@@ -258,3 +258,32 @@ wsl --status → PROGRAM BLOCKED BY SECURITY POLICY: wsl.exe
 ## 12. Git 状态
 
 见本轮最终提交（`git log --oneline -1` 与 `git status`）。未 push、未打 tag、未创建 Release、未改写历史。
+
+## 13. 提交后的复验（最终证据）
+
+提交：`089ae46 fix: v0.1.1 production hardening and real-environment acceptance`
+
+在**全新数据目录**（`.data/final-v011`，端口 8830，编译产物 `apps/api/dist/server.mjs`）上依次执行：
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| 冒烟（含 setup token、双源、Key、故障隔离、Token、MCP initialize） | `SEARCH_HUB_DATA_DIR=./.data/final-v011 bash tests/scripts/smoke.sh http://127.0.0.1:8830` | **SMOKE TEST PASSED** |
+| 真实搜索（HN，两个 query，REST/MCP 一致性） | `node tests/scripts/live-search.mjs --url http://127.0.0.1:8830 --token sh_...` | **20/20 checks passed** |
+| MCP 官方客户端（HTTP + stdio） | `node tests/scripts/mcp-live.mjs --url http://127.0.0.1:8830 --token sh_...` | **20/20 checks passed** |
+
+真实结果示例（同一实例）：
+
+```text
+PASS: different queries return different result sets — 0 overlapping of 8/8
+PASS: each live call gets a new task id — task_... vs task_...
+PASS: MCP and REST agree on the result set — 8/8 overlapping URLs
+PASS: MCP carries provider attribution — prv_... vs prv_...
+```
+
+注意：冒烟脚本创建的 Mock 源会产生 `example.com` 合成结果。为得到纯真实证据，复验时先停用了 Mock 源，只保留 `hn-live`。
+
+## 14. 本轮未做（明确边界）
+
+- 未实现 MCP SSE 流式、PostgreSQL、Redis 多实例、向量库、多租户。
+- 未实现旧版迁移的 Web UI；该能力仅提供 REST 接口与 curl 流程（见 `docs/legacy-migration.md`）。
+- 未执行 `git push`、打 Tag、创建 Release、改写历史。
