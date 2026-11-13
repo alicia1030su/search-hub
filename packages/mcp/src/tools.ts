@@ -366,6 +366,10 @@ function toToolResult(result: SearchResponse["results"][number]) {
     title: result.title,
     url: result.url,
     snippet: result.snippet,
+    provider: result.provider,
+    providerType: result.providerType,
+    providerName: result.providerName,
+    source: result.source,
     sources: result.sources.map((source) => ({
       providerId: source.providerId,
       providerName: source.providerName,

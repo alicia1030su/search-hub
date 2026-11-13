@@ -4,6 +4,7 @@ import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
 import { authenticate } from "../auth.js";
 import { sendError } from "../http.js";
+import { isAllowedHost, isAllowedOrigin } from "../security/host.js";
 
 export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
   const handler = createMcpHttpHandler({
@@ -23,8 +24,35 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
     version: ctx.config.version,
   });
 
+  /**
+   * Host/Origin validation happens before authentication on purpose: a
+   * DNS-rebinding attempt must not even be able to tell whether a token is
+   * valid. `publicBaseUrl` is only used for documentation, not for validation,
+   * because the instance may legitimately be reached by several names.
+   */
   app.all("/mcp", async (request, reply) => {
     try {
+      const hostHeader = request.headers.host;
+      if (!isAllowedHost(hostHeader, ctx.config.allowedHosts)) {
+        throw new SearchHubError(
+          "forbidden",
+          `Host "${hostHeader ?? ""}" is not allowed. Add it to SEARCH_HUB_ALLOWED_HOSTS if this is intentional.`,
+        );
+      }
+
+      const requestOrigin = `${request.protocol}://${request.headers.host}`;
+      const originHeader = request.headers.origin;
+      if (
+        !isAllowedOrigin(
+          typeof originHeader === "string" ? originHeader : null,
+          requestOrigin,
+          ctx.config.corsOrigins,
+          ctx.config.allowedHosts,
+        )
+      ) {
+        throw new SearchHubError("forbidden", "Origin is not allowed for this MCP endpoint");
+      }
+
       const actor = authenticate(
         {
           headers: request.headers as Record<string, string | string[] | undefined>,
@@ -34,16 +62,6 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
         ctx.authDeps,
         { scope: "mcp:use", requireToken: true },
       );
-
-      // DNS-rebinding / CSRF hardening for browser-originated requests.
-      const origin = request.headers.origin;
-      if (typeof origin === "string" && origin) {
-        const allowed = new Set<string>([`${request.protocol}://${request.headers.host}`]);
-        for (const entry of ctx.config.corsOrigins) allowed.add(new URL(entry).origin);
-        if (!allowed.has(origin)) {
-          throw new SearchHubError("forbidden", "Origin is not allowed for this MCP endpoint");
-        }
-      }
 
       const host = request.headers.host ?? `127.0.0.1:${ctx.config.port}`;
       const url = new URL(`${request.protocol}://${host}${request.url}`);

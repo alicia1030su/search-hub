@@ -15,8 +15,12 @@ services:
       # Generate with: openssl rand -hex 32
       # If unset, a key is generated once in /app/data/master.key.
       SEARCH_HUB_ENCRYPTION_KEY: ${SEARCH_HUB_ENCRYPTION_KEY:-}
-      # Optional: require this token on the first-run setup form.
+      # Optional: pin the one-time setup token. When empty, the server
+      # generates ./data/setup-token and prints it to the container log.
       SEARCH_HUB_SETUP_TOKEN: ${SEARCH_HUB_SETUP_TOKEN:-}
+      # Extra hostnames accepted in the Host header (comma separated).
+      # IP literals and localhost are always accepted.
+      SEARCH_HUB_ALLOWED_HOSTS: ${SEARCH_HUB_ALLOWED_HOSTS:-}
       # Set when serving behind an HTTPS reverse proxy on a public domain.
       SEARCH_HUB_PUBLIC_URL: ${SEARCH_HUB_PUBLIC_URL:-}
       SEARCH_HUB_COOKIE_SECURE: ${SEARCH_HUB_COOKIE_SECURE:-false}
@@ -26,7 +30,10 @@ services:
       SEARCH_HUB_CORS_ORIGINS: ${SEARCH_HUB_CORS_ORIGINS:-}
       TZ: Asia/Shanghai
     volumes:
-      - ./data:/app/data
+      # Named volume: Docker initialises it with the image's non-root owner
+      # (uid 1001). A bind mount (./data:/app/data) would be root-owned and
+      # the container could not write the database without a manual chown.
+      - search-hub-data:/app/data
     healthcheck:
       test:
         [
@@ -52,3 +59,6 @@ services:
   #   command: ["redis-server", "--appendonly", "yes"]
   #   volumes:
   #     - ./data/redis:/data
+
+volumes:
+  search-hub-data:

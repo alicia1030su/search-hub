@@ -1,14 +1,12 @@
 import { eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { SearchHubError, setupSchema, loginSchema } from "@search-hub/shared";
 import { adminUsers } from "@search-hub/db";
 import type { AppContext } from "../context.js";
 import { SESSION_COOKIE } from "../auth.js";
 import { jsonFor, parseInput, requestMeta, audit } from "../http.js";
 import { hashPassword, newId, verifyPassword } from "../security/crypto.js";
-
-const setupTokenSchema = z.object({ setupToken: z.string().max(200).optional() });
+import { setupTokenMatches } from "../security/setup-token.js";
 
 /** Process-local login throttle, configurable via settings.security.loginRateLimitPerMin. */
 const loginAttempts = new Map<string, number[]>();
@@ -23,7 +21,9 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         initialized: count > 0,
         version: ctx.config.version,
         admins: count,
-        setupTokenRequired: Boolean(ctx.config.setupToken),
+        // Always true while uninitialized: a fresh instance must never be
+        // claimable by whoever happens to reach the port first.
+        setupTokenRequired: count === 0 && Boolean(ctx.setupToken.value),
       };
     }),
   );
@@ -36,27 +36,53 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         throw new SearchHubError("already_initialized", "This instance is already initialized. Sign in instead.");
       }
       const input = parseInput(setupSchema, request.body);
-      if (ctx.config.setupToken) {
-        const provided = input.setupToken ?? request.headers["x-setup-token"];
-        if (typeof provided !== "string" || provided !== ctx.config.setupToken) {
-          throw new SearchHubError("forbidden", "A valid setup token is required to initialize this instance");
-        }
+
+      const expected = ctx.setupToken.value;
+      const provided = input.setupToken ?? request.headers["x-setup-token"];
+      if (!expected) {
+        throw new SearchHubError(
+          "forbidden",
+          "This instance has no active setup token. Restart it to generate one.",
+        );
+      }
+      if (typeof provided !== "string" || !setupTokenMatches(expected, provided)) {
+        throw new SearchHubError("forbidden", "A valid setup token is required to initialize this instance");
       }
 
       const now = new Date().toISOString();
       const userId = newId("usr");
-      ctx.db
-        .insert(adminUsers)
-        .values({
-          id: userId,
-          email: input.email.toLowerCase(),
-          name: input.name,
-          passwordHash: hashPassword(input.password),
-          role: "admin",
-          createdAt: now,
-        })
-        .run();
+      const passwordHash = hashPassword(input.password);
+
+      // BEGIN IMMEDIATE serialises this check-and-insert across processes that
+      // share the same database file, so two simultaneous setup calls cannot
+      // both create an administrator.
+      const claim = ctx.sqlite.transaction(() => {
+        const row = ctx.sqlite
+          .prepare("SELECT COUNT(*) AS count FROM admin_users")
+          .get() as { count: number };
+        if (Number(row.count) > 0) {
+          throw new SearchHubError(
+            "already_initialized",
+            "This instance is already initialized. Sign in instead.",
+          );
+        }
+        ctx.db
+          .insert(adminUsers)
+          .values({
+            id: userId,
+            email: input.email.toLowerCase(),
+            name: input.name,
+            passwordHash,
+            role: "admin",
+            createdAt: now,
+          })
+          .run();
+      });
+      claim.immediate();
+
       ctx.settings.markInitialized();
+      ctx.refreshSetupToken();
+      audit(ctx, `admin:${input.email}`, "setup.initialize", null, { version: ctx.config.version }, requestMeta(request).ip);
 
       const meta = requestMeta(request);
       const session = ctx.sessions.create(userId, {
@@ -65,7 +91,6 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         ttlHours: ctx.settings.get().security.sessionTtlHours,
       });
       void reply.setCookie(SESSION_COOKIE, session.token, ctx.sessions.cookieOptions());
-      audit(ctx, `admin:${input.email}`, "setup.initialize", null, { version: ctx.config.version }, meta.ip);
       return {
         user: { id: userId, email: input.email.toLowerCase(), name: input.name },
         csrfToken: session.csrfToken,
@@ -168,5 +193,3 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     }),
   );
 }
-
-export { setupTokenSchema };

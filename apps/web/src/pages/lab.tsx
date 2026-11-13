@@ -170,6 +170,7 @@ export function LabPage() {
       limit: numericLimit,
       providers: selected.length === providers.length ? undefined : selected,
       includeRaw: includeDebug,
+      skipCache: true,
       ...(numericTimeout === null ? {} : { timeoutMs: numericTimeout }),
       ...(language.trim() ? { language: language.trim() } : {}),
       ...(freshness ? { freshness: freshness as Freshness } : {}),

@@ -25,6 +25,8 @@ const child = spawn(
       NODE_ENV: "production",
       SEARCH_HUB_LOG_LEVEL: "warn",
       SEARCH_HUB_COOKIE_SECURE: "false",
+      // Fixed first-run token so the Playwright flow is deterministic.
+      SEARCH_HUB_SETUP_TOKEN: "e2e-setup-token",
     },
     stdio: "inherit",
   },

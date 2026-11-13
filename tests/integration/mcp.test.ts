@@ -47,7 +47,7 @@ beforeAll(async () => {
   const setup = await app.inject({
     method: "POST",
     url: "/api/setup",
-    payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin" },
+    payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin", setupToken: ctx.setupToken.value! },
   });
   cookie = setup.cookies.find((item) => item.name === "sh_session")!.value;
   csrf = setup.json().csrfToken as string;

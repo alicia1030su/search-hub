@@ -1,12 +1,15 @@
 import pino, { type Logger as PinoLogger } from "pino";
+import { sql } from "drizzle-orm";
 import {
   createSafeFetch,
   type Logger,
   type SafeFetch,
 } from "@search-hub/shared";
 import { createDb, runMigrations, type DbHandle } from "@search-hub/db";
+import { adminUsers } from "@search-hub/db";
 import type { AppConfig } from "./config.js";
 import { SecretBox, ensureDir } from "./security/crypto.js";
+import { clearGeneratedSetupToken, ensureSetupToken, type SetupTokenState } from "./security/setup-token.js";
 import { SettingsService } from "./services/settings.js";
 import { ProviderService } from "./services/providers.js";
 import { ModelService } from "./services/models.js";
@@ -46,6 +49,9 @@ export interface AppContext {
   appLogger: Logger;
   fetch: SafeFetch;
   authDeps: AuthDependencies;
+  /** First-run token. Null once an administrator exists. */
+  setupToken: SetupTokenState;
+  refreshSetupToken: () => void;
   migrated: string[];
 }
 
@@ -71,13 +77,35 @@ export function createContext(config: AppConfig): AppContext {
   });
 
   const handle = createDb({ file: config.dbPath });
-  const migration = runMigrations(handle.sqlite);
+  const migration = runMigrations(handle.sqlite, config.migrationsDir);
   if (migration.applied.length > 0) {
     logger.info({ migrations: migration.applied }, "database migrations applied");
   }
 
-  const secrets = SecretBox.fromEnvOrFile(config.dataDir, config.encryptionKey);
+  const adminCount = Number(
+    handle.db.select({ count: sql<number>`count(*)` }).from(adminUsers).all()[0]?.count ?? 0,
+  );
+  let setupToken = ensureSetupToken(config.dataDir, config.setupToken, adminCount > 0);
+  if (setupToken.value) {
+    logger.warn(
+      { source: setupToken.source, file: setupToken.source === "generated" ? setupToken.filePath : undefined },
+      setupToken.source === "env"
+        ? "First-run setup is protected by SEARCH_HUB_SETUP_TOKEN."
+        : "First-run setup token generated. Open /setup and paste this token: " + setupToken.value,
+    );
+  }
+
+  const refreshSetupToken = () => {
+    const count = Number(
+      handle.db.select({ count: sql<number>`count(*)` }).from(adminUsers).all()[0]?.count ?? 0,
+    );
+    if (count > 0) {
+      clearGeneratedSetupToken(setupToken);
+      setupToken = { ...setupToken, value: null, source: "none" };
+    }
+  };
   const settings = new SettingsService(handle.db, config);
+  const secrets = SecretBox.fromEnvOrFile(config.dataDir, config.encryptionKey);
   const sessions = new SessionService(handle.db, config);
   const tokens = new TokenService(handle.db);
   const providers = new ProviderService(handle.db, secrets);
@@ -115,6 +143,8 @@ export function createContext(config: AppConfig): AppContext {
     appLogger,
     fetch: fetchProxy,
     authDeps: { db: handle.db, sessions, tokens, settings },
+    setupToken,
+    refreshSetupToken,
     migrated: migration.applied,
   };
 }

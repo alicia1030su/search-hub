@@ -48,7 +48,7 @@ async function createHarness(): Promise<Harness> {
   const setup = await app.inject({
     method: "POST",
     url: "/api/setup",
-    payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin" },
+    payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin", setupToken: ctx.setupToken.value! },
   });
   expect(setup.statusCode).toBe(200);
   const cookie = setup.cookies.find((item) => item.name === "sh_session")?.value;
@@ -149,7 +149,7 @@ describe("provider and key management", () => {
   it("never returns the plaintext key and stores it encrypted", async () => {
     const harness = await createHarness();
     const providerId = await createMockProvider(harness, "masked-provider");
-    const secret = "sk-LIVE-FINGERPRINT-9c1f5e2a";
+    const secret = "sk-TEST-MASK-FINGERPRINT-9c1f5e2a";
 
     const created = await harness.app.inject({
       method: "POST",
@@ -190,7 +190,7 @@ describe("provider and key management", () => {
     const setup = await app1.inject({
       method: "POST",
       url: "/api/setup",
-      payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin" },
+      payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin", setupToken: ctx1.setupToken.value! },
     });
     const cookie = setup.cookies.find((item) => item.name === "sh_session")!.value;
     const csrf = setup.json().csrfToken as string;
@@ -474,7 +474,7 @@ describe("admin surface", () => {
     const setup = await app1.inject({
       method: "POST",
       url: "/api/setup",
-      payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin" },
+      payload: { email: "admin@example.com", password: "A-very-long-password-1", name: "Admin", setupToken: ctx1.setupToken.value! },
     });
     const cookies = { sh_session: setup.cookies.find((item) => item.name === "sh_session")!.value };
     const headers = { "x-csrf-token": setup.json().csrfToken as string };

@@ -1,6 +1,7 @@
 import { SearchHubError, type SearchProviderAdapter } from "@search-hub/shared";
 import { braveAdapter } from "./builtin/brave.js";
 import { genericHttpAdapter } from "./builtin/generic.js";
+import { hackerNewsAdapter } from "./builtin/hackernews.js";
 import { mockAdapter } from "./builtin/mock.js";
 import { searxngAdapter } from "./builtin/searxng.js";
 import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
@@ -8,6 +9,7 @@ import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
 const ADAPTERS: SearchProviderAdapter[] = [
   braveAdapter,
   searxngAdapter,
+  hackerNewsAdapter,
   genericHttpAdapter,
   mockAdapter,
 ];

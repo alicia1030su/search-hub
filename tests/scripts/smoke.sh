@@ -25,9 +25,23 @@ step "1. health"
 curl -sS "$BASE/api/health" | tee "$TMP_JSON"
 grep -q '"status":"ok"' "$TMP_JSON" || fail "health status"
 
-step "2. first-run setup (no default password)"
+step "2. first-run setup (requires the one-time token)"
+SETUP_TOKEN="${SEARCH_HUB_SETUP_TOKEN:-}"
+if [ -z "$SETUP_TOKEN" ]; then
+  for candidate in "${SEARCH_HUB_DATA_DIR:-./data}/setup-token" "${SEARCH_HUB_DATA_DIR:-./data}/../setup-token"; do
+    if [ -f "$candidate" ]; then SETUP_TOKEN=$(cat "$candidate"); break; fi
+  done
+fi
+[ -n "$SETUP_TOKEN" ] || fail "setup token not found; pass SEARCH_HUB_SETUP_TOKEN or point SEARCH_HUB_DATA_DIR at the instance data dir"
+
+# A fresh instance must reject a setup call without the token (admin preemption guard).
+NO_TOKEN_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+  -d '{"email":"attacker@example.com","password":"Attacker-Password-1","name":"Attacker"}' \
+  "$BASE/api/setup")
+[ "$NO_TOKEN_CODE" = "403" ] || fail "setup without token returned $NO_TOKEN_CODE (expected 403)"
+
 curl -sS -c "$COOKIE_JAR" -H 'content-type: application/json' \
-  -d '{"email":"admin@example.com","password":"Initial-Admin-Pass-1","name":"Admin"}' \
+  -d "{\"email\":\"admin@example.com\",\"password\":\"Initial-Admin-Pass-1\",\"name\":\"Admin\",\"setupToken\":\"$SETUP_TOKEN\"}" \
   "$BASE/api/setup" | tee "$TMP_JSON"
 CSRF=$(jget csrfToken < "$TMP_JSON")
 [ -n "$CSRF" ] || fail "setup did not return a session"

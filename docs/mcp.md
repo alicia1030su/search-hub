@@ -10,7 +10,7 @@ Two transports:
 | Transport | Use case | Auth |
 |---|---|---|
 | Streamable HTTP (`POST /mcp`) | Remote clients, web IDE plugins | `Authorization: Bearer sh_...` with `mcp:use` |
-| stdio (`packages/mcp/src/stdio.ts`) | Local desktop clients | Proxies REST, so the same token is used |
+| stdio (`packages/mcp/dist/stdio.mjs`) | Local desktop clients | Proxies REST, so the same token is used |
 
 ## Protocol eras
 
@@ -69,8 +69,8 @@ Tool failures are returned as MCP tool errors (`isError: true`) with a readable 
 {
   "mcpServers": {
     "search-hub": {
-      "command": "npx",
-      "args": ["tsx", "/path/to/search-hub/packages/mcp/src/stdio.ts"],
+      "command": "node",
+      "args": ["/path/to/search-hub/packages/mcp/dist/stdio.mjs"],
       "env": {
         "SEARCH_HUB_URL": "http://127.0.0.1:8787",
         "SEARCH_HUB_TOKEN": "sh_your_token"
@@ -80,13 +80,16 @@ Tool failures are returned as MCP tool errors (`isError: true`) with a readable 
 }
 ```
 
-Or inside Docker:
+Or inside the container:
 
 ```bash
-docker exec -i search-hub node --import tsx packages/mcp/src/stdio.ts
+docker compose exec -i \
+  -e SEARCH_HUB_URL=http://127.0.0.1:8787 \
+  -e SEARCH_HUB_TOKEN=sh_your_token \
+  search-hub node packages/mcp/dist/stdio.mjs
 ```
 
-with `SEARCH_HUB_URL=http://127.0.0.1:8787` and a token.
+The bundle is plain JavaScript; no `tsx`, TypeScript, or network install is required. `SEARCH_HUB_TOKEN` needs `mcp:use`, `search`, and (for `get_search_sources`) `sources:read`.
 
 ## Verifying with curl
 
@@ -116,9 +119,10 @@ curl -sS http://localhost:8787/mcp \
 ## Security
 
 - Bearer token required for every request; tokens are revocable and scoped.
-- `Origin` is checked when present; cross-origin browser calls are rejected unless the origin is configured in `SEARCH_HUB_CORS_ORIGINS`.
-- Behind a reverse proxy, terminate TLS there and set `SEARCH_HUB_PUBLIC_URL` plus `SEARCH_HUB_TRUST_PROXY=true`.
-- The handler itself performs no host validation; DNS-rebinding protection is meaningful only when the endpoint is not exposed to untrusted browsers. Keep the token secret and do not embed it in client-side code.
+- **Host validation happens before authentication.** Accepted: IP literals, `localhost`, the hostname of `SEARCH_HUB_PUBLIC_URL`, and entries in `SEARCH_HUB_ALLOWED_HOSTS`. Anything else gets `403`, which blocks DNS rebinding before a token can be probed.
+- `Origin` is checked when present; cross-origin browser calls are rejected unless the origin is in `SEARCH_HUB_CORS_ORIGINS` or matches the request host.
+- Behind a reverse proxy, terminate TLS there and set `SEARCH_HUB_PUBLIC_URL` plus `SEARCH_HUB_TRUST_PROXY=true` (loopback-only) or an explicit proxy CIDR.
+- The endpoint requires a Bearer token; the admin session cookie is not accepted. Keep the token secret and never embed it in client-side code.
 - Tool output never contains provider API keys.
 
 ## Known limits

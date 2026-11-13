@@ -108,7 +108,8 @@ export class SearchService {
       chatModelId: request.chatModelId ?? null,
     });
 
-    if (cacheConfig.enabled && cacheConfig.ttlSeconds > 0) {
+    const cacheUsable = cacheConfig.enabled && cacheConfig.ttlSeconds > 0 && request.skipCache !== true;
+    if (cacheUsable) {
       const hit = this.cache.get(cacheKey);
       if (hit && hit.expiresAt > Date.now()) {
         const cached: SearchResponse = {
@@ -178,7 +179,7 @@ export class SearchService {
       const cancelled = controller.signal.aborted && options.signal?.aborted === true;
 
       this.persistTask(taskId, response, cancelled ? "cancelled" : null);
-      if (cacheConfig.enabled && cacheConfig.ttlSeconds > 0 && response.status !== "failed") {
+      if (cacheUsable && response.status !== "failed") {
         this.cache.set(cacheKey, {
           expiresAt: Date.now() + cacheConfig.ttlSeconds * 1000,
           response: structuredClone(response),
@@ -539,6 +540,7 @@ export class SearchService {
       ...response,
       stats: {
         ...response.stats,
+        degraded: true,
         [timingKey]: response.stats.timing[timingKey] ?? 0,
       },
       errors: [...response.errors, warning],

@@ -1,6 +1,6 @@
 {
   "name": "@search-hub/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
@@ -16,6 +16,10 @@
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
     "@search-hub/shared": "workspace:*",
+    "undici": "^8.12.4",
     "zod": "^4.6.7"
+  },
+  "bin": {
+    "search-hub-mcp": "./dist/stdio.mjs"
   }
 }

@@ -18,87 +18,78 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (139 tests)
+## What is covered (177 tests, 17 files)
 
-**Scheduler (`tests/unit/scheduler.test.ts`)**
+**Scheduler and quotas** — `tests/unit/scheduler.test.ts`, `tests/unit/key-limits.test.ts`
 
 - 100 concurrent acquires on 5 keys × 3 slots → exactly 15 leases; every key active; no key above 3.
-- Slot release is idempotent; RPM window; daily quota reset; round-robin order; failover preference; least-used choice; weighted distribution.
-- 429 → cooldown honouring `Retry-After`; 401 → `invalid` until manual reset; repeated 5xx → breaker cooldown; all-cooling → `null` instead of endless retry.
+- **Three-tier limits**: per-key concurrency peak is *exactly* 2 (not 1, not 3) under 100 concurrent acquires; the RPM window rejects the 11th request in 60s while concurrency is free; a daily quota of 3 accepts 3 and then rejects.
+- `acquireWithReason` separates a saturated pool (`queue_timeout`) from an unusable one (`no_key`); a parked waiter is woken by `release()` in ~80ms instead of polling.
+- Slot release is idempotent; daily quota reset; round-robin; failover; least-used; weighted distribution.
+- 429 → cooldown honouring `Retry-After`; 401 → `invalid` until manual reset; repeated 5xx → breaker.
 
-**Fusion (`tests/unit/fusion.test.ts`)**
+**Fault isolation matrix** — `tests/integration/fault-matrix.test.ts`
 
-- Tracking parameters removed, query sorted, default port and fragment removed.
-- Exact URL merge keeps both sources; near-title merge on the same domain; cross-domain titles are not merged.
-- RRF matches `2/61` for a document ranked first by two providers; order-independent; multi-source results outrank single-source.
+- Timeout / 401 / 429 / 5xx: 50 runs each against a broken source plus a healthy one. Success rate ≥99%, `stats.partial=true`, `failedSources` exactly the broken source with the expected code, and the healthy source's results always present.
+- Malformed JSON from a real local HTTP server (`generic-http`) → `bad_request`, isolated, healthy source still returns.
+- Every source broken → HTTP 503 + `status:"failed"` (no empty 200).
 
-**SSRF (`tests/unit/ssrf.test.ts`)**
+**Models (optional stages)** — `tests/unit/models.test.ts`, `tests/integration/model-degradation.test.ts`
 
-- Loopback, RFC1918, CGNAT, link-local, metadata, IPv6 ULA/link-local, IPv4-mapped IPv6 blocked.
-- Metadata IP blocked even when allowlisted; exact/suffix allowlist semantics.
-- Runtime: loopback blocked before a socket opens; redirect re-validation catches a private hop; size cap; timeout.
+- OpenAI-compatible chat, Anthropic message format, HTTP failure propagation; embedding dimension validation and batching; Cohere-compatible rerank ordering and truncation.
+- Prompt-injection detection, boundary stripping, untrusted block, citation extraction, query rewrite fallback.
+- A 500 from every model endpoint: rerank / embedding / summary each set `stats.degraded=true`, keep base results, and add a `*-model` error entry. No model configured → plain search unaffected.
 
-**Providers (`tests/unit/providers.test.ts`)**
+**Security** — `tests/integration/security-hardening.test.ts`, `tests/unit/safe-fetch.test.ts`, `tests/unit/crypto.test.ts`
 
-- SearXNG happy path, JSON-disabled 403 hint, malformed payload, missing base URL.
-- Brave header/query mapping, missing key, 401 → `auth_invalid`, 429 + `Retry-After` → `rate_limited`.
-- Generic mapping (header key injection, nested results path), invalid mapping rejection, missing path error.
-- Mock determinism and failure modes.
+- Setup token file created 0600, anonymous setup → 403, concurrent setup → exactly one admin row, env token honoured.
+- Host header: rebinding host → 403 before auth; allowlisted host accepted.
+- CSRF required for cookie mutations; `X-Forwarded-For` ignored without a trusted proxy and honoured with one.
+- guarded `lookup` returns the `all:true` array form (regression for ERR_INVALID_IP_ADDRESS), blocks non-allowlisted private hosts, re-validates redirects, enforces the size cap and the http/https policy.
+- AES-256-GCM round trip; ciphertext never contains plaintext.
 
-**Models (`tests/unit/models.test.ts`)**
+**MCP** — `tests/integration/mcp.test.ts`, `tests/integration/mcp-client.test.ts`
 
-- OpenAI-compatible chat, Anthropic message format, HTTP failure propagation.
-- Embedding dimension validation, batching, cosine similarity.
-- Cohere-compatible rerank ordering, document truncation.
-- Prompt injection detection, boundary marker stripping, untrusted block in the prompt, citation extraction.
-- Query rewrite JSON parsing and fallback; embedding re-scoring.
+- Official `@modelcontextprotocol/client` over Streamable HTTP and stdio: 9 tools, `search_web` returns structured results with provider attribution, `get_search_sources` lists providers, empty query → readable error.
+- Cross-transport parity: same URLs and same provider attribution.
+- Unsafe Origin → 403; rebound Host → 403 before auth; session cookie without Bearer → 401.
+- Legacy 2025-11-25 handshake and modern 2026-07-28 envelope; mixing them → 400.
 
-**API (`tests/integration/api.test.ts`)**
+**API** — `tests/integration/api.test.ts`, `tests/integration/search-errors.test.ts`, `tests/integration/legacy-migration.test.ts`
 
-- Setup exactly once; wrong password rejected; CSRF required; unauthenticated admin rejected.
-- Unimplemented provider type rejected; key masked in responses and absent from the SQLite file (plaintext and base64).
-- Provider/settings persistence across a real close/reopen.
-- Multi-source fusion + dedupe; partial results with visible failure; task retrieval; token scopes; revocation.
-- Dashboard aggregates; config export without secrets; OpenAPI paths; setup token.
+- Setup once; wrong password; CSRF; unauthenticated admin; unimplemented provider type; key masking and absence from the SQLite file; persistence across a real close/reopen.
+- Fusion + dedupe; partial results; task retrieval; token scopes; revocation; dashboard aggregates; config export without secrets; OpenAPI paths.
+- Cache hit marks `stats.cached` with a new task id; `skipCache` forces a live run.
+- Legacy migration: dry-run writes nothing, apply requires confirmation, credentials in the payload never reach the response or the database, a second apply creates nothing.
 
-**Errors and hardening (`tests/integration/search-errors.test.ts`)**
+**E2E** — `tests/e2e/admin.spec.ts`
 
-- All providers failing → HTTP 503 + `failedSources`; one failing → 200 partial.
-- Missing key → `auth_invalid` with actionable message.
-- Global timeout returns before the slow provider's own timeout.
-- RPM burst hits 503 after the configured window.
-- Cache hit returns `stats.cached` and a new task id; different queries miss.
-- Login throttling → 429; MCP endpoint absolute.
+- First run (with setup token) → dashboard empty state → add mock providers → search lab → theme toggle → settings saved → reload retains session.
 
-**MCP (`tests/integration/mcp.test.ts`)**
+**Standalone scripts** (start their own instance, no external credentials)
 
-- Bearer required; legacy `initialize` + `tools/list` (9 tools); `tools/call` through the shared core.
-- Modern 2026-07-28 envelope with `MCP-Protocol-Version` + `Mcp-Method` + `Mcp-Name` + `_meta`.
-- Mixing a legacy handshake with a modern header → 400 with a mismatch message.
-- Status tools contain no key-like strings.
-
-**Concurrency (`tests/integration/concurrency.test.ts`)**
-
-- 100 parallel searches on 2 keys × 2 slots: all succeed, no key leaks, in-flight returns to zero, total not serialized.
-
-**E2E (`tests/e2e/admin.spec.ts`)**
-
-- First-run → dashboard empty state → add two mock providers → search lab shows both → theme toggle → settings saved → reload retains session and value.
-- Unauthenticated redirect; wrong-password message; integrations page shows `/mcp` and `search_web` without `sk-`.
+| Script | Proves |
+|---|---|
+| `tests/scripts/smoke.sh` | setup token enforcement, providers, keys, search, fault isolation, token, MCP initialize |
+| `tests/scripts/leak-scan.mjs` | no key material in any API response, the SQLite file (plaintext/Base64/hex) or logs |
+| `tests/scripts/mcp-live.mjs` | HTTP and stdio via the official client, parity of results |
+| `tests/scripts/live-search.mjs` | **real** HN queries, different result sets, REST/MCP agreement |
+| `tests/scripts/clean-install.mjs` | install → build → prod-only install → boot → real search |
 
 ## What is not covered
 
 | Gap | Reason | Status |
 |---|---|---|
-| Brave live API | No subscription key | Documented as “not integration-tested” |
-| SearXNG live instance | No instance available | Documented |
-| OpenAI/Anthropic/Gemini/Jina/Cohere live | No vendor keys | Contracts tested with local servers |
-| Docker image build | Docker daemon unavailable in the development environment | CI job provided; not executed here |
-| Multi-instance quota | Redis coordination not implemented | Out of scope for 0.1.0 |
-| Long-running soak / memory leaks | No soak harness yet | Planned |
+| Brave live API | No subscription key; the host is unreachable from this network | **BLOCKED** |
+| SearXNG live instance | No self-hosted instance; public instances unreachable here | **BLOCKED** |
+| Tavily / Bocha / Metaso | No keys; official contract not verified in this round | NOT IMPLEMENTED |
+| OpenAI/Anthropic/Gemini/Jina/Cohere live | No vendor keys | Contract verified with local servers only |
+| Docker image build / container restart | Docker Engine unavailable (WSL blocked by host security policy) | **BLOCKED** |
+| Multi-instance quota | Redis coordination not implemented | Out of scope |
+| Soak / memory-leak testing | No soak harness yet | Planned |
 | Browser matrix | Chromium only | Firefox/WebKit not run |
 
-**Never** treat a green mock-backed suite as evidence that a real vendor integration works. When reporting status, separate “contract verified with a mock” from “verified against the provider”.
+**Never** treat a green mock-backed suite as evidence that a real vendor integration works. Hacker News is the only provider in this repository with a recorded live run.
 
 ## Running the smoke script
 

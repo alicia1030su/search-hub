@@ -8,9 +8,11 @@ import {
 import { auditLogs, modelConfigs, providerInstances, searchGroups } from "@search-hub/db";
 import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
-import { audit, jsonFor, parseInput } from "../http.js";
+import { audit, jsonFor, parseInput, sendError } from "../http.js";
 import { dashboardStats, parseRange, recentEvents } from "../services/stats.js";
+import { applyLegacyPlan, planLegacyMigration } from "../services/legacy-migration.js";
 import { newId } from "../security/crypto.js";
+import { REPO_ROOT } from "../config.js";
 
 function actorOf(request: FastifyRequest, ctx: AppContext, mutation = false): Actor {
   return authenticate(
@@ -174,11 +176,9 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
       requireAdmin(actorOf(request, ctx));
       const fs = await import("node:fs/promises");
       const path = await import("node:path");
-      const { fileURLToPath } = await import("node:url");
-      const root = path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        "../../../../packages/skills",
-      );
+      // Path is derived from the install root, not from this module's location,
+      // so the bundled server (apps/api/dist) resolves it the same way.
+      const root = path.join(REPO_ROOT, "packages", "skills");
       const skills = await Promise.all(
         SKILL_DEFINITIONS.map(async (definition) => {
           try {
@@ -216,6 +216,112 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
   };
   app.post("/api/admin/import", jsonFor(app, importHandler));
   app.post("/api/admin/config/import", jsonFor(app, importHandler));
+
+  /**
+   * Legacy Search Hub migration.
+   *
+   * `POST /api/admin/migration/legacy` accepts the provider list exported by an
+   * older deployment. It NEVER reads or stores credentials: the response lists
+   * which providers need a key, and the operator re-enters keys in the UI.
+   * Dry-run is the default; apply requires an explicit confirmation string and
+   * refuses to overwrite existing provider names.
+   */
+  app.post(
+    "/api/admin/migration/legacy",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const body = (request.body ?? {}) as {
+        mode?: string;
+        payload?: unknown;
+        confirm?: string;
+        baseUrl?: string;
+      };
+      const mode = body.mode === "apply" ? "apply" : "dry_run";
+      const existing = ctx.providers.listRows().map((row) => row.name);
+      const plan = planLegacyMigration(body.payload, existing, mode);
+
+      if (mode === "dry_run") {
+        audit(ctx, actorLabel(actor), "migration.legacy.preview", null, {
+          total: plan.total,
+          importable: plan.importable,
+        }, request.ip);
+        return plan;
+      }
+
+      const result = applyLegacyPlan(
+        plan,
+        body.confirm ?? "",
+        {
+          createProvider: ({ body: providerBody }) => {
+            const now = new Date().toISOString();
+            ctx.db
+              .insert(providerInstances)
+              .values({
+                id: newId("prv"),
+                name: String(providerBody["name"]),
+                type: String(providerBody["type"]),
+                enabled: Boolean(providerBody["enabled"] ?? true),
+                baseUrl: (providerBody["baseUrl"] as string | null | undefined) ?? null,
+                timeoutMs: Number(providerBody["timeoutMs"] ?? 12_000),
+                maxConcurrency: Number(providerBody["maxConcurrency"] ?? 4),
+                priority: Number(providerBody["priority"] ?? 100),
+                weight: Number(providerBody["weight"] ?? 100),
+                maxRetries: Number(providerBody["maxRetries"] ?? 1),
+                language: (providerBody["language"] as string | null | undefined) ?? null,
+                freshness: (providerBody["freshness"] as string | null | undefined) ?? null,
+                resultsPerPage: Number(providerBody["resultsPerPage"] ?? 10),
+                rpmLimit: Number(providerBody["rpmLimit"] ?? 60),
+                dailyQuota: providerBody["dailyQuota"] == null ? null : Number(providerBody["dailyQuota"]),
+                keyStrategy: String(providerBody["keyStrategy"] ?? "round_robin"),
+                cooldownMs: Number(providerBody["cooldownMs"] ?? 30_000),
+                breakerThreshold: Number(providerBody["breakerThreshold"] ?? 5),
+                breakerCooldownMs: Number(providerBody["breakerCooldownMs"] ?? 60_000),
+                configJson: JSON.stringify(providerBody["config"] ?? {}),
+                createdAt: now,
+                updatedAt: now,
+              })
+              .run();
+          },
+        },
+        body.baseUrl,
+      );
+      ctx.providers.reload();
+      audit(ctx, actorLabel(actor), "migration.legacy.apply", null, result, request.ip);
+      return { ...plan, applied: result };
+    }),
+  );
+
+  /** Forces a WAL checkpoint so a file-level backup is self-contained. */
+  app.post(
+    "/api/admin/maintenance/checkpoint",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx, true));
+      const result = ctx.sqlite.pragma("wal_checkpoint(TRUNCATE)");
+      return { ok: true, checkpoint: result };
+    }),
+  );
+
+  /**
+   * Downloads a consistent SQLite snapshot. The response intentionally does
+   * NOT include master.key: restoring the database without that key leaves
+   * stored provider credentials unreadable, which is the safe failure mode.
+   */
+  app.get("/api/admin/backup", async (request, reply) => {
+    try {
+      requireAdmin(actorOf(request, ctx));
+      ctx.sqlite.pragma("wal_checkpoint(TRUNCATE)");
+      const fs = await import("node:fs");
+      const data = fs.readFileSync(ctx.config.dbPath);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      reply
+        .header("content-disposition", `attachment; filename="search-hub-${stamp}.db"`)
+        .header("cache-control", "no-store")
+        .type("application/vnd.sqlite3")
+        .send(data);
+    } catch (error) {
+      sendError(reply, error);
+    }
+  });
 
   app.get(
     "/api/mcp/info",

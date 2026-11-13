@@ -7,7 +7,7 @@ Thanks for helping. This project values **honest capability claims** over surfac
 1. **No fabricated results.** Do not add a provider, endpoint, or model adapter based on guesswork. Link the official documentation you implemented against.
 2. **No fake tests.** Do not weaken an assertion to make CI pass, and do not mock away the behaviour under test.
 3. **No silent degradation.** A failed upstream must produce an error code, not an empty success.
-4. **Secrets never enter git.** No API keys, tokens, cookies, or personal data. Use `.env` (git-ignored) and the local mock providers.
+4. **Secrets never enter git.** No API keys, tokens, cookies, or personal data. Use `.env` (git-ignored) and the local mock providers. Live-verification notes must show the query and result URL, never the credential.
 5. **One search core.** REST, MCP, and Skills must call the same engine. A second implementation will be rejected.
 6. **Preserve user data.** Migrations must be additive; never drop stored keys.
 
@@ -113,3 +113,16 @@ Maintainers only:
 4. Tag `vX.Y.Z` and publish release notes that separate **verified** from **unverified** capabilities.
 
 No force-push, tag rewrite, or destructive migration without maintainer approval.
+
+## Verification before a provider is marked implemented
+
+The catalog field `verification` is the only place where support status lives:
+
+| Value | Meaning | Requirements |
+|---|---|---|
+| `live_tested` | A recorded real call exists | Query, response URL(s), timestamp, and the command used. Never include the key. |
+| `documented` | Implemented only from official docs | Link to the docs; no live run yet. |
+| `unverified` | Endpoint not confirmed | Must stay `planned`; cannot be created in the UI. |
+| `no_official_api` | No public API | Cannot be created; do not add scrapers. |
+
+Moving a provider from `planned` to `builtin` requires all four: official doc link, error-code mapping, mock tests, and one recorded live call. A green mock suite alone is never enough.

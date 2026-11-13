@@ -9,10 +9,10 @@ Two mechanisms:
 
 | Client | Mechanism | Notes |
 |---|---|---|
-| Admin UI | `sh_session` HttpOnly cookie + `x-csrf-token` header | Required on every `POST`/`PUT`/`PATCH`/`DELETE` |
-| Integrations | `Authorization: Bearer sh_...` | Scopes: `search`, `sources:read`, `mcp:use`, `admin` |
+| Admin UI | `sh_session` HttpOnly cookie + `x-csrf-token` header | Required on cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` |
+| Integrations | `Authorization: Bearer sh_...` | Scopes: `search`, `sources:read`, `mcp:use`, `admin`. Bearer requests are not CSRF-checked because no ambient cookie is used. |
 
-A session request without `x-csrf-token` returns `403`, never a silent success. Tokens are shown once at creation; only their SHA-256 hash is stored.
+A cookie-authenticated mutation without `x-csrf-token` returns `403`, never a silent success. Bearer-token requests do not need CSRF. Tokens are shown once at creation; only their SHA-256 hash is stored.
 
 ## Error shape
 
@@ -35,14 +35,14 @@ A session request without `x-csrf-token` returns `403`, never a silent success. 
 | 409 | `conflict` / `already_initialized` | Duplicate name, or setup already completed |
 | 429 | `rate_limited` | Login or token rate limit |
 | 501 | `unsupported` | Provider type has no adapter |
-| 503 | `no_available_key` / `server_error` | All keys unavailable, or every provider failed |
+| 503 | `no_available_key` / `queue_timeout` / `circuit_open` / `server_error` | All keys unusable, every slot busy beyond the queue budget, the provider circuit is open, or every provider failed |
 | 504 | `timeout` | Global deadline exceeded |
 
 ## Setup and auth
 
 ```http
 GET  /api/setup/status
-POST /api/setup                 {email,password,name,setupToken?}
+POST /api/setup                 {email,password,name,setupToken}   # token required on a fresh instance
 POST /api/auth/login            {email,password}
 GET  /api/auth/session
 POST /api/auth/logout
@@ -244,6 +244,22 @@ const response = await fetch("http://localhost:8787/api/search", {
 if (!response.ok) throw new Error((await response.json()).error.message);
 const { results } = await response.json();
 ```
+
+## Optional cache and degraded models
+
+- The response cache is **off by default** (`settings.cache.enabled=false`). When enabled, `stats.cached=true` marks a hit.
+- Send `"skipCache": true` to force a live run; the search lab always sets it.
+- Optional stages (rerank / embedding / summary) never fail the request. A failure sets `stats.degraded=true`, leaves the base results intact, and appends a `*-model` entry to `errors[]`.
+
+## Backup and legacy migration
+
+```http
+POST /api/admin/maintenance/checkpoint      # wal_checkpoint(TRUNCATE)
+GET  /api/admin/backup                      # consistent SQLite snapshot (no master.key)
+POST /api/admin/migration/legacy            # {mode:"dry_run"|"apply", payload, confirm?, baseUrl?}
+```
+
+The migration endpoint accepts the provider list of an older Search Hub deployment. It **never reads or stores credentials**: the plan lists which providers need a key, and you re-enter keys in the UI. `apply` requires `"confirm":"IMPORT LEGACY PROVIDERS"` and skips names that already exist (no overwrite). See [legacy-migration.md](./legacy-migration.md).
 
 ## Rate limits
 

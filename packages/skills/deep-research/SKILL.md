@@ -4,8 +4,8 @@ description: Run a multi-query deep research pass through Search Hub: rewrite th
 license: MIT
 metadata:
   author: search-hub
-  version: "0.1.0"
-  requires: search-hub>=0.1.0, chat-model:optional
+  version: "0.1.1"
+  requires: search-hub>=0.1.1, chat-model:optional
   transport: rest
 ---
 

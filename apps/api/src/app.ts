@@ -15,6 +15,7 @@ import { registerAdminRoutes } from "./routes/admin-routes.js";
 import { registerMcpRoutes } from "./routes/mcp-routes.js";
 import { registerOpenApiRoutes } from "./routes/openapi-routes.js";
 import { sendError } from "./http.js";
+import { isAllowedHost } from "./security/host.js";
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -31,6 +32,23 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     max: 300,
     timeWindow: "1 minute",
     allowList: (request) => request.url === "/api/health",
+  });
+
+  // Host header validation for every route (DNS-rebinding hardening).
+  // Health checks are exempt so container healthchecks can use any local address.
+  app.addHook("onRequest", async (request, reply) => {
+    if (request.url === "/api/health" || request.url === "/healthz") return;
+    if (!isAllowedHost(request.headers.host, ctx.config.allowedHosts)) {
+      request.log.warn({ host: request.headers.host }, "rejected request with disallowed Host header");
+      await reply.status(403).send({
+        error: {
+          code: "forbidden",
+          message:
+            `Host "${request.headers.host ?? ""}" is not allowed. ` +
+            "Set SEARCH_HUB_ALLOWED_HOSTS (comma separated) to the hostname clients use.",
+        },
+      });
+    }
   });
 
   if (ctx.config.corsOrigins.length > 0) {

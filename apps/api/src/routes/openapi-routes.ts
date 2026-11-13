@@ -58,6 +58,7 @@ export const openApiDocument = {
       post: { tags: ["system"], summary: "Sign out", responses: { "200": { description: "Signed out" } } },
     },
     "/api/search": {
+      // skipCache:true bypasses the optional response cache.
       post: {
         tags: ["search"],
         summary: "Run a search",
@@ -149,6 +150,29 @@ export const openApiDocument = {
     },
     "/api/admin/tokens/{id}": {
       delete: { tags: ["admin"], summary: "Revoke an access token", responses: { "200": { description: "Revoked" } } },
+    },
+    "/api/admin/migration/legacy": {
+      post: {
+        tags: ["admin"],
+        summary: "Plan or apply a legacy Search Hub provider migration",
+        description:
+          "mode=dry_run (default) returns a plan; mode=apply requires confirm=\"IMPORT LEGACY PROVIDERS\". Credentials in the payload are ignored and never stored.",
+        responses: {
+          "200": { description: "Plan (dry run) or plan plus applied result" },
+          "400": { description: "Missing confirmation or malformed payload" },
+        },
+      },
+    },
+    "/api/admin/backup": {
+      get: {
+        tags: ["admin"],
+        summary: "Download a consistent SQLite snapshot",
+        description: "Runs wal_checkpoint(TRUNCATE) first. Does not include master.key.",
+        responses: { "200": { description: "SQLite database file" } },
+      },
+    },
+    "/api/admin/maintenance/checkpoint": {
+      post: { tags: ["admin"], summary: "Force a WAL checkpoint", responses: { "200": { description: "Checkpoint result" } } },
     },
     "/api/openapi.json": {
       get: { tags: ["system"], summary: "This document", responses: { "200": { description: "OpenAPI JSON" } } },

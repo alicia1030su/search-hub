@@ -279,6 +279,7 @@ export interface SearchRequest {
   summarize?: boolean;
   timeoutMs?: number;
   includeRaw?: boolean;
+  skipCache?: boolean;
   rerankModelId?: string;
   embeddingModelId?: string;
   chatModelId?: string;

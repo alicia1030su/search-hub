@@ -30,6 +30,8 @@ const STATUS_BY_CODE: Record<SearchHubErrorCode, number> = {
   quota_exceeded: 429,
   auth_invalid: 401,
   no_available_key: 503,
+  queue_timeout: 503,
+  circuit_open: 503,
   cancelled: 499,
   unknown: 500,
   internal_error: 500,

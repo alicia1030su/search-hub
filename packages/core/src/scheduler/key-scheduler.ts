@@ -1,5 +1,16 @@
 import type { KeyStatus, KeyStrategy } from "@search-hub/shared";
 
+/** Upper bound on parked callers; beyond this we reject instead of growing unbounded. */
+const MAX_WAITERS = 1024;
+
+interface Waiter {
+  done: boolean;
+  timer: NodeJS.Timeout;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+  resolve: (woke: boolean) => void;
+}
+
 export interface SchedulerKeySeed {
   id: string;
   label: string;
@@ -23,6 +34,7 @@ interface RuntimeKey extends Required<Omit<SchedulerKeySeed, "avgLatencyMs" | "c
   avgLatencyMs: number | null;
   cooldownUntilMs: number | null;
   inFlight: number;
+  peakInFlight: number;
   window: number[];
   lastUsedAtMs: number | null;
   lastFailureAtMs: number | null;
@@ -35,6 +47,8 @@ export interface KeyRuntimeSnapshot {
   maskedKey: string;
   status: KeyStatus;
   inFlight: number;
+  /** Highest in-flight value observed since the scheduler was created. */
+  peakInFlight: number;
   rpmUsed: number;
   quotaUsedToday: number;
   requestCount: number;
@@ -109,6 +123,7 @@ export class KeyScheduler {
   private readonly onDirty?: (snapshot: KeyRuntimeSnapshot) => void;
   /** Number of requests currently parked waiting for a slot (bounded). */
   private waiting = 0;
+  private waiters: Waiter[] = [];
 
   constructor(options: KeySchedulerOptions) {
     this.providerId = options.providerId;
@@ -184,28 +199,99 @@ export class KeyScheduler {
    * Returns null once the wait budget or the caller's deadline is exhausted.
    */
   async acquire(options: { maxWaitMs?: number; signal?: AbortSignal } = {}): Promise<KeyLease | null> {
+    const result = await this.acquireWithReason(options);
+    return result.lease;
+  }
+
+  /**
+   * Same as acquire(), but distinguishes a permanently unusable key pool from
+   * a temporarily saturated one so callers can return NO_AVAILABLE_KEY vs
+   * QUEUE_TIMEOUT instead of conflating both.
+   */
+  async acquireWithReason(
+    options: { maxWaitMs?: number; signal?: AbortSignal } = {},
+  ): Promise<{ lease: KeyLease | null; reason?: "no_key" | "queue_timeout" }> {
     const immediate = this.tryAcquire();
-    if (immediate) return immediate;
+    if (immediate) return { lease: immediate };
 
     // Distinguish "temporarily saturated" from "permanently unavailable".
-    if (!this.hasPotentiallyUsableKey(Date.now())) return null;
-    if (this.waiting >= 512) return null; // bounded queue: reject instead of growing unbounded
+    if (!this.hasPotentiallyUsableKey(Date.now())) return { lease: null, reason: "no_key" };
+    if (this.waiting >= MAX_WAITERS) return { lease: null, reason: "queue_timeout" };
 
     const waitBudget = Math.max(0, options.maxWaitMs ?? 2_000);
     const deadline = Date.now() + waitBudget;
     this.waiting += 1;
     try {
       while (Date.now() < deadline) {
-        if (options.signal?.aborted) return null;
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        if (options.signal?.aborted) return { lease: null, reason: "queue_timeout" };
+        // Woken by release() instead of polling: this keeps the observed
+        // schedule close to ceil(requests / slots) * latency.
+        await this.waitForSlot(Math.min(deadline - Date.now(), 250), options.signal);
         const lease = this.tryAcquire();
-        if (lease) return lease;
-        if (!this.hasPotentiallyUsableKey(Date.now())) return null;
+        if (lease) return { lease };
+        if (!this.hasPotentiallyUsableKey(Date.now())) return { lease: null, reason: "no_key" };
       }
-      return null;
+      return { lease: null, reason: "queue_timeout" };
     } finally {
       this.waiting -= 1;
     }
+  }
+
+  /** Number of callers currently parked waiting for a slot. */
+  get waitingCount(): number {
+    return this.waiting;
+  }
+
+  /** Wakes exactly one waiter after a slot is released. */
+  private wakeOne(): void {
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift()!;
+      if (waiter.done) continue;
+      waiter.done = true;
+      clearTimeout(waiter.timer);
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+      waiter.resolve(true);
+      return;
+    }
+  }
+
+  private waitForSlot(maxMs: number, signal?: AbortSignal): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const waiter: Waiter = {
+        done: false,
+        timer: setTimeout(() => {
+          if (waiter.done) return;
+          waiter.done = true;
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          if (waiter.signal && waiter.onAbort) {
+            waiter.signal.removeEventListener("abort", waiter.onAbort);
+          }
+          resolve(false);
+        }, Math.max(1, maxMs)),
+        ...(signal === undefined ? {} : { signal }),
+        onAbort: () => {
+          if (waiter.done) return;
+          waiter.done = true;
+          clearTimeout(waiter.timer);
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          resolve(false);
+        },
+        resolve: (woke: boolean) => resolve(woke),
+      };
+      waiter.timer.unref?.();
+      if (signal) {
+        if (signal.aborted) {
+          waiter.done = true;
+          clearTimeout(waiter.timer);
+          resolve(false);
+          return;
+        }
+        signal.addEventListener("abort", waiter.onAbort!, { once: true });
+      }
+      this.waiters.push(waiter);
+    });
   }
 
   /** True when at least one key is enabled, not invalid and not in long cooldown. */
@@ -235,6 +321,7 @@ export class KeyScheduler {
 
     // --- critical section: no awaits below this line ---
     selected.inFlight += 1;
+    if (selected.inFlight > selected.peakInFlight) selected.peakInFlight = selected.inFlight;
     selected.requestCount += 1;
     selected.lastUsedAtMs = now;
     selected.window.push(now);
@@ -255,6 +342,7 @@ export class KeyScheduler {
     if (outcome.cancelled) {
       key.dirty = true;
       this.emitDirty(key);
+      this.wakeOne();
       return;
     }
 
@@ -321,6 +409,7 @@ export class KeyScheduler {
 
     key.dirty = true;
     this.emitDirty(key);
+    this.wakeOne();
   }
 
   /** Manual re-test success resets an invalid or cooling key. */
@@ -378,6 +467,7 @@ export class KeyScheduler {
       lastErrorCode: seed.lastErrorCode ?? null,
       lastErrorMessage: seed.lastErrorMessage ?? null,
       inFlight: 0,
+      peakInFlight: 0,
       window: [],
       lastUsedAtMs: null,
       lastFailureAtMs: null,
@@ -481,6 +571,7 @@ export class KeyScheduler {
       maskedKey: key.maskedKey,
       status: key.status,
       inFlight: key.inFlight,
+      peakInFlight: key.peakInFlight,
       rpmUsed: key.window.length,
       quotaUsedToday: key.quotaUsedToday,
       requestCount: key.requestCount,

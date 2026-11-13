@@ -125,14 +125,14 @@ export async function runProvider(
         ok: false,
         latencyMs: 0,
         resultCount: 0,
-        errorCode: "server_error",
+        errorCode: "circuit_open",
         errorMessage: `Circuit breaker open for another ${Math.round(remaining / 1000)}s`,
         attempts: 0,
       },
       error: {
         providerId: config.id,
         providerName: config.name,
-        code: "server_error",
+        code: "circuit_open",
         message: `Circuit breaker open for another ${Math.round(remaining / 1000)}s`,
       },
     };
@@ -147,13 +147,17 @@ export async function runProvider(
 
     let lease: KeyLease | null = null;
     if (adapter.requiresKey || scheduler.hasKeys()) {
-      lease = await scheduler.acquire({
+      const acquired = await scheduler.acquireWithReason({
         maxWaitMs: Math.min(2_000, Math.max(0, deadline - nowMs())),
         signal: options.signal,
       });
+      lease = acquired.lease;
       if (!lease) {
-        lastCode = "no_available_key";
-        lastMessage = `No available API key for provider "${config.name}" (cooldown, concurrency or quota limit reached)`;
+        const waiting = acquired.reason === "queue_timeout";
+        lastCode = waiting ? "queue_timeout" : "no_available_key";
+        lastMessage = waiting
+          ? `All API key slots for provider "${config.name}" were busy beyond the queue budget`
+          : `No available API key for provider "${config.name}" (cooldown, quota or rate limit reached)`;
         break;
       }
       usedKeyId = lease.keyId;
@@ -221,8 +225,15 @@ export async function runProvider(
       clearTimeout(timer);
       const classified = classifyError(error);
       const timedOutByDeadline = nowMs() >= deadline;
-      lastCode = timedOutByDeadline && !classified.code ? "timeout" : classified.code;
-      lastMessage = classified.message;
+      // A per-provider timeout aborts through the combined signal, so the raw
+      // error is a plain Error("provider timeout"), not an AbortError. Without
+      // this mapping operators see "unknown" instead of "timeout".
+      const timedOutByProvider = timeoutController.signal.aborted && !options.signal.aborted;
+      lastCode =
+        timedOutByProvider || (timedOutByDeadline && classified.code === "unknown")
+          ? "timeout"
+          : classified.code;
+      lastMessage = timedOutByProvider ? "Provider exceeded its timeout budget" : classified.message;
       statusCode = error instanceof ProviderError ? error.statusCode : undefined;
 
       if (isAbortError(error) && options.signal.aborted) {

@@ -106,6 +106,8 @@ function normalizeCode(code: string): ProviderErrorCode {  switch (code) {
     case "auth_invalid":
     case "quota_exceeded":
     case "no_available_key":
+    case "queue_timeout":
+    case "circuit_open":
     case "unsupported":
     case "cancelled":
     case "unknown":

@@ -6,6 +6,7 @@ const PASSWORD = "E2E-Admin-Password-1";
 async function completeSetup(page: Page): Promise<void> {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "初始化 Search Hub" })).toBeVisible();
+  await page.locator("#setup-token").fill("e2e-setup-token");
   await page.locator("#setup-email").fill(EMAIL);
   await page.locator("#setup-name").fill("管理员");
   await page.locator("#setup-password").fill(PASSWORD);
@@ -61,7 +62,7 @@ test.describe("Search Hub 管理后台端到端", () => {
     await expect(page.getByText("e2e-mock-a", { exact: false }).first()).toBeVisible({
       timeout: 25_000,
     });
-    await expect(page.locator("body")).not.toContainText("sk-LIVE");
+    await expect(page.locator("body")).not.toContainText("sk-TEST");
 
     // 5. Theme toggle actually switches the html class.
     await page.getByRole("button", { name: "切换主题" }).click();

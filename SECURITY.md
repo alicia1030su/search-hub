@@ -36,7 +36,8 @@ Out of scope:
 - Admin sessions are opaque 32-byte tokens; only their SHA-256 hash is stored. The cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` when `SEARCH_HUB_COOKIE_SECURE=true`.
 - Every state-changing admin request must carry `x-csrf-token` matching the session's CSRF value. A missing header is a 403, not a silent success.
 - External integrations use bearer tokens (`sh_...`), stored as SHA-256 hashes, with scopes (`search`, `sources:read`, `mcp:use`, `admin`), an optional expiry, and a per-token per-minute limit. Tokens are shown once at creation.
-- If `SEARCH_HUB_SETUP_TOKEN` is set, the setup form additionally requires it.
+- **First-run initialisation always requires a one-time token.** When `SEARCH_HUB_SETUP_TOKEN` is set, that value is used; otherwise the server generates `<data>/setup-token` (mode `0600`), prints it once, and deletes it after setup. Administrator creation runs inside a `BEGIN IMMEDIATE` transaction with a second count check, so concurrent setup requests cannot create two administrators.
+- **Host header validation.** Every route except `/api/health` rejects requests whose `Host` is neither an IP literal, `localhost`, the `SEARCH_HUB_PUBLIC_URL` hostname, nor an entry in `SEARCH_HUB_ALLOWED_HOSTS`. This blocks DNS rebinding before authentication. `/mcp` additionally validates `Origin` when present.
 
 **Secrets at rest.**
 
@@ -94,8 +95,9 @@ Rate limiting is a **safety** feature, not a bug:
 ## Hardening checklist for operators
 
 - [ ] Set a fixed `SEARCH_HUB_ENCRYPTION_KEY` and back it up.
-- [ ] Serve over HTTPS via a reverse proxy; set `SEARCH_HUB_COOKIE_SECURE=true` and `SEARCH_HUB_TRUST_PROXY=true`.
-- [ ] Set `SEARCH_HUB_SETUP_TOKEN` before exposing the instance publicly.
+- [ ] Serve over HTTPS via a reverse proxy; set `SEARCH_HUB_COOKIE_SECURE=true` and `SEARCH_HUB_TRUST_PROXY=true` (loopback-only) or an explicit proxy CIDR such as `172.17.0.0/16`.
+- [ ] Set `SEARCH_HUB_PUBLIC_URL` and, if you use additional hostnames, `SEARCH_HUB_ALLOWED_HOSTS`.
+- [ ] Set `SEARCH_HUB_SETUP_TOKEN` before exposing the instance publicly, or read the generated token from the log/file and keep it private.
 - [ ] Do not expose port 8787 directly to the internet.
 - [ ] Create one token per integration with the narrowest scope; revoke unused tokens.
 - [ ] Review `/api/admin/audit` periodically for unexpected admin actions.

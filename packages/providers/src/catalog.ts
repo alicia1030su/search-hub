@@ -38,6 +38,19 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     notes: "必须由用户提供自建实例地址；许多公共实例禁用了 JSON 格式。",
   },
   {
+    type: "hackernews",
+    name: "Hacker News（Algolia 官方搜索 API）",
+    category: "general",
+    authType: "none",
+    implementation: "builtin",
+    defaultBaseUrl: "https://hn.algolia.com",
+    docsUrl: "https://hn.algolia.com/api",
+    description:
+      "HN Search 官方托管 API（Algolia），无需密钥，返回真实 story/comment 链接。它是垂直技术社区搜索，不等同于通用网页搜索。",
+    verification: "live_tested",
+    notes: "v0.1.1 已在真实网络环境完成联调，用于验证完整搜索链路；不用于宣称通用网页搜索能力。",
+  },
+  {
     type: "generic-http",
     name: "通用 HTTP/JSON",
     category: "custom",

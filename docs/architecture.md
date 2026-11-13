@@ -1,20 +1,21 @@
-# Search Hub 架构设计
+# Search Hub 架构设计（v0.1.1 事实基线）
 
-> 定稿说明：本文包含架构师早期的待裁决项，**最终裁决以 [`architecture-decisions.md`](./architecture-decisions.md) 为准**。仓库实现与该裁决一致（MCP v2、`/api/search`、全源失败 503、有界排队、真实模型适配器、SQLite only）。
+> 本文在 v0.1.1 按**仓库实际代码**重写了对账表。历史版本中的 E-1…E-6 / D-1…D-6 待裁决项均已落地或有结论，不再作为"偏离"保留。
+> 标注约定：`【已实现】`＝仓库内可运行且被测试覆盖；`【未实现】`＝不在本期，不得对外声称支持；`【待联调】`＝代码就绪但缺真实凭证/实例。
+> 版本已与 `pnpm-lock.yaml` 核对：fastify 5.12.8、better-sqlite3 13.1.1、drizzle-orm 0.45.4、vite 8.3.8、react 19.3.1、tailwind 4.3.5、zod 4.6.7、undici 8.12.4、typescript 5.9.3、@modelcontextprotocol/server 2.4.0、node ≥22.12。
 
-> 系统架构师：梁承宇 ｜ v0.3 ｜ 输入：主理人架构基线 + `docs/product-mvp.md` v0.2
-> 本文只写**确定事实**与**可验证机制**。标注：`【待验证】`＝无实测证据、仅设计推断；`【未实现】`＝本期不做、**不得对外声称支持**；`【偏离基线】`＝仓库实现与主理人基线不一致，需裁决；所有性能数字为**设计预算**，非实测值。
-> 版本已与仓库 `pnpm-lock.yaml` + npm 元数据双向核对：fastify 5.12.8、better-sqlite3 13.1.1、drizzle-orm 0.45.4、vite 8.3.8、react 19.3.1、tailwind 4.3.5、zod 4.6.7、undici 8.12.4、typescript 5.9.3、node ≥22.12。
-> 下表是**仓库已落地代码与主理人基线/PM 文档的硬偏离**，本文一律按实际代码写，不再单方面推测意图：
->
-> | # | 项 | 主理人基线 | 仓库实际 | 处置 |
-> |---|---|---|---|---|
-> | E-1 | MCP 依赖 | `@modelcontextprotocol/sdk@1.32.2`（v1 线，`StreamableHTTPServerTransport.handleRequest(req,res,body)`） | `@modelcontextprotocol/server@2.4.0` + `@modelcontextprotocol/core@2.4.0`（v2 线，`createMcpHandler().fetch(Request)`） | **两套 API 不兼容**。已按实际写；若坚持基线需重做 `packages/mcp` 与 `/mcp` 路由 → 见 D-4 |
-> | E-2 | 契约口径 | 路径 `/v1/search`；失败源字段 `failed_sources[{id,code}]`（PM 文档） | 路径 `/api/search`；字段 `errors[{providerId,code,message}]` + `stats.partial` | 二选一，OpenAPI/验收脚本/AC-06 断言需同步 → D-2 |
-> | E-3 | 全源失败状态码 | 503 + `ALL_SOURCES_FAILED` | HTTP 200，body `status:"failed"` + `errors[]` | 与 PM AC-08「不返回空结果冒充成功」冲突 → D-3 |
-> | E-4 | 100 并发吞吐 | PM AC-05 期望 ≈⌈100/6⌉×延迟（需排队） | `tryAcquire()` 立即返 null → `no_available_key` 快速失败，**无排队** | 94/100 会被拒 → D-5 |
-> | E-5 | 模型推理 | 基线含 Chat/Embedding/Rerank 全套 | `packages/models` 已实现（763 行）并接入 `deep`/`rerank`/`summarize` | 与 PM AC-14「Phase 1 不引入推理」冲突 → D-1 |
-> | E-6 | 目录与超时 | 「30 源」；单源 5s / 全局 8s | `catalog.ts` **27** 条元数据、适配器 **4** 个；全局超时默认 **15s**、provider 默认 12s、`maxRetries=1` | 对外只能说 4 个已实现；验收按 15s |
+| # | 事实 | 当前实现 | 验证方式 |
+|---|---|---|---|
+| F-1 | MCP 依赖与协议 | `@modelcontextprotocol/server@2.4.0`（v2 线），现代 2026-07-28 envelope + 2025-11-25 传统握手；`createMcpHandler().fetch(Request)` | `tests/integration/mcp.test.ts`、`mcp-client.test.ts` |
+| F-2 | REST 路径与失败字段 | `POST /api/search`；失败源字段 **`failedSources[{id,code}]`**，另保留 `errors[{providerId,providerName,code,message}]` | OpenAPI + 集成测试 |
+| F-3 | 全源失败 | **HTTP 503** + `status:"failed"` + `failedSources[]`，不用 200 空结果冒充成功 | `search-errors.test.ts` |
+| F-4 | 100 并发与排队 | 原子占额 + **有界等待队列**（最多 1024 个等待者，单次等待预算默认 2s）；等待者由 `release()` 唤醒，不轮询；排队超时返回 `queue_timeout` | `key-limits.test.ts`、`concurrency.test.ts` |
+| F-5 | 模型能力 | Chat / Embedding / Rerank 为**真实适配器、默认关闭**；可选阶段失败时响应 `stats.degraded=true`，基础结果照常返回 | `model-degradation.test.ts` |
+| F-6 | 能力目录 | `catalog.ts` **27** 条元数据 = 5 个已实现适配器（Brave / SearXNG / Hacker News / Generic HTTP / Mock）+ 13 planned + 2 unavailable + 7 generic 入口 | `node --import tsx` 统计 + `providers.test.ts` |
+| F-7 | 超时默认值 | 全局 15s、单源 12s、`maxRetries=1`；全局 deadline 优先 | `settings.ts` / 集成测试 |
+| F-8 | 首次初始化 | 未初始化时自动生成一次性 setup token（`data/setup-token`，0600；或 `SEARCH_HUB_SETUP_TOKEN`），`POST /api/setup` 必须携带；事务内二次校验，防抢占与并发双管理员 | `security-hardening.test.ts` |
+| F-9 | Host / 代理边界 | 所有非健康检查路由校验 Host（IP 字面量、localhost、`SEARCH_HUB_ALLOWED_HOSTS`/`PUBLIC_URL`）；`SEARCH_HUB_TRUST_PROXY=true` 只信任回环代理，跨网段需显式 CIDR | `security-hardening.test.ts`、`mcp-client.test.ts` |
+| F-10 | 生产运行形态 | `scripts/build-server.mjs` 用 esbuild 产出 `apps/api/dist/server.mjs` 与 `packages/mcp/dist/stdio.mjs`；运行时不再依赖 tsx/TypeScript | 干净目录 `pnpm install --prod` 后启动验证 |
 
 ## 1. 架构总览
 
@@ -52,7 +53,7 @@ graph TB
     FUSE["归一化・去重・RRF"]
     ERR["错误分类・重试预算"]
   end
-  PR["packages/providers 4 个适配器・注册表・Catalog 27 条"]
+  PR["packages/providers 5 个适配器・注册表・Catalog 27 条"]
   MD["packages/models Chat/Embedding/Rerank・注入防护"]
   MC["packages/mcp v2 SDK・createMcpHandler・9 工具"]
   DB["packages/db Drizzle 0.45 + better-sqlite3 13・迁移"]
@@ -80,7 +81,7 @@ graph TB
 | `packages/db` | Drizzle schema、连接与 PRAGMA、手写迁移执行器、Key 加解密 | shared | core / providers / api |
 | `packages/core` | KeyScheduler、编排、去重、RRF、错误分类、重试预算 | shared、providers(接口) | db（走注入端口）、api、直接发 HTTP |
 | `packages/providers` | 适配器、注册表、SSRF 安全 HTTP、能力目录 | shared | core / db；读进程 env |
-| `packages/models` | Chat/Embedding/Rerank 适配器与智能检索管线（**已实现并接入**，见 E-5） | shared | core / db；被 core 反向依赖 |
+| `packages/models` | Chat/Embedding/Rerank 适配器与智能检索管线（**已实现并接入，默认关闭**） | shared | core / db；被 core 反向依赖 |
 | `packages/mcp` | MCP Server、工具定义、双通道 | core、providers、shared | 复制搜索实现；直连 SQLite |
 | `apps/api` | HTTP 装配、鉴权、路由、静态、启动初始化、**加解密**（`security/crypto.ts`） | 全部 | 被任何 package 依赖 |
 | `apps/web` | 管理后台 SPA | 仅 shared 的纯类型 | 直连 DB；共享运行时代码 |
@@ -135,15 +136,15 @@ sequenceDiagram
   end
   O->>F: normalize → dedupe → rrf(k=60)
   O-->>A: 200 {status, results, errors[], stats}
-  A-->>C: 响应（全源失败也是 200+status=failed，见 E-3）
+  A-->>C: 响应（全源失败：HTTP 503 + status=failed + failedSources[]）
   O-)DB: search_tasks 前后同步写.update；search_events 同一次 persistTask 内同步批量 insert
 ```
 
 **四层超时预算**（以实际默认值为准）：单源 `timeoutMs` 默认 12000ms（provider 级可配 500–120000）→ abort 该源记 `timeout`；全局 deadline 取 `settings.defaults.timeoutMs` 默认 15000ms（请求可覆盖）→ abort 未完成源、返回已得结果并置 `partial`；重试 `maxRetries` 默认 1，仅对 `timeout`/`network`/`server_error`/`rate_limited`，且受 `RetryBudget(max(4, 源数×2+2))` 全局约束；客户端断开 → `request.raw.on('close')` 且 `!readableEnded` → abort 全链路。
 
-**部分成功判定（按实际实现）**：`status` 三态 `completed | partial | failed`；`partial = errors.length > 0`。`results` 非空 → 200；`results` 为空且**存在成功源** → 200 + `[]`（真空结果，不是故障）；`results` 为空且**全源失败** → **HTTP 200** + `status:"failed"` + `errors[]`（当前实现，与 PM AC-08 的「503 + 明确错误码」不一致，见 E-3 / D-3）。失败源以 `errors[{providerId, providerName, code, message}]` 表达，不是 `failed_sources`（见 E-2）。
+**部分成功判定（v0.1.1 实际）**：`status` 三态 `completed | partial | failed`；`partial = errors.length > 0`。`results` 非空 → 200；`results` 为空且**存在成功源** → 200 + `[]`（真空结果，不是故障）；`results` 为空且**全源失败** → **HTTP 503** + `status:"failed"` + `failedSources[]`。失败源同时以 `failedSources[{id, code}]`（稳定断言用）和 `errors[{providerId, providerName, code, message}]`（排查用）表达。
 
-**MCP 入口的差异仅在前置**：`/mcp` 在 Fastify 层完成 Bearer 鉴权 + Origin 校验后，把 Node 请求转换成 Web `Request` 交给 `handler.fetch()`，工具参数最终映射为同一个 `SearchRequest` 交给同一个编排器；stdio 进程经 `RestSearchPort` 走一次本机 REST。三条入口共用编排、额度与融合逻辑，**不存在第二套实现**（对应 PM 反作弊 R6）。当前实现用 `createMcpHandler({ responseMode: "json", legacy: "stateless" })`，因此 GET/DELETE 返 405、无 SSE 流；`reply.send(await response.arrayBuffer())` 是**全量缓冲**——一旦将来启用 SSE（订阅/进度通知），这里会挂住直到流结束，见 R-06。
+**MCP 入口的差异仅在前置**：`/mcp` 在 Fastify 层完成 Bearer 鉴权 + Origin 校验后，把 Node 请求转换成 Web `Request` 交给 `handler.fetch()`，工具参数最终映射为同一个 `SearchRequest` 交给同一个编排器；stdio 进程经 `RestSearchPort` 走一次本机 REST。三条入口共用编排、额度与融合逻辑，**不存在第二套实现**（对应 PM 反作弊 R6）。当前实现用 `createMcpHandler({ responseMode: "json", legacy: "stateless" })`，因此 GET/DELETE 返 405、无 SSE 流；`reply.send(await response.arrayBuffer())` 是**全量缓冲**。`/mcp` 在鉴权前先校验 Host 与 Origin（`SEARCH_HUB_ALLOWED_HOSTS` / `PUBLIC_URL` / CORS 白名单），DNS rebinding 请求得到 403 而不是 401。SSE 流式通知仍未实现【未实现】。
 
 ## 3. 数据模型 ER 摘要
 
@@ -165,7 +166,7 @@ erDiagram
 | `sessions` | id, userId, tokenHash(sha256), csrfSecret, expiresAt, lastSeenAt | `idx_sessions_expires` | 会话 TTL 默认 168h |
 | `provider_instances` | id, type, name, baseUrl, configJson, enabled, timeoutMs, maxConcurrency, priority, weight, maxRetries, resultsPerPage, rpmLimit, dailyQuota, keyStrategy, cooldownMs | `idx_provider_instances_type` | 永久 |
 | `api_keys` | id, providerId, label, ciphertext, iv, authTag, keyVersionHint, maskedKey, status, weight, cooldownUntil, consecutiveFailures, quotaUsedToday, quotaDate | `idx_api_keys_provider` | 永久 |
-| `model_configs` | id, kind(chat/embedding/rerank), baseUrl, ciphertext, model, enabled, createdAt | `idx_model_configs_kind` | 已实现，见 E-5 |
+| `model_configs` | id, kind(chat/embedding/rerank), baseUrl, ciphertext, model, enabled, createdAt | `idx_model_configs_kind` | 已实现；默认不启用 |
 | `search_groups` | id, name, description, providerIdsJson, createdAt | uniq(name)=`idx_search_groups_name` | 永久 |
 | `search_tasks` | id, query, mode, status, providersJson, requestJson, responseJson, actor, createdAt, completedAt | `idx_search_tasks_created`, `idx_search_tasks_status` | `taskRetentionDays` 默认 30 |
 | `search_events` | id, taskId, providerId, providerName, providerType, keyId?, ok, statusCode?, latencyMs, resultCount, errorCode?, errorMessage?, createdAt | `idx_search_events_created/provider/task` | 随 task 清理（默认 30 天） |
@@ -247,7 +248,7 @@ runProviderContract(makeAdapter, {
 });
 ```
 
-**能力目录边界**：`packages/providers/src/catalog.ts` 有 **27** 条声明式元数据（不是 30），已实现适配器仅 **4** 个：Brave / SearXNG / Generic HTTP / Mock（Tavily 未实现，无代码）。**目录条目 ≠ 可用适配器**，UI 与文档必须区分「已实现」与「仅目录条目」，不得用 27 或 30 暗示源数量。
+**能力目录边界**：`packages/providers/src/catalog.ts` 有 **27** 条声明式元数据，已实现适配器 **5** 个：Brave / SearXNG / **Hacker News（Algolia 官方 API，已真实联调）** / Generic HTTP / Mock。其余 13 planned、2 unavailable、7 generic 入口。**目录条目 ≠ 可用适配器**，UI 与文档必须区分「已实现」与「仅目录条目」，不得用 27 暗示源数量。
 
 ## 5. KeyScheduler 并发正确性论证
 
@@ -280,15 +281,18 @@ tryAcquire(now = Date.now()): KeyLease | null {
 5. 状态容器必须是单进程单例（每个 provider runtime 一个），禁止每请求 new 一个 Scheduler。
 6. 时间戳窗口用 `window` 数组 + `slice` 修剪（`refreshKey`），不是原地 `shift` 循环，避免大窗口下的 O(n²)。
 
-### 5.2 100 并发为什么不突破额度（**当前实现是快速失败，不是排队**）
+### 5.2 100 并发为什么不突破额度（原子占额 + 有界队列）
 
 单 Key 的硬不变量：① `inFlight ≤ perKeyConcurrency`；② 任意 60s 滑动窗口 `window.length ≤ rpmLimit`；③ `quotaUsedToday ≤ dailyQuota`（按 UTC 日切）。三条都在 `availableKeys()` 里同时判定，且判定与自增在同一个同步块内，因此**不存在超发**。
 
-但"不超发"≠"100 个都能成功"。当前 `tryAcquire()` 拿不到就返回 `null`，`fanout.ts` 立刻 `break` 并记 `no_available_key`，**没有排队/等待/重试**。因此 3 Key × `perKeyConcurrency=2` = 6 个并发名额时，100 个并发请求的实际结果是：**约 6 个成功，其余 94 个快速失败**（`errors[]` 里 code=`no_available_key`），总耗时 ≈ 1 个单次延迟，而不是 PM AC-05 期望的 ≈⌈100/6⌉ × 延迟。
+v0.1.1 的调度分两步：
 
-**这是与 PM AC-05 的正面冲突（E-4 / D-5）**，二选一：
-- **方案 A（推荐，不改代码）**：承认"额度满即拒"，把 AC-05 的断言从"总耗时 ≈ ⌈100/6⌉×延迟"改为"峰值 in-flight 恰为 2/Key、突破 0 次、拒绝请求全部返回 `no_available_key` 而非超时"。符合 PM 自己写的"计数超限直接拒绝（503 + code），不排队静默丢请求"，但**不符合** AC-05 里的耗时断言。
-- **方案 B（改代码，约 1 人日）**：加 `acquire(timeoutMs)` 异步 FIFO 有界队列，临界区仍是同步的（"检查容量→自增或入队"在同一无 await 块内；`await` 只发生在入队之后，此时尚未占额度），队列等待计入全局 deadline，超时 reject `QUEUE_TIMEOUT`。这样 AC-05 的耗时断言才能成立。
+1. `tryAcquire()` 同步完成"选择 Key + 占用额度"；临界区内没有 `await`，所以 100 个并发调用不可能同时看到同一个空余名额。
+2. 没有空名额且**池仍然可用**时，`acquire()` 进入有界等待队列（最多 1024 个等待者，默认等待 2s）。`release()` 会唤醒恰好一个等待者，而不是让所有请求轮询。这样 3 Key × 2 = 6 个名额时，100 个请求约 17 轮完成，而不是 94 个直接失败。
+
+错误语义因此可区分：`no_key`（Key 全部失效/配额耗尽/冷却）→ `no_available_key`；`queue_timeout`（池可用但等待预算耗尽）→ `queue_timeout`。两者都是 503，且都会出现在 `failedSources[]` 中，不会返回空结果冒充成功。
+
+**峰值证据**：`KeyRuntimeSnapshot.peakInFlight` 记录调度器生命周期内单 Key 的最大 in-flight。`tests/unit/key-limits.test.ts` 断言 100 并发下峰值为 2（不是 1，也不是 3），同时验证 RPM 窗口与日配额独立生效。
 
 ### 5.3 崩溃与重启的残余风险（必须承认）
 
@@ -341,11 +345,11 @@ tryAcquire(now = Date.now()): KeyLease | null {
 | U1 | PostgreSQL 适配 | **未实现** | 无法多实例/高并发写；数据增长后单文件备份与 VACUUM 变慢 | 业务代码禁写 SQLite 专有语法；Drizzle dialect 层预留 |
 | U2 | Redis 多实例调度 | **未实现** | 只能单进程；无跨实例限速；横向扩容不可用 | 需先把 `KeyScheduler` 抽成接口（当前是类，方法可直接抽） |
 | U3 | 向量库持久索引 / Embedding 检索 | **未实现** | 无语义召回；Embedding 只做**在线打分**不落索引 | 文档不得声称"向量检索" |
-| U4 | Rerank 云端模型 / AI 总结 | **已实现代码，未验证质量** | 与 PM AC-14 冲突（E-5） | 见 D-1：要么禁用、要么改 AC |
+| U4 | Rerank 云端模型 / AI 总结 | **已实现代码，默认关闭** | 模型质量与真实厂商联调未验证 | 需要真实 Key 才能做质量评测；功能链路由本地模拟服务验证 |
 | U5 | 大 Key 池（rpm > 2000 或 Key > 500） | **未验证** | `window` 数组用 `slice` 修剪，O(n) 重建；GC 压力随 rpm 增长 | 按 `rpm ≤ 2000` 设计并加断言；超限需改分桶计数 |
 | U6 | 崩溃时额度状态恢复精度 | **未验证** | 见 R-01 | 启动校准 + 风险接受决策 |
 | U7 | 100 并发下 SQLite 写入阻塞 | **未验证** | better-sqlite3 同步 I/O 可能抬 p99 | dirty 批量 flush + 索引约束 + p99 压测门禁 |
-| U8 | 能力目录真实可用性 | **口径错误** | `catalog.ts` 27 条元数据、**已实现仅 4 个**；基线说"30 源" | UI 分「已实现/仅目录」；对外只说 4 个源 |
+| U8 | 能力目录真实可用性 | **口径已修正** | `catalog.ts` 27 条元数据、**已实现 5 个**（Brave / SearXNG / Hacker News / Generic HTTP / Mock） | UI 分「已实现/仅目录」；对外只说 5 个源 |
 | U9 | 工具链版本 | **TS 正确，Node 略低** | 仓库锁 `typescript@5.9.3`（正确，npm latest 是 7.0.2）；但 `engines.node>=22.11` 低于 `vite@8`/`vitest@5` 要求的 **22.12** | 改 `engines.node>=22.12.0`；升级 TS 7 需单开分支验证 drizzle 类型推导 |
 | U10 | MCP 集成方式 | **已实现但与基线不同** | 用的是 v2 包 `@modelcontextprotocol/server@2.4.0` 的 `createMcpHandler().fetch(Request)` → 手工转 Node req/res（**不再需要 reply.hijack**）；基线写的 sdk@1.32.2 `handleRequest` 路线不可复用 | 已可行（`tsc` 通过）；但每次请求要**缓冲整个响应体**，SSE 不可用（R-06）。若要 SSE，改用 `@modelcontextprotocol/node` 的 `toNodeHandler(handler.fetch)` + `reply.hijack()` `【待验证】` |
 | U11 | zod 与 MCP tool schema | **已规避** | 仓库用 zod 4.6.7；v2 server 包声明 `zod ^4.2.0`，原生 v4 schema | 保持；需补一条 `tools/list` 快照测试断言 inputSchema 正确 |
@@ -365,7 +369,7 @@ tryAcquire(now = Date.now()): KeyLease | null {
 背景：各源 score 量纲不可比（BM25 / 相关性分 / 无分数）。决定：只用源内排名（`RawSearchResult` 数组下标 +1），`score = Σ 1/(k+rank_i)`，等权、k 可配（`fuse.ts` 中 60 为论文原值）。后果：无法表达"某源更重要"（加权留 Phase 4）；RRF 对输入顺序不敏感、可手算、可断言。替代：分数归一化（否决，需假设分布、不可复算）；ML 排序（否决，无标注数据）。
 
 **ADR-003 Provider 是进程内插件，不是外部进程**
-背景：需覆盖长尾源（Generic HTTP 声明式映射）。决定：统一 `SearchProviderAdapter` + 注册表（`packages/providers/src/registry.ts` 注册 4 个 builtin）；适配器只能经注入的 `ctx.fetch`（SafeFetch）出网；能力目录与实现分离。后果：适配器与主进程共享事件循环与内存，一个死循环会拖垮全服务，故适配器内禁止 CPU 密集与同步阻塞（lint + code review）。替代：每适配器独立进程/沙箱（否决，部署复杂度与 Phase 1 目标冲突）。
+背景：需覆盖长尾源（Generic HTTP 声明式映射）。决定：统一 `SearchProviderAdapter` + 注册表（`packages/providers/src/registry.ts` 注册 5 个 builtin）；适配器只能经注入的 `ctx.fetch`（SafeFetch）出网；能力目录与实现分离。后果：适配器与主进程共享事件循环与内存，一个死循环会拖垮全服务，故适配器内禁止 CPU 密集与同步阻塞（lint + code review）。替代：每适配器独立进程/沙箱（否决，部署复杂度与 Phase 1 目标冲突）。
 
 **ADR-004 MCP 用 per-request 工厂，stdio 走 REST 代理**
 背景：PM Q3 要求双通道同口径；单进程无会话粘滞。决定：**实际实现**基于 `@modelcontextprotocol/server@2.4.0` 的 `createMcpHandler(factory, { responseMode: "json", legacy: "stateless" })`——每次 HTTP 请求由工厂新建 `McpServer`（即基线要的"无状态 per-request"语义，只是 API 名字不同）；`/mcp` 路由把 Node 请求转成 Web `Request` 调 `handler.fetch()`，再把 `Response` 写回。stdio 由 `serveStdio()` 起独立进程，经 `RestSearchPort` 转发到本机 REST，不复制搜索逻辑。后果：无跨请求会话状态（不需要）；stdio 依赖 REST 可用（关掉 REST，stdio 必须失败——反作弊 R6 的判据）。替代：有状态会话 Map（否决，需清理且单进程无收益）；stdio 直连 core（否决，会产生第二套行为）。
@@ -385,18 +389,20 @@ tryAcquire(now = Date.now()): KeyLease | null {
 | ID | 风险 | 概率 | 影响 | 缓解 |
 |---|---|---|---|---|
 | R-01 | 崩溃后额度状态丢失 → 短时超发或上游仍处限流窗口 | 中 | 中（上游 429 兜底） | 启动用 DB 当日聚合校准；文档披露 |
-| R-02 | `packages/models` 已实现并接入，与 PM「Phase 1 不做推理」冲突 | 高 | 高（AC-14 直接判失败） | 见 D-1 |
-| R-03 | 全源失败返回 200 而非 503，与 AC-08 冲突 | 高 | 中（验收口径） | 见 D-3 |
-| R-04 | 100 并发因无排队大量 `no_available_key`，与 AC-05 耗时断言冲突 | 高 | 中 | 见 D-5 |
+| R-02 | 模型为可选增强，默认关闭；误配置可能增加延迟 | 低 | 低 | 默认 `mode=basic`；失败降级 `degraded=true`；`model-degradation.test.ts` |
+| R-03 | 全源失败返回 503，调用方若不处理会当作服务故障 | 低 | 低 | `failedSources[]` 给出精确原因；文档与 OpenAPI 明确 503 语义 |
+| R-04 | 等待队列上限 1024，极端突发会返回 `queue_timeout` | 低 | 低 | 有界队列 + 明确 503 错误码；指标可观测 |
 | R-05 | SQLite 同步 I/O 在 100 并发下抬升 p99 | 中 | 中 | dirty 批量 flush + p99 压测门禁 |
 | R-06 | `/mcp` 路由缓冲整个响应体，SSE 无法工作；一旦启用订阅/进度通知会挂住 | 中 | 中（Phase 2 阻塞） | 改用 `toNodeHandler` + `reply.hijack()` 流式转发 `【待验证】` |
 | R-07 | 提示词注入正则防御只能挡已知模式，模型已接入 | 中 | 中（内容可信度） | 补定界块 + 输出标注 + 对抗性用例 |
 
-**待裁决（不阻塞其余开工，但直接决定验收能否通过）**
+**v0.1.0 待裁决项的最终结论（v0.1.1 已全部关闭）**
 
-- **D-1（最高优先）**：`packages/models` 已交付 763 行（chat/embeddings/rerank/pipeline）并被 `deep`/`rerank`/`summarize` 三条路径调用，而 PM AC-14 要求 Phase 1「不引入任何模型推理」且禁用控件不得发请求。二者只能活一个：**(a)** 保留实现、把状态从"未启用"改为"实验性（默认关闭、显式配置模型后才可用）"并改写 M1/M14/AC-14；**(b)** 移除 deep 模式与自动 rerank/summarize，仅保留手动开关 + 禁用态。技术上已完成，**要不要上由你定**。
-- **D-2**：REST 路径 `/v1/search`（PM 文档 + 基线）vs `/api/search`（实际代码 + OpenAPI）。二选一，需同步改 OpenAPI、Skills 文档、验收脚本。
-- **D-3**：全源失败的状态码 —— 200 + `status:"failed"`（现状）vs 503 + `ALL_SOURCES_FAILED`（PM AC-08）。我倾向 **503**：Agent 调用方靠 HTTP 状态码分流比解析 body 可靠。
-- **D-4**：MCP 依赖版本 —— `@modelcontextprotocol/server@2.4.0`（现状，v2 线，依赖干净）vs 基线 `@modelcontextprotocol/sdk@1.32.2`（v1 线）。我建议**承认现状并改基线**：v2 的 `createMcpHandler` 天然就是 per-request 无状态，代码已通类型检查。
-- **D-5**：100 并发语义 —— 接受"额度满即拒"（改 AC-05 断言，0 人日）vs 加 FIFO 排队（1 人日，才能满足 AC-05 的 ⌈100/6⌉ 耗时断言）。
-- **D-6**：崩溃额度恢复（R-01）是否接受"启动校准 + 披露"，还是要求同步落库保零丢失（牺牲延迟）。
+| 编号 | 结论 |
+|---|---|
+| D-1 模型范围 | 保留真实适配器，**默认关闭**；模型失败必须降级且响应标注 `stats.degraded=true`。AC-16 按此口径验收。 |
+| D-2 REST 路径 | 固定为 `/api/search`；OpenAPI、Skills、脚本统一。 |
+| D-3 全源失败 | 固定为 **503** + `status:"failed"` + `failedSources[]`。 |
+| D-4 MCP 依赖 | 固定为 `@modelcontextprotocol/server@2.4.0`，现代/传统双协议均被测试覆盖。 |
+| D-5 100 并发 | 原子占额 + 有界等待队列，等待者由 release 唤醒；超时返回 `queue_timeout`。 |
+| D-6 崩溃恢复 | 接受"启动校准 + 披露"；`SIGTERM` 优雅关闭会 checkpoint/关闭 SQLite；`kill -9` 不构成硬保证。 |

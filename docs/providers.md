@@ -59,6 +59,15 @@ Never map a failure to an empty success. A provider that returns zero results mu
 - Optional `Authorization: Bearer` is forwarded for instances behind an authenticating proxy.
 - Response: `results[]` with `title`, `url`, `content`, `publishedDate`, `score`
 
+## Hacker News (Algolia)
+
+- `GET {baseUrl}/api/v1/search?query=...&tags=story&hitsPerPage=N`
+- Keyless, official hosted API: <https://hn.algolia.com/api>
+- Optional `numericFilters=created_at_i>...` when a freshness range is set
+- Response: `hits[]` with `title`, `url`, `story_text`/`comment_text`, `created_at`, `points`
+- Default base URL: `https://hn.algolia.com`
+- **Live verification**: v0.1.1 queried the real API through REST and MCP and got real URLs, titles, and timestamps. It is a technical-community search, not a general web index; the catalog says so explicitly.
+
 ## Generic HTTP/JSON
 
 The declarative adapter has no arbitrary code execution. Configuration:

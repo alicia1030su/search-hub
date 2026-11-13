@@ -48,6 +48,8 @@ export type ProviderErrorCode =
   | "bad_request"
   | "blocked"
   | "no_available_key"
+  | "queue_timeout"
+  | "circuit_open"
   | "unsupported"
   | "cancelled"
   | "unknown";
@@ -67,6 +69,8 @@ export interface SearchRequest {
   embedding?: boolean;
   summarize?: boolean;
   timeoutMs?: number;
+  /** Bypass the optional response cache. */
+  skipCache?: boolean;
   includeRaw?: boolean;
   /** Optional model config id used for rerank / embedding / summarization. */
   rerankModelId?: string;
@@ -162,6 +166,8 @@ export interface SearchResponse {
     embeddingApplied: boolean;
     summaryApplied: boolean;
     partial: boolean;
+    /** True when an optional stage (rerank / embedding / summary) failed and was skipped. */
+    degraded?: boolean;
     cached?: boolean;
   };
   errors: SearchErrorSummary[];

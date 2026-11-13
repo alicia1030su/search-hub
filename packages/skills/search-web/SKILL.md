@@ -4,8 +4,8 @@ description: Run a single web search through a self-hosted Search Hub instance a
 license: MIT
 metadata:
   author: search-hub
-  version: "0.1.0"
-  requires: search-hub>=0.1.0
+  version: "0.1.1"
+  requires: search-hub>=0.1.1
   transport: rest
 ---
 

@@ -43,6 +43,9 @@ import {
 const SCOPE_OPTIONS = [
   { value: "search", labelKey: "integrations.tokens.scope.search" as const },
   { value: "mcp:use", labelKey: "integrations.tokens.scope.mcp" as const },
+  // GET /api/providers requires this scope; without it the MCP
+  // get_search_sources tool returns a 403 for stdio clients.
+  { value: "sources:read", labelKey: "integrations.tokens.scope.sources" as const },
 ];
 
 function CodeBlock({
@@ -720,7 +723,7 @@ function CreateTokenDialog({
 }) {
   const toast = useToast();
   const [name, setName] = useState("");
-  const [scopes, setScopes] = useState<string[]>(["search", "mcp:use"]);
+  const [scopes, setScopes] = useState<string[]>(["search", "mcp:use", "sources:read"]);
   const [customScope, setCustomScope] = useState("");
   const [rateLimit, setRateLimit] = useState("120");
   const [expiresAt, setExpiresAt] = useState("");
@@ -768,7 +771,7 @@ function CreateTokenDialog({
       toast.success({ title: t("integrations.tokens.created") });
       onCreated({ token: result.token, name: result.record.name });
       setName("");
-      setScopes(["search", "mcp:use"]);
+      setScopes(["search", "mcp:use", "sources:read"]);
       setCustomScope("");
       setRateLimit("120");
       setExpiresAt("");

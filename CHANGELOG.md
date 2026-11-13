@@ -14,6 +14,93 @@ All notable changes to this project are documented here. The format follows
 - Additional verified provider adapters (only after a recorded live test).
 - SSE streaming for summaries and long-running deep research.
 
+## [0.1.1] - 2026-11-13
+
+Production-readiness pass: the main fixes are the ones that only show up when
+the service actually talks to a real network or a clean production install.
+
+### Fixed
+
+- **Every real outbound HTTP call failed on Node 22.** The guarded DNS
+  `lookup` returned a single address while `autoSelectFamily` requests the
+  `all: true` array form, so provider calls died with
+  `ERR_INVALID_IP_ADDRESS`. The lookup now honours both callback shapes, and
+  the guarded dispatcher is covered by a regression test that hits a real
+  local server.
+- **First-run administrator preemption.** A fresh instance could be claimed by
+  anyone who reached the port. It now always requires a one-time setup token:
+  `SEARCH_HUB_SETUP_TOKEN` when set, otherwise a generated
+  `<data>/setup-token` (0600) printed once to the log and deleted after
+  initialization. Admin creation runs in a `BEGIN IMMEDIATE` transaction, so
+  two concurrent setup requests cannot create two administrators.
+- **MCP Host validation.** Only `Origin` was checked and the host comparison
+  was self-referential, which left DNS rebinding open. Host and Origin are now
+  validated before authentication against IP literals, `localhost`,
+  `SEARCH_HUB_PUBLIC_URL` and `SEARCH_HUB_ALLOWED_HOSTS`; rejected requests
+  get 403 without revealing whether a token is valid.
+- **Reverse-proxy trust boundary.** `SEARCH_HUB_TRUST_PROXY=true` used to
+  trust every peer, allowing `X-Forwarded-For` spoofing of login throttling
+  and audit attribution. It now trusts only loopback proxies; other networks
+  must be listed as explicit CIDRs.
+- **Timeout errors were reported as `unknown`.** A per-provider timeout
+  aborts through a combined signal whose reason is a plain `Error`; the
+  fan-out now maps it to `timeout`. Circuit-breaker short-circuits report
+  `circuit_open` instead of a misleading `server_error`.
+- **MCP search results dropped provider attribution.** `provider`,
+  `providerType`, `providerName` and `source` are now present in tool output.
+- **Tokens created in the UI could not list sources.** `sources:read` is now
+  offered and preselected; without it `get_search_sources` returned 403.
+- **Docker image referenced `apps/web/dist` from the build context** instead
+  of the build stage, so a clean `docker build` could not work. The runtime
+  stage now copies the web bundle, server bundle, migrations and skills from
+  the build stage.
+- **`pnpm install --prod` followed by `pnpm build` was impossible** (the
+  bundler needs dev dependencies). The documented order is now install →
+  build → prod-only install → run the compiled server.
+- **Backup guidance lost WAL data.** Copying only `search-hub.db` while the
+  service runs drops recent writes; documented `db + -wal + -shm`, and added
+  `GET /api/admin/backup` which checkpoints first.
+
+### Added
+
+- Hacker News adapter over the official Algolia API (keyless), **live-tested**
+  through REST and MCP with real URLs and timestamps.
+- `POST /api/admin/migration/legacy`: dry-run/apply migration of an older
+  Search Hub provider list. It never reads or stores credentials, never
+  overwrites existing names, and requires an explicit confirmation string.
+- `GET /api/admin/backup` and `POST /api/admin/maintenance/checkpoint`.
+- `skipCache` on `POST /api/search`; the search lab always sets it.
+- `stats.degraded` on responses when an optional model stage fails.
+- `queue_timeout` and `circuit_open` error codes.
+- `peakInFlight` in key runtime snapshots (used by the quota tests).
+- Production build: `scripts/build-server.mjs` emits
+  `apps/api/dist/server.mjs` and `packages/mcp/dist/stdio.mjs`; the runtime no
+  longer needs `tsx` or TypeScript sources.
+- Verification scripts: `leak-scan.mjs`, `mcp-live.mjs`, `live-search.mjs`,
+  `clean-install.mjs`.
+- 38 new tests (177 total): three-tier quota peaks, 50-run fault matrix,
+  model degradation, setup/Host/CSRF/proxy hardening, official MCP client over
+  HTTP and stdio, legacy migration.
+
+### Changed
+
+- `/api/search` returns **503** when every provider fails; partial success
+  stays 200 with `stats.partial=true` and `failedSources[]`.
+- Documentation reconciled with the code: catalog counts (27 entries, 5
+  implemented adapters), queue semantics, timeout defaults, error fields, and
+  the fact that caching is implemented but disabled by default.
+- Compose uses the named volume `search-hub-data` so the non-root container
+  can write without a manual `chown`.
+
+### Known limitations
+
+- Docker image build and container restart could not be executed here: the
+  Docker engine is unavailable (the WSL backend is blocked by the host
+  security policy). See `docs/acceptance-report.md` for the evidence.
+- Brave and SearXNG remain unverified (no key / no reachable instance).
+- `kill -9` may lose up to the current 60s quota window; `SIGTERM` performs a
+  clean checkpoint and close.
+
 ## [0.1.0] - 2026-11-13
 
 First functional release: the full search loop works end to end, with keys,

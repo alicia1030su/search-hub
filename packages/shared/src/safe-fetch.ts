@@ -185,10 +185,14 @@ export async function validateOutboundUrl(
  * validation and connection, the socket can only reach an approved address.
  */
 export function createGuardedDispatcher(policy: SsrfPolicy = DEFAULT_SSRF_POLICY): Dispatcher {
+  // Node's net.connect calls lookup with `all: true` when autoSelectFamily is
+  // enabled (the default on Node 20+). Returning a single address in that mode
+  // crashes with ERR_INVALID_IP_ADDRESS, so the callback shape must follow the
+  // requested option.
   const lookup: typeof import("node:dns").lookup = ((
     hostname: string,
     options: Record<string, unknown>,
-    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+    callback: (...args: unknown[]) => void,
   ) => {
     const allowlisted = hostIsAllowlisted(hostname, policy.allowPrivateHosts);
     dnsLookup(hostname, { all: true, verbatim: true })
@@ -201,17 +205,25 @@ export function createGuardedDispatcher(policy: SsrfPolicy = DEFAULT_SSRF_POLICY
             `SSRF guard blocked connection to ${hostname}`,
           );
           error.code = "ERR_SSRF_BLOCKED";
-          callback(error, "", 0);
+          callback(error);
+          return;
+        }
+        if (options["all"]) {
+          callback(null, usable.map((item) => ({ address: item.address, family: item.family })));
           return;
         }
         const family = Number(options["family"] ?? 0);
         const chosen = usable.find((item) => family === 0 || item.family === family) ?? usable[0]!;
         callback(null, chosen.address, chosen.family);
       })
-      .catch((error: NodeJS.ErrnoException) => callback(error, "", 0));
+      .catch((error: NodeJS.ErrnoException) => callback(error));
   }) as unknown as typeof import("node:dns").lookup;
 
-  return new Agent({ connect: { lookup } });
+  return new Agent({
+    connect: {
+      lookup,
+    },
+  });
 }
 
 export interface SafeFetchOptions {

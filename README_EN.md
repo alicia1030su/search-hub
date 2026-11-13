@@ -4,7 +4,7 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Testing](./docs/testing.md)
 
-> Status: `0.1.0`. Core search, key scheduling, admin UI, REST, MCP (both protocol eras), and Skills are implemented and covered by automated tests. Live third-party verification status is listed under [Verification](#verification); nothing untested is described as verified.
+> Status: `0.1.1`. Core search, key scheduling, admin UI, REST, MCP (both protocol eras), and Skills are implemented and covered by automated tests; Hacker News has been verified end to end over the real network. Live third-party verification status is listed under [Verification](#verification); nothing untested is described as verified.
 
 ---
 
@@ -38,25 +38,26 @@ Search Hub packages that as a deployable service:
 
 ## Supported providers
 
-**Implemented adapters (4 kinds)**
+**Implemented adapters (5 kinds)**
 
 | Type | Auth | Notes | Verification |
 |---|---|---|---|
 | `brave` | API key | Brave Web Search API, `X-Subscription-Token` | Implemented from official docs; **no live key, not integration-tested** |
+| `hackernews` | None | HN Search official hosted API (Algolia); real technical-community results | **Live-tested** (real URLs and timestamps) |
 | `searxng` | Optional | Self-hosted `/search?format=json`; JSON output must be enabled | Implemented from official docs; **no live instance test** |
 | `generic-http` | Configurable | Declarative request + response mapping, covers long-tail APIs | Tested against a local mock server |
 | `mock` | None | Deterministic test source with latency/failure injection | Used by the automated suite |
 
 **Catalogued but not implemented**: DuckDuckGo, Baidu, Metaso, Bocha, AnySearch, Gemini, Grok, MiniMax, MiMo, DeepSeek, Doubao, Tencent Yuanbao, Alibaba Bailian, Baidu Qianfan, StepFun, plus seven private gateway presets. They either have no publicly verifiable official API or need a separate AI-search adapter. The UI labels them “catalog only · not implemented” and **refuses to create them**. Private gateways can be wired through `generic-http`.
 
-> The catalog has 26 entries: 4 usable adapters, 13 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 26 providers.
+> The catalog has 27 entries: 5 usable adapters, 13 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 27 providers.
 
 ## Quick start
 
 ### Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/search-hub/search-hub.git
+git clone https://github.com/<your-org>/search-hub.git
 cd search-hub
 cp .env.example .env
 # Strongly recommended: set a stable master key
@@ -64,9 +65,11 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Open `http://localhost:8787`. The first visit creates the administrator account — there is no default password. Then:
+Open `http://localhost:8787`. The first visit creates the administrator account — there is no default password.
 
-1. **Sources → Add source**: Brave (with a key) or SearXNG (with your instance URL). A Mock source is handy to validate the flow.
+**First-run initialisation requires a one-time setup token.** When `SEARCH_HUB_SETUP_TOKEN` is unset the server generates `data/setup-token` (mode 0600) and prints it to the log. Run `docker compose logs search-hub | grep "setup token"` or `cat data/setup-token`, then paste it into the setup form. Without it nobody can claim the administrator account. Then:
+
+1. **Sources → Add source**. Zero credentials: pick **Hacker News** (official Algolia API, live results) to validate the whole chain. With a key, pick Brave; with a self-hosted instance, pick SearXNG.
 2. **Test** performs a real request and shows the exact error code on failure.
 3. **Search lab**: run a query, inspect per-source latency, failures, dedupe counts, and fused ranks.
 4. **Integrations**: create an access token and copy the MCP configuration.
@@ -75,7 +78,7 @@ Open `http://localhost:8787`. The first visit creates the administrator account 
 
 ```bash
 corepack pnpm install
-corepack pnpm build      # build the web bundle
+corepack pnpm build      # web bundle + server bundle (dist/server.mjs)
 corepack pnpm dev        # API :8787 + Vite :5173
 corepack pnpm test       # unit + integration
 ```
@@ -107,7 +110,7 @@ Each provider can have multiple independent instances (`brave-eu`, `brave-us`) w
 }
 ```
 
-The token needs `mcp:use` and is shown once when created.
+The token needs `mcp:use` and `search`; `get_search_sources` also needs `sources:read` (all three are preselected in the UI). It is shown once when created.
 
 **Local (stdio proxy to the same REST API)**
 
@@ -115,8 +118,8 @@ The token needs `mcp:use` and is shown once when created.
 {
   "mcpServers": {
     "search-hub": {
-      "command": "npx",
-      "args": ["tsx", "/path/to/search-hub/packages/mcp/src/stdio.ts"],
+      "command": "node",
+      "args": ["/path/to/search-hub/packages/mcp/dist/stdio.mjs"],
       "env": {
         "SEARCH_HUB_URL": "http://127.0.0.1:8787",
         "SEARCH_HUB_TOKEN": "sh_your_token"
@@ -165,7 +168,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- 139 unit/integration tests covering scheduler concurrency, 429/401/5xx state transitions, dedupe, hand-computed RRF, SSRF, secret encryption, provider mapping, model adapters, MCP dual protocol, 100 concurrent searches, restart persistence.
+- 177 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF, secret encryption with a three-way leak scan, provider mapping, model degradation, MCP over both transports with the official client, 100 concurrent searches, and restart persistence.
 - `tests/scripts/smoke.sh`: setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize.
 - Playwright: first-run, login, add source, search lab, theme, settings, integrations.
 

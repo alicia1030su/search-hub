@@ -73,11 +73,32 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build web bundle
+      - name: Build web and server bundles
         run: pnpm build
 
-      - name: Verify the built bundle exists
-        run: test -f apps/web/dist/index.html
+      - name: Verify the built artifacts exist
+        run: |
+          test -f apps/web/dist/index.html
+          test -f apps/api/dist/server.mjs
+          test -f apps/api/migrations/0001_init.sql
+          test -f packages/mcp/dist/stdio.mjs
+
+      - name: Production-only install and boot
+        run: |
+          pnpm install --frozen-lockfile --prod
+          test ! -d node_modules/vite
+          SEARCH_HUB_DATA_DIR="$RUNNER_TEMP/sh-prod" \
+          SEARCH_HUB_PORT=8788 \
+          SEARCH_HUB_COOKIE_SECURE=false \
+          node apps/api/dist/server.mjs &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8788/api/health && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8788/api/setup/status | tee /dev/stderr | grep -q '"setupTokenRequired":true'
+          test -f "$RUNNER_TEMP/sh-prod/setup-token"
+          kill "$SERVER_PID" || true
 
       - name: Build container image
         run: docker build -t search-hub:ci .
@@ -95,6 +116,9 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8787/api/health
+          curl -fsS http://127.0.0.1:8787/api/setup/status | grep -q '"setupTokenRequired":true'
+          test "$(docker exec search-hub-ci id -u)" = "1001"
+          docker exec search-hub-ci test -f /app/data/setup-token
 
       - name: Stop container
         if: always()

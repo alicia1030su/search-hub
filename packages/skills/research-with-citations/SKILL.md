@@ -4,8 +4,8 @@ description: Retrieve evidence through Search Hub and format a citation-ready so
 license: MIT
 metadata:
   author: search-hub
-  version: "0.1.0"
-  requires: search-hub>=0.1.0
+  version: "0.1.1"
+  requires: search-hub>=0.1.1
   transport: rest
 ---
 

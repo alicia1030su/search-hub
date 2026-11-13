@@ -31,6 +31,8 @@ export const searchRequestSchema = z.object({
   embedding: z.boolean().optional(),
   summarize: z.boolean().optional(),
   timeoutMs: z.number().int().min(1000).max(120_000).optional(),
+  /** Bypass the optional response cache (the lab always sets this). */
+  skipCache: z.boolean().optional(),
   includeRaw: z.boolean().optional(),
   rerankModelId: z.string().optional(),
   embeddingModelId: z.string().optional(),

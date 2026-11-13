@@ -1,9 +1,49 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
-const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations", import.meta.url));
+/**
+ * Migrations live next to the source in `packages/db/migrations`.
+ *
+ * When the API is bundled into `apps/api/dist/server.mjs`, `import.meta.url`
+ * points at the bundle, so the source-relative default no longer resolves.
+ * We therefore probe a small list of candidates and require an explicit
+ * `SEARCH_HUB_MIGRATIONS_DIR` when none match (the Docker image sets it).
+ */
+function defaultCandidates(): string[] {
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  return [
+    fileURLToPath(new URL("../migrations", import.meta.url)),
+    join(here, "../migrations"),
+    join(process.cwd(), "packages", "db", "migrations"),
+    join(process.cwd(), "../packages/db/migrations"),
+    join(process.cwd(), "../../packages/db/migrations"),
+    "/app/packages/db/migrations",
+  ];
+}
+
+export function resolveMigrationsDir(explicit?: string): string {
+  if (explicit) {
+    if (!existsSync(explicit)) {
+      throw new Error(
+        `Migrations directory not found: ${explicit}. Set SEARCH_HUB_MIGRATIONS_DIR to the directory containing *.sql migrations.`,
+      );
+    }
+    return explicit;
+  }
+  for (const candidate of defaultCandidates()) {
+    if (existsSync(candidate) && readdirSync(candidate).some((file) => file.endsWith(".sql"))) {
+      return candidate;
+    }
+  }
+  throw new Error(
+    "Could not locate the SQL migrations directory. " +
+      "Set SEARCH_HUB_MIGRATIONS_DIR to the directory containing *.sql migrations.",
+  );
+}
+
+const MIGRATIONS_DIR = resolveMigrationsDir(process.env["SEARCH_HUB_MIGRATIONS_DIR"]);
 
 export interface MigrationResult {
   applied: string[];
