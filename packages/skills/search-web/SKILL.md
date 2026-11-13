@@ -4,7 +4,7 @@ description: Run a single web search through a self-hosted Search Hub instance a
 license: MIT
 metadata:
   author: search-hub
-  version: "0.1.1"
+  version: "0.1.2"
   requires: search-hub>=0.1.1
   transport: rest
 ---
@@ -38,7 +38,7 @@ Do not store provider API keys here. Search Hub holds them; the token only autho
 curl -sS "$SEARCH_HUB_URL/api/search" \
   -H "authorization: Bearer $SEARCH_HUB_TOKEN" \
   -H "content-type: application/json" \
-  -d '{"query":"rust async runtime comparison 2026","mode":"rrf","limit":8,"freshness":"month"}'
+  -d '{"query":"postgres logical replication lag","mode":"rrf","limit":8}'
 ```
 
 ## Parameters

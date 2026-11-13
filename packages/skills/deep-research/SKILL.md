@@ -4,7 +4,7 @@ description: Run a multi-query deep research pass through Search Hub: rewrite th
 license: MIT
 metadata:
   author: search-hub
-  version: "0.1.1"
+  version: "0.1.2"
   requires: search-hub>=0.1.1, chat-model:optional
   transport: rest
 ---
@@ -28,13 +28,9 @@ Skip it for single-fact lookups — `search-web` is cheaper and faster.
 | `SEARCH_HUB_URL` | Instance base URL |
 | `SEARCH_HUB_TOKEN` | Token with the `search` scope |
 
-A chat model must be configured in Search Hub → AI Models for the synthesis step. Without one, `mode: "deep"` returns retrieval only; the request fails with a clear validation error if the model is missing, so check first:
+A chat model must be configured in Search Hub → AI Models for the synthesis step. A `search`-scope token **cannot** list models: `GET /api/admin/models` requires an administrator session and will return 401/403. Do not try to call it from a skill.
 
-```bash
-curl -sS "$SEARCH_HUB_URL/api/admin/models" -H "authorization: Bearer $SEARCH_HUB_TOKEN"
-```
-
-That endpoint needs an admin session; for a token-only client, ask the user whether a chat model is configured, or simply call `search_deep` over MCP and let it report the error.
+Instead, ask the user for the model id if they configured one, pass it as `chatModelId`, or call `search_deep` and surface the validation error when no model exists. The retrieval passes still run; only the synthesis stage is skipped or fails explicitly.
 
 ## Call
 

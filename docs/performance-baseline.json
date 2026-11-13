@@ -1,0 +1,77 @@
+{
+  "generatedAt": "2026-11-13T20:02:16.351Z",
+  "baseUrl": "http://127.0.0.1:8881",
+  "providerLatencyMs": 50,
+  "providerId": "prv_c73d6a351c024ce3847f",
+  "sequential": {
+    "samples": 200,
+    "wall": {
+      "p50": 61.91679999999997,
+      "p95": 64.01710000000094,
+      "p99": 75.41579999999999
+    },
+    "total": {
+      "p50": 59,
+      "p95": 61,
+      "p99": 65
+    },
+    "fanout": {
+      "p50": 59,
+      "p95": 61
+    },
+    "fusion": {
+      "p50": 0,
+      "p95": 1
+    },
+    "dbWrite": {
+      "p50": 0.82,
+      "p95": 1.5
+    },
+    "httpOverhead": {
+      "p50": 2.563799999999901,
+      "p95": 4.20470000000023
+    },
+    "queue": {
+      "p50": 9
+    }
+  },
+  "burst": {
+    "size": 100,
+    "expectedMs": 850,
+    "runs": [
+      {
+        "run": 1,
+        "wallMs": 1178.6279000000013,
+        "maxServerMs": 1020,
+        "meanServerMs": 536.21,
+        "expectedMs": 850,
+        "ratioWall": 1.386621058823531,
+        "ratioServer": 1.2
+      },
+      {
+        "run": 2,
+        "wallMs": 1122.6041000000005,
+        "maxServerMs": 1002,
+        "meanServerMs": 548.61,
+        "expectedMs": 850,
+        "ratioWall": 1.3207107058823535,
+        "ratioServer": 1.1788235294117646
+      },
+      {
+        "run": 3,
+        "wallMs": 1069.8420999999998,
+        "maxServerMs": 951,
+        "meanServerMs": 495.07,
+        "expectedMs": 850,
+        "ratioWall": 1.2586377647058822,
+        "ratioServer": 1.1188235294117648
+      }
+    ]
+  },
+  "notes": [
+    "server totalMs comes from stats.timing.totalMs and excludes the final response serialisation",
+    "httpOverhead = client wall - server totalMs",
+    "queue = fanout p50 - provider latency (scheduler waiting for a free slot)",
+    "mock provider: no network, so this isolates scheduler/HTTP/SQLite cost"
+  ]
+}

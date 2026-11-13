@@ -26,7 +26,7 @@
 
 日期 2026-11-13 ｜ 主机 Windows（`windows/amd64`）｜ Docker CLI 29.9.2 / Compose v5.6.1
 
-容器级 10 项验收**一项也没有执行**。不是"跑过但没记录"，是引擎起不来。
+容器级 11 项验收**一项也没有执行**。不是"跑过但没记录"，是引擎起不来。
 以下命令全部原样执行，退出码为实测值。
 
 | # | 命令 | 退出码 | 关键输出（原文） |
@@ -135,7 +135,7 @@ SEARCH_HUB_VERIFY_MAX_HIGH=0 SEARCH_HUB_VERIFY_MAX_CRITICAL=0 TRIVY_IGNORE_UNFIX
 
 `.github/workflows/docker.yml`，触发条件：PR / 推送到 `main`（相关路径变更时）、`workflow_dispatch`。
 
-流水线：`checkout → setup-buildx（GHA 层缓存）→ build（load 到本地）→ docker compose config → 安装 trivy（v0.76.2，固定版本）→ scripts/docker-verify.sh（10 项）→ 上传报告 artifact → 失败时抓日志 → 清理容器/卷/镜像`。
+流水线：`quality job（checkout → pnpm install --frozen-lockfile → typecheck → lint → test → build）→ container job（checkout → setup-buildx（GHA 层缓存）→ build（load 到本地）→ docker compose config → 安装 trivy（v0.76.2，固定版本）→ scripts/docker-verify.sh（11 项）→ 上传报告 artifact → 失败时抓日志 → 清理容器/卷/镜像）`。container 通过 `needs: quality` 依赖前者，代码不绿时不会构建镜像。
 
 要点：
 
@@ -182,7 +182,7 @@ docker compose -p sh-manual down -v                 # 收尾
 
 ---
 
-## 3. 10 项验收：期望输出
+## 3. 11 项验收：期望输出
 
 | # | 项目 | 关键命令 | 期望 | 判定依据 |
 |---|---|---|---|---|
@@ -198,11 +198,13 @@ docker compose -p sh-manual down -v                 # 收尾
 | 4c | token 自清理 | 再次 `test -f /app/data/setup-token` | 文件已删除 | 初始化后不可重复使用 |
 | 5a | 建源 | `POST /api/admin/providers {type:"hackernews"}` | `200` + `provider.id` | 免密钥源，用于真实联网 |
 | 5b | 真实搜索 | `POST /api/search`（`hn-live`，`skipCache`） | `200`，`status=completed\|partial`，`results ≥1` | 每个结果带 `https://` 真实 URL；失败重试 3 次 |
+| 5c | Key 加密与掩码 | `POST /api/admin/providers/{id}/keys` | `200` + `maskedKey` | 响应不含明文 Key；掩码为首 4+末 4 |
 | 6 | 重启一致性 | `compose restart` → 对比 providers / dashboard | `hn-live` 计数不变、`searches` 不变、`session=200` | 配置在 SQLite，会话在 SQLite，均应存活 |
 | 7 | 持久化 | `compose down`（不删卷）→ `up` | 卷存在、providers 与 searches 不变、`initialized=true` | 命名卷 `search-hub-data` 生效 |
 | 8 | 资源 | `docker stats --no-stream` 空闲 vs 50 次搜索后 | 50/50 成功 | 记录 `cpu% \| mem \| mem%`（基线见 §3.1） |
 | 9 | 崩溃恢复 | `docker kill <c>` → 轮询 health | 自动拉起，`RestartCount` 递增，health `200` | 再调 `POST /api/admin/maintenance/checkpoint`（`wal_checkpoint(TRUNCATE)`）须 `200`，providers/searches 不丢 |
 | 10 | 漏洞扫描 | `trivy image --severity HIGH,CRITICAL` | `CRITICAL=0`、`HIGH=0`（可配置） | 缺失扫描器且 `REQUIRE_SCAN=1` → FAIL |
+| 11 | MCP Streamable HTTP | `POST /mcp`：initialize → tools/list → tools/call | tools ≥9；search_web 返回真实 URL + provider 归因 | REST 同 query 必须包含 MCP 首条 URL；无效 token 401/403 |
 
 补充说明：
 
@@ -355,7 +357,7 @@ Docker 上下文虽然靠 `.dockerignore` 排除了 `node_modules`，结论上�
 | 文件 | 职责 |
 |---|---|
 | `.github/workflows/ci.yml` | lint / typecheck / vitest / 迁移冒烟 / web+server 产物 / 生产安装启动 / Playwright E2E / `pnpm audit` |
-| `.github/workflows/docker.yml` | 镜像构建（层缓存）/ compose 校验 / 10 项容器验收 / trivy 门禁 / 清理 |
+| `.github/workflows/docker.yml` | quality job（install/typecheck/lint/test/build）+ 镜像构建（层缓存）/ compose 校验 / 11 项容器验收 / trivy 门禁 / 清理 |
 
 两处不重复：`ci.yml` 不再构建镜像，`docker.yml` 不再跑单元测试。
 
@@ -389,6 +391,6 @@ Docker 上下文虽然靠 `.dockerignore` 排除了 `node_modules`，结论上�
 | 一键验证脚本 | **DONE** | B 静态 + 替身（`bash -n` exit 0；PASS/FAIL/SKIP 三分支跑通） | `scripts/docker-verify.sh`、§2.4 |
 | CI 容器工作流 | **DONE** | B 静态（YAML 解析通过） | `.github/workflows/docker.yml` |
 | 镜像构建成功 | **BLOCKED** | C 未执行 | 需在有 Docker 的 Linux/CI 上跑 |
-| 10 项容器验收实测 | **BLOCKED** | C 未执行 | 需在有 Docker 的 Linux/CI 上执行 `bash scripts/docker-verify.sh` |
+| 11 项容器验收实测 | **BLOCKED** | C 未执行 | 需在有 Docker 的 Linux/CI 上执行 `bash scripts/docker-verify.sh` |
 | 资源基线 | **BLOCKED** | C 未执行 | 首次 CI 通过后回填 §3.1 |
 | 漏洞扫描 HIGH/CRITICAL 实测 | **BLOCKED** | C 未执行 | 同上，结果在 artifact `vulnerabilities-*.txt` |

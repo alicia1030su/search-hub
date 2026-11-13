@@ -379,11 +379,31 @@ else
   record SKIP "5b. live search" "ALLOW_SKIP_NETWORK=1: outbound network unavailable, vendor call not proven"
 fi
 
+
+# ------------------------------------------- 5c. provider key encryption/mask
+line
+log "=== item 5c: a provider key is stored encrypted and only ever masked ==="
+KEY_PLAIN="sk-VERIFY-FINGERPRINT-1234"
+key_code=$(curl -s -b "$COOKIES" -o "$BODY" -w '%{http_code}' --max-time 20 \
+  -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -d "{\"label\":\"verify-key\",\"key\":\"$KEY_PLAIN\",\"weight\":100,\"enabled\":true}" \
+  "$BASE/api/admin/providers/$PRV_ID/keys")
+KEY_MASK=$(jget "$BODY" maskedKey)
+log "  POST /api/admin/providers/{id}/keys -> $key_code maskedKey=${KEY_MASK:-none}"
+if [ "$key_code" = "200" ] && [ -n "$KEY_MASK" ] && ! grep -q "$KEY_PLAIN" "$BODY"; then
+  record PASS "5c. key mask" "create returned maskedKey=$KEY_MASK and no plaintext"
+else
+  record FAIL "5c. key mask" "status=$key_code maskedKey=${KEY_MASK:-none} (plaintext leak or missing mask)"
+fi
+
 # ------------------------------------------------- 6. restart -> consistency
 line
 log "=== item 6: docker compose restart keeps config, session and statistics ==="
 PROV_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/providers" > "$WORK/prov1.json"; \
   grep -c '"name":"hn-live"' "$WORK/prov1.json" 2>/dev/null || true)
+# The key was created in item 5c; its mask must survive the restart unchanged.
+curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/providers/$PRV_ID/keys" > "$WORK/keys1.json" || true
+KEY_BEFORE=$(jget "$WORK/keys1.json" 0.maskedKey)
 SESS_BEFORE=$(curl -s -b "$COOKIES" -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/api/auth/session")
 SEARCH_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/dashboard?range=24h" > "$WORK/dash1.json"; \
   jget "$WORK/dash1.json" totals.searches)
@@ -393,14 +413,17 @@ compose restart >>"$REPORT" 2>&1 || true
 if wait_health; then
   PROV_AFTER=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/providers" > "$WORK/prov2.json"; \
     grep -c '"name":"hn-live"' "$WORK/prov2.json" 2>/dev/null || true)
+  curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/providers/$PRV_ID/keys" > "$WORK/keys2.json" || true
+  KEY_AFTER=$(jget "$WORK/keys2.json" 0.maskedKey)
   SESS_AFTER=$(curl -s -b "$COOKIES" -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/api/auth/session")
   SEARCH_AFTER=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/dashboard?range=24h" > "$WORK/dash2.json"; \
     jget "$WORK/dash2.json" totals.searches)
   log "  after:  hn-live entries=${PROV_AFTER:-?} session=$SESS_AFTER dashboard.searches=${SEARCH_AFTER:-0}"
-  if [ "$PROV_AFTER" = "$PROV_BEFORE" ] && [ "${SEARCH_AFTER:-x}" = "${SEARCH_BEFORE:-y}" ] && [ "$SESS_AFTER" = "200" ]; then
-    record PASS "6. restart consistency" "providers=${PROV_AFTER} searches=${SEARCH_AFTER} session=200 (unchanged)"
+  if [ "$PROV_AFTER" = "$PROV_BEFORE" ] && [ "${SEARCH_AFTER:-x}" = "${SEARCH_BEFORE:-y}" ] \
+     && [ "$SESS_AFTER" = "200" ] && [ -n "$KEY_AFTER" ] && [ "$KEY_AFTER" = "$KEY_BEFORE" ]; then
+    record PASS "6. restart consistency" "providers=${PROV_AFTER} searches=${SEARCH_AFTER} key=${KEY_AFTER} session=200 (unchanged)"
   else
-    record FAIL "6. restart consistency" "providers ${PROV_BEFORE:-?}->${PROV_AFTER:-?} searches ${SEARCH_BEFORE:-0}->${SEARCH_AFTER:-0} session=$SESS_AFTER"
+    record FAIL "6. restart consistency" "providers ${PROV_BEFORE:-?}->${PROV_AFTER:-?} searches ${SEARCH_BEFORE:-0}->${SEARCH_AFTER:-0} key ${KEY_BEFORE:-none}->${KEY_AFTER:-none} session=$SESS_AFTER"
   fi
 else
   record FAIL "6. restart consistency" "health did not recover after restart"
@@ -548,6 +571,92 @@ if [ -z "$SCANNER" ]; then
   else
     record SKIP "10. vulnerability scan" "neither trivy nor docker scout on this host; install trivy (https://trivy.dev) and re-run"
   fi
+fi
+
+# ------------------------------------------------------- 11. MCP over HTTP
+line
+log "=== item 11: MCP Streamable HTTP (initialize -> tools/list -> tools/call) ==="
+tok_code=$(curl -s -b "$COOKIES" -o "$BODY" -w '%{http_code}' --max-time 20 \
+  -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -d '{"name":"verify-mcp","scopes":["search","mcp:use","sources:read"],"rateLimitPerMin":120}' \
+  "$BASE/api/admin/tokens")
+MCP_TOKEN=$(jget "$BODY" token)
+log "  POST /api/admin/tokens -> $tok_code token=${MCP_TOKEN:+issued}"
+if [ "$tok_code" = "200" ] && [ -n "$MCP_TOKEN" ]; then
+  record PASS "11a. mcp token" "token with search+mcp:use issued (value never printed)"
+else
+  record FAIL "11a. mcp token" "POST /api/admin/tokens = $tok_code"
+fi
+
+mcp_rpc() { # mcp_rpc <outfile> <payload>
+  curl -s --max-time 60 -o "$1" \
+    -H "authorization: Bearer $MCP_TOKEN" \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' \
+    -d "$2" "$BASE/mcp"
+}
+
+if [ -n "$MCP_TOKEN" ]; then
+  mcp_rpc "$WORK/mcp-init.raw" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"docker-verify","version":"1"}}}'
+  sed -n 's/^data: //p' "$WORK/mcp-init.raw" > "$WORK/mcp-init.json" 2>/dev/null || true
+  [ -s "$WORK/mcp-init.json" ] || cp "$WORK/mcp-init.raw" "$WORK/mcp-init.json"
+  MCP_SERVER=$(jget "$WORK/mcp-init.json" result.serverInfo.name)
+  MCP_PROTO=$(jget "$WORK/mcp-init.json" result.protocolVersion)
+  log "  initialize -> server=${MCP_SERVER:-none} protocol=${MCP_PROTO:-none}"
+  if [ "$MCP_SERVER" = "search-hub" ]; then
+    record PASS "11b. mcp initialize" "serverInfo.name=search-hub protocol=${MCP_PROTO:-n/a}"
+  else
+    record FAIL "11b. mcp initialize" "unexpected initialize response (see $WORK/mcp-init.raw)"
+  fi
+
+  mcp_rpc "$WORK/mcp-tools.raw" '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+  sed -n 's/^data: //p' "$WORK/mcp-tools.raw" > "$WORK/mcp-tools.json" 2>/dev/null || true
+  [ -s "$WORK/mcp-tools.json" ] || cp "$WORK/mcp-tools.raw" "$WORK/mcp-tools.json"
+  MCP_TOOLS=$(jget "$WORK/mcp-tools.json" result.tools.length)
+  log "  tools/list -> ${MCP_TOOLS:-0} tool(s)"
+  if [ "${MCP_TOOLS:-0}" -ge 9 ] 2>/dev/null; then
+    record PASS "11c. mcp tools/list" "$MCP_TOOLS tools exposed (>=9)"
+  else
+    record FAIL "11c. mcp tools/list" "expected >=9 tools, got ${MCP_TOOLS:-0}"
+  fi
+
+  MCP_QUERY="typescript monorepo"
+  mcp_rpc "$WORK/mcp-call.raw" "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_web\",\"arguments\":{\"query\":\"$MCP_QUERY\",\"limit\":3}}}"
+  sed -n 's/^data: //p' "$WORK/mcp-call.raw" > "$WORK/mcp-call.json" 2>/dev/null || true
+  [ -s "$WORK/mcp-call.json" ] || cp "$WORK/mcp-call.raw" "$WORK/mcp-call.json"
+  MCP_IS_ERROR=$(jget "$WORK/mcp-call.json" result.isError)
+  MCP_URL=$(grep -o '"url":"https\?://[^"]*"' "$WORK/mcp-call.json" | head -1 | cut -d'"' -f4)
+  MCP_PROVIDER=$(grep -o '"provider":"[^"]*"' "$WORK/mcp-call.json" | head -1 | cut -d'"' -f4)
+  log "  tools/call search_web -> isError=${MCP_IS_ERROR:-false} firstUrl=${MCP_URL:-none} provider=${MCP_PROVIDER:-none}"
+  if [ "$MCP_IS_ERROR" != "true" ] && [ -n "$MCP_URL" ] && [ -n "$MCP_PROVIDER" ]; then
+    record PASS "11d. mcp tools/call" "search_web returned a real URL with provider attribution (${MCP_PROVIDER})"
+  else
+    record FAIL "11d. mcp tools/call" "isError=${MCP_IS_ERROR:-?} url=${MCP_URL:-none} provider=${MCP_PROVIDER:-none}"
+  fi
+
+  # Same query over REST must agree with MCP on at least the first URL.
+  rest_code=$(curl -s -b "$COOKIES" -o "$WORK/rest-parity.json" -w '%{http_code}' --max-time 60 \
+    -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+    -d "{\"query\":\"$MCP_QUERY\",\"mode\":\"rrf\",\"limit\":3,\"skipCache\":true}" "$BASE/api/search")
+  REST_HAS_URL=0
+  if [ -n "$MCP_URL" ] && grep -qF "$MCP_URL" "$WORK/rest-parity.json" 2>/dev/null; then REST_HAS_URL=1; fi
+  if [ "$rest_code" = "200" ] && [ "$REST_HAS_URL" = "1" ]; then
+    record PASS "11e. rest/mcp parity" "REST 200 and contains the MCP first URL"
+  else
+    record FAIL "11e. rest/mcp parity" "REST=$rest_code mcpUrl=${MCP_URL:-none} present=$REST_HAS_URL"
+  fi
+
+  BAD_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    -H 'authorization: Bearer sh_invalid_token_for_verify' \
+    -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' "$BASE/mcp")
+  if [ "$BAD_CODE" = "401" ] || [ "$BAD_CODE" = "403" ]; then
+    record PASS "11f. mcp auth" "invalid token rejected with HTTP $BAD_CODE"
+  else
+    record FAIL "11f. mcp auth" "invalid token returned HTTP $BAD_CODE (expected 401/403)"
+  fi
+else
+  record FAIL "11b. mcp initialize" "no token, MCP checks not executed"
 fi
 
 # ------------------------------------------------------------------- summary

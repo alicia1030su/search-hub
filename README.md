@@ -2,7 +2,7 @@
 
 **自托管的 AI 聚合搜索基础设施。** 一套服务，聚合多个搜索源，管理多组 API Key，输出统一结果，并通过 REST、MCP 与 Agent Skills 同时对外提供能力。
 
-[English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [Provider 开发](./docs/provider-plugin-guide.md)
+[English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
 > 状态：`0.1.2`。核心搜索闭环、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过自动化测试；Hacker News 已用真实网络完成端到端联调，代理出网与 SQLite 在线备份已完成加固。真实第三方搜索 API 的联调状态见下方[验证状态](#验证状态)与[Provider 状态矩阵](./docs/provider-matrix.md)，未联调的能力不会被描述为“已验证”。
 
@@ -179,7 +179,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **363 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试 **366 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 验收矩阵 **16 项**（PASS 10 / PARTIAL 5 / BLOCKED 1），由 `docs/ac-matrix.json` 自动生成，见 [docs/ac-matrix.md](./docs/ac-matrix.md)。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
 - Playwright 覆盖首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注。
@@ -221,7 +221,7 @@ tests              unit / integration / e2e / scripts
 ## 测试
 
 ```bash
-pnpm test                 # Vitest：单元 + 集成（363 项）
+pnpm test                 # Vitest：单元 + 集成（366 项）
 pnpm build && pnpm test:e2e
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 node tests/scripts/leak-scan.mjs        # 密钥泄漏扫描（自起临时实例）

@@ -2,7 +2,7 @@
 
 **Self-hosted AI search infrastructure.** One service that aggregates multiple search providers, manages pools of API keys, normalizes and fuses results, and exposes the same engine over REST, MCP, and Agent Skills.
 
-[中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Testing](./docs/testing.md)
+[中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
 > Status: `0.1.2`. Core search, key scheduling, admin UI, REST, MCP (both protocol eras), and Skills are implemented and covered by automated tests; Hacker News has been verified end to end over the real network, and proxy egress plus SQLite online backup have been hardened. Live third-party verification status is listed under [Verification](#verification) and [the provider matrix](./docs/provider-matrix.md); nothing untested is described as verified.
 
@@ -170,7 +170,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- 363 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- 366 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
 - A 16-row acceptance matrix (PASS 10 / PARTIAL 5 / BLOCKED 1) generated from `docs/ac-matrix.json`: [docs/ac-matrix.md](./docs/ac-matrix.md).
 - `tests/scripts/smoke.sh`: setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize.
 - Playwright: first-run, login, add source, search lab, theme, settings, integrations.

@@ -4,7 +4,7 @@ description: Retrieve evidence through Search Hub and format a citation-ready so
 license: MIT
 metadata:
   author: search-hub
-  version: "0.1.1"
+  version: "0.1.2"
   requires: search-hub>=0.1.1
   transport: rest
 ---
@@ -34,7 +34,7 @@ Use `search-web` when a plain answer is enough.
 curl -sS "$SEARCH_HUB_URL/api/search" \
   -H "authorization: Bearer $SEARCH_HUB_TOKEN" \
   -H "content-type: application/json" \
-  -d '{"query":"RFC 9110 HTTP semantics caching","mode":"rrf","limit":12,"includeRaw":false}'
+  -d '{"query":"postgres logical replication","mode":"rrf","limit":12,"includeRaw":false}'
 ```
 
 Use `search_with_sources` over MCP when you also need per-provider timing and failure reasons.

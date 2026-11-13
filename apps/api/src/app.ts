@@ -30,7 +30,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
 
   await app.register(cookie);
   await app.register(rateLimit, {
-    max: 300,
+    max: ctx.config.rateLimitPerMin,
     timeWindow: "1 minute",
     allowList: (request) => request.url === "/api/health",
   });

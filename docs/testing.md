@@ -18,7 +18,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (363 tests, 25 files)
+## What is covered (366 tests, 25 files)
 
 **Scheduler and quotas** — `tests/unit/scheduler.test.ts`, `tests/unit/key-limits.test.ts`
 
@@ -82,6 +82,8 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | `tests/scripts/clean-install.mjs` | install → build → prod-only install → boot → real search |
 | `tests/scripts/search-quality.mjs` | multi-source quality **numbers** on a live instance (per-provider + fused counts, valid URLs, duplicate rate, latency, failure codes); refuses to call mock output real evidence (exit 3) |
 | `tests/scripts/ac05-concurrency.mjs` | AC-05 elapsed-time budget `⌈100/6⌉ × latency ±20%` and cross-key in-flight overlap measured against the real scheduler |
+| `tests/scripts/perf-breakdown.mjs` | AC-05 layered timings (fan-out, fusion, SQLite `dbWriteMs`, HTTP overhead, queue), P50/P95/P99, and the 100-request burst ratio |
+| `tests/scripts/skills-verify.mjs` | static SKILL.md checks plus the documented REST calls against a live instance; proves a search-scope token cannot read admin models and that a missing token fails |
 | `tests/scripts/backup-restore.mjs` | backup under concurrent writes (3 downloads, `integrity_check`, ciphertext-only keys), restore into a fresh directory with `master.key`, newer-schema refusal at boot, and failure handling (no published file when the backup path is unusable or the process is killed mid-snapshot) |
 
 `scripts/ac-matrix.mjs` validates and renders the acceptance matrix from

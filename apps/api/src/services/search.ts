@@ -144,6 +144,10 @@ export class SearchService {
       if (hit) this.cache.delete(cacheKey);
     }
 
+    // Measured so the AC-05 breakdown can separate SQLite cost from fan-out,
+    // fusion and HTTP overhead. Cheap enough to keep on in production.
+    let dbWriteMs = 0;
+    const insertStarted = performance.now();
     this.deps.db
       .insert(searchTasks)
       .values({
@@ -157,6 +161,7 @@ export class SearchService {
         createdAt: new Date().toISOString(),
       })
       .run();
+    dbWriteMs += performance.now() - insertStarted;
     this.controllers.set(taskId, controller);
 
     try {
@@ -178,7 +183,10 @@ export class SearchService {
       response.stats.timing.totalMs = Date.now() - startedAt;
       const cancelled = controller.signal.aborted && options.signal?.aborted === true;
 
+      const persistStarted = performance.now();
       this.persistTask(taskId, response, cancelled ? "cancelled" : null);
+      dbWriteMs += performance.now() - persistStarted;
+      response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
       if (cacheUsable && response.status !== "failed") {
         this.cache.set(cacheKey, {
           expiresAt: Date.now() + cacheConfig.ttlSeconds * 1000,

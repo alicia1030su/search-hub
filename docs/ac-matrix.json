@@ -103,7 +103,7 @@
     "id": "AC-05",
     "title": "【红线】三级额度不被突破（含 AC-05b 实验室明细）",
     "status": "PARTIAL",
-    "summary": "峰值恰 2、rpm 拒第 11 次、日配额 3、跨 Key 重叠 201–213 对、队列饱和 503+queue_timeout 全部实测通过；但『总耗时 ≈ ⌈100/6⌉×单次延迟 ±20%』只在纯调度器路径明确成立（ratio 0.97–1.06），端到端经 HTTP+SQLite 后为 1225–1245ms，落在两种口径的带宽边界（一种超 2%、一种在带内），故总体 PARTIAL。",
+    "summary": "峰值恰 2、rpm 拒第 11 次、日配额 3、跨 Key 重叠、队列饱和 503 全部通过；耗时预算在服务端流水线成立（ratio 0.93–1.00），但客户端 wall 1.26–1.39 超带，两种口径不一致，总体 PARTIAL。",
     "evidence": [
       {
         "command": "corepack pnpm exec vitest run tests/unit/key-limits.test.ts tests/unit/scheduler.test.ts",
@@ -132,6 +132,10 @@
       {
         "command": "同一实例安静时段复测（cookie 会话，先测单次中位数 62ms 再 burst ×3）",
         "result": "单次中位 62ms → 预期 ⌈100/6⌉×62=1054ms；实测 1056 / 1138 / 927ms → ratio 1.00 / 1.08 / 0.88，其中两轮在 ±20% 内（第三轮 15×429 是全局 300/min 限流，不计）。结论：该带宽在机器空闲时可满足，但在有并发负载时退化到 1.22–1.30，无法宣称稳定达标 —— 故 AC-05 保持 PARTIAL"
+      },
+      {
+        "command": "node tests/scripts/perf-breakdown.mjs --url http://127.0.0.1:8881 --latency 50 --seq 200 --burst 100 --runs 3",
+        "result": "分层：SQLite 写入 P50 0.8ms / P95 1.5ms；融合 P50 0ms；HTTP 框架+序列化 P50 2.6ms；服务端 total P50 59ms；100 并发服务端最大 951–1020ms（相对单次中位 60ms 的预算 ratio 0.93–1.00），客户端 wall 1070–1179ms（ratio 1.26–1.39）。超额来自客户端并发连接与 mock 定时器 50→60ms 漂移，不是 SQLite/融合/日志"
       }
     ],
     "gaps": [
@@ -300,6 +304,10 @@
       {
         "command": "grep -rn 'TODO|FIXME|your-org|<placeholder>' packages/skills/*/SKILL.md",
         "result": "0 命中"
+      },
+      {
+        "command": "node tests/scripts/skills-verify.mjs --url http://127.0.0.1:8882 --token sh_...",
+        "result": "SKILLS: PASS — 3 个 SKILL.md frontmatter/version 0.1.2 校验通过；search-web 与 research-with-citations 按文档命令返回 200 且 URL 全为绝对地址；deep-research 无 chat model 时返回 400（明确的校验错误，非 200 空结果）；search scope token 调 /api/admin/models 被 403 拒绝；无效 token 401；响应不含 token"
       }
     ],
     "gaps": [

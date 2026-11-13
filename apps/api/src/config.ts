@@ -35,6 +35,8 @@ export interface AppConfig {
   version: string;
   /** Hard cap for `POST /api/admin/backup/verify` raw uploads (default 64 MB). */
   maxBackupUploadBytes: number;
+  /** Global per-IP request budget (default 300/min). Raise for load testing. */
+  rateLimitPerMin: number;
   /**
    * Outbound proxy configuration for every provider/model request.
    * Deployment configuration only: it is intentionally NOT part of the
@@ -191,6 +193,7 @@ export function loadConfig(): AppConfig {
     staticDir: existsSync(staticDir) ? staticDir : null,
     migrationsDir,
     version: "0.1.2",
+    rateLimitPerMin: Number(env("SEARCH_HUB_RATE_LIMIT_PER_MIN") ?? 300),
     maxBackupUploadBytes: Math.min(
       // Clamp: too small makes verification useless, too large lets one upload
       // exhaust the temp disk.

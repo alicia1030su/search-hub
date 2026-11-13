@@ -486,8 +486,36 @@ describe("proxy mode", () => {
     }
   });
 
-  it("still blocks cloud metadata in proxy mode even when it is allowlisted", async () => {
+  it("blocks a public-looking hostname that resolves privately before any CONNECT", async () => {
+    // The proxy resolves the destination itself, so a hostname that looks
+    // public is the interesting case: the application must still resolve it,
+    // reject the private answer, and never hand it to the proxy.
     const proxy = await startMockProxy();
+    track(proxy.close);
+
+    const safeFetch = createSafeFetch({
+      policy: POLICY,
+      timeoutMs: 2_000,
+      resolveHost: makeResolver({
+        "rebind.public.test": ["127.0.0.1"],
+        "rfc1918.public.test": ["10.0.0.7"],
+        "metadata.public.test": ["169.254.169.254"],
+      }),
+      proxy: { proxy: `http://127.0.0.1:${proxy.port}` },
+    });
+
+    for (const host of [
+      "rebind.public.test",
+      "rfc1918.public.test",
+      "metadata.public.test",
+    ]) {
+      await expect(safeFetch(`http://${host}/`)).rejects.toMatchObject({ code: "blocked" });
+    }
+    expect(proxy.connects.length).toBe(0);
+    expect(proxy.forwardRequests.length).toBe(0);
+  });
+
+  it("still blocks cloud metadata in proxy mode even when it is allowlisted", async () => {    const proxy = await startMockProxy();
     track(proxy.close);
     const safeFetch = createSafeFetch({
       policy: { ...POLICY, allowPrivateHosts: ["169.254.169.254", "100.100.100.200"] },

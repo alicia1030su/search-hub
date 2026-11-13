@@ -138,6 +138,8 @@ export interface SearchTiming {
   totalMs: number;
   fanoutMs: number;
   fusionMs: number;
+  /** Time spent in SQLite writes (task insert + final task/event persist). */
+  dbWriteMs?: number;
   rerankMs?: number;
   embeddingMs?: number;
   summaryMs?: number;

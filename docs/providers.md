@@ -113,7 +113,7 @@ Live probe (2026-11-13, invalid key): `POST /search` answered `401 {"detail":{"e
 
 Official docs: <https://bocha-ai.feishu.cn/wiki/RXEOw02rFiwzGSkd9mUcqoeAnNK>
 
-- `POST {baseUrl}/v1/web-search` (default base URL `https://api.bochaai.com`; `https://api.bocha.cn` is the alias some documents use — override `baseUrl` if your account is provisioned there), JSON body
+- `POST {baseUrl}/v1/web-search` (default base URL `https://api.bochaai.com`; `https://api.bocha.cn` also answers with the same envelope; the official console example uses `api.bochaai.com`, so that stays the default and the other host can be selected with `baseUrl`), JSON body
 - Auth: `Authorization: Bearer <key>`
 
 | Internal input | Request field | Notes |
@@ -147,7 +147,7 @@ Errors arrive on two layers, so both are checked:
 | HTTP 200 without `data.webPages` | **zero results**, not an error |
 | HTTP 200 with non-array `data.webPages.value` | `bad_request` |
 
-Live probe (2026-11-13, invalid key): `POST https://api.bochaai.com/v1/web-search` answered `401 {"log_id":"...","message":"Invalid API KEY","code":"401"}` — the endpoint is online and `Authorization: Bearer` is the right scheme. Verification: `documented`. Run `tests/scripts/provider-live.mjs --provider bocha` with a funded key before claiming `live_tested`.
+Live probe (2026-11-13, invalid key): `POST https://api.bochaai.com/v1/web-search` answered `401 {"log_id":"...","message":"Invalid API KEY","code":"401"}` in 188ms, and `POST https://api.bocha.cn/v1/web-search` answered `401 {"code":"401","log_id":"...","message":"Invalid API KEY"}` in 461ms. Both are online, both use `Authorization: Bearer`, and the field order is the only difference; the official console example uses `api.bochaai.com`, which is why it is the default. Verification: `documented`. Run `tests/scripts/provider-live.mjs --provider bocha` with a funded key before claiming `live_tested`.
 
 ## Brave
 

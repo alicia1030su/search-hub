@@ -236,4 +236,73 @@ describe("outbound proxy configuration", () => {
     expect(health.payload).not.toContain("proxyuser");
     expect(health.payload).not.toContain("a.test");
   });
+
+  it("does not let the admin settings API change the proxy identity", async () => {
+    const { app, ctx } = await boot({ SEARCH_HUB_PROXY: "http://127.0.0.1:3128" });
+    const admin = await signIn(app, ctx);
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      cookies: admin.cookies,
+      headers: admin.headers,
+      payload: {
+        outbound: { proxy: "http://127.0.0.1:9999", proxyTrust: "trusted-networks" },
+        proxy: "http://127.0.0.1:9999",
+        security: { privateHostAllowlist: ["127.0.0.1"] },
+      },
+    });
+    // The endpoint may accept or reject the unknown keys; either way the
+    // process-lifetime proxy comes from the environment and must not change.
+    expect([200, 400]).toContain(response.statusCode);
+    expect(ctx.outboundProxy.proxy?.display).toBe("http://127.0.0.1:3128");
+    expect(ctx.describeOutboundPolicy().proxyTrust).toBe("untrusted");
+  });
+
+  it("blocks a loopback model over an untrusted proxy even when the host is allowlisted", async () => {
+    // A modified or mistaken proxy must not become a way to reach an internal
+    // model service: the allowlist only applies in direct mode or when the
+    // operator declares trusted-networks.
+    const { app, ctx } = await boot({ SEARCH_HUB_PROXY: "http://127.0.0.1:9" });
+    const admin = await signIn(app, ctx);
+
+    const settings = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      cookies: admin.cookies,
+      headers: admin.headers,
+      payload: { security: { privateHostAllowlist: ["127.0.0.1"] } },
+    });
+    expect(settings.statusCode).toBe(200);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/models",
+      cookies: admin.cookies,
+      headers: admin.headers,
+      payload: {
+        kind: "chat",
+        name: "internal-chat",
+        providerType: "openai-compatible",
+        baseUrl: "http://127.0.0.1:9/v1",
+        apiKey: "sk-TEST-INTERNAL-MODEL",
+        modelId: "internal",
+        timeoutMs: 2_000,
+      },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const id = (created.json() as { id?: string; model?: { id?: string } }).id
+      ?? (created.json() as { model?: { id?: string } }).model?.id;
+    expect(id).toBeTruthy();
+
+    const tested = await app.inject({
+      method: "POST",
+      url: `/api/admin/models/${id}/test`,
+      cookies: admin.cookies,
+      headers: admin.headers,
+    });
+    expect(tested.statusCode).toBe(200);
+    expect(tested.json().ok).toBe(false);
+    expect(tested.json().message).toMatch(/private|reserved|allowlist|blocked/i);
+  });
 });

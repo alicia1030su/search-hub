@@ -125,7 +125,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
       "博查官方 Web Search API，中文网页覆盖较好，响应兼容 Bing Search 结构（data.webPages.value[]），支持 freshness 时间筛选。",
     verification: "documented",
     notes:
-      "适配器按官方 Web Search API 文档实现（POST /v1/web-search，Authorization: Bearer）；官方文档另出现 api.bocha.cn 别名域名，可用 baseUrl 覆盖；无真实 API Key，未联调（探测到 401 Invalid API KEY）。",
+      "适配器按官方 Web Search API 文档实现（POST /v1/web-search，Authorization: Bearer）；两个域名均实测可达且返回同一错误信封：api.bochaai.com 401 (188ms) / api.bocha.cn 401 (461ms)；官方开放平台示例使用 api.bochaai.com，故默认值保持该域名，api.bocha.cn 可用 baseUrl 覆盖；无真实 API Key，未联调。",
   },
   {
     type: "anysearch",
