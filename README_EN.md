@@ -4,7 +4,7 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Testing](./docs/testing.md)
 
-> Status: `0.1.1`. Core search, key scheduling, admin UI, REST, MCP (both protocol eras), and Skills are implemented and covered by automated tests; Hacker News has been verified end to end over the real network. Live third-party verification status is listed under [Verification](#verification); nothing untested is described as verified.
+> Status: `0.1.2`. Core search, key scheduling, admin UI, REST, MCP (both protocol eras), and Skills are implemented and covered by automated tests; Hacker News has been verified end to end over the real network, and proxy egress plus SQLite online backup have been hardened. Live third-party verification status is listed under [Verification](#verification) and [the provider matrix](./docs/provider-matrix.md); nothing untested is described as verified.
 
 ---
 

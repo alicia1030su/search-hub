@@ -4,7 +4,7 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> 状态：`0.1.1`。核心搜索闭环、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过自动化测试；Hacker News 已用真实网络完成端到端联调。真实第三方搜索 API 的联调状态见下方[验证状态](#验证状态)，未联调的能力不会被描述为“已验证”。
+> 状态：`0.1.2`。核心搜索闭环、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过自动化测试；Hacker News 已用真实网络完成端到端联调，代理出网与 SQLite 在线备份已完成加固。真实第三方搜索 API 的联调状态见下方[验证状态](#验证状态)与[Provider 状态矩阵](./docs/provider-matrix.md)，未联调的能力不会被描述为“已验证”。
 
 ---
 
