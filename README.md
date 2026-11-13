@@ -58,8 +58,8 @@ Search Hub 把这些做成一个可部署的服务：
 
 ```bash
 # 将 <your-org> 替换为实际托管地址；仓库尚未发布官方镜像/Release
- git clone https://github.com/<your-org>/search-hub.git
- cd search-hub
+git clone https://github.com/<your-org>/search-hub.git
+cd search-hub
 cp .env.example .env
 # 强烈建议写入一个固定主密钥：openssl rand -hex 32
 # 编辑 .env，填入 SEARCH_HUB_ENCRYPTION_KEY
@@ -68,7 +68,7 @@ docker compose up -d
 
 打开 `http://localhost:8787`，首次进入会要求创建管理员（没有默认密码）。
 
-**首次初始化需要一次性 setup token**：未设置 `SEARCH_HUB_SETUP_TOKEN` 时，服务启动会自动生成 `data/setup-token`（权限 0600）并打印到容器日志。执行 `docker compose logs search-hub | grep "setup token"`，或直接 `cat data/setup-token`，把该值填入 /setup 页面。没有这个 token 就无法抢占管理员账号。
+**首次初始化需要一次性 setup token**：未设置 `SEARCH_HUB_SETUP_TOKEN` 时，服务启动会自动生成 `data/setup-token`（权限 0600）并打印到容器日志。执行 `docker compose logs search-hub | grep "setup token"`，或用命名卷读取 `docker compose exec search-hub cat /app/data/setup-token`，把该值填入 /setup 页面。没有这个 token 就无法抢占管理员账号。
 
 随后：
 

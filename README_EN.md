@@ -67,7 +67,7 @@ docker compose up -d
 
 Open `http://localhost:8787`. The first visit creates the administrator account — there is no default password.
 
-**First-run initialisation requires a one-time setup token.** When `SEARCH_HUB_SETUP_TOKEN` is unset the server generates `data/setup-token` (mode 0600) and prints it to the log. Run `docker compose logs search-hub | grep "setup token"` or `cat data/setup-token`, then paste it into the setup form. Without it nobody can claim the administrator account. Then:
+**First-run initialisation requires a one-time setup token.** When `SEARCH_HUB_SETUP_TOKEN` is unset the server generates `data/setup-token` (mode 0600) and prints it to the log. Run `docker compose logs search-hub | grep "setup token"` or `docker compose exec search-hub cat /app/data/setup-token`, then paste it into the setup form. Without it nobody can claim the administrator account. Then:
 
 1. **Sources → Add source**. Zero credentials: pick **Hacker News** (official Algolia API, live results) to validate the whole chain. With a key, pick Brave; with a self-hosted instance, pick SearXNG.
 2. **Test** performs a real request and shows the exact error code on failure.
