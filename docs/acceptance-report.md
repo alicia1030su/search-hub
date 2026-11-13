@@ -312,4 +312,4 @@ PASS: MCP carries provider attribution — prv_... vs prv_...
 | AC-15 目录与可用源不混淆 | **PASS** | 标签改为"仅目录 · 未实现"/"无官方接口"；E2E 断言不存在"支持 30 源"文案；README/目录数字统一为 27/5。 |
 | AC-16 模型可选增强 | **PASS（降级/默认关闭）/ BLOCKED（真实厂商质量）** | `model-degradation.test.ts`：三类模型 500 → 200 + `degraded=true` + 基础结果保留；未配置模型时零影响。真实厂商 Key 缺失，"测试按钮真实请求"仅用本地模拟 500 验证失败路径。 |
 
-**结论**：16 条 AC 中 13 条为 PASS，2 条为 BLOCKED（AC-13 无客户端、AC-16 的真实厂商质量），1 条为 PASS/BLOCKED 混合（AC-01/09 的容器部分）。没有任何一条在缺乏证据的情况下标为 PASS。
+**结论**：AC 表共 17 行（含 AC-05b）。**12 行为完全 PASS**（AC-03/04/05/05b/06/07/08/10/11/12/14/15）；**4 行为部分 PASS + 部分 BLOCKED**（AC-01 容器启动、AC-02 Brave/SearXNG、AC-09 容器重启、AC-16 真实厂商质量）；**1 行为 BLOCKED**（AC-13 无真实 Agent 客户端）。没有任何一条在缺乏证据的情况下标为 PASS。
