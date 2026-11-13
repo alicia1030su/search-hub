@@ -287,3 +287,29 @@ PASS: MCP carries provider attribution — prv_... vs prv_...
 - 未实现 MCP SSE 流式、PostgreSQL、Redis 多实例、向量库、多租户。
 - 未实现旧版迁移的 Web UI；该能力仅提供 REST 接口与 curl 流程（见 `docs/legacy-migration.md`）。
 - 未执行 `git push`、打 Tag、创建 Release、改写历史。
+
+## 15. AC-01 ~ AC-16 逐项判定
+
+判定口径：PASS 必须有本轮可复现的命令/测试；BLOCKED 必须写明缺什么；不允许"文档写了"就算通过。
+
+| AC | 判定 | 证据 / 缺口 |
+|---|---|---|
+| AC-01 首次安装与就绪 | **PASS（原生）/ BLOCKED（容器）** | `clean-install.mjs`：全新目录 → install/build/prod/boot → `/api/health` 200、迁移 1 条、匿名 setup 403、token 文件 0600、初始化后删除；未配置源时仪表盘为空状态。**容器启动未验证**（§6）。镜像实际基线是 `node:22-bookworm-slim`，文档已按实际修正。 |
+| AC-02 源添加与自检 | **PASS（HN）/ BLOCKED（Brave、SearXNG）** | HN 自检真实返回 3 条（1685ms）；Brave/SearXNG 无凭证/实例，未测。 |
+| AC-03 多 Key 与掩码 | **PASS** | 响应仅 `…1234`；`leak-scan.mjs` 扫描全部响应；DB 无双 Key 明文。 |
+| AC-04 密钥不泄漏 | **PASS** | `leak-scan.mjs` 18/18：8 类 API 响应、SQLite 三文件（明文/Base64/Base64URL/Hex）、日志全部 0 命中；错误路径亦覆盖。 |
+| AC-05 三级额度 | **PASS** | `key-limits.test.ts`：100 并发峰值恰为 2（断言非 1、非 3）；RPM=10 时第 11 次拒绝；日配额=3 后拒绝；等待者 80ms 内被唤醒；`queue_timeout` 与 `no_available_key` 可区分。 |
+| AC-05b 实验室明细 | **PASS** | E2E 首条用例：每源条数/耗时、去重前后、RRF 排名、失败源均可见；`skipCache` 强制真实调用。 |
+| AC-06 单源故障隔离 | **PASS** | `fault-matrix.test.ts`：超时/401/429/5xx 各 50 次 + 畸形 JSON，成功率 ≥99%，`failedSources` 精确，健康源结果始终存在；全源失败 503。 |
+| AC-07 MCP 双通道 | **PASS** | 官方 client HTTP 20/20、stdio 20/20；REST 关闭后 stdio 调用 `isError=true`（代理证据）；Host/Origin 伪造 403；cookie-only 401。 |
+| AC-08 限流冷却/全冷却 | **PASS** | `scheduler.test.ts` 429 冷却、401 置 invalid、连续 5xx 熔断；全 Key 不可用返回 503 + 明确 code（`no_available_key`），不返回空 200。 |
+| AC-09 重启保留 | **PASS（原生）/ BLOCKED（容器）** | `clean-install.mjs` 与独立实例两次对比：providers、Key 掩码、`searches` 计数完全一致；`SIGTERM` 路径由 `app.close` 关闭 SQLite；容器重启未验证。 |
+| AC-10 去重与 RRF | **PASS** | `fusion.test.ts`：同 URL 不同 utm 合并为 1 条并保留双来源；RRF 与手算 `2/61` 一致、顺序无关。 |
+| AC-11 鉴权与会话 | **PASS** | 未登录 401；错误口令统一 401；Cookie HttpOnly；缺 CSRF 403；Token 撤销后 401；scope 越界 403；仅 `/api/health` 免鉴权。 |
+| AC-12 统计一致性 | **PASS** | `concurrency.test.ts`：100 次搜索后 dashboard `searches ≥ 100`、`currentConcurrency=0`；重启后计数不归零。 |
+| AC-13 Agent Skills | **BLOCKED** | 3 个 `SKILL.md` 结构、元数据、`/api/search` 调用命令均有效；但本机**没有真实 Agent 客户端**（Claude Desktop / Cursor 等）可安装并执行，未做真实客户端调用。REST 侧等价流程已由 `live-search.mjs` 覆盖。 |
+| AC-14 未实现目录不可创建 | **PASS** | `api.test.ts` 直接创建 `planned` 类型 → 4xx + code；UI `canAdd()` 对 planned/unavailable 返回 false；E2E 断言标签。 |
+| AC-15 目录与可用源不混淆 | **PASS** | 标签改为"仅目录 · 未实现"/"无官方接口"；E2E 断言不存在"支持 30 源"文案；README/目录数字统一为 27/5。 |
+| AC-16 模型可选增强 | **PASS（降级/默认关闭）/ BLOCKED（真实厂商质量）** | `model-degradation.test.ts`：三类模型 500 → 200 + `degraded=true` + 基础结果保留；未配置模型时零影响。真实厂商 Key 缺失，"测试按钮真实请求"仅用本地模拟 500 验证失败路径。 |
+
+**结论**：16 条 AC 中 13 条为 PASS，2 条为 BLOCKED（AC-13 无客户端、AC-16 的真实厂商质量），1 条为 PASS/BLOCKED 混合（AC-01/09 的容器部分）。没有任何一条在缺乏证据的情况下标为 PASS。
