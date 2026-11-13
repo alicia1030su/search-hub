@@ -74,7 +74,7 @@ docker compose up -d
 
 随后：
 
-1. **搜索源 → 添加搜索源**。零凭据验证整条链路：选 **Hacker News**（官方 Algolia API，无需 Key，真实返回）。有 Key 时选 Brave；自建了 SearXNG 则填实例地址。
+1. **搜索源 → 添加搜索源**。零凭据验证整条链路：选 **Hacker News**（官方 Algolia API，无需 Key，真实返回）。有 Key 时可选 **Tavily / 博查 Bocha / Brave**；自建了 SearXNG 则填实例地址。四个非 HN 适配器均为 `documented`（无真实联调），详见 [Provider 状态矩阵](./docs/provider-matrix.md)。
 2. **测试** 按钮会发起真实请求；失败会显示具体错误码与原因。
 3. **搜索实验室** 输入查询，勾选搜索源，运行。能看到每个源的耗时、失败原因、去重前后数量、融合排名。
 4. **集成** 创建访问令牌，复制 MCP 配置。
@@ -95,7 +95,7 @@ corepack pnpm start          # 以编译产物运行（生产形态）
 
 每个搜索源可创建多个独立实例（例如 `brave-eu`、`brave-us`），每个实例有自己的地址、Key 池、并发、优先级与调度策略。
 
-- **Key 加密**：AES-256-GCM，主密钥来自 `SEARCH_HUB_ENCRYPTION_KEY` 或自动生成的 `data/master.key`。API 只返回掩码（`…abcd`）。
+- **Key 加密**：AES-256-GCM，主密钥来自 `SEARCH_HUB_ENCRYPTION_KEY` 或自动生成的 `data/master.key`。API 只返回首 4 + 末 4 的掩码（如 `sk-1…abcd`）。
 - **调度策略**：`round_robin` / `random` / `weighted_random` / `least_used` / `failover`。
 - **额度**：每 Key 并发上限 + 每分钟请求数 + 每日配额（可选）；超限返回明确错误，不静默丢请求。
 - **健康状态**：`healthy` / `rate_limited` / `cooldown` / `invalid` / `disabled` / `unknown`，可在 Key 面板单独测试与重置。

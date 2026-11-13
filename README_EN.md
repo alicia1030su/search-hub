@@ -71,7 +71,7 @@ Open `http://localhost:8787`. The first visit creates the administrator account 
 
 **First-run initialisation requires a one-time setup token.** When `SEARCH_HUB_SETUP_TOKEN` is unset the server generates `data/setup-token` (mode 0600) and prints it to the log. Run `docker compose logs search-hub | grep "setup token"` or `docker compose exec search-hub cat /app/data/setup-token`, then paste it into the setup form. Without it nobody can claim the administrator account. Then:
 
-1. **Sources → Add source**. Zero credentials: pick **Hacker News** (official Algolia API, live results) to validate the whole chain. With a key, pick Brave; with a self-hosted instance, pick SearXNG.
+1. **Sources → Add source**. Zero credentials: pick **Hacker News** (official Algolia API, live results) to validate the whole chain. With a key, pick **Tavily / Bocha / Brave**; with a self-hosted instance, pick SearXNG. All four non-HN adapters are `documented` (no live verification); see [the provider matrix](./docs/provider-matrix.md).
 2. **Test** performs a real request and shows the exact error code on failure.
 3. **Search lab**: run a query, inspect per-source latency, failures, dedupe counts, and fused ranks.
 4. **Integrations**: create an access token and copy the MCP configuration.
@@ -91,7 +91,7 @@ Requires Node ≥ 22.12 (`better-sqlite3` 13, Vite 8) and pnpm 12.
 
 Each provider can have multiple independent instances (`brave-eu`, `brave-us`) with their own URL, key pool, concurrency, priority, and strategy.
 
-- **Encryption**: AES-256-GCM; the master key comes from `SEARCH_HUB_ENCRYPTION_KEY` or a generated `data/master.key`. The API only returns a mask (`…abcd`).
+- **Encryption**: AES-256-GCM; the master key comes from `SEARCH_HUB_ENCRYPTION_KEY` or a generated `data/master.key`. The API only returns a first-4 + last-4 mask (for example `sk-1…abcd`).
 - **Strategies**: `round_robin`, `random`, `weighted_random`, `least_used`, `failover`.
 - **Quota**: per-key concurrency + requests per minute + optional daily quota; exceeding it returns an explicit error rather than dropping requests.
 - **Health**: `healthy`, `rate_limited`, `cooldown`, `invalid`, `disabled`, `unknown`; each key can be tested or reset individually.

@@ -43,12 +43,19 @@ The compose file uses the named volume `search-hub-data` mounted at `/app/data`.
 **Back up the database and `master.key` together.** Without the key, stored API keys cannot be decrypted.
 
 ```bash
+# Compose prefixes volume names with the project name (the directory name by
+# default). Resolve it instead of hard-coding "search-hub_...", which breaks
+# when the checkout directory has a different name.
+VOLUME=$(docker volume ls -q \
+  --filter label=com.docker.compose.project="$(basename "$PWD")" \
+  --filter label=com.docker.compose.volume=search-hub-data)
+[ -n "$VOLUME" ] || { echo "volume not found; start the stack once first" >&2; exit 1; }
 # Consistent database snapshot without stopping the service:
 curl -s -b cookies.txt -o backup.db http://127.0.0.1:8787/api/admin/backup
 
 # Or stop, then archive the whole volume including master.key:
 docker compose stop search-hub
-docker run --rm -v search-hub_search-hub-data:/data -v "$PWD":/backup alpine \
+docker run --rm -v "$VOLUME":/data -v "$PWD":/backup alpine \
   tar czf /backup/search-hub-backup-$(date +%F).tgz -C /data .
 docker compose start search-hub
 ```
@@ -130,6 +137,13 @@ That is deliberate: starting older code against a newer schema would read tables
 #### Restore procedure
 
 ```bash
+# Compose prefixes volume names with the project name (the directory name by
+# default). Resolve it instead of hard-coding "search-hub_...", which breaks
+# when the checkout directory has a different name.
+VOLUME=$(docker volume ls -q \
+  --filter label=com.docker.compose.project="$(basename "$PWD")" \
+  --filter label=com.docker.compose.volume=search-hub-data)
+[ -n "$VOLUME" ] || { echo "volume not found; start the stack once first" >&2; exit 1; }
 # 1. Stop the service (or the container).
 docker compose stop search-hub
 
@@ -138,10 +152,10 @@ curl -s -b cookies.txt -H 'content-type: application/octet-stream' \
   --data-binary @backup.db https://search.example.com/api/admin/backup/verify | jq '.ok, .schemaVersion'
 
 # 3. Replace the database and the master key together.
-docker run --rm -v search-hub_search-hub-data:/data -v "$PWD":/backup alpine \
+docker run --rm -v "$VOLUME":/data -v "$PWD":/backup alpine \
   sh -c 'cp /backup/backup.db /data/search-hub.db && rm -f /data/search-hub.db-wal /data/search-hub.db-shm'
 # Copy master.key only if you are restoring onto a host that lost it:
-docker run --rm -v search-hub_search-hub-data:/data -v "$PWD":/backup alpine \
+docker run --rm -v "$VOLUME":/data -v "$PWD":/backup alpine \
   sh -c 'cp /backup/master.key /data/master.key && chmod 600 /data/master.key'
 
 # 4. Start again; migrations for this build run automatically.
