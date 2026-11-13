@@ -12,7 +12,7 @@
 - **模型链路（P1-3）**：Base URL 走同一 SafeFetch、Key 不落响应/导出/备份、维度校验、Rerank 映射、引用过滤、失败降级全部通过；真实厂商联调仍 BLOCKED。
 - **质量验证（P1-2）**：`tests/scripts/search-quality.mjs` 可重复运行，结果写入 [`docs/search-quality-report.md`](./search-quality-report.md) + 同名 JSON；当前只有 HN 一个真实源（8/8 请求成功），en-tech 原始 13→去重 12→返回 10，中文时事与 freshness=week 均为 0 条（HN 垂直索引的预期结果），原始重复率 7.7%、返回行内重复率 0%。报告只给数字、不做 provider 排名，并写明「条数不是质量分」。
 - **Docker（P0-3）**：仍 **BLOCKED**（Engine 无法启动，WSL 被宿主安全策略禁止）；新增 `scripts/docker-verify.sh` 与 `.github/workflows/docker.yml`，10 项验收可在 Linux/CI 一键复现，本机未执行。
-- **测试总数**：Vitest **363** 项（25 文件）、Playwright **5** 项；`typecheck` 与 `lint` 均 0 错误。新增脚本：`backup-restore.mjs`、`search-quality.mjs`、`ac05-concurrency.mjs`、`provider-live.mjs`、`docker-verify.sh`、`ac-matrix.mjs`、`secret-scan.mjs`。
+- **测试总数**：Vitest **366** 项（25 文件）、Playwright **5** 项；`typecheck` 与 `lint` 均 0 错误。新增脚本：`backup-restore.mjs`、`search-quality.mjs`、`ac05-concurrency.mjs`、`provider-live.mjs`、`docker-verify.sh`、`ac-matrix.mjs`、`secret-scan.mjs`。
 - **本轮修复的真实缺陷 10 项**：`::ffff:` 十六进制映射 SSRF 绕过；`blocked` 被误报为 `auth_invalid`；模型 Key 被上游回显后进入数据库与备份；模型 Base URL 只在调用时校验；降级阶段耗时写到 `stats` 而非 `stats.timing`；`/api/health` 泄露代理地址；Key 掩码只有末 4 位；`clean-install.mjs` 未声明变量导致重启段被静默跳过；Dockerfile `chown -R` 使镜像接近翻倍；`prod-deps` 把 dev 依赖带进运行时。
 - **本地提交**：`0182ab2`（未 push、未打 tag、未创建 Release、未改写历史）。
 
