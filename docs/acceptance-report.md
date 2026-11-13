@@ -27,7 +27,7 @@ v0.1.1 在**无 Docker 的本机环境**完成了真实网络搜索链路、干�
 | 可选模型降级 | **PASS** | `model-degradation.test.ts`：rerank/embedding/summary 各自 `degraded=true`，基础结果保留 |
 | 缓存默认关闭且可绕过 | **PASS** | `search-errors.test.ts`；实验室强制 `skipCache` |
 | 旧版迁移（不泄密、不覆盖） | **PASS** | `legacy-migration.test.ts` 4 项 |
-| Web E2E | **PASS** | Playwright 4/4（含 setup token 流程） |
+| Web E2E | **PASS** | Playwright 5/5（含 setup token 与目录未实现标注） |
 | **Docker 镜像构建 / compose 启动 / 容器重启** | **BLOCKED** | 见 §6 |
 | Brave / SearXNG / Tavily / 博查 / 秘塔 真实联调 | **BLOCKED / NOT IMPLEMENTED** | 无凭证/实例；部分主机不可达 |
 | PostgreSQL / Redis 多实例 / 向量库 | **NOT IMPLEMENTED** | 文档与 UI 均标注未实现 |

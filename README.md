@@ -178,7 +178,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 - 单元 + 集成测试 **177 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF、密钥加密与三重泄漏扫描、Provider 映射、模型降级、MCP HTTP/stdio 官方客户端、100 并发搜索、重启持久化。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
-- Playwright 覆盖首次安装、登录、添加源、搜索实验室、主题、设置、集成页。
+- Playwright 覆盖首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注。
 
 **未验证（需要真实凭证或环境）**
 

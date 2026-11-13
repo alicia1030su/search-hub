@@ -113,4 +113,11 @@ test.describe("Search Hub 管理后台端到端", () => {
     await expect(page.locator("body")).toContainText("search_web");
     await expect(page.locator("body")).not.toContainText("sk-");
   });
+
+  test("搜索源目录把未实现项标注清楚且不可创建", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await expect(page.getByText("仅目录 · 未实现").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("支持 30 源", { exact: false })).toHaveCount(0);
+  });
 });

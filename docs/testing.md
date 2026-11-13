@@ -65,6 +65,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 **E2E** — `tests/e2e/admin.spec.ts`
 
 - First run (with setup token) → dashboard empty state → add mock providers → search lab → theme toggle → settings saved → reload retains session.
+- Catalog labels: unimplemented entries show "仅目录 · 未实现" and no "supports 30 sources" claim.
 
 **Standalone scripts** (start their own instance, no external credentials)
 

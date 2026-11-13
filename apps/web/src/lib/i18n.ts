@@ -369,8 +369,8 @@ const zh = {
 
   "implementation.builtin": "已实现",
   "implementation.generic": "声明式适配",
-  "implementation.planned": "规划中",
-  "implementation.unavailable": "不可用",
+  "implementation.planned": "仅目录 · 未实现",
+  "implementation.unavailable": "无官方接口",
 
   "verification.documented": "按文档实现",
   "verification.live_tested": "已联调",
