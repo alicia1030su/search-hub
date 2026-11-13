@@ -20,3 +20,6 @@ Thumbs.db
 .vscode/
 tmp/
 *.tsbuildinfo
+
+# Local agent workspace data
+.workbuddy/
