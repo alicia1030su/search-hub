@@ -48,3 +48,17 @@ export function withTransaction<T>(sqlite: Database.Database, fn: () => T): T {
   const run = sqlite.transaction(fn);
   return run();
 }
+
+/**
+ * Opens an existing SQLite file as-is, without the server pragmas applied by
+ * `createDb` (journal mode, busy timeout, ...).
+ *
+ * Used by snapshot verification: inspecting a backup file must not change the
+ * file's journal mode, and `journal_mode = WAL` on a read-only handle fails.
+ */
+export function openDatabaseFile(
+  file: string,
+  options: { readonly?: boolean } = {},
+): Database.Database {
+  return new Database(file, { readonly: options.readonly ?? false, fileMustExist: true });
+}

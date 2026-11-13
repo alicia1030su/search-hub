@@ -1,4 +1,5 @@
 import { SearchHubError, type EmbeddingResult, type ModelConfig, type SafeFetch } from "@search-hub/shared";
+import { scrubbingFetch } from "./redact.js";
 
 export interface EmbeddingDeps {
   fetch: SafeFetch;
@@ -25,14 +26,15 @@ interface CustomEmbeddingResponse {
  * which prevents mixing incompatible vectors in a later index.
  */
 export function createEmbeddingModel(config: ModelConfig, deps: EmbeddingDeps): EmbeddingModel {
+  const safeDeps: EmbeddingDeps = { ...deps, fetch: scrubbingFetch(deps.fetch, deps.apiKey) };
   return {
     config,
     async embed(texts) {
       if (texts.length === 0) return { vectors: [], modelId: config.modelId, dimensions: config.dimensions ?? 0 };
       const vectors =
         config.providerType === "custom-http"
-          ? await embedCustom(config, deps, texts)
-          : await embedOpenAICompatible(config, deps, texts);
+          ? await embedCustom(config, safeDeps, texts)
+          : await embedOpenAICompatible(config, safeDeps, texts);
 
       const dimension = vectors[0]?.length ?? 0;
       if (dimension === 0) {

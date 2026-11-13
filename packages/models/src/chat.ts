@@ -6,6 +6,7 @@ import {
   type ModelConfig,
   type SafeFetch,
 } from "@search-hub/shared";
+import { scrubbingFetch } from "./redact.js";
 
 export interface ModelDeps {
   fetch: SafeFetch;
@@ -43,6 +44,10 @@ interface GeminiResponse {
  * citation handling so retriever content is always treated as untrusted data.
  */
 export function createChatModel(config: ModelConfig, deps: ModelDeps): ChatModel {
+  // Every error that escapes this adapter is scrubbed of the API key first; a
+  // vendor or proxy that echoes the Authorization header must not turn an error
+  // message into a credential leak.
+  const safeDeps: ModelDeps = { ...deps, fetch: scrubbingFetch(deps.fetch, deps.apiKey) };
   return {
     config,
     async complete(messages, options = {}) {
@@ -53,12 +58,12 @@ export function createChatModel(config: ModelConfig, deps: ModelDeps): ChatModel
         options.maxTokens ?? (typeof params["maxTokens"] === "number" ? params["maxTokens"] : 800);
 
       if (config.providerType === "anthropic") {
-        return callAnthropic(config, deps, messages, { temperature, maxTokens, ...options });
+        return callAnthropic(config, safeDeps, messages, { temperature, maxTokens, ...options });
       }
       if (config.providerType === "gemini") {
-        return callGemini(config, deps, messages, { temperature, maxTokens, ...options });
+        return callGemini(config, safeDeps, messages, { temperature, maxTokens, ...options });
       }
-      return callOpenAICompatible(config, deps, messages, { temperature, maxTokens, ...options });
+      return callOpenAICompatible(config, safeDeps, messages, { temperature, maxTokens, ...options });
     },
   };
 }

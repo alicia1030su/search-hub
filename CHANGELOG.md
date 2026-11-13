@@ -14,6 +14,137 @@ All notable changes to this project are documented here. The format follows
 - Additional verified provider adapters (only after a recorded live test).
 - SSE streaming for summaries and long-running deep research.
 
+## [0.1.2] - 2026-11-13
+
+Security and release-readiness pass. The theme is "prove it or mark it blocked":
+proxy egress gets an explicit trust boundary, database snapshots use the SQLite
+online backup API, and the acceptance matrix is generated from evidence instead
+of being counted by hand.
+
+### Added
+
+- **Outbound proxy support with a default-deny trust model.**
+  `SEARCH_HUB_OUTBOUND_PROXY` / `SEARCH_HUB_OUTBOUND_NO_PROXY` /
+  `SEARCH_HUB_OUTBOUND_PROXY_TRUST` (plus an explicit
+  `SEARCH_HUB_OUTBOUND_PROXY_FROM_ENV` opt-in for conventional
+  `HTTPS_PROXY`/`NO_PROXY`). Only `http://` and `https://` forward proxies
+  are accepted. While the proxy is untrusted (default), loopback, RFC1918,
+  CGNAT, link-local, `.local`/`localhost` and cloud metadata destinations are
+  rejected **before** any proxy request, even if they are on the private host
+  allowlist. Proxy credentials are never logged; `/api/health` exposes only
+  mode/trust, and the full policy is admin-only at `/api/admin/outbound`.
+- **Provider expansion**: Tavily and Bocha adapters implemented strictly from
+  their official docs (official endpoint probed with an invalid key to confirm
+  reachability and the error envelope), plus a re-audit of Brave and SearXNG.
+  All four stay `documented`; Hacker News remains the only `live_tested`
+  provider. Per-vendor language/freshness mapping tables are in
+  `docs/provider-matrix.md`.
+- **Model protocol matrix**: `kind` × `providerType` combinations that cannot
+  work (e.g. `embedding` + `cohere`) are rejected at the edge with
+  `validation_error` instead of failing at request time.
+- **SQLite online backup**: `GET /api/admin/backup` now uses
+  `better-sqlite3` `db.backup()` (Online Backup API), normalises the copy to
+  `journal_mode=DELETE`, runs `PRAGMA integrity_check`, stamps
+  `user_version`, and publishes atomically (a failed or killed backup leaves
+  no file under the final name). Added
+  `POST /api/admin/backup/verify` (raw `.db` upload, 64 MB cap, header +
+  integrity + migration check, temp copy always deleted) and
+  `POST /api/admin/maintenance/checkpoint`.
+- `tests/scripts/backup-restore.mjs`: end-to-end drill — snapshots under
+  concurrent searches, `integrity_check` and ciphertext-only API keys on every
+  download, restore into a fresh directory with `master.key`, newer-schema
+  refusal at boot (exit code + log assertion), and failure handling.
+- `tests/unit/migrate-guard.test.ts` / `tests/integration/backup.test.ts`:
+  migration-version refusal, snapshot consistency under 50 concurrent writes,
+  verify endpoint (valid/newer/foreign/garbage/oversized/unauthenticated).
+- **Newer-schema refusal**: the API refuses to start when `_migrations`
+  contains a migration this build does not ship, instead of silently running
+  older code against a newer database.
+- `scripts/secret-scan.mjs`: working-tree + git-history credential scan with a
+  narrow allowlist for test fixtures; fails the release gate on any hit.
+- `docs/ac-matrix.json` + `scripts/ac-matrix.mjs`: the single source of truth
+  for AC-01…AC-16, exactly 16 rows, one overall status each, with generated
+  counts in `docs/ac-matrix.md`.
+- `tests/scripts/search-quality.mjs`: repeatable quality harness (Chinese
+  current affairs, English tech, exact phrase, recent) reporting per-source
+  counts, valid/unique URLs, duplicate rate, latency and failures without
+  subjective ranking.
+- `docs/provider-matrix.md`, `docs/provider-plugin-guide.md`,
+  `docs/release-checklist.md`, GitHub issue/PR templates.
+
+### Fixed
+
+- **IPv4-mapped IPv6 SSRF bypass**: `http://[::ffff:127.0.0.1]/` and
+  `[::ffff:169.254.169.254]` were not recognised as blocked because the URL
+  parser normalises the host to `::ffff:7f00:1`. The address guard now decodes
+  the hexadecimal mapped form.
+- **Blocked destinations were reported as `auth_invalid`**: a
+  `SearchHubError("blocked")` hit the generic HTTP-status mapper and became a
+  credential error, which could mark a key invalid and mislead operators. The
+  provider HTTP layer now passes `blocked` / `bad_request` / `unsupported`
+  through unchanged.
+- **Database snapshot raced concurrent writers**: replacing
+  `wal_checkpoint + readFile` with the Online Backup API removes the window
+  where a writer could append to the WAL after the checkpoint.
+- Proxy 407/502 errors are mapped to explicit, credential-free messages instead
+  of a generic `network` error.
+- **Model credentials could surface through vendor error bodies.** Gemini sends
+  its key as `x-goog-api-key`, which `SafeFetch`'s header redaction list does not
+  cover, so an upstream (or a proxy in front of it) that echoed that header put
+  the plaintext key into `model_configs.last_test_error` — and therefore into
+  `/api/admin/models`, `/api/admin/backup` snapshots and search
+  `stats.errors[].message`. Every model adapter now scrubs its own key (and the
+  known credential shapes) before an error leaves it, and the model test endpoint
+  scrubs again before persisting. Covered by
+  `tests/integration/model-security.test.ts`.
+- **A model Base URL that can never work is now refused at save time.**
+  Private / reserved / metadata destinations were stored successfully and only
+  failed later as a silently degraded search. `POST /api/admin/models` and
+  `PATCH /api/admin/models/:id` now reject them with `blocked` and an actionable
+  message unless the host is on `settings.security.privateHostAllowlist`; the
+  runtime check is unchanged and still applies per request (and to configs
+  imported through `/api/admin/config/import`).
+- **A degraded model stage lost its timing metric.** `withWarning` wrote
+  `rerankMs` / `embeddingMs` / `summaryMs` onto `stats` instead of
+  `stats.timing`, so the UI, the types and the dashboards always read
+  `undefined` on the failure path. The elapsed time is now recorded where it is
+  read.
+
+### Changed
+
+- All workspace packages and the API version are `0.1.2`.
+- **Unimplemented provider types now return `400 not_implemented`** instead of
+  `501 unsupported`: AC-14 explicitly requires a 4xx with a code, and a 501 is
+  a server error that looks like a bug.
+- **Model key masks are first-4 + last-4** instead of last-4 only, so two keys
+  with the same suffix are distinguishable (AC-03).
+- Provider count is now 7 implemented adapters (Brave, SearXNG, Hacker News,
+  Tavily, Bocha, Generic HTTP, Mock); the catalog stays at 27 entries and the
+  "catalog entry ≠ available adapter" rule is unchanged.
+- `docs/acceptance-report.md` now defers the AC tally to the generated
+  `docs/ac-matrix.md`; the matrix is the only place statuses are counted.
+
+### Known limitations
+
+- **Docker image build / Compose / container restart remain BLOCKED** in this
+  environment: `com.docker.service` cannot be started without administrator
+  rights and `wsl.exe` is blocked by the host security policy. A Linux/CI
+  verification workflow and script are provided; they have not run here.
+- **Tavily / Bocha / Brave / SearXNG are `documented`, not `live_tested`**:
+  no keys or reachable instance were available. Contract tests do not prove a
+  vendor account works.
+- **Proxy mode cannot pin the destination IP**: with an HTTP proxy the proxy
+  resolves the target, so a DNS-rebinding race is theoretically possible unless
+  the operator declares `trusted-networks` and enforces egress control at the
+  proxy.
+- Agent Skills still have no real agent-client execution evidence.
+- **AC-05 elapsed-time budget is PARTIAL**: the invariant parts (per-key peak,
+  RPM window, daily quota, queue timeout) hold, and the scheduler-level budget
+  lands at ratio 0.97–1.06, but the end-to-end 100-request burst measured
+  1.22–1.30 on a loaded host. The claim is not upgraded.
+- **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
+  with `unsupported` (still 501 for genuinely unsupported protocol requests).
+
 ## [0.1.1] - 2026-11-13
 
 Production-readiness pass: the main fixes are the ones that only show up when

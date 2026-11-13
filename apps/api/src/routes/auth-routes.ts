@@ -176,6 +176,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
       const admins = ctx.db.select({ count: sql<number>`count(*)` }).from(adminUsers).all()[0];
       const setupRequired = Number(admins?.count ?? 0) === 0;
       const providers = ctx.providers.providerSummaries();
+      const outbound = ctx.describeOutboundPolicy();
       return {
         status: "ok",
         version: ctx.config.version,
@@ -189,6 +190,16 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         },
         database: { driver: "sqlite", migrations: ctx.migrated.length },
         encryption: { source: ctx.secrets.source },
+        // Anonymous endpoint: only the coarse egress mode. The proxy endpoint,
+        // NO_PROXY entries and residual-risk text are reachable by any
+        // unauthenticated caller, so they live behind admin auth at
+        // /api/admin/outbound; exposing them here would leak internal
+        // topology (proxy host:port) to the network.
+        outbound: {
+          mode: outbound.mode,
+          proxyTrust: outbound.proxyTrust,
+          proxyTrustDeclared: outbound.proxyTrustDeclared,
+        },
       };
     }),
   );

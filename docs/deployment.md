@@ -16,7 +16,19 @@ curl -fsS http://127.0.0.1:8787/api/health
 
 Open `http://<host>:8787` and create the administrator. There is no default account.
 
+Compose-level knobs (all optional): `SEARCH_HUB_HOST_PORT` (host port, default `8787`),
+`SEARCH_HUB_CONTAINER_NAME` (default `search-hub`), `SEARCH_HUB_IMAGE` (use a published
+image instead of a local build), `SEARCH_HUB_MEM_LIMIT` (default `1g`).
+
+The service runs with `cap_drop: [ALL]`, `no-new-privileges`, `init: true`,
+a 30 s stop grace period and json-file log rotation (10 MB × 3). It does not need
+any Linux capability: it binds an unprivileged port and writes only to the volume.
+
 When `SEARCH_HUB_SETUP_TOKEN` is empty, the server generates a one-time token at `/app/data/setup-token` (0600) and prints it to the log. Read it with `docker compose logs search-hub | grep "setup token"` or `docker compose exec search-hub cat /app/data/setup-token`. The file disappears after initialization.
+
+Container-level acceptance (image build, compose stack, restart, persistence,
+resource footprint, crash recovery, vulnerability scan) is covered by
+[`docker-verification.md`](./docker-verification.md) and `scripts/docker-verify.sh`.
 
 ### Data
 
@@ -41,9 +53,104 @@ docker run --rm -v search-hub_search-hub-data:/data -v "$PWD":/backup alpine \
 docker compose start search-hub
 ```
 
-A file-level copy while the service is running must include `search-hub.db`, `search-hub.db-wal` and `search-hub.db-shm`; copying only `.db` loses recent writes (observed during v0.1.1 acceptance: 383 KB of WAL was not in the main file). The API endpoint runs `wal_checkpoint(TRUNCATE)` first, so its output is self-contained.
+A file-level copy while the service is running must include `search-hub.db`, `search-hub.db-wal` and `search-hub.db-shm`; copying only `.db` loses recent writes (observed during v0.1.1 acceptance: 383 KB of WAL was not in the main file). The API endpoint below takes a real snapshot instead — do not rely on a manual `cp` of `.db` while the service is up.
 
 Restore into a fresh volume before starting the container. Migrations run automatically on boot and only add/alter tables; they never drop stored keys.
+
+#### How `GET /api/admin/backup` builds the snapshot
+
+The endpoint uses the **SQLite Online Backup API** (`better-sqlite3`'s `db.backup()`), not a checkpoint followed by a file read. The difference matters:
+
+| Approach | Behaviour with concurrent writes |
+|---|---|
+| `wal_checkpoint(TRUNCATE)` + `readFile` (v0.1.1) | Writers that commit between the checkpoint and the read land in `-wal`; the copied `.db` opens fine but silently misses those transactions |
+| `db.backup()` (SQLite Online Backup API) | Pages are copied inside the source connection's read transactions; writes issued meanwhile are propagated into the copy or restart it — the result is always a valid committed state, never a torn page set |
+| `VACUUM INTO` (fallback) | Same consistency guarantee; used when the native build lacks the backup API. Requires SQLite ≥ 3.27.0 |
+
+After copying, the snapshot is normalised and verified before it is visible to the client:
+
+1. `PRAGMA journal_mode = DELETE` — checkpoints any WAL content into the file so the download is a single self-contained `.db` with no `-wal`/`-shm` sidecars;
+2. `PRAGMA user_version = <applied migration count>` — a cheap version marker for restores;
+3. `PRAGMA integrity_check` on a read-only connection — must return `ok`;
+4. atomic `rename` from `<name>.<random>.tmp` to the final name.
+
+Any failure deletes the temp file and returns a JSON error, so a failed backup never produces a truncated file that looks usable. Response headers:
+
+| Header | Meaning |
+|---|---|
+| `x-search-hub-schema-version` | Newest applied migration, e.g. `0001_init.sql` |
+| `x-search-hub-user-version` | `PRAGMA user_version` of the snapshot |
+| `x-search-hub-snapshot-method` | `sqlite_backup_api` or `vacuum_into` |
+| `x-search-hub-integrity` | Always `ok` (a failed check returns an error instead) |
+
+The snapshot is streamed to the client and deleted from `<data>/snapshots/` once the response finishes. Leftovers from a crashed download are swept on the next successful backup. `master.key` is never included.
+
+#### Verifying a snapshot before restoring
+
+`POST /api/admin/backup/verify` checks a downloaded file without restoring it:
+
+```bash
+# Send the raw file body (64 MB cap)
+curl -s -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/octet-stream' \
+  --data-binary @backup.db \
+  https://search.example.com/api/admin/backup/verify | jq
+```
+
+```json
+{
+  "ok": true,
+  "compatible": true,
+  "integrity": "ok",
+  "isSqliteFile": true,
+  "isSearchHubDatabase": true,
+  "schemaVersion": "0001_init.sql",
+  "userVersion": 1,
+  "migrations": ["0001_init.sql"],
+  "knownMigrations": ["0001_init.sql"],
+  "pendingMigrations": [],
+  "tables": ["admin_users", "api_keys", "provider_instances", "..."],
+  "rowCounts": { "admin_users": 1, "api_keys": 3, "provider_instances": 4, "search_tasks": 412 },
+  "bytes": 438272
+}
+```
+
+A snapshot taken by a **newer** release reports `ok: false, compatible: false, reason: "backup was created by a newer version"` — restoring it with older code is refused. `pendingMigrations` lists migrations the snapshot is missing (an older backup: restore is allowed, they run on boot). A valid SQLite file that is not a Search Hub database (no `_migrations` table) reports `isSearchHubDatabase: false` with a matching `reason`, so an unrelated `.db` is never accepted as a backup.
+
+#### Version compatibility is enforced at startup
+
+`runMigrations` compares `_migrations` against `packages/db/migrations` on every boot. If the database records a migration file this build does not ship, the process **exits with a non-zero code** and logs:
+
+```
+Database schema is newer than this build: 0002_x.sql is applied but not present in .../migrations.
+```
+
+That is deliberate: starting older code against a newer schema would read tables it does not understand. Fix by upgrading the application, not by deleting rows from `_migrations`.
+
+#### Restore procedure
+
+```bash
+# 1. Stop the service (or the container).
+docker compose stop search-hub
+
+# 2. Verify the file you are about to restore.
+curl -s -b cookies.txt -H 'content-type: application/octet-stream' \
+  --data-binary @backup.db https://search.example.com/api/admin/backup/verify | jq '.ok, .schemaVersion'
+
+# 3. Replace the database and the master key together.
+docker run --rm -v search-hub_search-hub-data:/data -v "$PWD":/backup alpine \
+  sh -c 'cp /backup/backup.db /data/search-hub.db && rm -f /data/search-hub.db-wal /data/search-hub.db-shm'
+# Copy master.key only if you are restoring onto a host that lost it:
+docker run --rm -v search-hub_search-hub-data:/data -v "$PWD":/backup alpine \
+  sh -c 'cp /backup/master.key /data/master.key && chmod 600 /data/master.key'
+
+# 4. Start again; migrations for this build run automatically.
+docker compose start search-hub
+```
+
+Without `master.key` (or the same `SEARCH_HUB_ENCRYPTION_KEY`) the restored instance keeps its providers and history, but stored provider/model keys cannot be decrypted and must be re-entered in the UI.
+
+A repeatable end-to-end check of this whole flow — concurrent writes, three downloads, restore into a fresh directory, newer-schema refusal, and failure handling — is `node tests/scripts/backup-restore.mjs`.
 
 ### Upgrade
 
@@ -189,15 +296,20 @@ WantedBy=multi-user.target
 ### Backup and restore
 
 ```bash
-# Consistent snapshot (WAL checkpointed, no -wal/-shm sidecars needed):
+# Consistent snapshot (online backup API, integrity-checked, single self-contained .db):
 curl -s -b cookies.txt -o backup.db https://search.example.com/api/admin/backup
+
+# Verify it before you need it:
+curl -s -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/octet-stream' --data-binary @backup.db \
+  https://search.example.com/api/admin/backup/verify
 
 # Or offline: stop the container, then copy data/search-hub.db and data/master.key.
 ```
 
 `master.key` is **not** included in the API download: without it the restored database cannot decrypt stored provider keys, which is the safe failure mode. Back it up separately (or keep using `SEARCH_HUB_ENCRYPTION_KEY`) and store it outside the web root.
 
-Restore: stop the service, copy `search-hub.db` (and `master.key` or the same env key) into the data directory, start again. Migrations are applied automatically on boot.
+Restore: stop the service, copy `search-hub.db` (and `master.key` or the same env key) into the data directory, start again. Migrations are applied automatically on boot. A database whose schema is *newer* than the running build is refused at startup rather than half-read — see "Backup and restore" above.
 
 ## Environment reference
 
@@ -215,6 +327,28 @@ Restore: stop the service, copy `search-hub.db` (and `master.key` or the same en
 | `SEARCH_HUB_CORS_ORIGINS` | empty | Comma-separated extra origins |
 | `SEARCH_HUB_LOG_LEVEL` | `info` | `fatal`…`trace` |
 | `SEARCH_HUB_STATIC_DIR` | `apps/web/dist` | Pre-built UI location |
+| `SEARCH_HUB_BACKUP_MAX_UPLOAD_BYTES` | `67108864` (64 MB) | Cap for `POST /api/admin/backup/verify` uploads |
+| `SEARCH_HUB_PROXY` | unset | `http(s)://` forward proxy for all provider/model traffic. `socks5://` / `pac+http://` / `file://` are rejected at boot. See `SECURITY.md` “Outbound network and proxy trust boundary”. |
+| `SEARCH_HUB_NO_PROXY` | unset | Bypass list (`NO_PROXY` semantics: `*.example.com`, `host:port`, `10.0.0.0/8`, `*`). Bypassed targets are still SSRF-validated and keep the connect-time guard. |
+| `SEARCH_HUB_PROXY_TRUST` | unset | `untrusted`/`application-only` or `trusted-networks`/`egress-enforced`. Unset keeps the private host allowlist ineffective for proxied hops and flags the undeclared boundary on `/api/health`. |
+| `SEARCH_HUB_PROXY_FROM_ENV` | `false` | `true` also honours ambient `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY`; still requires `SEARCH_HUB_PROXY_TRUST` or boot fails |
+
+### Deploying behind an HTTP proxy
+
+Some networks have no direct egress. Set `SEARCH_HUB_PROXY` to an `http://` or `https://` forward proxy and add the hosts that must not go through it to `SEARCH_HUB_NO_PROXY`.
+
+**What the application still enforces** (every request, every redirect hop, in both modes): http(s) only, no embedded credentials, DNS resolution + CIDR classification (loopback, RFC1918, CGNAT, link-local, multicast, reserved, IPv6 ULA/link-local), cloud metadata addresses always rejected, internal hostnames (`localhost`, `*.local`, `metadata.google.internal`) rejected. Rejected targets never reach the proxy — no `CONNECT` is issued for them.
+
+**What only the proxy can enforce:** which address the tunnel actually dials, whether internal ranges are reachable through it, and its own logging/rate limiting. Because the proxy resolves the destination, the connect-time IP pinning that protects direct connections cannot apply to proxied traffic; a proxy-side DNS rebinding is not detectable by Search Hub.
+
+That is why `SEARCH_HUB_PROXY_TRUST` has no default:
+
+- leave it unset or set `untrusted` / `application-only` — proxied requests are limited to application-validated public targets, the private host allowlist is ignored for them, and `/api/health` reports `proxyTrustDeclared: false`;
+- set `trusted-networks` / `egress-enforced` only after confirming the proxy itself blocks internal egress. Then allowlisted private targets may go through it.
+
+Direct connections (no proxy configured, or a `NO_PROXY` match) keep the connect-time lookup guard, and an allowlisted private host stays reachable that way — that is how a self-hosted SearXNG keeps working when a proxy is configured for public traffic.
+
+`GET /api/admin/outbound` shows the effective policy: redacted proxy endpoint, `NO_PROXY` list and count, whether the private host allowlist is honoured, and a one-line `residualRisk`. Proxy credentials are never logged or returned: the display form is `scheme://host:port`. `/api/health` is anonymous, so it only reports the coarse `mode` / `proxyTrust` / `proxyTrustDeclared` triple.
 
 ## Resource notes
 

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { OutboundProxyInput } from "@search-hub/shared";
 
 /**
  * Repository / install root.
@@ -32,6 +33,15 @@ export interface AppConfig {
   staticDir: string | null;
   migrationsDir: string;
   version: string;
+  /** Hard cap for `POST /api/admin/backup/verify` raw uploads (default 64 MB). */
+  maxBackupUploadBytes: number;
+  /**
+   * Outbound proxy configuration for every provider/model request.
+   * Deployment configuration only: it is intentionally NOT part of the
+   * settings table, so the admin UI, settings export and backups cannot
+   * redirect or disable egress control.
+   */
+  outboundProxy: OutboundProxyInput;
 }
 
 function env(name: string): string | undefined {
@@ -75,6 +85,59 @@ function deriveAllowedHosts(publicBaseUrl: string | null): string[] {
     }
   }
   return [...hosts];
+}
+
+/**
+ * Proxy settings are deployment-controlled on purpose.
+ *
+ * Canonical names: `SEARCH_HUB_PROXY`, `SEARCH_HUB_NO_PROXY`,
+ * `SEARCH_HUB_PROXY_TRUST`. The `SEARCH_HUB_OUTBOUND_*` spellings are accepted
+ * as aliases so an operator who followed an earlier draft of the docs is not
+ * silently left on a direct connection.
+ *
+ * Ambient `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` are ignored
+ * unless `SEARCH_HUB_PROXY_FROM_ENV=true` explicitly opts in, because those
+ * variables are frequently inherited from a shell, CI runner or base image and
+ * would silently reroute every provider request (including API keys) through an
+ * endpoint the operator never chose. Opting in still requires an explicit
+ * `SEARCH_HUB_PROXY_TRUST`, so an inherited proxy can never become "trusted" by
+ * accident.
+ *
+ * Validation happens in `resolveOutboundProxy` (scheme allowlist, port range,
+ * trust level), which the context calls at boot so a bad value fails closed
+ * instead of falling back to a direct connection.
+ */
+function readOutboundProxy(): OutboundProxyInput {
+  const fromEnv = boolEnv("SEARCH_HUB_PROXY_FROM_ENV", boolEnv("SEARCH_HUB_OUTBOUND_PROXY_FROM_ENV", false));
+  const explicit = env("SEARCH_HUB_PROXY") ?? env("SEARCH_HUB_OUTBOUND_PROXY");
+  const conventional = fromEnv
+    ? (env("HTTPS_PROXY") ?? env("HTTP_PROXY") ?? env("ALL_PROXY"))
+    : undefined;
+  const proxy = explicit ?? conventional ?? null;
+  const noProxy =
+    env("SEARCH_HUB_NO_PROXY") ??
+    env("SEARCH_HUB_OUTBOUND_NO_PROXY") ??
+    (fromEnv ? (env("NO_PROXY") ?? env("no_proxy")) : undefined);
+  const proxyTrust =
+    env("SEARCH_HUB_PROXY_TRUST") ?? env("SEARCH_HUB_OUTBOUND_PROXY_TRUST") ?? null;
+
+  // An opt-in to ambient env vars without a declared trust level is exactly the
+  // "undeclared proxy" the design forbids. Fail at boot with an actionable
+  // message rather than running with a silent downgrade.
+  if (!explicit && conventional && !proxyTrust) {
+    throw new Error(
+      "HTTP_PROXY/HTTPS_PROXY was picked up because SEARCH_HUB_PROXY_FROM_ENV=true, but " +
+        "SEARCH_HUB_PROXY_TRUST is not set. Set it (untrusted | trusted-networks) so the " +
+        "egress trust boundary is explicit, or unset SEARCH_HUB_PROXY_FROM_ENV.",
+    );
+  }
+
+  return {
+    proxy,
+    noProxy: noProxy ?? null,
+    proxyTrust,
+    source: !proxy ? "none" : explicit ? "search-hub-env" : "conventional-env",
+  };
 }
 
 export function loadConfig(): AppConfig {
@@ -127,6 +190,13 @@ export function loadConfig(): AppConfig {
     encryptionKey: env("SEARCH_HUB_ENCRYPTION_KEY"),
     staticDir: existsSync(staticDir) ? staticDir : null,
     migrationsDir,
-    version: "0.1.1",
+    version: "0.1.2",
+    maxBackupUploadBytes: Math.min(
+      // Clamp: too small makes verification useless, too large lets one upload
+      // exhaust the temp disk.
+      Math.max(Number(env("SEARCH_HUB_BACKUP_MAX_UPLOAD_BYTES") ?? 64 * 1024 * 1024), 1024 * 1024),
+      1024 * 1024 * 1024,
+    ),
+    outboundProxy: readOutboundProxy(),
   };
 }

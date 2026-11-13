@@ -1,0 +1,354 @@
+{
+  "generatedAt": "2026-11-13T16:53:00.094Z",
+  "target": {
+    "baseUrl": "http://127.0.0.1:8830",
+    "version": "0.1.2",
+    "setupRequired": false
+  },
+  "methodology": {
+    "mode": "rrf",
+    "limit": 10,
+    "skipCache": true,
+    "queries": [
+      {
+        "id": "zh-news",
+        "query": "国内 新能源汽车 出口 最新政策",
+        "freshness": null
+      },
+      {
+        "id": "en-tech",
+        "query": "postgres logical replication lag",
+        "freshness": null
+      },
+      {
+        "id": "exact-term",
+        "query": "\"Content-Security-Policy\" connect-src",
+        "freshness": null
+      },
+      {
+        "id": "fresh",
+        "query": "openai api changelog",
+        "freshness": "week"
+      }
+    ],
+    "perProviderCalls": 1,
+    "fusedCalls": 1,
+    "fusedProviderIds": [
+      "prv_182999b2f81c4fb0a19c"
+    ],
+    "rerankModel": null,
+    "validUrlRule": "matches ^https?:// and hostname is not example.com (or a subdomain of it)",
+    "duplicateRateRule": "returnedDuplicateRate = duplicate URLs among returned rows / returned URLs (0 expected, the engine de-duplicates); rawDuplicateRate = (rawCount - dedupedCount) / rawCount"
+  },
+  "providers": [
+    {
+      "id": "prv_182999b2f81c4fb0a19c",
+      "name": "hn-live",
+      "type": "hackernews",
+      "isMock": false
+    }
+  ],
+  "totals": {
+    "requests": 8,
+    "succeeded": 8,
+    "failed": 0,
+    "failureCodes": {}
+  },
+  "queries": [
+    {
+      "id": "zh-news",
+      "label": "中文时事",
+      "query": "国内 新能源汽车 出口 最新政策",
+      "note": "中文时政查询；对非中文索引的源天然不友好，仅记录数字。",
+      "perProvider": [
+        {
+          "providerId": "prv_182999b2f81c4fb0a19c",
+          "providerName": "hn-live",
+          "providerType": "hackernews",
+          "isMock": false,
+          "httpStatus": 200,
+          "taskStatus": "completed",
+          "requestOk": true,
+          "errorCodes": [],
+          "providerStat": {
+            "ok": true,
+            "resultCount": 0,
+            "latencyMs": 1542,
+            "errorCode": null
+          },
+          "rawCount": 0,
+          "dedupedCount": 0,
+          "fusedCount": 0,
+          "returnedCount": 0,
+          "validUrlCount": 0,
+          "uniqueValidUrlCount": 0,
+          "exampleUrlCount": 0,
+          "returnedDuplicateRate": 0,
+          "rawDuplicateRate": null,
+          "titleCoverage": 0,
+          "attributionCoverage": 0,
+          "serverMs": 1542,
+          "wallMs": 1550,
+          "partial": false,
+          "failedSources": [],
+          "degraded": false,
+          "notes": null,
+          "topUrls": []
+        }
+      ],
+      "fused": {
+        "providerIds": [
+          "prv_182999b2f81c4fb0a19c"
+        ],
+        "httpStatus": 200,
+        "taskStatus": "completed",
+        "requestOk": true,
+        "errorCodes": [],
+        "rawCount": 0,
+        "dedupedCount": 0,
+        "fusedCount": 0,
+        "returnedCount": 0,
+        "validUrlCount": 0,
+        "uniqueValidUrlCount": 0,
+        "exampleUrlCount": 0,
+        "returnedDuplicateRate": 0,
+        "rawDuplicateRate": null,
+        "titleCoverage": 0,
+        "attributionCoverage": 0,
+        "serverMs": 473,
+        "wallMs": 475,
+        "partial": false,
+        "failedSources": [],
+        "degraded": false,
+        "topUrls": []
+      },
+      "rerank": null
+    },
+    {
+      "id": "en-tech",
+      "label": "英文技术",
+      "query": "postgres logical replication lag",
+      "note": "英文技术主题，覆盖面广。",
+      "perProvider": [
+        {
+          "providerId": "prv_182999b2f81c4fb0a19c",
+          "providerName": "hn-live",
+          "providerType": "hackernews",
+          "isMock": false,
+          "httpStatus": 200,
+          "taskStatus": "completed",
+          "requestOk": true,
+          "errorCodes": [],
+          "providerStat": {
+            "ok": true,
+            "resultCount": 13,
+            "latencyMs": 1329,
+            "errorCode": null
+          },
+          "rawCount": 13,
+          "dedupedCount": 12,
+          "fusedCount": 12,
+          "returnedCount": 10,
+          "validUrlCount": 10,
+          "uniqueValidUrlCount": 10,
+          "exampleUrlCount": 0,
+          "returnedDuplicateRate": 0,
+          "rawDuplicateRate": 0.07692307692307693,
+          "titleCoverage": 1,
+          "attributionCoverage": 1,
+          "serverMs": 1331,
+          "wallMs": 1346,
+          "partial": false,
+          "failedSources": [],
+          "degraded": false,
+          "notes": null,
+          "topUrls": [
+            "https://github.com/kuvasz-io/kuvasz-streamer",
+            "https://github.com/pgdogdev/pgdog",
+            "https://xata.io/blog/pgstream-postgres-replication-schema-changes",
+            "https://github.com/mkleczek/pgwrh",
+            "https://github.com/PgOutput2Json/PgFreshCache"
+          ]
+        }
+      ],
+      "fused": {
+        "providerIds": [
+          "prv_182999b2f81c4fb0a19c"
+        ],
+        "httpStatus": 200,
+        "taskStatus": "completed",
+        "requestOk": true,
+        "errorCodes": [],
+        "rawCount": 13,
+        "dedupedCount": 12,
+        "fusedCount": 12,
+        "returnedCount": 10,
+        "validUrlCount": 10,
+        "uniqueValidUrlCount": 10,
+        "exampleUrlCount": 0,
+        "returnedDuplicateRate": 0,
+        "rawDuplicateRate": 0.07692307692307693,
+        "titleCoverage": 1,
+        "attributionCoverage": 1,
+        "serverMs": 1391,
+        "wallMs": 1395,
+        "partial": false,
+        "failedSources": [],
+        "degraded": false,
+        "topUrls": [
+          "https://github.com/kuvasz-io/kuvasz-streamer",
+          "https://github.com/pgdogdev/pgdog",
+          "https://xata.io/blog/pgstream-postgres-replication-schema-changes",
+          "https://github.com/mkleczek/pgwrh",
+          "https://github.com/PgOutput2Json/PgFreshCache"
+        ]
+      },
+      "rerank": null
+    },
+    {
+      "id": "exact-term",
+      "label": "精确关键词",
+      "query": "\"Content-Security-Policy\" connect-src",
+      "note": "带引号的精确短语，用于观察分词/短语匹配行为。",
+      "perProvider": [
+        {
+          "providerId": "prv_182999b2f81c4fb0a19c",
+          "providerName": "hn-live",
+          "providerType": "hackernews",
+          "isMock": false,
+          "httpStatus": 200,
+          "taskStatus": "completed",
+          "requestOk": true,
+          "errorCodes": [],
+          "providerStat": {
+            "ok": true,
+            "resultCount": 2,
+            "latencyMs": 773,
+            "errorCode": null
+          },
+          "rawCount": 2,
+          "dedupedCount": 2,
+          "fusedCount": 2,
+          "returnedCount": 2,
+          "validUrlCount": 2,
+          "uniqueValidUrlCount": 2,
+          "exampleUrlCount": 0,
+          "returnedDuplicateRate": 0,
+          "rawDuplicateRate": 0,
+          "titleCoverage": 1,
+          "attributionCoverage": 1,
+          "serverMs": 774,
+          "wallMs": 776,
+          "partial": false,
+          "failedSources": [],
+          "degraded": false,
+          "notes": null,
+          "topUrls": [
+            "https://news.ycombinator.com/item?id=45064867",
+            "https://news.ycombinator.com/item?id=5365008"
+          ]
+        }
+      ],
+      "fused": {
+        "providerIds": [
+          "prv_182999b2f81c4fb0a19c"
+        ],
+        "httpStatus": 200,
+        "taskStatus": "completed",
+        "requestOk": true,
+        "errorCodes": [],
+        "rawCount": 2,
+        "dedupedCount": 2,
+        "fusedCount": 2,
+        "returnedCount": 2,
+        "validUrlCount": 2,
+        "uniqueValidUrlCount": 2,
+        "exampleUrlCount": 0,
+        "returnedDuplicateRate": 0,
+        "rawDuplicateRate": 0,
+        "titleCoverage": 1,
+        "attributionCoverage": 1,
+        "serverMs": 505,
+        "wallMs": 509,
+        "partial": false,
+        "failedSources": [],
+        "degraded": false,
+        "topUrls": [
+          "https://news.ycombinator.com/item?id=45064867",
+          "https://news.ycombinator.com/item?id=5365008"
+        ]
+      },
+      "rerank": null
+    },
+    {
+      "id": "fresh",
+      "label": "新近内容",
+      "query": "openai api changelog",
+      "freshness": "week",
+      "note": "带 freshness=week，仅近 7 天；不支持时间过滤的源会返回更旧内容。",
+      "perProvider": [
+        {
+          "providerId": "prv_182999b2f81c4fb0a19c",
+          "providerName": "hn-live",
+          "providerType": "hackernews",
+          "isMock": false,
+          "httpStatus": 200,
+          "taskStatus": "completed",
+          "requestOk": true,
+          "errorCodes": [],
+          "providerStat": {
+            "ok": true,
+            "resultCount": 0,
+            "latencyMs": 502,
+            "errorCode": null
+          },
+          "rawCount": 0,
+          "dedupedCount": 0,
+          "fusedCount": 0,
+          "returnedCount": 0,
+          "validUrlCount": 0,
+          "uniqueValidUrlCount": 0,
+          "exampleUrlCount": 0,
+          "returnedDuplicateRate": 0,
+          "rawDuplicateRate": null,
+          "titleCoverage": 0,
+          "attributionCoverage": 0,
+          "serverMs": 503,
+          "wallMs": 509,
+          "partial": false,
+          "failedSources": [],
+          "degraded": false,
+          "notes": null,
+          "topUrls": []
+        }
+      ],
+      "fused": {
+        "providerIds": [
+          "prv_182999b2f81c4fb0a19c"
+        ],
+        "httpStatus": 200,
+        "taskStatus": "completed",
+        "requestOk": true,
+        "errorCodes": [],
+        "rawCount": 0,
+        "dedupedCount": 0,
+        "fusedCount": 0,
+        "returnedCount": 0,
+        "validUrlCount": 0,
+        "uniqueValidUrlCount": 0,
+        "exampleUrlCount": 0,
+        "returnedDuplicateRate": 0,
+        "rawDuplicateRate": null,
+        "titleCoverage": 0,
+        "attributionCoverage": 0,
+        "serverMs": 471,
+        "wallMs": 474,
+        "partial": false,
+        "failedSources": [],
+        "degraded": false,
+        "topUrls": []
+      },
+      "rerank": null
+    }
+  ]
+}

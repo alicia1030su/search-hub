@@ -1,0 +1,389 @@
+[
+  {
+    "id": "AC-01",
+    "title": "首次安装与就绪",
+    "status": "PARTIAL",
+    "summary": "原生路径完整通过：全新目录 install→build→prod-only install→boot，/api/health 200、迁移 1 条、匿名 setup 403、一次性 token 文件创建后删除。容器路径仍未验证。",
+    "evidence": [
+      {
+        "command": "node tests/scripts/clean-install.mjs",
+        "result": "28/28 checks passed（23:02 运行：copy→install→build→prod install→boot health 200→migrations 1→setup token 生成/匿名 403/初始化后删除→真实搜索→重启→备份→恢复）。00:37 起本机到 hn.algolia.com 持续超时，重跑触发脚本新加的 exit 3 INCONCLUSIVE（本地 15/15 通过）"
+      },
+      {
+        "command": "corepack pnpm test:e2e",
+        "result": "5 passed：首次安装需一次性 token、仪表盘空状态、加源、搜索实验室、设置持久化"
+      },
+      {
+        "command": "docker version / docker ps / docker build -t search-hub:qa-probe .",
+        "result": "failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine（daemon 未运行，exit 1）"
+      }
+    ],
+    "gaps": [
+      "容器路径未验证：`compose up → /api/health 200 ≤120s` 从未实测，Docker Engine 在本机不可用",
+      "未实现字面『未就绪』状态徽标；未配置源时仅有空状态文案（「还没有搜索源。先到『搜索源』页面添加一个。」/「当前时间范围内没有搜索记录。」）"
+    ]
+  },
+  {
+    "id": "AC-02",
+    "title": "源添加与连通性自检",
+    "status": "PARTIAL",
+    "summary": "自检链路可用且失败如实报告（Brave 无效令牌 → ok=false，8015ms ≤10s），但 Brave/SearXNG/Tavily/Bocha 均无可用凭证或实例，『返回 OK』从未发生；失败的源仍可保持启用。",
+    "evidence": [
+      {
+        "command": "curl -b cookie -X POST /api/admin/providers/prv_1f83d78497c64725a441/test（Brave + 无效订阅令牌）",
+        "result": "{\"ok\":false,\"latencyMs\":8015,\"message\":\"Network error requesting https://api.search.brave.com/res/v1/web/search?q=search+engine&count=3&offset=0\"}"
+      },
+      {
+        "command": "corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider brave|tavily|bocha",
+        "result": "SKIPPED: no credential → exit 2（三个源全部跳过，未伪造 0 退出）"
+      },
+      {
+        "command": "curl -m 20 -H 'x-subscription-token: invalid-qa-key' https://api.search.brave.com/res/v1/web/search?q=test",
+        "result": "连接超时（curl 28，20s 无响应）——本机到 Brave 主机不可达"
+      },
+      {
+        "command": "curl -m 20 -X POST https://api.tavily.com/search 与 https://api.bochaai.com/v1/web-search（无效 Key）",
+        "result": "两者均 401（<1s），端点在线，仅差真实 Key"
+      },
+      {
+        "command": "POST /api/admin/providers/prv_923f.../test（Brave 无效 Key）→ PATCH {enabled:false} → PATCH {enabled:true}",
+        "result": "自检 ok=false（6069ms），随后仍可把该源重新置为 enabled=true（HTTP 200）——失败自检不阻止启用"
+      }
+    ],
+    "gaps": [
+      "Brave 与 SearXNG 各自返回『OK』的路径从未验证：无 Brave 订阅 Key，且 api.search.brave.com 本机 20s 超时；无自建 SearXNG 实例",
+      "Tavily/Bocha 适配器只有本地契约测试（tests/unit/providers-web-search.test.ts），无真实账号调用记录",
+      "失败自检不阻止源保持启用：创建时 enabled=true，自检失败后源仍 enabled=true（AC 要求「错误 Key 必须失败且该源不可置为启用」）",
+      "自检耗时上界不独立于 provider.timeoutMs：timeoutMs=12000 时 Brave 自检实测 10757ms（>10s），timeoutMs=6000 时 6069ms；AC 要求自检 ≤10s，需要对自检路径单独设上限"
+    ]
+  },
+  {
+    "id": "AC-03",
+    "title": "多 Key 与掩码",
+    "status": "PASS",
+    "summary": "掩码为首 4 + 末 4（如 sk-1…abcd），任何接口/导出/备份均不含完整 Key（三重扫描 0 命中），同后缀 Key 可区分。",
+    "evidence": [
+      {
+        "command": "tests/unit/crypto.test.ts",
+        "result": "hint(\"sk-1234567890abcd\") === \"sk-1…abcd\"；≤12 字符折叠为 ••••"
+      },
+      {
+        "command": "tests/integration/api.test.ts",
+        "result": "3 把 Key 列表仅掩码，导出/查询/SQLite 均无明文"
+      },
+      {
+        "command": "node tests/scripts/leak-scan.mjs",
+        "result": "18/18：8 类响应 + SQLite（明文/Base64/Base64URL/Hex）+ 日志，0 命中"
+      },
+      {
+        "command": "POST /api/admin/providers/<id>/keys 3 次（sk-ALPHA-…-WXYZ / sk-BRAVO-…-2345 / sk-CHARL-…-6789）后 GET .../keys（v0.1.2 实例）",
+        "result": "maskedKey = \"sk-A…WXYZ\" / \"sk-B…2345\" / \"sk-C…6789\"：首 4 + 末 4，3 把 Key 得到 3 个不同掩码，无明文"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-04",
+    "title": "【红线】密钥不泄漏",
+    "status": "PASS",
+    "summary": "响应、SQLite 三文件（明文/Base64/Base64URL/Hex）、日志全部 0 命中；导出接口只暴露 keyLabels。",
+    "evidence": [
+      {
+        "command": "node tests/scripts/leak-scan.mjs",
+        "result": "18/18 checks passed（api/search、admin/config/export、admin/logs、admin/dashboard、setup/status 全部 0 命中；sqlite 403576 bytes 0 命中；日志 0 命中）"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/api.test.ts",
+        "result": "『never returns the plaintext key and stores it encrypted』『exports configuration without secret material』通过；导出仅含 keyLabels"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-05",
+    "title": "【红线】三级额度不被突破（含 AC-05b 实验室明细）",
+    "status": "PARTIAL",
+    "summary": "峰值恰 2、rpm 拒第 11 次、日配额 3、跨 Key 重叠 201–213 对、队列饱和 503+queue_timeout 全部实测通过；但『总耗时 ≈ ⌈100/6⌉×单次延迟 ±20%』只在纯调度器路径明确成立（ratio 0.97–1.06），端到端经 HTTP+SQLite 后为 1225–1245ms，落在两种口径的带宽边界（一种超 2%、一种在带内），故总体 PARTIAL。",
+    "evidence": [
+      {
+        "command": "corepack pnpm exec vitest run tests/unit/key-limits.test.ts tests/unit/scheduler.test.ts",
+        "result": "peakInFlight 恰为 2（断言非 1 非 3）；rpm=10 时第 11 次被拒；dailyQuota=3 后拒绝；queue_timeout 与 no_key 可区分"
+      },
+      {
+        "command": "node --import tsx tests/scripts/ac05-concurrency.mjs --runs 3（纯调度器层面）",
+        "result": "3/3 runs 在带内：elapsed 264/263/264ms vs ⌈100/6⌉×实测 15.93ms=271ms，ratio 0.97；跨 Key 重叠窗 201–209 对；每 Key 峰值 2"
+      },
+      {
+        "command": "node .data/ac05-e2e2.mjs <token> <providerId> http://127.0.0.1:8897（真实 HTTP 端到端，3 Key×maxConcurrency=2、mock 延迟 50ms、timeoutMs=60000、run 4 次）",
+        "result": "100 并发全部 200 且有结果；先测单次中位数 58–60ms，预期 ⌈100/6⌉×=986–1020ms；实测 wall 1203/1228/1328ms，ratio 1.22/1.25/1.30 —— 4 次全部超出 0.8–1.2 带；比串行快 4.5–4.8 倍"
+      },
+      {
+        "command": "10 × 并发 POST /api/search（maxConcurrency=1、3 Key、timeoutMs=3000、provider latency 5s）",
+        "result": "7 × HTTP 503 + failedSources code=queue_timeout，3 × HTTP 503 + code=timeout；无 200 空结果、无静默丢弃"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/concurrency.test.ts",
+        "result": "2 passed：100 并发 HTTP 搜索全部 200、无密钥泄漏、requestCount ≥100、currentConcurrency 归 0"
+      },
+      {
+        "command": "GET /api/search/{task} 与 UI /lab（搜索实验室，HN 真实搜索）",
+        "result": "lab 渲染 rawCount/dedupedCount、每源 latencyMs 与 errorCode、fusionScore 前 10；真实搜索 473–1542ms，满足 5s 内返回"
+      },
+      {
+        "command": "同一实例安静时段复测（cookie 会话，先测单次中位数 62ms 再 burst ×3）",
+        "result": "单次中位 62ms → 预期 ⌈100/6⌉×62=1054ms；实测 1056 / 1138 / 927ms → ratio 1.00 / 1.08 / 0.88，其中两轮在 ±20% 内（第三轮 15×429 是全局 300/min 限流，不计）。结论：该带宽在机器空闲时可满足，但在有并发负载时退化到 1.22–1.30，无法宣称稳定达标 —— 故 AC-05 保持 PARTIAL"
+      }
+    ],
+    "gaps": [
+      "耗时断言在调度器层成立、端到端处于边界：`tests/scripts/ac05-concurrency.mjs --runs 2~3` 得 ratio 0.97–1.06（纯 KeyScheduler，实测 setTimeout 延迟 15.5–15.9ms）；但经 Fastify + SQLite 的端到端 100 并发（3 Key × maxConcurrency=2、mock 单次服务端 59ms / 客户端 63ms）实测 wall 1225–1245ms。若以服务端单次 59ms 为『单次延迟』，预期 1003ms、带宽 802–1204ms，实测超出约 2%；若以客户端单次 63ms 为分母，预期 1071ms、带宽 857–1285ms，实测在带内。结论：不满足『两种口径都在 ±20% 带内』，且样本仅 2 次，故该子项 PARTIAL",
+      "端到端耗时的两次测量都接近阈值，样本量不足判稳（需 ≥5 次、每轮重启实例并预热）；另外 @fastify/rate-limit 为 300 req/min/IP，100 burst 加 15 次预热单调用会触顶返回 429，复测必须使用提高上限或独立的实例",
+      "AC-05b 已并入本条（每源条数/耗时/错误码/去重前后/RRF 分数），不再单列"
+    ]
+  },
+  {
+    "id": "AC-06",
+    "title": "【红线】单源故障不影响整体",
+    "status": "PASS",
+    "summary": "超时/401/429/5xx 各 50 次 + 畸形 JSON，成功率 ≥99%，failedSources 精确且含原因码，健康源结果始终存在；单次请求落在超时预算 + 500ms 内。",
+    "evidence": [
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/fault-matrix.test.ts",
+        "result": "4 类故障各 50 次：成功率 ≥99%；failedSources 恒等于故障源；健康源 results 始终存在；畸形 JSON → bad_request 隔离；全源失败 → 503 + status=failed"
+      },
+      {
+        "command": "单请求超时上界实测（provider timeoutMs=800、failMode=timeout、全局 timeoutMs=5000，v0.1.2 实例）",
+        "result": "HTTP 503，serverTotalMs=817ms，wallMs=903ms，failedSources code=timeout——预算 800+500=1300ms 内"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-07",
+    "title": "MCP 双通道可调用",
+    "status": "PASS",
+    "summary": "HTTP 与 stdio 均可 list tools 并调用搜索，同一 query 的 results[].url/title/source 逐项相等；stdio 是 REST 代理（REST 不可达时调用失败）；非法参数返回可读错误且进程不退出。",
+    "evidence": [
+      {
+        "command": "node tests/scripts/mcp-live.mjs --url http://127.0.0.1:8830 --token sh_xxx",
+        "result": "20/20 checks passed：HTTP 9 tools、stdio 9 tools、search_web 均返回结构化结果、get_search_sources 列出源、空 query → isError=true、parity 5/5 重叠 URL 且 provider 归因一致"
+      },
+      {
+        "command": "REST vs MCP 字段级对照（同一 query \"postgres logical replication lag\", limit 8, v0.1.2 实例）",
+        "result": "restCount=6, mcpCount=6, url/title/source 三项逐条相等（identical=true）"
+      },
+      {
+        "command": "SEARCH_HUB_URL=http://127.0.0.1:9 node packages/mcp/dist/stdio.mjs（关闭 REST 后调用 search_web）",
+        "result": "initialize 正常；tools/call 返回 {\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"error\\\": {\\n    \\\"message\\\": \\\"fetch failed\\\"\\n  }\\n}\"}],\"isError\":true}——证明 stdio 非第二套实现"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/mcp-client.test.ts",
+        "result": "官方 client 通过；非法 Origin → 403；Host 伪造 → 鉴权前 403；仅 cookie 无 Bearer → 401"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-08",
+    "title": "限流冷却与全冷却",
+    "status": "PASS",
+    "summary": "429 按 Retry-After 冷却且状态可见；401 置 invalid 需人工重置；全部 Key 不可用返回 503 + 明确错误码（no_available_key / queue_timeout），不返回空结果。",
+    "evidence": [
+      {
+        "command": "corepack pnpm exec vitest run tests/unit/scheduler.test.ts",
+        "result": "cools a key on 429 and honours Retry-After；marks invalid on 401；opens cooldown after repeated 5xx；returns null when every key is in cooldown"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/search-errors.test.ts",
+        "result": "全源失败 → 503 + status=failed；单源失败 → 200 + partial；provider 无可用 Key → 明确 code；rpm 耗尽后出现 503"
+      },
+      {
+        "command": "10 × 并发 POST /api/search（maxConcurrency=1、1 Key、timeoutMs=3000，v0.1.2 实例实测）",
+        "result": "HTTP 503 ×10：9 次 failedSources code=queue_timeout、1 次 timeout；没有任何 200 空结果"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-09",
+    "title": "【红线】重启后配置保留",
+    "status": "PARTIAL",
+    "summary": "原生进程重启后 providers 逐项相等、迁移版本不变、调用计数不归零、备份恢复可解密；`docker restart` 未执行。",
+    "evidence": [
+      {
+        "command": "node tests/scripts/clean-install.mjs（23:02 运行，修复脚本缺陷后）",
+        "result": "PASS: restart: providers identical — hn-live:hackernews:true；restart: counters preserved (not reset) — 1 -> 1；backup 180224 bytes 不含明文 Key；恢复后登录 200 且可继续真实搜索（28/28）"
+      },
+      {
+        "command": "docker restart search-hub",
+        "result": "BLOCKED：Docker daemon 不可连接（npipe 不存在），命令无法执行"
+      },
+      {
+        "command": "node tests/scripts/clean-install.mjs（00:37 重跑，v0.1.2 工作树）",
+        "result": "exit 3 INCONCLUSIVE：本地 install→build→prod→boot→setup 15/15 全通过，但本机到 hn.algolia.com 超时（curl 15s 无响应），live search/restart/backup/restore 未执行；脚本已改为「网络不可达 → SKIP + exit 3」，不再把网络故障算成代码失败"
+      }
+    ],
+    "gaps": [
+      "AC 明确要求 `docker restart` 后逐项相等；容器路径无法执行（Docker daemon 不可用），SIGTERM flush 只在原生进程上验证过",
+      "00:37 重跑 clean-install 时本机到 hn.algolia.com 15s 超时，restart/backup/restore 段未执行（脚本按设计以 exit 3 报 INCONCLUSIVE，不算通过）",
+      "kill -9（不在承诺内）未测试"
+    ]
+  },
+  {
+    "id": "AC-10",
+    "title": "去重与 RRF 正确性",
+    "status": "PASS",
+    "summary": "同 URL 的 utm/尾斜杠/大小写变体合并为 1 条并保留双来源；固定 fixture 手算 RRF 分一致；打乱输入顺序结果不变。",
+    "evidence": [
+      {
+        "command": "corepack pnpm exec vitest run tests/unit/fusion.test.ts",
+        "result": "15 passed：同 URL 变体合并、近重复标题同域合并、跨域不合并、手算 2/61 一致（容差 1e-6）、输入顺序无关、多源命中加分"
+      },
+      {
+        "command": "node tests/scripts/search-quality.mjs（HN 真实搜索）",
+        "result": "rawCount 13 → dedupedCount 12 → 返回 10；返回行内重复 URL 率 0.0%，原始重复率 7.7%"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-11",
+    "title": "鉴权与会话",
+    "status": "PASS",
+    "summary": "未登录 401、错误口令统一 401、Cookie HttpOnly、缺 CSRF 403、Token 撤销后 401、scope 越界 403、仅 /api/health 免鉴权。",
+    "evidence": [
+      {
+        "command": "curl -D - -X POST /api/auth/login（读取 Set-Cookie）",
+        "result": "set-cookie: sh_session=…; Max-Age=604800; Path=/; HttpOnly; SameSite=Lax"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/api.test.ts tests/integration/security-hardening.test.ts",
+        "result": "rejects a wrong password / rejects unauthenticated admin reads / refuses admin mutations without CSRF / enforces API token scopes / rejects a revoked token / Host 伪造 403 / X-Forwarded-For 未信任时被忽略"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-12",
+    "title": "统计一致性（最终一致）",
+    "status": "PASS",
+    "summary": "请求结束后 5s 内仪表盘的 24h 调用数、每源成功/失败数、每 Key 用量与 DB 聚合完全一致；其余指标即时精确。",
+    "evidence": [
+      {
+        "command": "连续 5 次 POST /api/search 后轮询 GET /api/admin/dashboard?range=24h",
+        "result": "before=60, after=65, delta=5，距最后一次请求 11ms 内一致（≤5000ms）"
+      },
+      {
+        "command": "dashboard vs SQLite 直接对照",
+        "result": "hn-live calls=37/errors=2 ↔ DB events ok=1:35/ok=0:2；qa-slow 29 ↔ 29；brave-badkey 16 ↔ 16（逐源逐字段相等）"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/concurrency.test.ts",
+        "result": "100 次搜索后 dashboard searches ≥100、providers[0].calls ≥100、currentConcurrency=0"
+      },
+      {
+        "command": "dashboard vs SQLite 直接对照（v0.1.2 实例，3 次搜索后立即读）",
+        "result": "totals.searches=53 ↔ DB search_tasks=53；hn-live 40/2、qa-slow 32/32、brave-badkey 19/19 与 DB search_events 逐源相等；currentConcurrency=0；读取延迟 18ms（≤5000ms）"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-13",
+    "title": "Agent Skills 可用",
+    "status": "BLOCKED",
+    "summary": "3 个 SKILL.md 存在、可读取、无 TODO/占位符，接口返回完整内容；但本机没有真实 Agent 客户端，无法完成『被 MCP 客户端加载并执行一次真实搜索』。",
+    "evidence": [
+      {
+        "command": "curl -b cookie /api/admin/skills",
+        "result": "3 skills：search-web 4436 字符、deep-research 4146、research-with-citations 3782，content 全部非空，installPath 正确"
+      },
+      {
+        "command": "grep -rn 'TODO|FIXME|your-org|<placeholder>' packages/skills/*/SKILL.md",
+        "result": "0 命中"
+      }
+    ],
+    "gaps": [
+      "无 Claude Desktop / Cursor 等真实 MCP 客户端可安装并加载 SKILL.md：『被 MCP 客户端成功加载』与『按文档完成一次真实搜索（含 Token 注入）』均未执行",
+      "『失败时排错步骤可定位到具体错误码』只做了文档阅读，未在真实客户端上复现错误码"
+    ]
+  },
+  {
+    "id": "AC-14",
+    "title": "未实现能力不可被当成可用",
+    "status": "PASS",
+    "summary": "UI 标注「仅目录 · 未实现」且创建按钮不可用；直接调创建 API 返回 400 + code=not_implemented（不是 5xx），不静默成功。",
+    "evidence": [
+      {
+        "command": "POST /api/admin/providers {\"type\":\"metaso\"}",
+        "result": "HTTP 400，error.code=not_implemented，details.implementation=planned（v0.1.2 实例实测；v0.1.1 曾返回 501，已修）"
+      },
+      {
+        "command": "tests/integration/api.test.ts + search-errors.test.ts",
+        "result": "planned/未知类型 → 400 + not_implemented（原 501 已修）"
+      },
+      {
+        "command": "corepack pnpm test:e2e",
+        "result": "页面可见「仅目录 · 未实现」，无「支持 30 源」文案"
+      },
+      {
+        "command": "apps/web/src/pages/providers/index.tsx canAdd()",
+        "result": "planned/unavailable → false"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-15",
+    "title": "能力目录与可用源不混淆",
+    "status": "PASS",
+    "summary": "本轮新增 Tavily/Bocha 适配器后，catalog 的 builtin 变为 7 个，与 README/docs 的『已实现适配器（7 类）』『目录共 28 条：7 builtin / 12 planned / 2 unavailable / 7 generic』一致；页面仍标注未实现项且无暗示性文案。",
+    "evidence": [
+      {
+        "command": "grep -c 'implementation: \"builtin\"' packages/providers/src/catalog.ts（及 planned/unavailable/generic）",
+        "result": "builtin=7, planned=12, unavailable=2, generic=7, 合计 28 条；listAdapters() 同为 7（brave/searxng/hackernews/generic-http/mock/tavily/bocha），与 README「已实现适配器（7 类）」「目录共 28 条」一致"
+      },
+      {
+        "command": "corepack pnpm test:e2e（AC-15 用例）",
+        "result": "PASS：`仅目录 · 未实现` 可见；『支持 30 源』文案计数为 0"
+      },
+      {
+        "command": "grep '27 条|5 类|支持 30 源' README.md README_EN.md docs/ apps/web/src",
+        "result": "无遗留旧数字；README 已写『已实现适配器（7 类）』与 28 条目录明细"
+      }
+    ],
+    "gaps": []
+  },
+  {
+    "id": "AC-16",
+    "title": "模型为可选增强，且真实可用、可降级",
+    "status": "PARTIAL",
+    "summary": "降级、默认关闭与『测试按钮发真实请求』已验证（真实 Cohere 403 → ok=false；真实厂商 403 时 200 + degraded=true，基础结果保留）；但无真实厂商 Key 的『配置后可用』、零模型出站断言、注入 findings 暴露三项未达成。",
+    "evidence": [
+      {
+        "command": "curl -b cookie -X POST /api/admin/models/mdl_22af153d0cf14499b882/test（Cohere rerank + 无效 Key，真实网络）",
+        "result": "{\"ok\":false,\"latencyMs\":1619,\"message\":\"Upstream returned HTTP 403: …403 Forbidden\"}——测试按钮确实发出真实请求，错误 Key 返回失败"
+      },
+      {
+        "command": "POST /api/search {mode:\"rerank\", rerank:true}（rerank 模型指向真实 Cohere，无效 Key）",
+        "result": "HTTP 200、status=completed、results=5、rerankApplied=false、degraded=true、errors=[{providerId:\"rerank-model\", code:\"server_error\"}]"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/model-degradation.test.ts",
+        "result": "rerank/embedding/summary 三类各自 degraded=true 且基础结果保留；未配置模型时 mode=basic 结果与无模型时一致（4 passed）"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/unit/models.test.ts",
+        "result": "detectPromptInjection 命中 ignore_instructions / prompt_exfiltration；`[n]` 引用抽取生成 citations[0].url；rewrite 回退原 query"
+      },
+      {
+        "command": "corepack pnpm exec vitest run tests/integration/model-security.test.ts",
+        "result": "14 passed，含 “makes zero model calls for a basic search”（hits.length 前后相等）与 “counts exactly one chat call when summarization is enabled”"
+      }
+    ],
+    "gaps": [
+      "(5) 注入 findings 未在 API 响应暴露：detectPromptInjection 已实现且有单测，但 search.ts 与 pipeline.ts 的 summarizeResults 都没有调用它，SearchSummary 也没有 findings 字段——AC 要求含 ignore previous instructions 的摘要输入被标记且 findings 非空，实际请求中无法观察",
+      "(2) 『配置后可用』未验证：Tavily/Cohere/Jina/OpenAI 均无有效 Key；另测得 Cohere 403、Jina/OpenAI 12s 超时，真实厂商成功路径无法执行",
+      "降级路径的阶段耗时不进 stats.timing：withWarning 把 rerankMs 写到了 stats 顶层（实测 stats.rerankMs=0 且 stats.timing 无 rerankMs），UI/类型都从 stats.timing 读取，降级时该指标恒缺"
+    ]
+  }
+]

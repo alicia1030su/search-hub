@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSafeFetch, type SsrfPolicy } from "../../packages/shared/src/index.js";
+import { createSafeFetch, redactSecrets, type SsrfPolicy } from "../../packages/shared/src/index.js";
 
 let server: Server;
 let port = 0;
@@ -93,5 +93,30 @@ describe("safe-fetch connection guard", () => {
     await expect(safeFetch(`http://127.0.0.1:${port}/json`)).rejects.toMatchObject({
       code: "blocked",
     });
+  });
+});
+
+describe("upstream error redaction", () => {
+  it("removes the exact credential used for the request", () => {
+    const key = "sk-REAL-LOOKING-SECRET-1234567890";
+    const text = redactSecrets(`HTTP 401: invalid key ${key}`, [`Bearer ${key}`]);
+    expect(text).not.toContain(key);
+    expect(text).toContain("[redacted]");
+  });
+
+  it("removes well-known credential shapes even when no header value is passed", () => {
+    const text = redactSecrets(
+      "echo Bearer abcdefghijklmnop sk-abcdefgh12345678 tvly-abcdefgh12345678 sh_abcdefgh12345678",
+    );
+    expect(text).not.toMatch(/abcdefgh/);
+    expect(text).toContain("Bearer [redacted]");
+    expect(text).toContain("sk-[redacted]");
+    expect(text).toContain("tvly-[redacted]");
+    expect(text).toContain("sh_[redacted]");
+  });
+
+  it("does not alter a message with no credential material", () => {
+    const text = "Upstream returned HTTP 429: rate limit exceeded";
+    expect(redactSecrets(text, [undefined, null, "short"])).toBe(text);
   });
 });

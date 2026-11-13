@@ -115,11 +115,15 @@ export class SecretBox {
     }
   }
 
-  /** Stable short hint for the UI: last 4 characters only. */
+  /**
+   * Stable hint for the UI: first 4 + last 4 characters (AC-03).
+   * Never enough to reconstruct the key, but enough for an operator to tell
+   * two keys apart. Short values collapse to a fixed mask.
+   */
   hint(plaintext: string): string {
     const trimmed = plaintext.trim();
-    if (trimmed.length <= 8) return "••••";
-    return `…${trimmed.slice(-4)}`;
+    if (trimmed.length <= 12) return "••••";
+    return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)}`;
   }
 }
 

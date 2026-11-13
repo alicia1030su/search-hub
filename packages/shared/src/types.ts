@@ -351,6 +351,7 @@ export interface ProviderRuntimeSnapshot {
     label: string;
     status: KeyStatus;
     inFlight: number;
+    peakInFlight: number;
     rpmUsed: number;
     quotaUsedToday: number;
     requestCount: number;

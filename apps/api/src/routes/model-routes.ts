@@ -7,6 +7,7 @@ import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
 import { audit, jsonFor, parseInput } from "../http.js";
 import { newId } from "../security/crypto.js";
+import { assertModelBaseUrlAllowed } from "../services/models.js";
 
 function actorOf(request: FastifyRequest, ctx: AppContext, mutation = false): Actor {
   return authenticate(
@@ -44,6 +45,8 @@ export function registerModelRoutes(app: FastifyInstance, ctx: AppContext): void
     jsonFor(app, async (request) => {
       const actor = requireAdmin(actorOf(request, ctx, true));
       const input = parseInput(modelCreateSchema, request.body);
+      // Reject a base URL that can never be used before storing it.
+      assertModelBaseUrlAllowed(input.baseUrl, ctx.settings.ssrfPolicy());
       if (input.kind === "embedding" && input.dimensions === null) {
         // Dimension is required for embeddings so incompatible vectors are never stored.
         throw new SearchHubError("validation_error", "Embedding models require an explicit vector dimension");
@@ -95,6 +98,9 @@ export function registerModelRoutes(app: FastifyInstance, ctx: AppContext): void
       const row = ctx.db.select().from(modelConfigs).where(eq(modelConfigs.id, id)).get();
       if (!row) throw new SearchHubError("not_found", "Model not found");
       const input = parseInput(modelUpdateSchema, request.body);
+      if (input.baseUrl !== undefined) {
+        assertModelBaseUrlAllowed(input.baseUrl, ctx.settings.ssrfPolicy());
+      }
 
       const patch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
       if (input.name !== undefined) patch["name"] = input.name;

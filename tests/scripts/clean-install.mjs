@@ -78,6 +78,10 @@ async function api(path, init = {}, session) {
 }
 
 let child;
+// `boot()` keeps its own log buffer and returns it; `main()` must not assign
+// the result to an undeclared module variable (that threw
+// `ReferenceError: log is not defined` after the first restart and silently
+// skipped the restart/backup/restore checks).
 async function boot(dataDir) {
   child = spawn(process.execPath, ["apps/api/dist/server.mjs"], {
     cwd: workspace,
@@ -91,13 +95,13 @@ async function boot(dataDir) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  let log = "";
-  child.stdout.on("data", (chunk) => (log += chunk.toString()));
-  child.stderr.on("data", (chunk) => (log += chunk.toString()));
+  let _log = "";
+  child.stdout.on("data", (chunk) => (_log += chunk.toString()));
+  child.stderr.on("data", (chunk) => (_log += chunk.toString()));
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
       const response = await fetch(`${base}/api/health`);
-      if (response.ok) return log;
+      if (response.ok) return _log;
     } catch {
       // not up yet
     }
@@ -197,7 +201,22 @@ async function main() {
     { method: "POST", body: "{}" },
     session,
   );
-  check("provider: self-test hit the real API", tested.status === 200 && tested.json().ok === true, tested.json().message);
+  const selfTestMessage = String(tested.json().message ?? "");
+  const liveReachable = tested.json().ok === true;
+  const networkProblem = /network error|timeout|enotfound|econn|eai_again|socket hang up/i.test(selfTestMessage);
+  if (!liveReachable && networkProblem) {
+    // Do not record a FAIL: nothing in the code is proven broken, the host just
+    // cannot reach the vendor. Exit 3 keeps CI from reading this as green.
+    console.log(
+      `SKIP: provider: self-test hit the real API — live upstream unreachable from this host (${selfTestMessage})`,
+    );
+    console.log(
+      "\nINCONCLUSIVE: local install/build/boot/setup checks above passed; live search and HN-dependent checks were skipped, not failed.",
+    );
+    process.exitCode = 3;
+    return;
+  }
+  check("provider: self-test hit the real API", liveReachable, selfTestMessage);
 
   const search = await api(
     "/api/search",
@@ -205,9 +224,13 @@ async function main() {
     session,
   );
   const body = search.json();
+  const firstResult = body.results?.[0];
   check("search: live results", search.status === 200 && body.results.length > 0, `${body.results.length} results`);
-  check("search: real absolute URLs", body.results.every((item) => /^https?:\/\//.test(item.url)));
-  console.log(`  first: ${body.results[0].title} | ${body.results[0].url}`);
+  check(
+    "search: real absolute URLs",
+    body.results.length > 0 && body.results.every((item) => /^https?:\/\//.test(item.url)),
+  );
+  console.log(`  first: ${firstResult?.title ?? "(no result)"} | ${firstResult?.url ?? "-"}`);
 
   // Snapshot configuration + counters before the restart.
   const before = {
@@ -216,7 +239,7 @@ async function main() {
   };
 
   await stop();
-  log = await boot(dataDir);
+  await boot(dataDir);
   const after = {
     providers: (await api("/api/admin/providers", {}, session)).json().providers.map((item) => `${item.name}:${item.type}:${item.enabled}`),
     totals: (await api("/api/admin/dashboard?range=24h", {}, session)).json().totals,
@@ -283,5 +306,8 @@ main()
     if (failed.length > 0) {
       console.log(`FAILED: ${failed.map((item) => item.name).join("; ")}`);
       process.exit(1);
+    }
+    if (process.exitCode === 3) {
+      console.log("RESULT: INCONCLUSIVE (live network) — exit 3; local checks passed");
     }
   });

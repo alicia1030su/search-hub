@@ -54,9 +54,9 @@ jobs:
           "
 
   build:
-    name: Build web bundle and container image
+    name: Build web and server bundles
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
     needs: quality
     steps:
       - uses: actions/checkout@v4
@@ -100,29 +100,11 @@ jobs:
           test -f "$RUNNER_TEMP/sh-prod/setup-token"
           kill "$SERVER_PID" || true
 
-      - name: Build container image
-        run: docker build -t search-hub:ci .
-
-      - name: Start container and wait for health
-        run: |
-          docker run -d --name search-hub-ci -p 8787:8787 \
-            -e SEARCH_HUB_ENCRYPTION_KEY=$(openssl rand -hex 32) \
-            search-hub:ci
-          for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8787/api/health > /dev/null; then
-              echo "healthy after ${i} tries"
-              break
-            fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:8787/api/health
-          curl -fsS http://127.0.0.1:8787/api/setup/status | grep -q '"setupTokenRequired":true'
-          test "$(docker exec search-hub-ci id -u)" = "1001"
-          docker exec search-hub-ci test -f /app/data/setup-token
-
-      - name: Stop container
-        if: always()
-        run: docker rm -f search-hub-ci || true
+      # The container image, the compose stack and the 10-item container
+      # acceptance run live in .github/workflows/docker.yml. They are kept out
+      # of this job on purpose: `pnpm install --prod` above prunes the workspace
+      # node_modules, and a container build in the same job would make it
+      # ambiguous whether a failure comes from the host tree or the image.
 
   e2e:
     name: End-to-end (Playwright)

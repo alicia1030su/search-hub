@@ -1,6 +1,7 @@
 import {
   ProviderError,
   getByPath,
+  type Freshness,
   type ProviderContext,
   type ProviderSearchInput,
   type ProviderSearchOutput,
@@ -9,12 +10,48 @@ import {
 } from "@search-hub/shared";
 import { callJson, expectObject, mapItem } from "../http.js";
 
-const TIME_RANGE_MAP: Record<string, string> = {
+/**
+ * SearXNG only accepts `day`, `month`, `year` for `time_range`
+ * (https://docs.searxng.org/dev/search_api.html — documented as
+ * `time_range optional [ day, month, year ]`).
+ *
+ * There is no `week` bucket upstream. `week` is therefore widened to `month`:
+ * a one-month window is a superset of a one-week window, so no result is
+ * dropped, only older pages may appear. Callers that need an exact week window
+ * should not map it here; the alternative (omitting `time_range` for `week`)
+ * would silently return results of any age, which hides the widening entirely.
+ */
+const TIME_RANGE_MAP: Record<Exclude<Freshness, "all">, string> = {
   day: "day",
-  week: "month", // SearXNG only supports day/month/year
+  week: "month",
   month: "month",
   year: "year",
 };
+
+/**
+ * SearXNG's `language` param takes its own codes (e.g. `zh-CN`, `zh-TW`, `en`,
+ * `ja`), upper-casing the region subtag. Lower-cased BCP-47 tags from the API
+ * are normalized here; unknown values are passed through unchanged so a
+ * self-hosted instance with extra engines is not blocked by this table.
+ */
+const LANGUAGE_MAP: Record<string, string> = {
+  "zh-cn": "zh-CN",
+  zh: "zh-CN",
+  "zh-sg": "zh-CN",
+  "zh-tw": "zh-TW",
+  "zh-hk": "zh-TW",
+  "zh-mo": "zh-TW",
+  "pt-br": "pt-BR",
+  "en-us": "en",
+  "en-gb": "en",
+};
+
+function mapLanguage(language?: string): string | undefined {
+  if (!language) return undefined;
+  const key = language.trim().toLowerCase();
+  if (!key) return undefined;
+  return LANGUAGE_MAP[key] ?? language.trim();
+}
 
 /**
  * SearXNG JSON adapter.
@@ -22,6 +59,9 @@ const TIME_RANGE_MAP: Record<string, string> = {
  * usually disable it, so this adapter is intended for a self-hosted instance.
  * If a key is configured it is forwarded as a Bearer token for instances
  * behind an authenticating reverse proxy.
+ *
+ * Verification status: `documented` only. No SearXNG instance was available in
+ * this repository, so this adapter has never been exercised live.
  */
 export const searxngAdapter: SearchProviderAdapter = {
   type: "searxng",
@@ -45,11 +85,10 @@ export const searxngAdapter: SearchProviderAdapter = {
     url.searchParams.set("q", input.query);
     url.searchParams.set("format", "json");
     url.searchParams.set("pageno", "1");
-    const language = input.language ?? ctx.config.language;
+    const language = mapLanguage(input.language ?? ctx.config.language ?? undefined);
     if (language) url.searchParams.set("language", language);
     if (input.freshness && input.freshness !== "all") {
-      const range = TIME_RANGE_MAP[input.freshness];
-      if (range) url.searchParams.set("time_range", range);
+      url.searchParams.set("time_range", TIME_RANGE_MAP[input.freshness]);
     }
     const categories = ctx.config.config["categories"];
     if (typeof categories === "string" && categories) url.searchParams.set("categories", categories);

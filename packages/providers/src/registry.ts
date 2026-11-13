@@ -1,12 +1,16 @@
 import { SearchHubError, type SearchProviderAdapter } from "@search-hub/shared";
+import { bochaAdapter } from "./builtin/bocha.js";
 import { braveAdapter } from "./builtin/brave.js";
 import { genericHttpAdapter } from "./builtin/generic.js";
 import { hackerNewsAdapter } from "./builtin/hackernews.js";
 import { mockAdapter } from "./builtin/mock.js";
 import { searxngAdapter } from "./builtin/searxng.js";
+import { tavilyAdapter } from "./builtin/tavily.js";
 import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
 
 const ADAPTERS: SearchProviderAdapter[] = [
+  tavilyAdapter,
+  bochaAdapter,
   braveAdapter,
   searxngAdapter,
   hackerNewsAdapter,

@@ -10,6 +10,7 @@ export type SearchHubErrorCode =
   | "rate_limited"
   | "setup_required"
   | "already_initialized"
+  | "not_implemented"
   | "internal_error";
 
 const STATUS_BY_CODE: Record<SearchHubErrorCode, number> = {
@@ -27,6 +28,7 @@ const STATUS_BY_CODE: Record<SearchHubErrorCode, number> = {
   bad_request: 400,
   blocked: 403,
   unsupported: 501,
+  not_implemented: 400,
   quota_exceeded: 429,
   auth_invalid: 401,
   no_available_key: 503,

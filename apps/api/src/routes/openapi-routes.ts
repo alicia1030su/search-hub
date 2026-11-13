@@ -144,6 +144,18 @@ export const openApiDocument = {
       get: { tags: ["admin"], summary: "Read settings", responses: { "200": { description: "Settings" } } },
       put: { tags: ["admin"], summary: "Update settings", responses: { "200": { description: "Updated settings" } } },
     },
+    "/api/admin/outbound": {
+      get: {
+        tags: ["admin"],
+        summary: "Outbound egress policy",
+        description:
+          "Read-only view of the deployment's outbound proxy: direct vs proxy, the redacted proxy endpoint, " +
+          "NO_PROXY entry count and the proxy trust level. Configure it with SEARCH_HUB_PROXY / " +
+          "SEARCH_HUB_NO_PROXY / SEARCH_HUB_PROXY_TRUST environment variables; it is intentionally " +
+          "not mutable through the API.",
+        responses: { "200": { description: "Outbound policy description (credential free)" } },
+      },
+    },
     "/api/admin/tokens": {
       get: { tags: ["admin"], summary: "List access tokens", responses: { "200": { description: "Tokens (hashed at rest)" } } },
       post: { tags: ["admin"], summary: "Create an access token (returned once)", responses: { "200": { description: "Token" } } },
@@ -167,8 +179,42 @@ export const openApiDocument = {
       get: {
         tags: ["admin"],
         summary: "Download a consistent SQLite snapshot",
-        description: "Runs wal_checkpoint(TRUNCATE) first. Does not include master.key.",
-        responses: { "200": { description: "SQLite database file" } },
+        description:
+          "Uses the SQLite Online Backup API (falling back to VACUUM INTO) so the copy is transaction-consistent while searches keep writing. " +
+          "The file is normalised to journal_mode=delete, checked with PRAGMA integrity_check, and only then published, so a failed backup never returns a partial file. " +
+          "Never includes master.key. The response carries x-search-hub-schema-version; the temp snapshot is deleted after the download.",
+        responses: {
+          "200": {
+            description: "SQLite database file",
+            headers: {
+              "x-search-hub-schema-version": { description: "Newest applied migration", schema: { type: "string" } },
+              "x-search-hub-user-version": { description: "PRAGMA user_version of the snapshot", schema: { type: "integer" } },
+              "x-search-hub-integrity": { description: "Always `ok` for a returned file", schema: { type: "string" } },
+            },
+          },
+          "500": { description: "Snapshot could not be created or failed integrity_check" },
+        },
+      },
+    },
+    "/api/admin/backup/verify": {
+      post: {
+        tags: ["admin"],
+        summary: "Verify an uploaded .db snapshot without restoring it",
+        description:
+          "Send the file as the raw request body (content-type: application/octet-stream, 64 MB cap). " +
+          "Returns integrity, schema version, applied migrations, tables and row counts. " +
+          "A snapshot containing migrations this build does not ship is reported as ok:false, compatible:false (created by a newer version).",
+        requestBody: {
+          required: true,
+          content: {
+            "application/octet-stream": { schema: { type: "string", format: "binary" } },
+          },
+        },
+        responses: {
+          "200": { description: "Verification report" },
+          "400": { description: "Empty or unreadable body" },
+          "413": { description: "Upload exceeds the size limit" },
+        },
       },
     },
     "/api/admin/maintenance/checkpoint": {

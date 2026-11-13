@@ -183,7 +183,8 @@ describe("configuration hardening", () => {
       headers: { "x-csrf-token": csrf },
       payload: { name: "unknown-type", type: "totally-made-up" },
     });
-    expect(response.statusCode).toBe(501);
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("not_implemented");
     expect(response.json().error.message).toMatch(/unknown provider type/i);
   });
 

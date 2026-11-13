@@ -1,6 +1,18 @@
-# 验收报告 — Search Hub v0.1.1
+# 验收报告 — Search Hub v0.1.1 → v0.1.2
 
 日期：2026-11-13 ｜ 范围：v0.1.1 生产可用性补强与真实环境验收 ｜ 仓库：`C:/Users/TYMO001/WorkBuddy/ai聚合搜索`
+
+## 0. v0.1.2 增量（本轮）
+
+- **验收矩阵**：[`docs/ac-matrix.md`](./ac-matrix.md)（由 `docs/ac-matrix.json` 生成，固定 16 项）
+  — **PASS 10 / PARTIAL 5 / BLOCKED 1**（PARTIAL：AC-01 容器、AC-02 Brave/SearXNG 真实自检、AC-05 端到端耗时带宽、AC-09 容器重启、AC-16 真实厂商；BLOCKED：AC-13 Agent 客户端）。
+- **代理出网（P0-1）**：新增显式代理配置与信任边界；真实代理模式联调通过（HN 查询 6 条真实结果，`mode=proxy`）；本地 mock 代理断言被拒目标**从未到达代理**；修复 IPv4-mapped IPv6（`::ffff:7f00:1`）SSRF 绕过。
+- **SQLite 备份（P0-2）**：改为 Online Backup API + `integrity_check` + 原子发布；并发写入下 57/57 检查通过；新版 schema 启动拒绝生效。
+- **Provider（P1-1）**：Tavily、博查 Bocha 按官方文档实现并加契约测试，保持 `documented`；Brave/SearXNG 仍无真实凭证/实例。
+- **模型链路（P1-3）**：Base URL 走同一 SafeFetch、Key 不落响应/导出/备份、维度校验、Rerank 映射、引用过滤、失败降级全部通过；真实厂商联调仍 BLOCKED。
+- **质量验证（P1-2）**：`tests/scripts/search-quality.mjs` 可重复运行，结果写入 [`docs/search-quality-report.md`](./search-quality-report.md) + 同名 JSON；当前只有 HN 一个真实源（8/8 请求成功），en-tech 原始 13→去重 12→返回 10，中文时事与 freshness=week 均为 0 条（HN 垂直索引的预期结果），原始重复率 7.7%、返回行内重复率 0%。报告只给数字、不做 provider 排名，并写明「条数不是质量分」。
+- **Docker（P0-3）**：仍 **BLOCKED**（Engine 无法启动，WSL 被宿主安全策略禁止）；新增 `scripts/docker-verify.sh` 与 `.github/workflows/docker.yml`，10 项验收可在 Linux/CI 一键复现，本机未执行。
+- **测试总数**：Vitest **363** 项（25 文件，最后一次全量运行实测）、Playwright **5** 项；新增脚本 `backup-restore.mjs`、`search-quality.mjs`、`provider-live.mjs`、`docker-verify.sh`、`ac-matrix.mjs`、`secret-scan.mjs`。
 
 ## 1. 一句话结论
 
@@ -290,26 +302,9 @@ PASS: MCP carries provider attribution — prv_... vs prv_...
 
 ## 15. AC-01 ~ AC-16 逐项判定
 
-判定口径：PASS 必须有本轮可复现的命令/测试；BLOCKED 必须写明缺什么；不允许"文档写了"就算通过。
+**唯一验收矩阵见 [docs/ac-matrix.md](./ac-matrix.md)**，由 `docs/ac-matrix.json` 经 `node scripts/ac-matrix.mjs` 生成。
 
-| AC | 判定 | 证据 / 缺口 |
-|---|---|---|
-| AC-01 首次安装与就绪 | **PASS（原生）/ BLOCKED（容器）** | `clean-install.mjs`：全新目录 → install/build/prod/boot → `/api/health` 200、迁移 1 条、匿名 setup 403、token 文件 0600、初始化后删除；未配置源时仪表盘为空状态。**容器启动未验证**（§6）。镜像实际基线是 `node:22-bookworm-slim`，文档已按实际修正。 |
-| AC-02 源添加与自检 | **PASS（HN）/ BLOCKED（Brave、SearXNG）** | HN 自检真实返回 3 条（1685ms）；Brave/SearXNG 无凭证/实例，未测。 |
-| AC-03 多 Key 与掩码 | **PASS** | 响应仅 `…1234`；`leak-scan.mjs` 扫描全部响应；DB 无双 Key 明文。 |
-| AC-04 密钥不泄漏 | **PASS** | `leak-scan.mjs` 18/18：8 类 API 响应、SQLite 三文件（明文/Base64/Base64URL/Hex）、日志全部 0 命中；错误路径亦覆盖。 |
-| AC-05 三级额度 | **PASS** | `key-limits.test.ts`：100 并发峰值恰为 2（断言非 1、非 3）；RPM=10 时第 11 次拒绝；日配额=3 后拒绝；等待者 80ms 内被唤醒；`queue_timeout` 与 `no_available_key` 可区分。 |
-| AC-05b 实验室明细 | **PASS** | E2E 首条用例：每源条数/耗时、去重前后、RRF 排名、失败源均可见；`skipCache` 强制真实调用。 |
-| AC-06 单源故障隔离 | **PASS** | `fault-matrix.test.ts`：超时/401/429/5xx 各 50 次 + 畸形 JSON，成功率 ≥99%，`failedSources` 精确，健康源结果始终存在；全源失败 503。 |
-| AC-07 MCP 双通道 | **PASS** | 官方 client HTTP 20/20、stdio 20/20；REST 关闭后 stdio 调用 `isError=true`（代理证据）；Host/Origin 伪造 403；cookie-only 401。 |
-| AC-08 限流冷却/全冷却 | **PASS** | `scheduler.test.ts` 429 冷却、401 置 invalid、连续 5xx 熔断；全 Key 不可用返回 503 + 明确 code（`no_available_key`），不返回空 200。 |
-| AC-09 重启保留 | **PASS（原生）/ BLOCKED（容器）** | `clean-install.mjs` 与独立实例两次对比：providers、Key 掩码、`searches` 计数完全一致；`SIGTERM` 路径由 `app.close` 关闭 SQLite；容器重启未验证。 |
-| AC-10 去重与 RRF | **PASS** | `fusion.test.ts`：同 URL 不同 utm 合并为 1 条并保留双来源；RRF 与手算 `2/61` 一致、顺序无关。 |
-| AC-11 鉴权与会话 | **PASS** | 未登录 401；错误口令统一 401；Cookie HttpOnly；缺 CSRF 403；Token 撤销后 401；scope 越界 403；仅 `/api/health` 免鉴权。 |
-| AC-12 统计一致性 | **PASS** | `concurrency.test.ts`：100 次搜索后 dashboard `searches ≥ 100`、`currentConcurrency=0`；重启后计数不归零。 |
-| AC-13 Agent Skills | **BLOCKED** | 3 个 `SKILL.md` 结构、元数据、`/api/search` 调用命令均有效；但本机**没有真实 Agent 客户端**（Claude Desktop / Cursor 等）可安装并执行，未做真实客户端调用。REST 侧等价流程已由 `live-search.mjs` 覆盖。 |
-| AC-14 未实现目录不可创建 | **PASS** | `api.test.ts` 直接创建 `planned` 类型 → 4xx + code；UI `canAdd()` 对 planned/unavailable 返回 false；E2E 断言标签。 |
-| AC-15 目录与可用源不混淆 | **PASS** | 标签改为"仅目录 · 未实现"/"无官方接口"；E2E 断言不存在"支持 30 源"文案；README/目录数字统一为 27/5。 |
-| AC-16 模型可选增强 | **PASS（降级/默认关闭）/ BLOCKED（真实厂商质量）** | `model-degradation.test.ts`：三类模型 500 → 200 + `degraded=true` + 基础结果保留；未配置模型时零影响。真实厂商 Key 缺失，"测试按钮真实请求"仅用本地模拟 500 验证失败路径。 |
+- 固定 16 项（AC-05b 并入 AC-05 的子项），每项只有一个总体状态；
+- PASS 必须有可复现 evidence，PARTIAL/BLOCKED 必须写缺口，脚本会拒绝不合规的条目；
+- 统计数字只保留 §0 一处（PASS 10 / PARTIAL 5 / BLOCKED 1），且由 `tests/unit/ac-matrix.test.ts` 断言与 `docs/ac-matrix.json` 完全一致；一旦矩阵变动而报告未同步，测试会失败。
 
-**结论**：AC 表共 17 行（含 AC-05b）。**12 行为完全 PASS**（AC-03/04/05/05b/06/07/08/10/11/12/14/15）；**4 行为部分 PASS + 部分 BLOCKED**（AC-01 容器启动、AC-02 Brave/SearXNG、AC-09 容器重启、AC-16 真实厂商质量）；**1 行为 BLOCKED**（AC-13 无真实 Agent 客户端）。没有任何一条在缺乏证据的情况下标为 PASS。

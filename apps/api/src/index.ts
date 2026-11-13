@@ -58,4 +58,16 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// Boot failures (invalid proxy configuration, a database written by a newer
+// release, an unwritable data directory) must be a one-line, actionable message
+// instead of an unhandled stack trace. Details stay in the error's code; no
+// secret is printed (proxy URLs are redacted by the config layer).
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "error";
+  console.error(`[search-hub] failed to start (${code}): ${message}`);
+  process.exit(1);
+});

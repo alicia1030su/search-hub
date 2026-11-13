@@ -4,6 +4,12 @@ node_modules
 .data
 data
 dist
+**/dist
+# Local SQLite files and backups must never reach a layer, even by accident.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
 test-results
 playwright-report
 coverage
@@ -16,3 +22,5 @@ coverage
 .shots
 .smoke-*
 tmp
+# Local agent/workspace scratch data (may contain tokens).
+.workbuddy

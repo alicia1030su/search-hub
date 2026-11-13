@@ -74,8 +74,11 @@ describe("SecretBox (AES-256-GCM)", () => {
 
   it("masks secrets for UI display", () => {
     const box = SecretBox.fromKey(Buffer.alloc(32, 1));
-    expect(box.hint("sk-1234567890abcd")).toBe("…abcd");
+    // AC-03: mask shows the first 4 and the last 4 characters.
+    expect(box.hint("sk-1234567890abcd")).toBe("sk-1…abcd");
     expect(box.hint("short")).toBe("••••");
+    expect(box.hint("123456789012")).toBe("••••"); // exactly 12 chars collapses
+    expect(box.hint("sk-1234567890123")).toBe("sk-1…0123");
   });
 });
 

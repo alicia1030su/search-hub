@@ -38,19 +38,21 @@ Search Hub packages that as a deployable service:
 
 ## Supported providers
 
-**Implemented adapters (5 kinds)**
+**Implemented adapters (7 kinds)**
 
 | Type | Auth | Notes | Verification |
 |---|---|---|---|
-| `brave` | API key | Brave Web Search API, `X-Subscription-Token` | Implemented from official docs; **no live key, not integration-tested** |
+| `tavily` | API key | Tavily Search API, `POST /search` + `Authorization: Bearer` | Implemented from official docs; **no live key, not integration-tested** |
+| `bocha` | API key | Bocha Web Search API, `POST /v1/web-search`, strong Chinese web coverage | Implemented from official docs; **no live key, not integration-tested** |
+| `brave` | API key | Brave Web Search API, `X-Subscription-Token` | Implemented from official docs; **no live key and the host is unreachable from this network** |
 | `hackernews` | None | HN Search official hosted API (Algolia); real technical-community results | **Live-tested** (real URLs and timestamps) |
 | `searxng` | Optional | Self-hosted `/search?format=json`; JSON output must be enabled | Implemented from official docs; **no live instance test** |
 | `generic-http` | Configurable | Declarative request + response mapping, covers long-tail APIs | Tested against a local mock server |
 | `mock` | None | Deterministic test source with latency/failure injection | Used by the automated suite |
 
-**Catalogued but not implemented**: DuckDuckGo, Baidu, Metaso, Bocha, AnySearch, Gemini, Grok, MiniMax, MiMo, DeepSeek, Doubao, Tencent Yuanbao, Alibaba Bailian, Baidu Qianfan, StepFun, plus seven private gateway presets. They either have no publicly verifiable official API or need a separate AI-search adapter. The UI labels them “catalog only · not implemented” and **refuses to create them**. Private gateways can be wired through `generic-http`.
+**Catalogued but not implemented**: DuckDuckGo, Baidu, Metaso, AnySearch, Gemini, Grok, MiniMax, MiMo, DeepSeek, Doubao, Tencent Yuanbao, Alibaba Bailian, Baidu Qianfan, StepFun, plus seven private gateway presets. They either have no publicly verifiable official API or need a separate AI-search adapter. The UI labels them “catalog only · not implemented” and **refuses to create them**. Private gateways can be wired through `generic-http`.
 
-> The catalog has 27 entries: 5 usable adapters, 13 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 27 providers.
+> The catalog has 28 entries: 7 usable adapters, 12 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 28 providers. Per-provider live-test gaps: [docs/provider-matrix.md](./docs/provider-matrix.md).
 
 ## Quick start
 
@@ -168,7 +170,8 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- 177 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF, secret encryption with a three-way leak scan, provider mapping, model degradation, MCP over both transports with the official client, 100 concurrent searches, and restart persistence.
+- 363 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- A 16-row acceptance matrix (PASS 10 / PARTIAL 5 / BLOCKED 1) generated from `docs/ac-matrix.json`: [docs/ac-matrix.md](./docs/ac-matrix.md).
 - `tests/scripts/smoke.sh`: setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize.
 - Playwright: first-run, login, add source, search lab, theme, settings, integrations.
 
@@ -197,7 +200,7 @@ apps/web          React + Vite + Tailwind admin UI
 packages/shared   Types, Zod contracts, URL canonicalization, SSRF-safe fetch
 packages/db       Drizzle schema, SQL migrations, SQLite client
 packages/core     KeyScheduler, fan-out, dedupe, RRF, error classification
-packages/providers Provider registry, catalog, Brave/SearXNG/Generic/Mock
+packages/providers Provider registry, catalog, Tavily/Bocha/Brave/SearXNG/Generic/Mock
 packages/models   Chat / embedding / rerank adapters, summary, injection guard
 packages/mcp      MCP v2 server (HTTP + stdio)
 packages/skills   Three SKILL.md packages

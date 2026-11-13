@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security disclosure
+    url: https://github.com/<your-org>/search-hub/security/advisories/new
+    about: Do not open a public issue for exploitable vulnerabilities. Use the private advisory flow described in SECURITY.md.
+  - name: Provider plugin guide
+    url: https://github.com/<your-org>/search-hub/blob/main/docs/provider-plugin-guide.md
+    about: How to add a provider with honest verification status and contract tests.
+  - name: Deployment and backup
+    url: https://github.com/<your-org>/search-hub/blob/main/docs/deployment.md
+    about: Docker Compose, reverse proxy trust boundary, first-run setup token, backup and restore.

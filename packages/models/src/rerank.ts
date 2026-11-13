@@ -5,6 +5,7 @@ import {
   type RerankResponse,
   type SafeFetch,
 } from "@search-hub/shared";
+import { scrubbingFetch } from "./redact.js";
 
 export interface RerankDeps {
   fetch: SafeFetch;
@@ -34,6 +35,7 @@ interface CustomRerankConfig {
  * A declarative custom-http mode covers other self-hosted rerankers.
  */
 export function createRerankModel(config: ModelConfig, deps: RerankDeps): RerankModel {
+  const safeDeps: RerankDeps = { ...deps, fetch: scrubbingFetch(deps.fetch, deps.apiKey) };
   return {
     config,
     async rerank(query, documents, topK) {
@@ -49,8 +51,8 @@ export function createRerankModel(config: ModelConfig, deps: RerankDeps): Rerank
 
       const ranked =
         config.providerType === "custom-http"
-          ? await rerankCustom(config, deps, query, truncated, topK)
-          : await rerankCohereCompatible(config, deps, query, truncated, topK);
+          ? await rerankCustom(config, safeDeps, query, truncated, topK)
+          : await rerankCohereCompatible(config, safeDeps, query, truncated, topK);
 
       const byId = new Map(documents.map((doc, index) => [doc.id, index] as const));
       const results = ranked

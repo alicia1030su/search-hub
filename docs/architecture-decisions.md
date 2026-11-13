@@ -10,7 +10,7 @@
 | D-4 | MCP 依赖 | **`@modelcontextprotocol/server@2.4.0`（v2 线）**：现代 2026-07-28 envelope + 2025-11-25 传统握手；不引入 v1 `sdk` | `tests/integration/mcp.test.ts` |
 | D-5 | 100 并发语义 | **原子占额 + 有界排队**：`acquire` 默认等待 2s、队列上限 **1024**；等待者由 `release()` 唤醒（不是轮询）。池可用但排队超时 → `queue_timeout`；池不可用 → `no_available_key` | `tests/unit/key-limits.test.ts`（峰值恰为 2）、`tests/integration/concurrency.test.ts`（100/100 成功） |
 | D-6 | 崩溃额度恢复 | **启动按当日事件近似校准 + 明示残余风险**，不做同步落库。`SIGTERM` 必须 flush；`kill -9` 不构成硬保证 | `README.md`「已知限制」、`SECURITY.md` |
-| E-1 | 目录源数量 | 目录 **27** 条 = **5** 个 builtin 适配器（Brave / SearXNG / Hacker News / Generic HTTP / Mock）+ 13 planned + 2 unavailable + 7 generic。对外只能说「5 类已实现适配器」 | `packages/providers/src/catalog.ts`、`providers.test.ts` |
+| E-1 | 目录源数量 | 目录 **28** 条 = **7** 个 builtin 适配器（Tavily / Bocha / Brave / SearXNG / Hacker News / Generic HTTP / Mock）+ 12 planned + 2 unavailable + 7 generic。对外只能说「7 类已实现适配器」 | `packages/providers/src/catalog.ts`、`providers.test.ts` |
 | E-3 | 初始化安全 | 未初始化时必须提供一次性 setup token（env 或 `data/setup-token`）；管理员创建在 `BEGIN IMMEDIATE` 事务内二次校验 | `tests/integration/security-hardening.test.ts` |
 | E-4 | Host / 代理边界 | 非健康检查请求校验 Host；`TRUST_PROXY=true` 仅信任回环 | 同上 + `tests/integration/mcp-client.test.ts` |
 | E-5 | 生产运行形态 | 运行时执行 `apps/api/dist/server.mjs`，不需要 tsx/TypeScript；构建顺序 install → build → prod install | `tests/scripts/clean-install.mjs`、`docs/deployment.md` |

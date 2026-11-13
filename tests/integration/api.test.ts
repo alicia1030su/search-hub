@@ -140,9 +140,11 @@ describe("provider and key management", () => {
       method: "POST",
       url: "/api/admin/providers",
       ...adminHeaders(harness),
-      payload: { name: "bocha", type: "bocha" },
+      // `metaso` is still catalog-only (planned); `bocha` gained a real adapter in v0.1.2.
+      payload: { name: "metaso", type: "metaso" },
     });
-    expect(response.statusCode).toBe(501);
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("not_implemented");
     expect(response.json().error.message).toMatch(/not implemented/i);
   });
 

@@ -1,13 +1,17 @@
+import { isIP } from "node:net";
 import { and, eq } from "drizzle-orm";
 import {
   SearchHubError,
+  hostIsAllowlisted,
+  isBlockedAddress,
   type ModelConfig,
   type ModelKind,
   type ModelProviderType,
   type SafeFetch,
+  type SsrfPolicy,
 } from "@search-hub/shared";
 import type { ChatModel as ChatModelImpl } from "@search-hub/models";
-import { createChatModel, createEmbeddingModel, createRerankModel } from "@search-hub/models";
+import { createChatModel, createEmbeddingModel, createRerankModel, scrubSecrets } from "@search-hub/models";
 import type { SearchHubDb } from "@search-hub/db";
 import { modelConfigs } from "@search-hub/db";
 import type { SecretBox } from "../security/crypto.js";
@@ -40,6 +44,82 @@ function parseJson<T>(value: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Cloud metadata endpoints. Never reachable, allowlisted or not. */
+const ALWAYS_BLOCKED_ADDRESSES = new Set(["169.254.169.254", "100.100.100.200", "fd00:ec2::254"]);
+
+/**
+ * Decodes an IPv4-mapped IPv6 literal (`::ffff:a9fe:a9fe`) so the metadata check
+ * sees the same address as the dotted form. The URL parser emits the compressed
+ * hex spelling for `[::ffff:169.254.169.254]`, which no string comparison
+ * against a dotted quad would match.
+ */
+function normalizedHostname(hostname: string): string {
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(hostname);
+  if (!mapped) return hostname;
+  const high = Number.parseInt(mapped[1]!, 16);
+  const low = Number.parseInt(mapped[2]!, 16);
+  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+}
+
+/** Hostnames that are private by construction, so no DNS answer can save them. */
+function isLocalName(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname === "metadata.google.internal"
+  );
+}
+
+/**
+ * Fail-fast check applied when a model configuration is created or updated.
+ *
+ * This is deliberately **static**: it only judges what can be decided without a
+ * DNS lookup (IP literals, localhost-style names, metadata addresses). Hostnames
+ * are still resolved and validated on every request by `SafeFetch`, so a
+ * temporarily unreachable DNS server never blocks an operator from saving a
+ * configuration, and a hostname that later resolves to a private address is
+ * still rejected at call time.
+ *
+ * Storing a configuration that can never work is a footgun: the operator sees a
+ * successful save and a degraded search later. Rejecting it here turns that into
+ * one actionable error message. The decision matches the runtime policy exactly
+ * (private / reserved / metadata are blocked unless allowlisted; public
+ * addresses are untouched), so nothing that used to work is refused.
+ */
+export function assertModelBaseUrlAllowed(baseUrl: string, policy: SsrfPolicy): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new SearchHubError("validation_error", `Model base URL is not a valid URL: ${baseUrl}`);
+  }
+  const rawHostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  // A cloud metadata address is never reachable, allowlisted or not. Check both
+  // the literal and the decoded IPv4-mapped spelling.
+  if (
+    ALWAYS_BLOCKED_ADDRESSES.has(rawHostname) ||
+    ALWAYS_BLOCKED_ADDRESSES.has(normalizedHostname(rawHostname))
+  ) {
+    throw new SearchHubError(
+      "blocked",
+      `Model base URL ${rawHostname} is a cloud metadata endpoint and is never allowed, allowlist or not.`,
+      { details: { host: rawHostname } },
+    );
+  }
+
+  const family = isIP(rawHostname);
+  const privateByNature = family !== 0 ? isBlockedAddress(rawHostname) : isLocalName(rawHostname);
+  if (!privateByNature) return; // public address or a hostname checked per request
+  if (hostIsAllowlisted(rawHostname, policy.allowPrivateHosts)) return;
+  throw new SearchHubError(
+    "blocked",
+    `Model base URL ${rawHostname} is a private or reserved address. ` +
+      "Add it to the private host allowlist in Settings if this is intentional.",
+    { details: { host: rawHostname } },
+  );
 }
 
 /**
@@ -182,7 +262,12 @@ export class ModelService {
         detail: { results: result.results },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // Defence in depth: the adapters already scrub, but a vendor (or a proxy
+      // in front of it) may echo the credential in an error body. This message
+      // is shown in the UI *and* persisted to SQLite, so it is scrubbed again
+      // against the decrypted key before it is stored.
+      const apiKey = this.apiKeyFor(id);
+      const message = scrubSecrets(error instanceof Error ? error.message : String(error), [apiKey]);
       this.recordTest(id, false, message.slice(0, 500));
       return { ok: false, latencyMs: Date.now() - started, message };
     }

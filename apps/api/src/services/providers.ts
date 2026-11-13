@@ -261,6 +261,7 @@ export class ProviderService {
           label: key.label,
           status: key.status,
           inFlight: key.inFlight,
+          peakInFlight: key.peakInFlight,
           rpmUsed: key.rpmUsed,
           quotaUsedToday: key.quotaUsedToday,
           requestCount: key.requestCount,
@@ -385,10 +386,11 @@ export class ProviderService {
     if (!getAdapter(type)) {
       const entry = getCatalogEntry(type);
       throw new SearchHubError(
-        "unsupported",
+        "not_implemented",
         entry
           ? `Provider "${entry.name}" is not implemented yet (${entry.implementation}). ${entry.description}`
           : `Unknown provider type "${type}"`,
+        { details: { type, implementation: entry?.implementation ?? "unknown" } },
       );
     }
   }

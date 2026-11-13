@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
+import { SearchHubError } from "@search-hub/shared";
 
 /**
  * Migrations live next to the source in `packages/db/migrations`.
@@ -48,28 +49,52 @@ const MIGRATIONS_DIR = resolveMigrationsDir(process.env["SEARCH_HUB_MIGRATIONS_D
 export interface MigrationResult {
   applied: string[];
   skipped: string[];
+  /** Migrations recorded in the database that this build does not ship. */
+  unknownToBuild: string[];
+}
+
+/** Migration names already recorded in `_migrations`, ascending. */
+export function appliedMigrations(sqlite: Database.Database): string[] {
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+  );
+  return (
+    sqlite.prepare("SELECT name FROM _migrations ORDER BY name").all() as Array<{ name: string }>
+  ).map((row) => row.name);
 }
 
 /**
  * Applies ordered .sql migrations exactly once. Each migration runs inside a
  * transaction so a failure leaves the schema untouched.
+ *
+ * A database whose `_migrations` table records files this build does not ship
+ * was written by a *newer* release. Starting the older code against it would
+ * half-read a schema it does not understand, so we refuse to boot instead of
+ * silently continuing (fail closed, with an operator-actionable message).
  */
 export function runMigrations(
   sqlite: Database.Database,
   directory: string = MIGRATIONS_DIR,
 ): MigrationResult {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
-  );
-
-  const appliedRows = sqlite
-    .prepare("SELECT name FROM _migrations ORDER BY name")
-    .all() as Array<{ name: string }>;
-  const appliedSet = new Set(appliedRows.map((row) => row.name));
+  const appliedNames = appliedMigrations(sqlite);
+  const appliedSet = new Set(appliedNames);
 
   const files = readdirSync(directory)
     .filter((file) => file.endsWith(".sql"))
     .sort((a, b) => a.localeCompare(b));
+  const knownSet = new Set(files);
+
+  const unknownToBuild = appliedNames.filter((name) => !knownSet.has(name));
+  if (unknownToBuild.length > 0) {
+    throw new SearchHubError(
+      "internal_error",
+      "Database schema is newer than this build: " +
+        `${unknownToBuild.join(", ")} ${unknownToBuild.length === 1 ? "is" : "are"} applied but ` +
+        `not present in ${directory}. This database was written by a newer Search Hub release. ` +
+        "Upgrade the application (or restore a backup taken with this version) before starting.",
+      { details: { unknownToBuild, applied: appliedNames, known: files } },
+    );
+  }
 
   const applied: string[] = [];
   const skipped: string[] = [];
@@ -93,7 +118,16 @@ export function runMigrations(
     }
   }
 
-  return { applied, skipped };
+  // Keep a coarse, cheap-to-read marker in sync so external tools (and our own
+  // backup verification) can compare versions without parsing `_migrations`.
+  // Only write when it changes: this runs on every boot.
+  const expectedUserVersion = files.length;
+  const currentUserVersion = Number(sqlite.pragma("user_version", { simple: true }) ?? 0);
+  if (currentUserVersion !== expectedUserVersion) {
+    sqlite.pragma(`user_version = ${expectedUserVersion}`);
+  }
+
+  return { applied, skipped, unknownToBuild: [] };
 }
 
 export function listMigrations(directory: string = MIGRATIONS_DIR): string[] {

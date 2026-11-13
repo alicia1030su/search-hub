@@ -16,6 +16,7 @@ import { registerMcpRoutes } from "./routes/mcp-routes.js";
 import { registerOpenApiRoutes } from "./routes/openapi-routes.js";
 import { sendError } from "./http.js";
 import { isAllowedHost } from "./security/host.js";
+import { registerBackupUploadParser } from "./services/backup.js";
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -33,6 +34,11 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     timeWindow: "1 minute",
     allowList: (request) => request.url === "/api/health",
   });
+
+  // `POST /api/admin/backup/verify` accepts the raw .db body. A stream parser
+  // keeps the 64 MB snapshot out of memory and lets the handler enforce its own
+  // limit before anything touches the (unpredictable) temp file.
+  registerBackupUploadParser(app, ctx);
 
   // Host header validation for every route (DNS-rebinding hardening).
   // Health checks are exempt so container healthchecks can use any local address.

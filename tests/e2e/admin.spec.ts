@@ -46,7 +46,7 @@ test.describe("Search Hub 管理后台端到端", () => {
 
     // 2. Providers: add two real mock providers through the UI.
     await page.goto("/providers");
-    await expect(page.getByRole("heading", { name: "搜索源" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "搜索源", exact: true })).toBeVisible();
     await addMockProvider(page, "e2e-mock-a", "a");
     await addMockProvider(page, "e2e-mock-b", "b");
 

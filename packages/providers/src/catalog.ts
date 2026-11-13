@@ -24,7 +24,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     docsUrl: "https://api-dashboard.search.brave.com/app/documentation/web-search",
     description: "Brave 官方 Web Search API，需要订阅令牌，支持语言与时间范围过滤。",
     verification: "documented",
-    notes: "适配器按官方 Web Search API 文档实现；未使用真实订阅 Key 联调，标记为待联调。",
+    notes: "适配器按官方 Web Search API 文档实现；无订阅 Key 且 api.search.brave.com 在当前开发网络不可达，未联调。",
   },
   {
     type: "searxng",
@@ -35,7 +35,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     docsUrl: "https://docs.searxng.org/dev/search_api.html",
     description: "自建元搜索实例，通过 /search?format=json 获取结果。需要在实例中启用 JSON 输出。",
     verification: "documented",
-    notes: "必须由用户提供自建实例地址；许多公共实例禁用了 JSON 格式。",
+    notes: "必须由用户提供自建实例地址；许多公共实例禁用了 JSON 格式；当前没有可用实例，未联调。",
   },
   {
     type: "hackernews",
@@ -100,13 +100,32 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     verification: "unverified",
   },
   {
+    type: "tavily",
+    name: "Tavily Search",
+    category: "general",
+    authType: "api_key",
+    implementation: "builtin",
+    defaultBaseUrl: "https://api.tavily.com",
+    docsUrl: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+    description:
+      "Tavily 官方 Search API，面向 RAG/Agent 设计，返回 title/url/content/score/published_date，支持 general/news 主题与时间范围。",
+    verification: "documented",
+    notes:
+      "适配器按官方 Search API 文档实现（POST /search，Authorization: Bearer；include_answer/include_raw_content 保持 false）；无真实 API Key，未联调（无效 Key 探测到 401 detail.error）。",
+  },
+  {
     type: "bocha",
     name: "博查（Bocha）",
     category: "general",
     authType: "api_key",
-    implementation: "planned",
-    description: "目标兼容源。需要核实官方 Web Search API 的鉴权与配额规则后再适配。",
-    verification: "unverified",
+    implementation: "builtin",
+    defaultBaseUrl: "https://api.bochaai.com",
+    docsUrl: "https://bocha-ai.feishu.cn/wiki/RXEOw02rFiwzGSkd9mUcqoeAnNK",
+    description:
+      "博查官方 Web Search API，中文网页覆盖较好，响应兼容 Bing Search 结构（data.webPages.value[]），支持 freshness 时间筛选。",
+    verification: "documented",
+    notes:
+      "适配器按官方 Web Search API 文档实现（POST /v1/web-search，Authorization: Bearer）；官方文档另出现 api.bocha.cn 别名域名，可用 baseUrl 覆盖；无真实 API Key，未联调（探测到 401 Invalid API KEY）。",
   },
   {
     type: "anysearch",

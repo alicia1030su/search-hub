@@ -2,6 +2,15 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Agent, fetch as undiciFetch, type Dispatcher } from "undici";
 import { SearchHubError } from "./errors.js";
+import {
+  getProxyDispatcher,
+  proxyForUrl,
+  resolveOutboundProxy,
+  stripUrlCredentials,
+  type OutboundProxyInput,
+  type ResolvedOutboundProxy,
+  type ResolvedProxy,
+} from "./outbound-proxy.js";
 import type { SafeFetch, SafeFetchResponse } from "./types.js";
 
 export interface SsrfPolicy {
@@ -11,6 +20,18 @@ export interface SsrfPolicy {
   /** Default true so self-hosted SearXNG over http keeps working. */
   allowHttp: boolean;
 }
+
+/** Replaceable DNS resolver, so tests can simulate rebinding deterministically. */
+export type HostResolver = (
+  hostname: string,
+) => Promise<Array<{ address: string; family: number }>>;
+
+export interface SsrfDeps {
+  /** Defaults to the system resolver (`dns.lookup` with `{all:true}`). */
+  resolveHost?: HostResolver;
+}
+
+const systemResolver: HostResolver = (hostname) => dnsLookup(hostname, { all: true, verbatim: true });
 
 export const DEFAULT_SSRF_POLICY: SsrfPolicy = {
   allowPrivateHosts: [],
@@ -59,10 +80,23 @@ function inV4Cidr(ip: string, base: string, bits: number): boolean {
   return (ipInt & mask) === (baseInt & mask);
 }
 
-/** Normalizes IPv4-mapped IPv6 (::ffff:127.0.0.1) to plain IPv4. */
+/**
+ * Normalizes IPv4-mapped IPv6 to plain IPv4 so one blocklist covers both.
+ *
+ * The WHATWG URL parser rewrites `::ffff:127.0.0.1` to the compressed hex form
+ * `::ffff:7f00:1`, so both spellings must be handled — otherwise a URL literal
+ * would slip past the CIDR list while the same address written as IPv4 is
+ * rejected.
+ */
 function normalizeIp(ip: string): string {
   const lower = ip.toLowerCase();
   if (lower.startsWith("::ffff:") && lower.includes(".")) return lower.slice(7);
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower);
+  if (mapped) {
+    const high = Number.parseInt(mapped[1]!, 16);
+    const low = Number.parseInt(mapped[2]!, 16);
+    return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+  }
   return lower;
 }
 
@@ -108,6 +142,7 @@ export interface ValidatedTarget {
 export async function validateOutboundUrl(
   rawUrl: string,
   policy: SsrfPolicy = DEFAULT_SSRF_POLICY,
+  deps: SsrfDeps = {},
 ): Promise<ValidatedTarget> {
   let url: URL;
   try {
@@ -146,9 +181,10 @@ export async function validateOutboundUrl(
   if (literalFamily !== 0) {
     addresses.push(hostname);
   } else {
+    const resolveHost = deps.resolveHost ?? systemResolver;
     let resolved: Array<{ address: string; family: number }>;
     try {
-      resolved = await dnsLookup(hostname, { all: true, verbatim: true });
+      resolved = await resolveHost(hostname);
     } catch (error) {
       throw new SearchHubError("network", `DNS resolution failed for ${hostname}`, {
         cause: error,
@@ -181,21 +217,27 @@ export async function validateOutboundUrl(
 }
 
 /**
- * Connect-time DNS guard. Even if an attacker changes the DNS answer between
- * validation and connection, the socket can only reach an approved address.
+ * Builds the connect-time `lookup` used by the direct agent.
+ *
+ * Node's net.connect calls lookup with `all: true` when autoSelectFamily is
+ * enabled (the default on Node 20+). Returning a single address in that mode
+ * crashes with ERR_INVALID_IP_ADDRESS, so the callback shape follows the
+ * requested option.
+ *
+ * Exported separately so the guard can be unit-tested without an HTTP layer.
  */
-export function createGuardedDispatcher(policy: SsrfPolicy = DEFAULT_SSRF_POLICY): Dispatcher {
-  // Node's net.connect calls lookup with `all: true` when autoSelectFamily is
-  // enabled (the default on Node 20+). Returning a single address in that mode
-  // crashes with ERR_INVALID_IP_ADDRESS, so the callback shape must follow the
-  // requested option.
-  const lookup: typeof import("node:dns").lookup = ((
+export function createGuardedLookup(
+  policy: SsrfPolicy = DEFAULT_SSRF_POLICY,
+  deps: SsrfDeps = {},
+): typeof import("node:dns").lookup {
+  const resolveHost = deps.resolveHost ?? systemResolver;
+  return ((
     hostname: string,
     options: Record<string, unknown>,
     callback: (...args: unknown[]) => void,
   ) => {
     const allowlisted = hostIsAllowlisted(hostname, policy.allowPrivateHosts);
-    dnsLookup(hostname, { all: true, verbatim: true })
+    resolveHost(hostname)
       .then((addresses) => {
         const usable = allowlisted
           ? addresses
@@ -218,10 +260,24 @@ export function createGuardedDispatcher(policy: SsrfPolicy = DEFAULT_SSRF_POLICY
       })
       .catch((error: NodeJS.ErrnoException) => callback(error));
   }) as unknown as typeof import("node:dns").lookup;
+}
 
+/**
+ * Connect-time DNS guard. Even if an attacker changes the DNS answer between
+ * validation and connection, the socket can only reach an approved address.
+ *
+ * This guard is only effective for DIRECT connections. When a proxy dispatcher
+ * is used the destination is resolved by the proxy, so `validateOutboundUrl`
+ * (which runs before every request and every redirect hop) is the only
+ * application-level check. See `outbound-proxy.ts` for the trust boundary.
+ */
+export function createGuardedDispatcher(
+  policy: SsrfPolicy = DEFAULT_SSRF_POLICY,
+  deps: SsrfDeps = {},
+): Dispatcher {
   return new Agent({
     connect: {
-      lookup,
+      lookup: createGuardedLookup(policy, deps),
     },
   });
 }
@@ -232,6 +288,66 @@ export interface SafeFetchOptions {
   maxBytes?: number;
   /** Optional fixed headers, for example User-Agent. */
   defaultHeaders?: Record<string, string>;
+  /** Deployment-level proxy configuration. Omitted means a direct connection. */
+  proxy?: OutboundProxyInput | ResolvedOutboundProxy;
+  /** Injected resolver, used by tests to simulate DNS rebinding. */
+  resolveHost?: HostResolver;
+}
+
+function isResolvedProxy(value: OutboundProxyInput | ResolvedOutboundProxy): value is ResolvedOutboundProxy {
+  return typeof (value as ResolvedOutboundProxy).enabled === "boolean" && "trust" in value;
+}
+
+/** Turns undici proxy failures into stable, credential-free errors. */
+function proxyFailure(
+  proxy: ResolvedProxy,
+  error: unknown,
+  target: string,
+): SearchHubError | null {
+  // undici reports a refused tunnel as `AbortError: Proxy response (407) !==
+  // 200 when HTTP Tunneling`, wrapped in "Request was cancelled" / "fetch
+  // failed". Walk the whole chain instead of only the top-level message.
+  const messages: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; current instanceof Error && depth < 6; depth += 1) {
+    messages.push(`${current.name}: ${current.message}`);
+    current = (current as { cause?: unknown }).cause;
+  }
+  const raw = messages.join(" | ");
+  const statusMatch = /Proxy response \((\d{3})\)/.exec(raw);
+  const status = statusMatch ? Number(statusMatch[1]) : null;
+
+  if (status === 407) {
+    return new SearchHubError(
+      "blocked",
+      `Outbound proxy ${proxy.display} requires authentication (HTTP 407). ` +
+        "Verify the credentials embedded in the proxy URL configured for this deployment.",
+      { status: 502, retryable: false, details: { proxy: proxy.display, proxyStatus: 407 }, cause: error },
+    );
+  }
+  if (status !== null && status >= 400) {
+    return new SearchHubError(
+      "network",
+      `Outbound proxy ${proxy.display} refused to reach ${target} (HTTP ${status}).`,
+      {
+        status: 502,
+        retryable: status >= 500,
+        details: { proxy: proxy.display, proxyStatus: status },
+        cause: error,
+      },
+    );
+  }
+  // A proxy that is not listening at all is a deployment error, not a provider
+  // error; say so instead of blaming the upstream.
+  if (/ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|certificate|CERT_|SSL|TLS/i.test(raw)) {
+    return new SearchHubError(
+      "network",
+      `Could not use outbound proxy ${proxy.display} to reach ${target}. ` +
+        "Check that the proxy is running and that its certificate is trusted.",
+      { status: 502, retryable: true, details: { proxy: proxy.display }, cause: error },
+    );
+  }
+  return null;
 }
 
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
@@ -259,6 +375,29 @@ async function readLimitedBody(response: Response, maxBytes: number): Promise<st
 }
 
 /**
+ * URL-validation policy for a hop that will be carried by the proxy.
+ *
+ * With an untrusted proxy (the default whenever a proxy is configured without
+ * an explicit `proxyTrust` declaration) the private host allowlist is dropped
+ * for proxied hops: the proxy resolves the destination, so an allowlisted
+ * internal host would be a pivot the application cannot verify. Cloud metadata
+ * addresses are rejected unconditionally by `validateOutboundUrl` in both
+ * modes, and loopback / RFC1918 / CGNAT / `.local` / `localhost` targets are
+ * therefore rejected before the proxy sees a single CONNECT.
+ *
+ * Applied per hop, not globally: a NO_PROXY bypass is a direct connection that
+ * keeps the connect-time lookup guard, so it keeps the full policy.
+ */
+export function effectiveValidationPolicy(
+  policy: SsrfPolicy,
+  proxy: ResolvedOutboundProxy,
+): SsrfPolicy {
+  if (!proxy.enabled || proxy.trust === "trusted-networks") return policy;
+  if (policy.allowPrivateHosts.length === 0) return policy;
+  return { ...policy, allowPrivateHosts: [] };
+}
+
+/**
  * JSON fetch with SSRF protection, manual redirects, size caps and timeouts.
  * All outbound provider/model traffic must go through this function.
  */
@@ -266,7 +405,22 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
   const policy = options.policy ?? DEFAULT_SSRF_POLICY;
   const defaultTimeout = options.timeoutMs ?? 15_000;
   const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
-  const dispatcher = createGuardedDispatcher(policy);
+  const proxyConfig: ResolvedOutboundProxy = options.proxy
+    ? isResolvedProxy(options.proxy)
+      ? options.proxy
+      : resolveOutboundProxy(options.proxy)
+    : resolveOutboundProxy({});
+  // Policy for hops the proxy will carry. Direct hops (no proxy, or a NO_PROXY
+  // bypass) are validated with the caller's full policy.
+  const proxiedPolicy = effectiveValidationPolicy(policy, proxyConfig);
+  const resolveHost = options.resolveHost;
+
+  // The guarded agent is always built: NO_PROXY entries route those targets
+  // back through the direct path, which keeps the connect-time lookup guard.
+  const directDispatcher = createGuardedDispatcher(policy, { resolveHost });
+  const proxyDispatcher = proxyConfig.proxy
+    ? getProxyDispatcher(proxyConfig.proxy, { connectTimeoutMs: Math.min(defaultTimeout, 15_000) })
+    : null;
 
   return async function safeFetch<T = unknown>(
     rawUrl: string,
@@ -277,7 +431,11 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
     const limit = init.maxBytes ?? maxBytes;
 
     for (let hop = 0; hop <= policy.maxRedirects; hop += 1) {
-      await validateOutboundUrl(currentUrl, policy);
+      const hopProxy = proxyForUrl(proxyConfig, currentUrl);
+      // Validate with the policy that matches how this hop will actually be
+      // carried. A proxied hop can never satisfy a private-host allowlist.
+      await validateOutboundUrl(currentUrl, hopProxy ? proxiedPolicy : policy, { resolveHost });
+      const dispatcher: Dispatcher = hopProxy && proxyDispatcher ? proxyDispatcher : directDispatcher;
 
       const timeoutController = new AbortController();
       const timer = setTimeout(() => timeoutController.abort(new Error("timeout")), timeoutMs);
@@ -315,10 +473,13 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
           });
         }
         if (error instanceof SearchHubError) throw error;
+        const mapped = hopProxy ? proxyFailure(hopProxy, error, currentUrl) : null;
+        if (mapped) throw mapped;
         throw new SearchHubError("network", `Network error requesting ${currentUrl}`, {
           cause: error,
           retryable: true,
           status: 502,
+          details: hopProxy ? { proxy: hopProxy.display } : undefined,
         });
       } finally {
         clearTimeout(timer);
@@ -337,6 +498,19 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
         continue;
       }
 
+      // A forward proxy answers 407 itself; the target cannot produce it.
+      // Never echo the proxy's body: some proxies reflect the request URI,
+      // which may carry credentials.
+      if (hopProxy && response.status === 407) {
+        await response.body?.cancel();
+        throw new SearchHubError(
+          "blocked",
+          `Outbound proxy ${hopProxy.display} requires authentication (HTTP 407). ` +
+            "Verify the credentials embedded in the proxy URL configured for this deployment.",
+          { status: 502, retryable: false, details: { proxy: hopProxy.display, proxyStatus: 407 } },
+        );
+      }
+
       const body = await readLimitedBody(response, limit);
       const contentType = response.headers.get("content-type") ?? "";
       let data: unknown = body;
@@ -349,13 +523,35 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
       }
 
       if (!response.ok) {
-        const message =
+        const upstreamMessage = redactSecrets(
           typeof data === "object" && data !== null
             ? extractErrorMessage(data)
-            : body.slice(0, 300);
-        throw new SearchHubError("bad_request", `Upstream returned HTTP ${response.status}${message ? `: ${message}` : ""}`, {
+            : body.slice(0, 300),
+          [
+            headers.get("authorization"),
+            headers.get("x-api-key"),
+            headers.get("x-subscription-token"),
+            headers.get("proxy-authorization"),
+          ],
+        );
+        // A proxy error page may echo a request URI that carries userinfo; the
+        // proxy endpoint itself is never sent with credentials, but scrub the
+        // shape anyway so a future refactor cannot leak it.
+        const message = hopProxy ? stripUrlCredentials(upstreamMessage) : upstreamMessage;
+        // A 502/503 through a forward proxy usually means the proxy could not
+        // reach the destination. Say so, so operators do not debug providers.
+        const proxyGateway =
+          hopProxy !== null && (response.status === 502 || response.status === 503);
+        const label = proxyGateway
+          ? `Outbound proxy ${hopProxy.display} could not reach the destination (HTTP ${response.status})`
+          : `Upstream returned HTTP ${response.status}`;
+        throw new SearchHubError("bad_request", `${label}${message ? `: ${message}` : ""}`, {
           status: response.status,
-          details: { upstreamStatus: response.status, url: currentUrl },
+          details: {
+            upstreamStatus: response.status,
+            url: currentUrl,
+            ...(hopProxy ? { proxy: hopProxy.display } : {}),
+          },
           retryable: response.status >= 500 || response.status === 429,
           retryAfterMs: parseRetryAfter(response.headers.get("retry-after")),
         });
@@ -386,6 +582,34 @@ function extractErrorMessage(data: unknown): string {
     }
   }
   return "";
+}
+
+/**
+ * Removes credential material from an upstream-controlled string.
+ *
+ * An upstream may echo request headers (or part of them) in an error body.
+ * That body ends up in error messages, logs and the admin UI, so the exact
+ * header values used for this request are replaced first, followed by
+ * well-known credential shapes so an unrelated token cannot slip through.
+ */
+export function redactSecrets(
+  text: string,
+  secrets: Array<string | null | undefined> = [],
+): string {
+  let output = text;
+  for (const secret of secrets) {
+    if (!secret || secret.length < 8) continue;
+    const bare = secret.replace(/^bearer\s+/i, "");
+    for (const variant of new Set([secret, bare])) {
+      if (variant.length < 8) continue;
+      output = output.split(variant).join("[redacted]");
+    }
+  }
+  return output
+    .replace(/bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
+    .replace(/\btvly-[A-Za-z0-9_-]{8,}/g, "tvly-[redacted]")
+    .replace(/\bsh_[A-Za-z0-9_-]{8,}/g, "sh_[redacted]");
 }
 
 export function parseRetryAfter(header: string | null): number | undefined {

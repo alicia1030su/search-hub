@@ -91,7 +91,32 @@ export const keyUpdateSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-export const modelCreateSchema = z.object({
+/**
+ * Which protocol each model kind can actually speak.
+ *
+ * Accepting `kind=embedding, providerType=cohere` would store a configuration
+ * that can only fail at request time; the API rejects it at the edge instead.
+ */
+const MODEL_PROTOCOLS: Record<string, readonly string[]> = {
+  chat: ["openai-compatible", "anthropic", "gemini", "custom-http"],
+  embedding: ["openai-compatible", "custom-http"],
+  rerank: ["cohere", "jina", "custom-http"],
+};
+
+function modelProtocolIssue(
+  kind: string | undefined,
+  providerType: string | undefined,
+): string | null {
+  if (!kind || !providerType) return null;
+  const allowed = MODEL_PROTOCOLS[kind];
+  if (!allowed) return `Unknown model kind "${kind}"`;
+  if (!allowed.includes(providerType)) {
+    return `Model kind "${kind}" cannot use providerType "${providerType}". Allowed: ${allowed.join(", ")}`;
+  }
+  return null;
+}
+
+const modelCreateShape = z.object({
   kind: z.enum(["chat", "embedding", "rerank"]),
   name: z.string().trim().min(1).max(80),
   providerType: z.enum(["openai-compatible", "anthropic", "gemini", "cohere", "jina", "custom-http"]),
@@ -107,7 +132,21 @@ export const modelCreateSchema = z.object({
   isDefault: z.boolean().default(false),
 });
 
-export const modelUpdateSchema = modelCreateSchema.partial();
+export const modelCreateSchema = modelCreateShape.superRefine((value, ctx) => {
+  const issue = modelProtocolIssue(value.kind, value.providerType);
+  if (issue) {
+    ctx.addIssue({ code: "custom", path: ["providerType"], message: issue });
+  }
+});
+
+export const modelUpdateSchema = modelCreateShape.partial().superRefine((value, ctx) => {
+  const kind = (value as { kind?: string }).kind;
+  const providerType = (value as { providerType?: string }).providerType;
+  const issue = modelProtocolIssue(kind, providerType);
+  if (issue) {
+    ctx.addIssue({ code: "custom", path: ["providerType"], message: issue });
+  }
+});
 
 export const tokenCreateSchema = z.object({
   name: z.string().trim().min(1).max(80),

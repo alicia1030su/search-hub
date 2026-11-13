@@ -2,7 +2,7 @@
 
 **自托管的 AI 聚合搜索基础设施。** 一套服务，聚合多个搜索源，管理多组 API Key，输出统一结果，并通过 REST、MCP 与 Agent Skills 同时对外提供能力。
 
-[English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收报告](./docs/acceptance-report.md)
+[English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
 > 状态：`0.1.1`。核心搜索闭环、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过自动化测试；Hacker News 已用真实网络完成端到端联调。真实第三方搜索 API 的联调状态见下方[验证状态](#验证状态)，未联调的能力不会被描述为“已验证”。
 
@@ -38,19 +38,21 @@ Search Hub 把这些做成一个可部署的服务：
 
 ## 支持的搜索源
 
-**已实现适配器（5 类）**
+**已实现适配器（7 类）**
 
 | 类型 | 鉴权 | 说明 | 验证状态 |
 |---|---|---|---|
-| `brave` | API Key | Brave Web Search API，`X-Subscription-Token` | 按官方文档实现；**无真实 Key，未联调** |
+| `tavily` | API Key | Tavily Search API，`POST /search` + `Authorization: Bearer` | 按官方文档实现；**无真实 Key，未联调** |
+| `bocha` | API Key | 博查 Web Search API，`POST /v1/web-search`，中文网页覆盖较好 | 按官方文档实现；**无真实 Key，未联调** |
+| `brave` | API Key | Brave Web Search API，`X-Subscription-Token` | 按官方文档实现；**无真实 Key，且当前网络不可达，未联调** |
 | `hackernews` | 无 | HN Search 官方托管 API（Algolia），真实可访问的技术社区检索 | **已真实联调**（真实 URL、真实时间戳） |
 | `searxng` | 可选 | 自建实例 `/search?format=json`，需启用 JSON 输出 | 按官方文档实现；**未对真实实例联调** |
 | `generic-http` | 可配置 | 声明式映射 URL/Headers/Body/结果路径，覆盖长尾 API | 本地模拟服务测试通过 |
 | `mock` | 无 | 确定性测试源，支持延迟与故障注入 | 自动化测试使用 |
 
-**目录中列出但尚未实现**：DuckDuckGo、百度、秘塔、博查、AnySearch、Gemini、Grok、MiniMax、MiMo、DeepSeek、豆包、腾讯元宝、百炼、千帆、阶跃星辰，以及 Search Gateway 等 7 个兼容网关。它们要么没有可公开验证的官方接口，要么需要单独的 AI 搜索适配层；界面中标注为“仅目录 · 未实现”，**不能创建**。兼容网关可通过 `generic-http` 自行接入。
+**目录中列出但尚未实现**：DuckDuckGo、百度、秘塔、AnySearch、Gemini、Grok、MiniMax、MiMo、DeepSeek、豆包、腾讯元宝、百炼、千帆、阶跃星辰，以及 Search Gateway 等 7 个兼容网关。它们要么没有可公开验证的官方接口，要么需要单独的 AI 搜索适配层；界面中标注为“仅目录 · 未实现”，**不能创建**。兼容网关可通过 `generic-http` 自行接入。
 
-> 目录共 27 条：5 个可用适配器、13 个 planned、2 个无官方接口、7 个 generic 兼容入口。项目**不声称支持 27 个搜索源**。
+> 目录共 28 条：7 个可用适配器、12 个 planned、2 个无官方接口、7 个 generic 兼容入口。项目**不声称支持 28 个搜索源**。逐源的联调缺口见 [docs/provider-matrix.md](./docs/provider-matrix.md)。
 
 ## 快速开始
 
@@ -165,7 +167,8 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 - 首次初始化必须设置管理员密码，且必须提供一次性 setup token（自动生成并写入 `data/setup-token`，或由 `SEARCH_HUB_SETUP_TOKEN` 指定），防止端口暴露时被他人抢占管理员。
 - 所有非健康检查请求校验 Host 头：接受 IP 字面量、`localhost`、`SEARCH_HUB_PUBLIC_URL` 的主机名与 `SEARCH_HUB_ALLOWED_HOSTS`，阻断 DNS rebinding。
 - 管理 API 需要 HttpOnly 会话 Cookie，写操作额外校验 CSRF Header；外部集成使用可撤销、带 scope、带限流的 Bearer Token。
-- 所有出站请求经过 SSRF 防护：DNS 解析校验 + 连接期 `lookup` 校验 + 手动重定向逐跳校验；默认拒绝回环、私网、链路本地与云元数据地址。内网服务需加入管理员白名单。
+- 所有出站请求经过 SSRF 防护：DNS 解析校验 + 连接期 `lookup` 校验 + 手动重定向逐跳校验；默认拒绝回环、私网、链路本地、CGNAT 与云元数据地址。IPv4-mapped IPv6（`[::ffff:127.0.0.1]`）也在拦截范围内。
+- **代理出网有显式信任边界**：只有 `SEARCH_HUB_OUTBOUND_PROXY` 才会启用代理（不隐式读取 `HTTPS_PROXY`）；`SEARCH_HUB_OUTBOUND_PROXY_TRUST` 默认 `untrusted`，此时即使目标在私网白名单里也会被拒绝。代理模式下应用仍逐跳校验 URL，但目标解析发生在代理端，残余 DNS-rebinding 风险由 `trusted-networks` 声明 + 代理出网策略承担。见 [SECURITY.md](./SECURITY.md)。
 - 日志对 `authorization`、`cookie`、`apiKey`、`password`、`token` 做脱敏；密钥不出现在 API 响应、导出文件或日志中。
 - 检索内容始终作为不可信外部数据送入模型；系统提示明确禁止执行其中的指令，并对常见注入模式做检测。
 - 前端生产构建启用 CSP、`X-Frame-Options: DENY`、`nosniff` 等响应头。
@@ -176,7 +179,8 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **177 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF、密钥加密与三重泄漏扫描、Provider 映射、模型降级、MCP HTTP/stdio 官方客户端、100 并发搜索、重启持久化。
+- 单元 + 集成测试 **363 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 验收矩阵 **16 项**（PASS 10 / PARTIAL 5 / BLOCKED 1），由 `docs/ac-matrix.json` 自动生成，见 [docs/ac-matrix.md](./docs/ac-matrix.md)。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
 - Playwright 覆盖首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注。
 
@@ -206,7 +210,7 @@ apps/web           React + Vite + Tailwind 管理后台
 packages/shared    类型、Zod 契约、URL 规范化、SSRF 安全 HTTP
 packages/db        Drizzle schema、手写迁移、SQLite 客户端
 packages/core      KeyScheduler、并发扇出、去重、RRF、错误分类
-packages/providers Provider 插件、目录、Brave/SearXNG/Hacker News/Generic/Mock
+packages/providers Provider 插件、目录、Tavily/Bocha/Brave/SearXNG/Hacker News/Generic/Mock
 packages/models    Chat / Embedding / Rerank 适配器、摘要与注入防护
 packages/mcp       MCP v2 Server（HTTP + stdio）
 packages/skills    3 个 SKILL.md
@@ -217,7 +221,7 @@ tests              unit / integration / e2e / scripts
 ## 测试
 
 ```bash
-pnpm test                 # Vitest：单元 + 集成（177 项）
+pnpm test                 # Vitest：单元 + 集成（363 项）
 pnpm build && pnpm test:e2e
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 node tests/scripts/leak-scan.mjs        # 密钥泄漏扫描（自起临时实例）

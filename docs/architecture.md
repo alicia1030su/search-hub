@@ -11,7 +11,7 @@
 | F-3 | 全源失败 | **HTTP 503** + `status:"failed"` + `failedSources[]`，不用 200 空结果冒充成功 | `search-errors.test.ts` |
 | F-4 | 100 并发与排队 | 原子占额 + **有界等待队列**（最多 1024 个等待者，单次等待预算默认 2s）；等待者由 `release()` 唤醒，不轮询；排队超时返回 `queue_timeout` | `key-limits.test.ts`、`concurrency.test.ts` |
 | F-5 | 模型能力 | Chat / Embedding / Rerank 为**真实适配器、默认关闭**；可选阶段失败时响应 `stats.degraded=true`，基础结果照常返回 | `model-degradation.test.ts` |
-| F-6 | 能力目录 | `catalog.ts` **27** 条元数据 = 5 个已实现适配器（Brave / SearXNG / Hacker News / Generic HTTP / Mock）+ 13 planned + 2 unavailable + 7 generic 入口 | `node --import tsx` 统计 + `providers.test.ts` |
+| F-6 | 能力目录 | `catalog.ts` **28** 条元数据 = 7 个已实现适配器（Tavily / Bocha / Brave / SearXNG / Hacker News / Generic HTTP / Mock）+ 12 planned + 2 unavailable + 7 generic 入口 | `node --import tsx` 统计 + `providers.test.ts` |
 | F-7 | 超时默认值 | 全局 15s、单源 12s、`maxRetries=1`；全局 deadline 优先 | `settings.ts` / 集成测试 |
 | F-8 | 首次初始化 | 未初始化时自动生成一次性 setup token（`data/setup-token`，0600；或 `SEARCH_HUB_SETUP_TOKEN`），`POST /api/setup` 必须携带；事务内二次校验，防抢占与并发双管理员 | `security-hardening.test.ts` |
 | F-9 | Host / 代理边界 | 所有非健康检查路由校验 Host（IP 字面量、localhost、`SEARCH_HUB_ALLOWED_HOSTS`/`PUBLIC_URL`）；`SEARCH_HUB_TRUST_PROXY=true` 只信任回环代理，跨网段需显式 CIDR | `security-hardening.test.ts`、`mcp-client.test.ts` |
@@ -53,7 +53,7 @@ graph TB
     FUSE["归一化・去重・RRF"]
     ERR["错误分类・重试预算"]
   end
-  PR["packages/providers 5 个适配器・注册表・Catalog 27 条"]
+  PR["packages/providers 7 个适配器・注册表・Catalog 28 条"]
   MD["packages/models Chat/Embedding/Rerank・注入防护"]
   MC["packages/mcp v2 SDK・createMcpHandler・9 工具"]
   DB["packages/db Drizzle 0.45 + better-sqlite3 13・迁移"]
@@ -248,7 +248,7 @@ runProviderContract(makeAdapter, {
 });
 ```
 
-**能力目录边界**：`packages/providers/src/catalog.ts` 有 **27** 条声明式元数据，已实现适配器 **5** 个：Brave / SearXNG / **Hacker News（Algolia 官方 API，已真实联调）** / Generic HTTP / Mock。其余 13 planned、2 unavailable、7 generic 入口。**目录条目 ≠ 可用适配器**，UI 与文档必须区分「已实现」与「仅目录条目」，不得用 27 暗示源数量。
+**能力目录边界**：`packages/providers/src/catalog.ts` 有 **28** 条声明式元数据，已实现适配器 **7** 个：Tavily / Bocha / Brave / SearXNG / **Hacker News（Algolia 官方 API，已真实联调）** / Generic HTTP / Mock。其余 12 planned、2 unavailable、7 generic 入口。**目录条目 ≠ 可用适配器**，UI 与文档必须区分「已实现」与「仅目录条目」，不得用 28 暗示源数量。逐源联调状态见 `docs/provider-matrix.md`。
 
 ## 5. KeyScheduler 并发正确性论证
 
@@ -310,7 +310,7 @@ v0.1.1 的调度分两步：
 |---|---|---|---|
 | T1 | DB 泄漏致 Key 明文外泄 | AES-256-GCM（**`apps/api/src/security/crypto.ts`，不在 `packages/db`**），每 Key 随机 IV，主密钥来自 env 或 `data/master.key`(0600)，不入库；启动日志显式提示"备份 master.key" | root 权限下主密钥与 DB 可同时取走；备份含 master.key 等同明文 |
 | T2 | Key 出现在日志/堆栈/响应 | 只存 `keyHint`（`CryptoService.hint()` 仅保留**末 4 位**，≤8 字符则全掩码）；`maskSecret()` 另提供 `前3…末4`；异常只映射 code + 截断消息 | 上游回显自家 Key 时截断可能漏掉 `【待验证】`；`maskSecret` 暴露前 3 位，对短 Key 信息量偏高 |
-| T3 | SSRF（用户配的 baseUrl / Generic URL 模板） | 双层，**已实现**（`packages/shared/src/safe-fetch.ts`，386 行）：① 出站前解析 A/AAAA 并按 `BLOCKED_V4` 段 + 元数据地址（169.254.169.254 / 100.100.100.200 / fd00:ec2::254）+ IPv6 私网段校验；② `new Agent({ connect: { lookup } })` 在**连接期**再校验（防 DNS rebinding）；③ `redirect: "manual"` + 手动逐跳（上限 `maxRedirects=3`，每跳重新解析）；④ `allowPrivateHosts` 显式白名单 | IPv6 映射写法 `[::ffff:127.0.0.1]`、十进制 IP 需用例覆盖 `【待验证】` |
+| T3 | SSRF（用户配的 baseUrl / Generic URL 模板） | 双层，**已实现**（`packages/shared/src/safe-fetch.ts`，386 行）：① 出站前解析 A/AAAA 并按 `BLOCKED_V4` 段 + 元数据地址（169.254.169.254 / 100.100.100.200 / fd00:ec2::254）+ IPv6 私网段校验；② `new Agent({ connect: { lookup } })` 在**连接期**再校验（防 DNS rebinding）；③ `redirect: "manual"` + 手动逐跳（上限 `maxRedirects=3`，每跳重新解析）；④ `allowPrivateHosts` 显式白名单 | IPv6 映射写法 `[::ffff:127.0.0.1]`（含十六进制规范化 `::ffff:7f00:1`）已覆盖用例；十进制/八进制 IP 仍待覆盖 `【未实现】` |
 | T4 | 大/慢响应拖垮内存与事件循环 | `maxBytes` 上限（SafeFetch 参数）、`headersTimeout`/`bodyTimeout`、AbortSignal | 分块慢速传输仍占连接 |
 | T5 | 管理面未授权访问 | 全部管理 API 服务端鉴权（不靠前端隐藏）；首启强制自设口令、无默认密码；未初始化时只暴露初始化接口（`setup_required` 428） | 初始化接口竞争窗口 `【待验证】` |
 | T6 | CSRF | HttpOnly + SameSite=Lax Cookie；写操作要求 `X-CSRF-Token` 与会话绑定（双提交） | 同站子域被攻破可绕 SameSite |
@@ -349,7 +349,7 @@ v0.1.1 的调度分两步：
 | U5 | 大 Key 池（rpm > 2000 或 Key > 500） | **未验证** | `window` 数组用 `slice` 修剪，O(n) 重建；GC 压力随 rpm 增长 | 按 `rpm ≤ 2000` 设计并加断言；超限需改分桶计数 |
 | U6 | 崩溃时额度状态恢复精度 | **未验证** | 见 R-01 | 启动校准 + 风险接受决策 |
 | U7 | 100 并发下 SQLite 写入阻塞 | **未验证** | better-sqlite3 同步 I/O 可能抬 p99 | dirty 批量 flush + 索引约束 + p99 压测门禁 |
-| U8 | 能力目录真实可用性 | **口径已修正** | `catalog.ts` 27 条元数据、**已实现 5 个**（Brave / SearXNG / Hacker News / Generic HTTP / Mock） | UI 分「已实现/仅目录」；对外只说 5 个源 |
+| U8 | 能力目录真实可用性 | **口径已修正** | `catalog.ts` 28 条元数据、**已实现 7 个**（Tavily / Bocha / Brave / SearXNG / Hacker News / Generic HTTP / Mock） | UI 分「已实现/仅目录」；对外只说 7 个源 |
 | U9 | 工具链版本 | **TS 正确，Node 略低** | 仓库锁 `typescript@5.9.3`（正确，npm latest 是 7.0.2）；但 `engines.node>=22.11` 低于 `vite@8`/`vitest@5` 要求的 **22.12** | 改 `engines.node>=22.12.0`；升级 TS 7 需单开分支验证 drizzle 类型推导 |
 | U10 | MCP 集成方式 | **已实现但与基线不同** | 用的是 v2 包 `@modelcontextprotocol/server@2.4.0` 的 `createMcpHandler().fetch(Request)` → 手工转 Node req/res（**不再需要 reply.hijack**）；基线写的 sdk@1.32.2 `handleRequest` 路线不可复用 | 已可行（`tsc` 通过）；但每次请求要**缓冲整个响应体**，SSE 不可用（R-06）。若要 SSE，改用 `@modelcontextprotocol/node` 的 `toNodeHandler(handler.fetch)` + `reply.hijack()` `【待验证】` |
 | U11 | zod 与 MCP tool schema | **已规避** | 仓库用 zod 4.6.7；v2 server 包声明 `zod ^4.2.0`，原生 v4 schema | 保持；需补一条 `tools/list` 快照测试断言 inputSchema 正确 |

@@ -1,12 +1,21 @@
 services:
   search-hub:
-    # Build locally from this repository. Once a release image is published,
-    # replace this with: image: ghcr.io/search-hub/search-hub:latest
+    # Built locally by default. Set SEARCH_HUB_IMAGE to use a published image
+    # (for example ghcr.io/search-hub/search-hub:0.1.2); the local build is then
+    # skipped as long as that image is already present.
+    image: ${SEARCH_HUB_IMAGE:-search-hub:local}
     build: .
-    container_name: search-hub
+    # Overridable so verification runs, staging copies and side-by-side
+    # instances do not collide on a fixed container name.
+    container_name: ${SEARCH_HUB_CONTAINER_NAME:-search-hub}
     restart: unless-stopped
+    # PID 1 helper: forwards SIGTERM/SIGINT and reaps orphans. The API closes
+    # Fastify and SQLite on SIGTERM, so give it more than the 10s default.
+    init: true
+    stop_grace_period: 30s
     ports:
-      - "8787:8787"
+      # Host port is configurable; the container port stays 8787.
+      - "${SEARCH_HUB_HOST_PORT:-8787}:8787"
     environment:
       NODE_ENV: production
       SEARCH_HUB_PORT: "8787"
@@ -28,12 +37,30 @@ services:
       SEARCH_HUB_LOG_LEVEL: ${SEARCH_HUB_LOG_LEVEL:-info}
       # Only needed for browser clients on another origin.
       SEARCH_HUB_CORS_ORIGINS: ${SEARCH_HUB_CORS_ORIGINS:-}
+      # Outbound egress proxy (P0-1). Without these three keys the values in
+      # .env never reach the container, so a proxied deployment would silently
+      # fall back to direct connections.
+      #   SEARCH_HUB_PROXY           http(s) forward proxy; socks/pac/file are
+      #                              rejected at boot (fail-closed).
+      #   SEARCH_HUB_NO_PROXY        hosts that bypass the proxy (still SSRF-validated).
+      #   SEARCH_HUB_PROXY_TRUST     untrusted | trusted-networks. Leave empty and
+      #                              /api/health will warn that the boundary is undeclared.
+      SEARCH_HUB_PROXY: ${SEARCH_HUB_PROXY:-}
+      SEARCH_HUB_NO_PROXY: ${SEARCH_HUB_NO_PROXY:-}
+      SEARCH_HUB_PROXY_TRUST: ${SEARCH_HUB_PROXY_TRUST:-}
       TZ: Asia/Shanghai
     volumes:
       # Named volume: Docker initialises it with the image's non-root owner
       # (uid 1001). A bind mount (./data:/app/data) would be root-owned and
       # the container could not write the database without a manual chown.
       - search-hub-data:/app/data
+    # --- hardening (safe for this image: uid 1001, port > 1024, no setuid) ---
+    # The process needs no Linux capabilities: it binds an unprivileged port and
+    # writes only inside the volume below.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test:
         [
@@ -46,11 +73,22 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    # Bound container log growth; without this a chatty instance fills the disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # Keep the footprint small on a 2C2G host.
+    # `deploy.resources.limits` is the Compose Specification form; `mem_limit`
+    # is the classic single-host key. Both are set to the same value on purpose:
+    # implementations that ignore `deploy` outside Swarm mode still enforce the
+    # hard limit through `mem_limit` (and the two must agree per the spec).
+    mem_limit: ${SEARCH_HUB_MEM_LIMIT:-1g}
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: ${SEARCH_HUB_MEM_LIMIT:-1g}
 
   # Optional: only needed for multi-instance key scheduling (not implemented yet).
   # redis:

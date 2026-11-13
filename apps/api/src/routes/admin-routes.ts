@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { join } from "node:path";
 import { desc, eq } from "drizzle-orm";
 import {
   SearchHubError,
@@ -11,6 +12,17 @@ import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
 import { audit, jsonFor, parseInput, sendError } from "../http.js";
 import { dashboardStats, parseRange, recentEvents } from "../services/stats.js";
 import { applyLegacyPlan, planLegacyMigration } from "../services/legacy-migration.js";
+import {
+  createDatabaseSnapshot,
+  disposeSnapshot,
+  disposeSnapshotSync,
+  inspectDatabaseFile,
+  pruneStaleSnapshots,
+  snapshotDirectory,
+  snapshotFileName,
+  snapshotReadStream,
+  type UploadedSnapshot,
+} from "../services/backup.js";
 import { newId } from "../security/crypto.js";
 import { REPO_ROOT } from "../config.js";
 
@@ -68,6 +80,20 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
     jsonFor(app, async (request) => {
       requireAdmin(actorOf(request, ctx));
       return ctx.settings.get();
+    }),
+  );
+
+  /**
+   * Outbound egress policy for operators: direct vs proxy, the redacted proxy
+   * endpoint, NO_PROXY entry count and the trust level. Read-only on purpose —
+   * the proxy is deployment configuration (SEARCH_HUB_PROXY / _NO_PROXY /
+   * _PROXY_TRUST), never a runtime setting, so it cannot be changed here.
+   */
+  app.get(
+    "/api/admin/outbound",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      return ctx.describeOutboundPolicy();
     }),
   );
 
@@ -291,7 +317,13 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
     }),
   );
 
-  /** Forces a WAL checkpoint so a file-level backup is self-contained. */
+  /**
+   * Forces a WAL checkpoint.
+   *
+   * Only useful for an *offline* copy of `search-hub.db` on a stopped service.
+   * A running service must use `GET /api/admin/backup`, which takes a real
+   * snapshot: a checkpoint followed by a file read still races writers.
+   */
   app.post(
     "/api/admin/maintenance/checkpoint",
     jsonFor(app, async (request) => {
@@ -302,24 +334,114 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
   );
 
   /**
-   * Downloads a consistent SQLite snapshot. The response intentionally does
-   * NOT include master.key: restoring the database without that key leaves
-   * stored provider credentials unreadable, which is the safe failure mode.
+   * Downloads a consistent SQLite snapshot.
+   *
+   * The snapshot is produced by `createDatabaseSnapshot`: SQLite Online Backup
+   * API (or `VACUUM INTO`), normalised to a single file, verified with
+   * `PRAGMA integrity_check`, and only then published under its final name.
+   * Streaming means a multi-hundred-MB database never sits in memory, and the
+   * temp file is deleted once the response is finished (or aborted).
+   *
+   * The response intentionally does NOT include master.key: restoring the
+   * database without that key leaves stored provider credentials unreadable,
+   * which is the safe failure mode.
    */
   app.get("/api/admin/backup", async (request, reply) => {
+    let snapshotPath: string | null = null;
     try {
       requireAdmin(actorOf(request, ctx));
-      ctx.sqlite.pragma("wal_checkpoint(TRUNCATE)");
-      const fs = await import("node:fs");
-      const data = fs.readFileSync(ctx.config.dbPath);
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      // Sweep leftovers from crashed downloads before creating a new snapshot.
+      void pruneStaleSnapshots(ctx).catch(() => undefined);
+      const name = snapshotFileName();
+      const snapshot = await createDatabaseSnapshot(ctx, join(snapshotDirectory(ctx), name));
+      snapshotPath = snapshot.path;
+
       reply
-        .header("content-disposition", `attachment; filename="search-hub-${stamp}.db"`)
+        .header("content-disposition", `attachment; filename="${name}"`)
         .header("cache-control", "no-store")
-        .type("application/vnd.sqlite3")
-        .send(data);
+        .header("content-length", String(snapshot.bytes))
+        .header("x-search-hub-schema-version", snapshot.schemaVersion ?? "none")
+        .header("x-search-hub-user-version", String(snapshot.userVersion))
+        .header("x-search-hub-snapshot-method", snapshot.method)
+        .header("x-search-hub-integrity", snapshot.integrity)
+        .type("application/vnd.sqlite3");
+
+      const stream = snapshotReadStream(snapshot.path);
+      // `finish` = bytes flushed to the client; `close` also covers aborts.
+      reply.raw.once("finish", () => {
+        stream.destroy();
+        disposeSnapshotSync(snapshot.path);
+      });
+      reply.raw.once("close", () => {
+        stream.destroy();
+        disposeSnapshotSync(snapshot.path);
+      });
+      stream.once("error", (error) => {
+        request.log.warn({ err: error }, "snapshot stream failed");
+        disposeSnapshotSync(snapshot.path);
+      });
+      // Must be returned: in an async handler, a bare `reply.send()` is
+      // overwritten by the implicit `undefined` return value.
+      return reply.send(stream);
+    } catch (error) {
+      if (snapshotPath) await disposeSnapshot(snapshotPath);
+      sendError(reply, error);
+    }
+  });
+
+  /**
+   * Verifies an uploaded `.db` snapshot without restoring it.
+   *
+   * Accepts the raw file body (`application/octet-stream`,
+   * `application/vnd.sqlite3` or `application/x-sqlite3`) with a hard 64 MB
+   * cap. The file is written to an unpredictable temp path, integrity-checked
+   * with a read-only connection, compared against the migrations this build
+   * ships, and deleted immediately afterwards.
+   *
+   * A snapshot that contains migrations unknown to this build was created by
+   * a newer release: `ok:false, compatible:false` with an explicit reason, not
+   * a bare `ok`.
+   */
+  app.post("/api/admin/backup/verify", async (request, reply) => {
+    let upload: UploadedSnapshot | null = null;
+    try {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const body = request.body as UploadedSnapshot | null;
+      if (!body || typeof body.filePath !== "string" || typeof body.dispose !== "function") {
+        throw new SearchHubError(
+          "validation_error",
+          "Send the .db file as the raw request body with content-type: application/octet-stream",
+        );
+      }
+      upload = body;
+      const report = await inspectDatabaseFile(upload.filePath, {
+        migrationsDir: ctx.config.migrationsDir,
+        appVersion: ctx.config.version,
+        bytes: upload.bytes,
+      });
+      audit(
+        ctx,
+        actorLabel(actor),
+        "backup.verify",
+        null,
+        {
+          ok: report.ok,
+          compatible: report.compatible,
+          schemaVersion: report.schemaVersion,
+          bytes: report.bytes,
+        },
+        request.ip,
+      );
+      request.log.info(
+        { ok: report.ok, compatible: report.compatible, schemaVersion: report.schemaVersion },
+        "backup snapshot verified",
+      );
+      reply.header("x-search-hub-integrity", report.integrity === "ok" ? "ok" : "failed");
+      return report;
     } catch (error) {
       sendError(reply, error);
+    } finally {
+      if (upload) await upload.dispose().catch(() => undefined);
     }
   });
 

@@ -6,6 +6,7 @@ import {
   stripHtml,
   truncateText,
   type ProviderContext,
+  type ProviderErrorCode,
   type RawSearchResult,
   type SafeFetchResponse,
 } from "@search-hub/shared";
@@ -29,6 +30,23 @@ export interface RequestSpec {
   headers?: Record<string, string>;
   body?: unknown;
   timeoutMs?: number;
+  /**
+   * Vendor-specific HTTP status → ProviderErrorCode mapping. Needed because
+   * some vendors repurpose standard codes (Tavily 432/433/434, Bocha 403 =
+   * "insufficient balance"). Only the statuses listed here are overridden; the
+   * default `mapHttpStatus` table still applies to everything else.
+   */
+  statusOverrides?: Record<number, { code: ProviderErrorCode; retryable: boolean }>;
+}
+
+/** True when a SearchHubError came from an upstream HTTP response, not local validation. */
+function isUpstreamHttpError(error: SearchHubError): boolean {
+  const details = error.details;
+  return (
+    typeof details === "object" &&
+    details !== null &&
+    typeof (details as Record<string, unknown>)["upstreamStatus"] === "number"
+  );
 }
 
 /**
@@ -59,17 +77,57 @@ export async function callJson(
     });
   } catch (error) {
     if (error instanceof SearchHubError) {
-      // validateOutboundUrl / size caps / timeouts already carry a code.
-      if (error.code === "timeout") {
-        throw new ProviderError(ctx.config.id, ctx.config.type, "timeout", error.message, {
-          retryable: true,
-          statusCode: 504,
-          cause: error,
-        });
+      // LOCAL/APPLICATION-layer rejections are checked BEFORE any HTTP-status
+      // mapping. `SearchHubError("blocked", ...)` carries `status: 403` (see
+      // STATUS_BY_CODE in errors.ts), so mapping by status alone turned an SSRF
+      // rejection into `auth_invalid` and suspended a key that was never used.
+      if (!isUpstreamHttpError(error)) {
+        if (error.code === "blocked") {
+          throw new ProviderError(ctx.config.id, ctx.config.type, "blocked", error.message, {
+            statusCode: 403,
+            cause: error,
+          });
+        }
+        if (error.code === "bad_request" || error.code === "validation_error") {
+          throw new ProviderError(ctx.config.id, ctx.config.type, "bad_request", error.message, {
+            statusCode: 400,
+            cause: error,
+          });
+        }
+        if (error.code === "unsupported") {
+          throw new ProviderError(ctx.config.id, ctx.config.type, "unsupported", error.message, {
+            statusCode: 501,
+            cause: error,
+          });
+        }
+        if (error.code === "timeout") {
+          throw new ProviderError(ctx.config.id, ctx.config.type, "timeout", error.message, {
+            retryable: true,
+            statusCode: 504,
+            cause: error,
+          });
+        }
+        if (error.code === "network") {
+          throw new ProviderError(ctx.config.id, ctx.config.type, "network", error.message, {
+            retryable: true,
+            cause: error,
+          });
+        }
+        if (error.code === "cancelled") {
+          throw new ProviderError(ctx.config.id, ctx.config.type, "cancelled", error.message, {
+            cause: error,
+          });
+        }
       }
-      if (error.code === "network") {
-        throw new ProviderError(ctx.config.id, ctx.config.type, "network", error.message, {
-          retryable: true,
+
+      // Upstream HTTP responses (safe-fetch tags them with `details.upstreamStatus`).
+      // Vendor-specific repurposed statuses win over the generic table.
+      const override = spec.statusOverrides?.[error.status];
+      if (override) {
+        throw new ProviderError(ctx.config.id, ctx.config.type, override.code, error.message, {
+          statusCode: error.status,
+          retryable: override.retryable,
+          ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
           cause: error,
         });
       }
@@ -77,6 +135,16 @@ export async function callJson(
         throw new ProviderError(ctx.config.id, ctx.config.type, "rate_limited", error.message, {
           retryable: true,
           statusCode: 429,
+          ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
+          cause: error,
+        });
+      }
+      if (error.status === 402) {
+        // "Payment required" is a quota signal on several vendors; keeping the
+        // upstream code makes the scheduler cool the key instead of suspending it.
+        throw new ProviderError(ctx.config.id, ctx.config.type, "quota_exceeded", error.message, {
+          statusCode: 402,
+          retryable: false,
           ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
           cause: error,
         });
@@ -94,6 +162,7 @@ export async function callJson(
       throw new ProviderError(ctx.config.id, ctx.config.type, classified.code, error.message, {
         statusCode: error.status,
         retryable: classified.retryable,
+        ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
         cause: error,
       });
     }
@@ -218,4 +287,19 @@ export function normalizeDate(input: string): string | undefined {
 
 export function retryAfterFromHeaders(headers: Headers): number | undefined {
   return parseRetryAfter(headers.get("retry-after"));
+}
+
+/**
+ * Joins an API path onto a user-supplied base URL **without dropping a base
+ * path prefix**.
+ *
+ * `new URL("/res/v1/web/search", "https://proxy.example.com/brave")` silently
+ * resolves to `https://proxy.example.com/res/v1/web/search`, which breaks every
+ * operator who fronts a vendor through a path-mounted reverse proxy. Providers
+ * that accept a `baseUrl` override must append instead.
+ */
+export function joinApiPath(baseUrl: string, apiPath: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  const suffix = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  return `${base}${suffix}`;
 }

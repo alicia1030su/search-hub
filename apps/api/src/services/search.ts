@@ -446,7 +446,7 @@ export class SearchService {
         },
       };
     } catch (error) {
-      return this.withWarning(response, "embedding", error, "embeddingMs");
+      return this.withWarning(response, "embedding", error, "embeddingMs", started);
     }
   }
 
@@ -484,7 +484,7 @@ export class SearchService {
         },
       };
     } catch (error) {
-      return this.withWarning(response, "rerank", error, "rerankMs");
+      return this.withWarning(response, "rerank", error, "rerankMs", started);
     }
   }
 
@@ -506,6 +506,7 @@ export class SearchService {
           "summary",
           new Error("The chat model did not return a usable summary"),
           "summaryMs",
+          started,
         );
       }
       return {
@@ -518,7 +519,7 @@ export class SearchService {
         },
       };
     } catch (error) {
-      return this.withWarning(response, "summary", error, "summaryMs");
+      return this.withWarning(response, "summary", error, "summaryMs", started);
     }
   }
 
@@ -527,6 +528,7 @@ export class SearchService {
     stage: "rerank" | "embedding" | "summary",
     error: unknown,
     timingKey: "rerankMs" | "embeddingMs" | "summaryMs",
+    startedAt: number,
   ): SearchResponse {
     const message = error instanceof Error ? error.message : String(error);
     const code: ProviderErrorCode = "server_error";
@@ -541,7 +543,9 @@ export class SearchService {
       stats: {
         ...response.stats,
         degraded: true,
-        [timingKey]: response.stats.timing[timingKey] ?? 0,
+        // The failed stage still cost time; record it inside `timing` (where the
+        // type, the UI and the dashboards read it) instead of on `stats`.
+        timing: { ...response.stats.timing, [timingKey]: Date.now() - startedAt },
       },
       errors: [...response.errors, warning],
     };

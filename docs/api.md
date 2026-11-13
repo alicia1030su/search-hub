@@ -51,7 +51,9 @@ GET  /api/health
 
 `POST /api/setup` succeeds only when no administrator exists. Password minimum is 12 characters. If `SEARCH_HUB_SETUP_TOKEN` is set, the token is required in the body or `x-setup-token` header.
 
-`GET /api/health` is public and returns version, uptime, setup requirement, provider counts, and encryption-key source (never the key).
+`GET /api/health` is public and returns version, uptime, setup requirement, provider counts, and encryption-key source (never the key). Its `outbound` object is deliberately coarse — `mode`, `proxyTrust` and `proxyTrustDeclared` only. The proxy endpoint, the `NO_PROXY` list/count and the `residualRisk` text are reachable by any unauthenticated caller, so they live behind admin auth at `/api/admin/outbound`; exposing them here would leak the internal egress topology (`proxy host:port`).
+
+`GET /api/admin/outbound` (admin session, read-only) returns the full outbound policy: redacted proxy endpoint (`scheme://host:port`, never userinfo), the full `NO_PROXY` list and count, whether the private host allowlist is honoured for proxied requests, the one-line `residualRisk`, the controls the application performs and the ones only the proxy can provide. Configure it with `SEARCH_HUB_PROXY` / `SEARCH_HUB_NO_PROXY` / `SEARCH_HUB_PROXY_TRUST` — it is intentionally not mutable through the API.
 
 ## Search
 
@@ -189,6 +191,8 @@ POST   /api/admin/models/:id/test
 
 Embedding models require `dimensions`. `POST /:id/test` performs a real network call; a wrong key must fail.
 
+A model `baseUrl` that the current SSRF policy can never reach is rejected with `403 blocked` at create/update time — an IP literal or `localhost`-style hostname that is private/reserved and not on `settings.security.privateHostAllowlist`, or a cloud metadata address (never allowed). Hostnames are still resolved and validated on every request, so a later DNS change to a private address is blocked at call time. See `docs/model-integration-status.md` for what each vendor/kind pair actually implements.
+
 ### System
 
 ```http
@@ -256,8 +260,21 @@ const { results } = await response.json();
 ```http
 POST /api/admin/maintenance/checkpoint      # wal_checkpoint(TRUNCATE)
 GET  /api/admin/backup                      # consistent SQLite snapshot (no master.key)
+POST /api/admin/backup/verify               # verify an uploaded .db (raw body, 64 MB cap)
 POST /api/admin/migration/legacy            # {mode:"dry_run"|"apply", payload, confirm?, baseUrl?}
 ```
+
+`GET /api/admin/backup` uses the SQLite Online Backup API (fallback `VACUUM INTO`) rather than a checkpoint plus file read, so concurrent searches cannot land between the copy and the response. The snapshot is normalised to `journal_mode=delete`, verified with `PRAGMA integrity_check`, and only then renamed into place; a failure returns a JSON error rather than a partial file. Response headers `x-search-hub-schema-version` / `x-search-hub-user-version` identify the schema for the restore check. `master.key` is never included.
+
+`POST /api/admin/backup/verify` accepts the file as the raw request body (`content-type: application/octet-stream`) and returns integrity, schema version, applied migrations, tables and row counts, then deletes its temp copy:
+
+```json
+{ "ok": true, "compatible": true, "integrity": "ok", "schemaVersion": "0001_init.sql",
+  "userVersion": 1, "migrations": ["0001_init.sql"], "pendingMigrations": [],
+  "tables": ["admin_users", "..."], "rowCounts": { "api_keys": 3 }, "bytes": 438272 }
+```
+
+A snapshot from a **newer** release returns `{ "ok": false, "compatible": false, "reason": "backup was created by a newer version" }`, and starting this build against such a database fails at boot with an explicit "schema is newer than this build" error. See [deployment.md](./deployment.md#backup-and-restore).
 
 The migration endpoint accepts the provider list of an older Search Hub deployment. It **never reads or stores credentials**: the plan lists which providers need a key, and you re-enter keys in the UI. `apply` requires `"confirm":"IMPORT LEGACY PROVIDERS"` and skips names that already exist (no overwrite). See [legacy-migration.md](./legacy-migration.md).
 
