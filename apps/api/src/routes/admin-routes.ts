@@ -1,0 +1,453 @@
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { desc, eq } from "drizzle-orm";
+import {
+  SearchHubError,
+  settingsUpdateSchema,
+  tokenCreateSchema,
+} from "@search-hub/shared";
+import { auditLogs, modelConfigs, providerInstances, searchGroups } from "@search-hub/db";
+import type { AppContext } from "../context.js";
+import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
+import { audit, jsonFor, parseInput } from "../http.js";
+import { dashboardStats, parseRange, recentEvents } from "../services/stats.js";
+import { newId } from "../security/crypto.js";
+
+function actorOf(request: FastifyRequest, ctx: AppContext, mutation = false): Actor {
+  return authenticate(
+    {
+      headers: request.headers as Record<string, string | string[] | undefined>,
+      cookies: request.cookies as Record<string, string | undefined>,
+      ip: request.ip,
+    },
+    ctx.authDeps,
+    { scope: "admin", mutation },
+  );
+}
+
+const SKILL_DEFINITIONS = [
+  {
+    name: "search-web",
+    description: "Run a single web search through Search Hub and return cited results.",
+  },
+  {
+    name: "deep-research",
+    description: "Run a multi-query deep research pass and synthesize cited findings.",
+  },
+  {
+    name: "research-with-citations",
+    description: "Retrieve and format a citation-ready evidence list with source attribution.",
+  },
+];
+
+const MCP_TOOLS = [
+  { name: "search_web", title: "Web search", description: "Multi-provider web search with fused results" },
+  { name: "search_multi", title: "Multi-query search", description: "Run several queries and merge results" },
+  { name: "search_deep", title: "Deep search", description: "Rewrite, retrieve and summarize with citations" },
+  { name: "search_news", title: "News search", description: "Freshness-restricted search (last day)" },
+  { name: "search_with_sources", title: "Search with sources", description: "Results plus per-provider diagnostics" },
+  { name: "search_and_rerank", title: "Search and rerank", description: "Fuse then rerank with a rerank model" },
+  { name: "search_and_summarize", title: "Search and summarize", description: "Cited summary over fused results" },
+  { name: "get_search_sources", title: "List sources", description: "List configured providers and health" },
+  { name: "get_search_status", title: "Service status", description: "Provider, key and breaker status" },
+];
+
+export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void {
+  app.get(
+    "/api/admin/dashboard",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      const query = request.query as { range?: string; from?: string; to?: string };
+      return dashboardStats(ctx.db, ctx.providers, parseRange(query));
+    }),
+  );
+
+  app.get(
+    "/api/admin/settings",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      return ctx.settings.get();
+    }),
+  );
+
+  app.put(
+    "/api/admin/settings",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const input = parseInput(settingsUpdateSchema, request.body);
+      const updated = ctx.settings.update(input);
+      audit(ctx, actorLabel(actor), "settings.update", null, Object.keys(input), request.ip);
+      return updated;
+    }),
+  );
+
+  app.get(
+    "/api/admin/tokens",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      return ctx.tokens.list();
+    }),
+  );
+
+  app.post(
+    "/api/admin/tokens",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const input = parseInput(tokenCreateSchema, request.body);
+      const created = ctx.tokens.create({
+        name: input.name,
+        scopes: input.scopes,
+        rateLimitPerMin: input.rateLimitPerMin,
+        expiresAt: input.expiresAt ?? null,
+      });
+      audit(
+        ctx,
+        actorLabel(actor),
+        "token.create",
+        created.id,
+        { name: input.name, scopes: input.scopes },
+        request.ip,
+      );
+      return {
+        token: created.token,
+        record: ctx.tokens.list().find((item) => item.id === created.id),
+        warning: "Copy this token now. It will not be shown again.",
+      };
+    }),
+  );
+
+  app.delete(
+    "/api/admin/tokens/:id",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const { id } = request.params as { id: string };
+      if (!ctx.tokens.revoke(id)) throw new SearchHubError("not_found", "Token not found");
+      audit(ctx, actorLabel(actor), "token.revoke", id, null, request.ip);
+      return { ok: true };
+    }),
+  );
+
+  app.get(
+    "/api/admin/logs",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      const query = request.query as { limit?: string; offset?: string; providerId?: string };
+      const limit = Math.min(500, Math.max(1, Number(query.limit ?? 100)));
+      const offset = Math.max(0, Number(query.offset ?? 0));
+      return {
+        events: recentEvents(ctx.db, {
+          limit,
+          offset,
+          ...(query.providerId ? { providerId: query.providerId } : {}),
+        }),
+      };
+    }),
+  );
+
+  app.get(
+    "/api/admin/audit",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      const limit = Math.min(500, Math.max(1, Number((request.query as { limit?: string }).limit ?? 100)));
+      return {
+        logs: ctx.db
+          .select()
+          .from(auditLogs)
+          .orderBy(desc(auditLogs.id))
+          .limit(limit)
+          .all()
+          .map((row) => ({
+            id: row.id,
+            actor: row.actor,
+            action: row.action,
+            target: row.target,
+            detail: row.detailJson,
+            ip: row.ip,
+            createdAt: row.createdAt,
+          })),
+      };
+    }),
+  );
+
+  app.get(
+    "/api/admin/skills",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+      const root = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../../../packages/skills",
+      );
+      const skills = await Promise.all(
+        SKILL_DEFINITIONS.map(async (definition) => {
+          try {
+            const content = await fs.readFile(path.join(root, definition.name, "SKILL.md"), "utf8");
+            return { ...definition, content, installPath: `packages/skills/${definition.name}/SKILL.md` };
+          } catch {
+            return {
+              ...definition,
+              content: null,
+              installPath: `packages/skills/${definition.name}/SKILL.md`,
+            };
+          }
+        }),
+      );
+      return { skills };
+    }),
+  );
+
+  const exportHandler = async (request: FastifyRequest) => {
+    requireAdmin(actorOf(request, ctx));
+    return exportConfig(ctx);
+  };
+  app.get("/api/admin/export", jsonFor(app, exportHandler));
+  app.get("/api/admin/config/export", jsonFor(app, exportHandler));
+
+  const importHandler = async (request: FastifyRequest) => {
+    const actor = requireAdmin(actorOf(request, ctx, true));
+    const body = request.body as { config?: unknown } | undefined;
+    if (!body?.config || typeof body.config !== "object") {
+      throw new SearchHubError("validation_error", "A config object is required in the request body");
+    }
+    const result = importConfig(ctx, body.config as Record<string, unknown>);
+    audit(ctx, actorLabel(actor), "config.import", null, result, request.ip);
+    return result;
+  };
+  app.post("/api/admin/import", jsonFor(app, importHandler));
+  app.post("/api/admin/config/import", jsonFor(app, importHandler));
+
+  app.get(
+    "/api/mcp/info",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      const origin = ctx.settings.publicBaseUrl() ?? `${request.protocol}://${request.headers.host}`;
+      return {
+        endpoint: `${origin.replace(/\/+$/, "")}/mcp`,
+        transports: ["streamable-http", "stdio"],
+        protocolVersion: "2026-07-28",
+        tools: MCP_TOOLS,
+      };
+    }),
+  );
+}
+
+interface ExportShape {
+  version: string;
+  exportedAt: string;
+  providers: Array<Record<string, unknown> & { keyLabels: string[] }>;
+  models: Array<Record<string, unknown>>;
+  groups: Array<Record<string, unknown>>;
+  settings: Record<string, unknown>;
+}
+
+function parseJson<T>(value: string | null, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Exports configuration without any secret material (no key, no password). */
+function exportConfig(ctx: AppContext): ExportShape {
+  const providers = ctx.providers.listRows().map((row) => ({
+    name: row.name,
+    type: row.type,
+    enabled: row.enabled,
+    baseUrl: row.baseUrl,
+    timeoutMs: row.timeoutMs,
+    maxConcurrency: row.maxConcurrency,
+    priority: row.priority,
+    weight: row.weight,
+    maxRetries: row.maxRetries,
+    language: row.language,
+    freshness: row.freshness,
+    resultsPerPage: row.resultsPerPage,
+    rpmLimit: row.rpmLimit,
+    dailyQuota: row.dailyQuota,
+    keyStrategy: row.keyStrategy,
+    cooldownMs: row.cooldownMs,
+    breakerThreshold: row.breakerThreshold,
+    breakerCooldownMs: row.breakerCooldownMs,
+    config: parseJson<Record<string, unknown>>(row.configJson, {}),
+    keyLabels: ctx.providers.listKeys(row.id).map((key) => key.label),
+  }));
+
+  const models = ctx.db
+    .select()
+    .from(modelConfigs)
+    .all()
+    .map((row) => ({
+      kind: row.kind,
+      name: row.name,
+      providerType: row.providerType,
+      baseUrl: row.baseUrl,
+      modelId: row.modelId,
+      dimensions: row.dimensions,
+      batchSize: row.batchSize,
+      timeoutMs: row.timeoutMs,
+      maxConcurrency: row.maxConcurrency,
+      params: parseJson<Record<string, unknown>>(row.paramsJson, {}),
+      enabled: row.enabled,
+      isDefault: row.isDefault,
+      hasKey: Boolean(row.apiKeyCiphertext),
+    }));
+
+  const groups = ctx.db
+    .select()
+    .from(searchGroups)
+    .all()
+    .map((row) => ({
+      name: row.name,
+      description: row.description,
+      providerIds: parseJson<string[]>(row.providerIdsJson, []),
+    }));
+
+  return {
+    version: ctx.config.version,
+    exportedAt: new Date().toISOString(),
+    providers,
+    models,
+    groups,
+    settings: ctx.settings.get() as unknown as Record<string, unknown>,
+  };
+}
+
+function importConfig(
+  ctx: AppContext,
+  config: Record<string, unknown>,
+): { providers: number; models: number; groups: number; skipped: string[] } {
+  const skipped: string[] = [];
+  let providersCreated = 0;
+  let modelsCreated = 0;
+  let groupsCreated = 0;
+  const now = new Date().toISOString();
+
+  if (Array.isArray(config["providers"])) {
+    for (const raw of config["providers"] as unknown[]) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const name = String(row["name"] ?? "").trim();
+      const type = String(row["type"] ?? "").trim();
+      if (!name || !type) continue;
+      const catalog = ctx.providers.catalogFor(type);
+      if (!catalog || catalog.implementation === "planned" || catalog.implementation === "unavailable") {
+        skipped.push(`provider "${name}": type "${type}" is not implemented`);
+        continue;
+      }
+      if (ctx.providers.listRows().some((item) => item.name === name)) {
+        skipped.push(`provider "${name}": name already exists`);
+        continue;
+      }
+      const id = newId("prv");
+      ctx.db
+        .insert(providerInstances)
+        .values({
+          id,
+          name,
+          type,
+          enabled: Boolean(row["enabled"] ?? true),
+          baseUrl: typeof row["baseUrl"] === "string" ? row["baseUrl"] : null,
+          timeoutMs: Number(row["timeoutMs"] ?? 12000),
+          maxConcurrency: Number(row["maxConcurrency"] ?? 4),
+          priority: Number(row["priority"] ?? 100),
+          weight: Number(row["weight"] ?? 100),
+          maxRetries: Number(row["maxRetries"] ?? 1),
+          language: typeof row["language"] === "string" ? row["language"] : null,
+          freshness: typeof row["freshness"] === "string" ? row["freshness"] : null,
+          resultsPerPage: Number(row["resultsPerPage"] ?? 10),
+          rpmLimit: Number(row["rpmLimit"] ?? 60),
+          dailyQuota: row["dailyQuota"] == null ? null : Number(row["dailyQuota"]),
+          keyStrategy: String(row["keyStrategy"] ?? "round_robin"),
+          cooldownMs: Number(row["cooldownMs"] ?? 30000),
+          breakerThreshold: Number(row["breakerThreshold"] ?? 5),
+          breakerCooldownMs: Number(row["breakerCooldownMs"] ?? 60000),
+          configJson: JSON.stringify(row["config"] ?? {}),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      providersCreated += 1;
+      const labels = row["keyLabels"];
+      if (Array.isArray(labels) && labels.length > 0) {
+        skipped.push(
+          `provider "${name}": ${labels.length} key(s) were not imported — re-enter API keys manually`,
+        );
+      }
+    }
+  }
+
+  if (Array.isArray(config["models"])) {
+    for (const raw of config["models"] as unknown[]) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const kind = String(row["kind"] ?? "");
+      const name = String(row["name"] ?? "").trim();
+      if (!kind || !name) continue;
+      if (!["chat", "embedding", "rerank"].includes(kind)) {
+        skipped.push(`model "${name}": unknown kind "${kind}"`);
+        continue;
+      }
+      if (ctx.models.list(kind as "chat" | "embedding" | "rerank").some((item) => item.name === name)) {
+        skipped.push(`model "${name}": name already exists`);
+        continue;
+      }
+      const id = newId("mdl");
+      ctx.db
+        .insert(modelConfigs)
+        .values({
+          id,
+          kind,
+          name,
+          providerType: String(row["providerType"] ?? "openai-compatible"),
+          baseUrl: String(row["baseUrl"] ?? ""),
+          modelId: String(row["modelId"] ?? ""),
+          dimensions: row["dimensions"] == null ? null : Number(row["dimensions"]),
+          batchSize: Number(row["batchSize"] ?? 32),
+          timeoutMs: Number(row["timeoutMs"] ?? 30000),
+          maxConcurrency: Number(row["maxConcurrency"] ?? 4),
+          paramsJson: JSON.stringify(row["params"] ?? {}),
+          enabled: Boolean(row["enabled"] ?? true),
+          isDefault: Boolean(row["isDefault"] ?? false),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      modelsCreated += 1;
+      if (row["hasKey"]) skipped.push(`model "${name}": API key must be re-entered manually`);
+    }
+  }
+
+  if (Array.isArray(config["groups"])) {
+    for (const raw of config["groups"] as unknown[]) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const name = String(row["name"] ?? "").trim();
+      if (!name) continue;
+      if (ctx.db.select().from(searchGroups).where(eq(searchGroups.name, name)).get()) {
+        skipped.push(`group "${name}": name already exists`);
+        continue;
+      }
+      ctx.db
+        .insert(searchGroups)
+        .values({
+          id: newId("grp"),
+          name,
+          description: typeof row["description"] === "string" ? row["description"] : null,
+          providerIdsJson: JSON.stringify(
+            Array.isArray(row["providerIds"]) ? (row["providerIds"] as string[]) : [],
+          ),
+          createdAt: now,
+        })
+        .run();
+      groupsCreated += 1;
+    }
+  }
+
+  ctx.providers.reload();
+  return { providers: providersCreated, models: modelsCreated, groups: groupsCreated, skipped };
+}
+
+export { MCP_TOOLS, SKILL_DEFINITIONS };

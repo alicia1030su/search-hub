@@ -1,0 +1,51 @@
+import { SearchHubError, type SearchProviderAdapter } from "@search-hub/shared";
+import { braveAdapter } from "./builtin/brave.js";
+import { genericHttpAdapter } from "./builtin/generic.js";
+import { mockAdapter } from "./builtin/mock.js";
+import { searxngAdapter } from "./builtin/searxng.js";
+import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
+
+const ADAPTERS: SearchProviderAdapter[] = [
+  braveAdapter,
+  searxngAdapter,
+  genericHttpAdapter,
+  mockAdapter,
+];
+
+const ADAPTER_MAP = new Map(ADAPTERS.map((adapter) => [adapter.type, adapter]));
+
+export function getAdapter(type: string): SearchProviderAdapter | undefined {
+  return ADAPTER_MAP.get(type);
+}
+
+export function requireAdapter(type: string): SearchProviderAdapter {
+  const adapter = ADAPTER_MAP.get(type);
+  if (!adapter) {
+    const entry = getCatalogEntry(type);
+    const detail = entry
+      ? `Provider type "${type}" is ${entry.implementation}: ${entry.description}`
+      : `Unknown provider type "${type}"`;
+    throw new SearchHubError("unsupported", detail);
+  }
+  return adapter;
+}
+
+export function listAdapters(): Array<{
+  type: string;
+  name: string;
+  requiresKey: boolean;
+  supportsTest: boolean;
+}> {
+  return ADAPTERS.map((adapter) => ({
+    type: adapter.type,
+    name: getCatalogEntry(adapter.type)?.name ?? adapter.type,
+    requiresKey: adapter.requiresKey,
+    supportsTest: adapter.supportsTest,
+  }));
+}
+
+export function isAdapterImplemented(type: string): boolean {
+  return ADAPTER_MAP.has(type);
+}
+
+export { PROVIDER_CATALOG, getCatalogEntry };

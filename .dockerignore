@@ -1,0 +1,18 @@
+# Build context hygiene: never ship local dependencies, data, or build output.
+node_modules
+**/node_modules
+.data
+data
+dist
+test-results
+playwright-report
+coverage
+.git
+.github
+*.log
+.env
+.env.*
+!.env.example
+.shots
+.smoke-*
+tmp

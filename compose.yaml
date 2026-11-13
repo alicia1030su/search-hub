@@ -1,0 +1,54 @@
+services:
+  search-hub:
+    # Build locally from this repository. Once a release image is published,
+    # replace this with: image: ghcr.io/search-hub/search-hub:latest
+    build: .
+    container_name: search-hub
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      NODE_ENV: production
+      SEARCH_HUB_PORT: "8787"
+      SEARCH_HUB_HOST: 0.0.0.0
+      SEARCH_HUB_DATA_DIR: /app/data
+      # Generate with: openssl rand -hex 32
+      # If unset, a key is generated once in /app/data/master.key.
+      SEARCH_HUB_ENCRYPTION_KEY: ${SEARCH_HUB_ENCRYPTION_KEY:-}
+      # Optional: require this token on the first-run setup form.
+      SEARCH_HUB_SETUP_TOKEN: ${SEARCH_HUB_SETUP_TOKEN:-}
+      # Set when serving behind an HTTPS reverse proxy on a public domain.
+      SEARCH_HUB_PUBLIC_URL: ${SEARCH_HUB_PUBLIC_URL:-}
+      SEARCH_HUB_COOKIE_SECURE: ${SEARCH_HUB_COOKIE_SECURE:-false}
+      SEARCH_HUB_TRUST_PROXY: ${SEARCH_HUB_TRUST_PROXY:-false}
+      SEARCH_HUB_LOG_LEVEL: ${SEARCH_HUB_LOG_LEVEL:-info}
+      # Only needed for browser clients on another origin.
+      SEARCH_HUB_CORS_ORIGINS: ${SEARCH_HUB_CORS_ORIGINS:-}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Keep the footprint small on a 2C2G host.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # Optional: only needed for multi-instance key scheduling (not implemented yet).
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   command: ["redis-server", "--appendonly", "yes"]
+  #   volumes:
+  #     - ./data/redis:/data
