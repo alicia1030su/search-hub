@@ -203,6 +203,10 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
   });
 
   const okCount = outcomes.filter((outcome) => outcome.ok).length;
+  const answers = outcomes
+    .map((outcome) => outcome.answer)
+    .filter((answer): answer is NonNullable<typeof answer> => answer !== undefined);
+
   const errorSummaries: SearchErrorSummary[] = outcomes
     .filter((outcome) => !outcome.ok && outcome.error)
     .map((outcome) => outcome.error!);
@@ -244,6 +248,7 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
       partial: errorSummaries.length > 0,
     },
     errors: errorSummaries,
+    ...(answers.length > 0 ? { answers } : {}),
     failedSources: errorSummaries.map((item) => ({ id: item.providerId, code: item.code })),
     debug: {
       providerQueries: outcomes.map((outcome) => ({

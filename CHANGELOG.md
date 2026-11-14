@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-11-15
+
+Provider expansion round. Every entry below is either implemented and covered
+by contract tests against the vendor's documented wire format, or explicitly
+left unverified. No provider is marked `live_tested` without a recorded run.
+
+### Added — native search providers (first batch)
+
+| Type | Endpoint | Auth | Documented response |
+|---|---|---|---|
+| `tencent-yuanbao` | `POST https://wsa.tencentcloudapi.com/` (SearchPro, 2025-05-08) | TC3-HMAC-SHA256, SecretId+SecretKey pair | `Response.Pages[]`, each a JSON string |
+| `doubao` | `POST https://open.feedcoopapi.com/search_api/web_search` | Bearer | `Result.WebResults[]` (PascalCase) |
+| `deepseek-search` | `POST https://api.deepseek.com/v1/tools/search` | Bearer | `results[]` |
+| `qianfan-search` | `POST https://qianfan.baidubce.com/v2/ai_search/web_search` | Bearer | `references[]` |
+| `anysearch` | `POST https://api.anysearch.com/v1/search` | optional Bearer | `{code,data:{results[]}}` |
+
+- All five are `raw_search`: they return verifiable web pages, never an AI
+  answer. `deepseek-search` uses the standalone search API, not chat completions.
+- Tencent uses a **credential pair** stored as one JSON credential, so key
+  rotation switches both halves atomically. A single half is rejected.
+- Quota vs auth is mapped per vendor: Volcengine 10406/10408/10409/10410/10412
+  and DeepSeek 402 are quota errors, not invalid keys.
+- Date parsing for Tencent is pinned to +08:00 because the source string has no
+  timezone; otherwise the same value would differ between a local and a CI run.
+
+### Added — capability contract
+
+- `ProviderCapability = raw_search | grounded_answer`, `GroundedAnswer` with
+  `citations[]` and `toolInvoked`.
+- `SearchResponse.answers[]` is a separate channel from `results[]`; MCP and the
+  lab UI surface it separately. An answer with `toolInvoked=false` or no
+  citations is never presented as search success.
+
+### Added — web configuration
+
+- Catalog entries now carry declarative `fields[]` (text/password/number/select/
+  boolean), rendered per provider instead of one generic JSON box.
+- Saving a provider with credential fields creates the key in the same action;
+  pair credentials are joined into one key value.
+- Catalog cards show capability (`原始检索` / `模型联网`), `凭证对`, and
+  `可无 Key 使用` badges.
+
+### Changed
+
+- `baidu` catalog entry now points at `qianfan-search` (the actual official
+  endpoint) instead of claiming no API exists.
+- `metaso` stays `planned`: only the path and query params could be verified;
+  host, auth header and response shape could not, so no adapter was written.
+
+### Not done (honest gaps)
+
+- Gemini / Grok / MiMo / Bailian / MiniMax / Stepfun grounded adapters: not
+  implemented in this round.
+- Generic MCP search: not implemented.
+- Metaso: protocol partially verified only.
+- No provider is `live_tested`; no real key was used.
+
 ## [0.1.3] - 2026-11-14
 
 Development round focused on real integration options, honest docs and CI

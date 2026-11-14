@@ -78,6 +78,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
           results: response.results.map(toToolResult),
           errors: response.errors,
           timing: response.stats.timing,
+          // Grounded answers are kept out of `results` so a caller can never
+          // mistake an AI answer for a web page.
+          ...(response.answers === undefined ? {} : { answers: response.answers }),
           },
           response.status === "failed",
         );

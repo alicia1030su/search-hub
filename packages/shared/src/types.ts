@@ -179,6 +179,8 @@ export interface SearchResponse {
     cached?: boolean;
   };
   errors: SearchErrorSummary[];
+  /** AI answers with citations; kept separate from `results` on purpose. */
+  answers?: GroundedAnswer[];
   /** Compact view of failing providers, stable for client assertions. */
   failedSources: FailedSource[];
   summary?: SearchSummary;
@@ -233,6 +235,30 @@ export interface UpstreamAttribution {
   sources?: string[];
 }
 
+/** How a provider produces results. */
+export type ProviderCapability = "raw_search" | "grounded_answer";
+
+/** One citation attached to a grounded answer. URL is always provider-supplied. */
+export interface GroundedCitation {
+  title: string;
+  url: string;
+  snippet?: string;
+  publishedAt?: string;
+}
+
+/**
+ * An AI-generated answer with verifiable citations. `toolInvoked=false` means
+ * the model answered without calling its search tool; callers must not present
+ * that as a search result.
+ */
+export interface GroundedAnswer {
+  text: string;
+  citations: GroundedCitation[];
+  toolInvoked: boolean;
+  model?: string;
+  provider: string;
+}
+
 export interface RawSearchResult {
   title: string;
   url: string;
@@ -249,6 +275,8 @@ export interface ProviderSearchOutput {
   results: RawSearchResult[];
   requestUrl?: string;
   warnings?: string[];
+  /** Present only for `grounded_answer` providers that actually invoked search. */
+  answer?: GroundedAnswer;
 }
 
 export interface ProviderTestResult {
@@ -291,14 +319,39 @@ export interface SearchProviderAdapter {
   readonly type: string;
   readonly requiresKey: boolean;
   readonly supportsTest: boolean;
+  readonly capability?: ProviderCapability;
   search(input: ProviderSearchInput, ctx: ProviderContext): Promise<ProviderSearchOutput>;
   test?(ctx: ProviderContext): Promise<ProviderTestResult>;
+}
+
+export type CatalogFieldType = "text" | "password" | "number" | "select" | "boolean" | "textarea";
+
+/** Declarative field rendered by the web provider form. */
+export interface ProviderCatalogField {
+  key: string;
+  label: string;
+  type: CatalogFieldType;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: Array<{ value: string; label: string }>;
+  /** Where the value is stored. `credential` fields are joined into the key value. */
+  target?: "config" | "baseUrl" | "credential" | "model";
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
 }
 
 export interface ProviderCatalogEntry {
   type: string;
   name: string;
   category: ProviderCategory;
+  /** Defaults to `raw_search` when omitted. */
+  capability?: ProviderCapability;
+  /** `pair` means two secrets (e.g. SecretId + SecretKey) stored as one credential. */
+  credentialKind?: "single" | "pair";
+  /** Declarative web-form fields; empty/omitted means the generic fields only. */
+  fields?: ProviderCatalogField[];
   authType: ProviderAuthType;
   implementation: ProviderImplementation;
   defaultBaseUrl?: string;

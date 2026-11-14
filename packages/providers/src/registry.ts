@@ -4,12 +4,22 @@ import { braveAdapter } from "./builtin/brave.js";
 import { genericHttpAdapter } from "./builtin/generic.js";
 import { hackerNewsAdapter } from "./builtin/hackernews.js";
 import { legacySearchHubAdapter } from "./builtin/legacy-search-hub.js";
+import { tencentYuanbaoAdapter } from "./builtin/tencent-yuanbao.js";
+import { doubaoAdapter } from "./builtin/doubao.js";
+import { deepseekSearchAdapter } from "./builtin/deepseek-search.js";
+import { qianfanSearchAdapter } from "./builtin/qianfan-search.js";
+import { anySearchAdapter } from "./builtin/anysearch.js";
 import { mockAdapter } from "./builtin/mock.js";
 import { searxngAdapter } from "./builtin/searxng.js";
 import { tavilyAdapter } from "./builtin/tavily.js";
 import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
 
 const ADAPTERS: SearchProviderAdapter[] = [
+  tencentYuanbaoAdapter,
+  doubaoAdapter,
+  deepseekSearchAdapter,
+  qianfanSearchAdapter,
+  anySearchAdapter,
   tavilyAdapter,
   bochaAdapter,
   braveAdapter,

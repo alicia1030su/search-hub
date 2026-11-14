@@ -739,6 +739,62 @@ function SearchResultPanel({
         </CardContent>
       </Card>
 
+      {response.answers && response.answers.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle className="flex items-center gap-1.5">
+                <Sparkles className="size-4" aria-hidden />
+                {t("lab.answers")}
+              </CardTitle>
+              <CardDescription>{response.answers[0]!.provider}</CardDescription>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Badge tone="info">{t("lab.capability.grounded")}</Badge>
+              {response.answers[0]!.toolInvoked ? (
+                <Badge tone="success">{t("lab.answers.toolCalls")}</Badge>
+              ) : (
+                <Badge tone="warning">{t("lab.answers.noTool")}</Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {!response.answers[0]!.toolInvoked ? (
+              <Alert tone="warning" title={t("lab.answers.noTool")}>
+                {t("lab.answers.noTool")}
+              </Alert>
+            ) : null}
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">{response.answers[0]!.text}</p>
+            {response.answers[0]!.citations.length > 0 ? (
+              <div>
+                <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+                  {t("lab.result.citations")} ({response.answers[0]!.citations.length})
+                </p>
+                <ol className="space-y-1">
+                  {response.answers[0]!.citations.map((citation, index) => (
+                    <li key={`${citation.url}-${index}`} className="flex gap-2 text-xs">
+                      <span className="font-mono text-muted-foreground">[{index + 1}]</span>
+                      <a
+                        href={citation.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="min-w-0 truncate hover:underline"
+                      >
+                        {citation.title || citation.url}
+                      </a>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : (
+              <Alert tone="warning" title={t("lab.answers.noCitation")}>
+                {t("lab.answers.noCitation")}
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
       {response.summary ? (
         <Card>
           <CardHeader>

@@ -97,10 +97,30 @@ export interface ProviderSummary {
   circuitOpen: boolean;
 }
 
+export type ProviderCapability = "raw_search" | "grounded_answer";
+export type CatalogFieldType = "text" | "password" | "number" | "select" | "boolean" | "textarea";
+
+export interface ProviderCatalogField {
+  key: string;
+  label: string;
+  type: CatalogFieldType;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: Array<{ value: string; label: string }>;
+  target?: "config" | "baseUrl" | "credential" | "model";
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+}
+
 export interface ProviderCatalogEntry {
   type: string;
   name: string;
   category: ProviderCategory;
+  capability?: ProviderCapability;
+  credentialKind?: "single" | "pair";
+  fields?: ProviderCatalogField[];
   authType: ProviderAuthType;
   implementation: ProviderImplementation;
   defaultBaseUrl?: string;
@@ -292,6 +312,14 @@ export interface UpstreamAttribution {
   sources?: string[];
 }
 
+export interface GroundedAnswer {
+  text: string;
+  citations: Array<{ title: string; url: string; snippet?: string; publishedAt?: string }>;
+  toolInvoked: boolean;
+  model?: string;
+  provider: string;
+}
+
 export interface SearchResult {
   id: string;
   title: string;
@@ -362,6 +390,7 @@ export interface SearchResponse {
     partial: boolean;
   };
   errors: Array<{ providerId: string; providerName: string; code: string; message: string }>;
+  answers?: GroundedAnswer[];
   summary?: {
     text: string;
     modelId?: string;

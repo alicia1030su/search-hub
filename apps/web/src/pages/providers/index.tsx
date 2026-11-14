@@ -292,6 +292,17 @@ export function ProvidersPage() {
                                 {verificationLabels[entry.verification]}
                               </Badge>
                               <Badge tone="muted">{providerAuthLabels[entry.authType]}</Badge>
+                              <Badge tone="outline">
+                                {entry.capability === "grounded_answer"
+                                  ? t("lab.capability.grounded")
+                                  : t("lab.capability.raw")}
+                              </Badge>
+                              {entry.credentialKind === "pair" ? (
+                                <Badge tone="outline">{t("providers.catalog.pairCredential")}</Badge>
+                              ) : null}
+                              {entry.authType === "none" ? (
+                                <Badge tone="success">{t("providers.catalog.keyless")}</Badge>
+                              ) : null}
                               {configured > 0 ? (
                                 <Badge tone="info">{t("providers.catalog.configured", { count: configured })}</Badge>
                               ) : null}

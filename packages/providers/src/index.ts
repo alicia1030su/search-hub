@@ -1,5 +1,6 @@
 export * from "./catalog.js";
 export * from "./registry.js";
+export * from "./tc3.js";
 export * from "./http.js";
 export * from "./builtin/tavily.js";
 export * from "./builtin/bocha.js";
@@ -8,4 +9,9 @@ export * from "./builtin/searxng.js";
 export * from "./builtin/generic.js";
 export * from "./builtin/hackernews.js";
 export * from "./builtin/legacy-search-hub.js";
+export * from "./builtin/anysearch.js";
+export * from "./builtin/qianfan-search.js";
+export * from "./builtin/deepseek-search.js";
+export * from "./builtin/doubao.js";
+export * from "./builtin/tencent-yuanbao.js";
 export * from "./builtin/mock.js";

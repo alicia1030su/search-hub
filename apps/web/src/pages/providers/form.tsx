@@ -7,6 +7,7 @@ import type {
   Freshness,
   GenericProviderConfig,
   KeyStrategy,
+  ProviderCatalogField,
   ProviderCatalogEntry,
   ProviderInput,
   ProviderSummary,
@@ -189,6 +190,39 @@ function intValue(
   return parsed;
 }
 
+function readConfigValue(config: string, key: string): unknown {
+  try {
+    const parsed = JSON.parse(config || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return (parsed as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Tencent-style providers need a credential *pair*. The pair is stored as one
+ * JSON string so the key scheduler rotates both halves atomically; two
+ * unrelated halves can never be combined.
+ */
+function buildCredentialValue(
+  fields: ProviderCatalogField[],
+  values: Record<string, string>,
+  kind: "single" | "pair" | undefined,
+): string | null {
+  if (fields.length === 0) return null;
+  const filled = fields
+    .map((field) => ({ key: field.key, value: (values[field.key] ?? "").trim() }))
+    .filter((entry) => entry.value.length > 0);
+  if (filled.length === 0) return null;
+  if (kind === "pair") {
+    const missing = fields.some((field) => field.required && !(values[field.key] ?? "").trim());
+    if (missing) return null;
+    return JSON.stringify(Object.fromEntries(filled.map((entry) => [entry.key, entry.value])));
+  }
+  return filled.length === 1 ? filled[0]!.value : JSON.stringify(Object.fromEntries(filled.map((entry) => [entry.key, entry.value])));
+}
+
 export interface ProviderFormProps {
   open: boolean;
   onClose: () => void;
@@ -212,6 +246,7 @@ export function ProviderForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [formErrors, setFormErrors] = useState<string[]>([]);
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [configCheck, setConfigCheck] = useState<{
     ok: boolean;
     message: string;
@@ -233,6 +268,22 @@ export function ProviderForm({
     () => catalog.find((entry) => entry.type === state.type) ?? null,
     [catalog, state.type],
   );
+
+  const setConfigField = (fieldKey: string, value: unknown) => {
+    setState((current) => {
+      let parsed: Record<string, unknown> = {};
+      try {
+        const candidate = JSON.parse(current.config || "{}");
+        parsed = candidate && typeof candidate === "object" && !Array.isArray(candidate) ? candidate : {};
+      } catch {
+        parsed = {};
+      }
+      if (value === "" || value === undefined) delete parsed[fieldKey];
+      else parsed[fieldKey] = value;
+      return { ...current, config: prettyJson(parsed) };
+    });
+    setConfigCheck(null);
+  };
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setState((current) => ({ ...current, [key]: value }));
@@ -349,6 +400,15 @@ export function ProviderForm({
       config: (configJson.value ?? {}) as Record<string, unknown>,
     };
 
+    // Provider-specific credentials declared in the catalog.
+    const credentialFields = (selectedCatalog?.fields ?? []).filter(
+      (field) => (field.target ?? "config") === "credential",
+    );
+    const credentialValue = buildCredentialValue(credentialFields, credentials, selectedCatalog?.credentialKind);
+    if (!isEdit && credentialFields.some((field) => field.required) && credentialValue === null) {
+      errors.push(t("providers.form.credentialRequired"));
+    }
+
     setFormErrors(errors);
     if (errors.length > 0) return;
 
@@ -359,7 +419,18 @@ export function ProviderForm({
         delete patch.type;
         await api.updateProvider(provider.id, patch);
       } else {
-        await api.createProvider(payload);
+        const created = await api.createProvider(payload);
+        // A key can only be attached after the provider exists; creating it here
+        // means "save the provider with its credential" is one user action.
+        const newId = created.provider?.id;
+        if (newId && credentialValue !== null) {
+          await api.createKey(newId, {
+            label: t("providers.form.primaryCredential"),
+            key: credentialValue,
+            weight: 100,
+            enabled: true,
+          });
+        }
       }
       onSaved();
       onClose();
@@ -478,6 +549,114 @@ export function ProviderForm({
                 ) : null}
               </div>
               {selectedCatalog.notes ? <p className="mt-1.5">{selectedCatalog.notes}</p> : null}
+            </div>
+          ) : null}
+
+          {selectedCatalog && selectedCatalog.fields && selectedCatalog.fields.length > 0 ? (
+            <div className="space-y-3 rounded-md border bg-card p-3">
+              <div>
+                <p className="text-xs font-semibold">{t("providers.form.providerFields")}</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {t("providers.form.providerFieldsHint")}
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {selectedCatalog.fields.map((field) => {
+                  const target = field.target ?? "config";
+                  if (target === "credential") {
+                    return (
+                      <Field
+                        key={field.key}
+                        label={field.label}
+                        htmlFor={`field-${field.key}`}
+                        required={field.required && !isEdit}
+                        hint={field.help}
+                      >
+                        <Input
+                          id={`field-${field.key}`}
+                          type={field.type === "password" ? "password" : "text"}
+                          value={credentials[field.key] ?? ""}
+                          onChange={(event) =>
+                            setCredentials((current) => ({
+                              ...current,
+                              [field.key]: event.target.value,
+                            }))
+                          }
+                          placeholder={field.placeholder}
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </Field>
+                    );
+                  }
+                  if (target === "baseUrl") return null;
+                  if (field.type === "boolean") {
+                    return (
+                      <div
+                        key={field.key}
+                        className="flex items-center justify-between rounded-md border px-3 py-2.5"
+                      >
+                        <div>
+                          <p className="text-xs font-medium">{field.label}</p>
+                          {field.help ? (
+                            <p className="text-[11px] text-muted-foreground">{field.help}</p>
+                          ) : null}
+                        </div>
+                        <Switch
+                          checked={Boolean(readConfigValue(state.config, field.key) ?? field.default)}
+                          onChange={(value) => setConfigField(field.key, value)}
+                          label={field.label}
+                        />
+                      </div>
+                    );
+                  }
+                  if (field.type === "select") {
+                    return (
+                      <Field
+                        key={field.key}
+                        label={field.label}
+                        htmlFor={`field-${field.key}`}
+                        hint={field.help}
+                      >
+                        <Select
+                          id={`field-${field.key}`}
+                          value={String(readConfigValue(state.config, field.key) ?? field.default ?? "")}
+                          onChange={(event) => setConfigField(field.key, event.target.value)}
+                        >
+                          {(field.options ?? []).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                    );
+                  }
+                  return (
+                    <Field
+                      key={field.key}
+                      label={field.label}
+                      htmlFor={`field-${field.key}`}
+                      hint={field.help}
+                    >
+                      <Input
+                        id={`field-${field.key}`}
+                        type={field.type === "number" ? "number" : "text"}
+                        value={String(readConfigValue(state.config, field.key) ?? "")}
+                        onChange={(event) =>
+                          setConfigField(
+                            field.key,
+                            field.type === "number" && event.target.value !== ""
+                              ? Number(event.target.value)
+                              : event.target.value,
+                          )
+                        }
+                        placeholder={field.placeholder}
+                      />
+                    </Field>
+                  );
+                })}
+              </div>
             </div>
           ) : null}
 
