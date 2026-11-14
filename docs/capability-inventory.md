@@ -27,6 +27,7 @@
 
 | Provider | 适配器 | 契约测试 | 真实结果 | 当前状态 | 缺什么 |
 |---|---|---|---|---|---|
+| **旧版 Search Hub（兼容）** | 是 | 16 项契约 | **否**（未获授权连接 44475） | 模拟测试通过 | 一个真实旧实例 + 明确授权；见 `docs/legacy-44475-integration.md` |
 | **Hacker News**（Algolia 官方 API） | 是 | 是 | **是**（真实 URL、真实时间戳，REST 与 MCP 一致） | **真实联调通过** | —— |
 | Tavily | 是 | 40 例之一 | **否**（仅 401 `Unauthorized`，188–500ms） | 模拟测试通过 / 接口健康已知 | 一个有效 Key，跑 `provider-live.mjs --provider tavily` |
 | 博查 Bocha | 是 | 40 例之一 | **否**（`api.bochaai.com` 与 `api.bocha.cn` 均 401；188ms / 461ms） | 模拟测试通过 / 接口健康已知 | 一个有效且有余额的 Key |
@@ -91,7 +92,7 @@
 
 **不能说**
 
-- 「支持 28 个搜索源」——实际是 7 个适配器 + 21 条目录条目。
+- 「支持 29 个搜索源」——实际是 8 个适配器 + 21 条目录条目。
 - 「通用网页搜索已验证」——只有 HN 一个垂直源。
 - ~~「Docker 部署已验证」~~——现已可写「Docker 镜像与容器验收已在 GitHub Actions 通过」，但仍不能写「生产就绪」。
 - 「生产就绪 / production-ready」——AC-05、容器、真实 Provider 均未达标。
