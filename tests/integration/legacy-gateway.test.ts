@@ -214,6 +214,26 @@ describe("legacy gateway through the real search API", () => {
     expect(body.errors[0].message).toContain("reported failure");
   });
 
+  it("maps a failed envelope without results[] to the upstream error, not bad_request", async () => {
+    reply = {
+      body: {
+        status: "failed",
+        errors: [{ providerName: "brave", code: "auth_invalid", message: "token revoked" }],
+      },
+    };
+    const providerId = await addProvider({
+      name: "legacy-failed-no-results",
+      type: "search-hub-legacy",
+      baseUrl: fakeBase,
+    });
+    const response = await search([providerId]);
+    expect(response.statusCode).toBe(503);
+    const body = response.json();
+    expect(body.errors[0].code).toBe("auth_invalid");
+    expect(body.errors[0].message).toContain("reported failure");
+    expect(body.errors[0].message).not.toContain("no results[] array");
+  });
+
   it("maps an upstream partial envelope to status=partial with a warning", async () => {
     reply = {
       body: {

@@ -203,7 +203,7 @@ of being counted by hand.
 - **Networking docs/UI**: the base-URL hint and `docs/deployment.md` explain
   container vs host vs cross-server addresses, and state that the SSRF
   allowlist is an explicit declaration, not a workaround.
-- Tests: 397 (23 legacy contract + 5 legacy API integration + cancellation).
+- Tests: 408 (23 legacy contract + 5 legacy API integration + cancellation).
 
 ### Verified in GitHub Actions (2026-11-14)
 

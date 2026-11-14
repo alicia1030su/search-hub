@@ -29,7 +29,12 @@
 { "transport": "rest", "path": "/api/search", "mode": "rrf" }
 ```
 
-写入 `transport: "mcp"` 或其他值会立刻返回 `unsupported`（HTTP 501），**不会静默回退到 REST**——静默回退会把“协议没实现”伪装成“地址配错了”。
+`transport` 校验是**严格的**：只有 `undefined` / `null` / `""` / `"rest"` 会被接受（前三种表示“用默认 REST”）；
+
+- 非字符串（数字、布尔、对象、数组）→ `unsupported`（HTTP 501），并说明收到的类型；
+- 字符串但不是 `rest`（含 `"mcp"`、`"MCP"`、`"graphql"` 等）→ `unsupported`（HTTP 501）。
+
+两种情况都**不会发起任何 HTTP 请求**，因此不可能静默回退到 REST——静默回退会把“协议没实现”伪装成“地址配错了”。
 
 **未来扩展点**：MCP 客户端依赖已经存在于仓库（`packages/mcp` 使用官方 SDK），但 MCP 兼容应作为**独立适配器**（例如 `search-hub-legacy-mcp`）实现，而不是在 REST 适配器里加分支。这样两条协议的请求形状、错误码和测试互不污染。当前版本不包含 MCP 兼容。
 
@@ -92,6 +97,7 @@
 | `status: "partial"` | 保留结果，搜索状态为 `partial`，Provider stat 带 `warning` |
 | `status: "failed"` | 抛出 provider 错误（绝不当作“成功空数组”）；全源失败时 HTTP 503 + 结构化 `errors` |
 | `status: "failed"` + `results: []` | 同上，空数组不能洗白失败 |
+| `status: "failed"` + **缺少 `results` 字段** | 同上：先判 `status`，再要求 `results[]`，因此仍返回上游错误码（`auth_invalid` / `rate_limited` / …），不会被误报成 `bad_request: no results[] array` |
 | 无 `results[]` 字段 | `bad_request`，明确提示期望的两种信封 |
 
 ## 4. 操作步骤（需人工执行）
@@ -119,7 +125,7 @@
 | 项 | 状态 |
 |---|---|
 | 适配器实现 | 已完成 |
-| 契约测试（23 项） | **PASS**：请求形状、两种信封、字段别名、相对 URL 丢弃、401/403/429/5xx、取消语义、上游归因、failed/partial/empty 状态、未实现 transport 拒绝、注册 |
+| 契约测试（33 项） | **PASS**：请求形状、两种信封、字段别名、相对 URL 丢弃、401/403/429/5xx、取消语义、上游归因、failed/partial/empty 状态、未实现 transport 拒绝、注册 |
 | API 集成测试（5 项） | **PASS**：归因透传到 `POST /api/search`、failed→503、partial→`status=partial`+warning、取消不冷却 Key、只调用文档路径 |
 | 真实旧实例联调 | **未执行**（未获授权连接 44475） |
 | 旧服务兼容性（实际版本/字段） | 未知，需在授权后用「测试」按钮确认 |

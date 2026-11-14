@@ -306,6 +306,36 @@ describe("legacy Search Hub adapter: upstream status envelopes", () => {
     expect((error as Error).message).toContain("reported failure");
   });
 
+  it("maps status=failed first when results[] is missing entirely", async () => {
+    // Ordering regression: a failed envelope may omit results[]. Checking for
+    // results[] first would turn the upstream error into a generic bad_request.
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({
+        status: "failed",
+        errors: [{ providerName: "brave-legacy", code: "auth_invalid", message: "token revoked" }],
+      }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const error = await legacySearchHubAdapter
+      .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "auth_invalid" });
+    expect((error as Error).message).toContain("reported failure");
+    expect((error as Error).message).not.toContain("no results[] array");
+  });
+
+  it("maps status=failed with no errors[] at all to a retryless bad_request naming the status", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({ status: "failed" }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const error = await legacySearchHubAdapter
+      .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "bad_request", retryable: false });
+    expect((error as Error).message).toContain("status=failed");
+  });
+
   it("keeps results but returns a warning on status=partial", async () => {
     const { baseUrl } = await startServer(() => ({
       body: JSON.stringify({
@@ -392,13 +422,55 @@ describe("legacy Search Hub adapter: upstream attribution", () => {
 });
 
 describe("legacy Search Hub adapter: transport extensibility", () => {
-  it("fails fast for an unimplemented transport instead of silently using REST", async () => {
-    const ctx = makeCtx({ baseUrl: "http://127.0.0.1:9", config: { transport: "mcp" } });
-    const error = await legacySearchHubAdapter
-      .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
-      .catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "unsupported", statusCode: 501 });
-    expect((error as Error).message).toContain('Only "rest"');
+  const rejected: Array<[string, unknown]> = [
+    ["a string other than rest", "mcp"],
+    ["a padded unknown string", "  MCP "],
+    ["an empty-ish unknown string", "graphql"],
+    ["a number", 1],
+    ["a boolean", true],
+    ["an object", { kind: "mcp" }],
+    ["an array", ["rest", "mcp"]],
+  ];
+
+  for (const [label, value] of rejected) {
+    it(`rejects ${label} instead of falling back to REST`, async () => {
+      let calls = 0;
+      const { baseUrl } = await startServer(() => {
+        calls += 1;
+        return { body: JSON.stringify({ results: [RESULT] }) };
+      });
+      const ctx = makeCtx({ baseUrl, config: { transport: value } });
+      const error = await legacySearchHubAdapter
+        .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: "unsupported", statusCode: 501 });
+      // No request may be attempted: a silent REST fallback would show up here.
+      expect(calls).toBe(0);
+    });
+  }
+
+  it("treats undefined, null and an empty string as the REST default", async () => {
+    for (const value of [undefined, null, "", "   "]) {
+      const { baseUrl, requests } = await startServer(() => ({
+        body: JSON.stringify({ results: [RESULT] }),
+      }));
+      const ctx = makeCtx({ baseUrl, config: { transport: value } });
+      const output = await legacySearchHubAdapter.search(
+        { query: "x", limit: 5, signal: ctx.signal },
+        ctx,
+      );
+      expect(output.results).toHaveLength(1);
+      expect(requests[0]!.url).toBe("/api/search");
+    }
+  });
+
+  it("accepts the explicit rest value", async () => {
+    const { baseUrl, requests } = await startServer(() => ({
+      body: JSON.stringify({ results: [RESULT] }),
+    }));
+    const ctx = makeCtx({ baseUrl, config: { transport: "rest" } });
+    await legacySearchHubAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx);
+    expect(requests[0]!.url).toBe("/api/search");
   });
 });
 

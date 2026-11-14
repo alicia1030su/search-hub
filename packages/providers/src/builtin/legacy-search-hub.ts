@@ -65,6 +65,18 @@ export const legacySearchHubAdapter: SearchProviderAdapter = {
     ctx: ProviderContext,
   ): Promise<ProviderSearchOutput> {
     const transport = ctx.config.config["transport"];
+    // Strict gate: a non-string value (number/boolean/object/array) must never
+    // fall through to REST. Absent, null and "" mean "use the default".
+    if (transport !== undefined && transport !== null && typeof transport !== "string") {
+      throw new ProviderError(
+        ctx.config.id,
+        "search-hub-legacy",
+        "unsupported",
+        `Legacy transport must be a string; received ${Array.isArray(transport) ? "array" : typeof transport}. ` +
+          'Only "rest" is supported today.',
+        { statusCode: 501 },
+      );
+    }
     if (typeof transport === "string" && transport.trim() && !SUPPORTED_TRANSPORTS.has(transport.trim())) {
       throw new ProviderError(
         ctx.config.id,
@@ -105,25 +117,13 @@ export const legacySearchHubAdapter: SearchProviderAdapter = {
 
     // Some builds wrap the envelope in `data`; accept both without guessing.
     const envelope = isRecord(payload["data"]) ? (payload["data"] as Record<string, unknown>) : payload;
-    const list = Array.isArray(envelope["results"])
-      ? envelope["results"]
-      : Array.isArray(payload["results"])
-        ? payload["results"]
-        : undefined;
-    if (list === undefined) {
-      throw new ProviderError(
-        ctx.config.id,
-        "search-hub-legacy",
-        "bad_request",
-        "Legacy Search Hub response has no results[] array. Expected {results:[]} or {data:{results:[]}}.",
-        { statusCode: response.status },
-      );
-    }
-
     const status = typeof envelope["status"] === "string" ? envelope["status"] : "completed";
     const upstreamErrors = readUpstreamErrors(envelope["errors"]);
 
     // A gateway that reports `failed` must not be mapped to an empty success.
+    // Check this BEFORE requiring results[]: a failed envelope may omit the
+    // field entirely, and that must still surface as the upstream error rather
+    // than as a generic "malformed response".
     if (status === "failed") {
       const first = upstreamErrors[0];
       throw new ProviderError(
@@ -138,6 +138,21 @@ export const legacySearchHubAdapter: SearchProviderAdapter = {
           retryable: mapUpstreamErrorCode(first?.code) === "server_error",
           details: { upstreamStatus: status, upstreamErrors },
         },
+      );
+    }
+
+    const list = Array.isArray(envelope["results"])
+      ? envelope["results"]
+      : Array.isArray(payload["results"])
+        ? payload["results"]
+        : undefined;
+    if (list === undefined) {
+      throw new ProviderError(
+        ctx.config.id,
+        "search-hub-legacy",
+        "bad_request",
+        "Legacy Search Hub response has no results[] array. Expected {results:[]} or {data:{results:[]}}.",
+        { statusCode: response.status },
       );
     }
 
