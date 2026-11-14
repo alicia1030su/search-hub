@@ -67,6 +67,22 @@ $ gh secret list
 - 两个 query：中文 `中国 新能源汽车 产业 最新政策`（`freshness=month`）+ 英文 `typescript monorepo best practices`。**中文 query 是刻意设计的**——如果厂商对中文支持差，这里会直接暴露。
 - 失败会打印 `code` 与 message，不含 Key。
 
+### 1.4 无 Secret 时的真实行为（已实测）
+
+2026-11-14 在分支上手动触发 `provider-live.yml -f provider=auto`（Environment 中 0 个 Secret）：
+
+```text
+SKIP: tavily has no secret in the provider-live environment
+SKIP: bocha  has no secret in the provider-live environment
+SKIP: brave  has no secret in the provider-live environment
+##[error]No provider secret is configured for this run
+Process completed with exit code 1.
+```
+
+Run: <https://github.com/alicia1030su/search-hub/actions/runs/43613257891>
+
+**这是刻意设计**：没有 Key 时工作流失败，而不是绿色。因此不存在"没配 Key 却显示通过"的假证据。
+
 > 一个真实局限：`freshness` 只对中文 query 生效，英文 query 不带时间过滤。这是有意为之（避免旧结果被误判为失败），但也意味着**时间范围过滤只在一半样本上被验证**。
 
 ---
@@ -207,6 +223,19 @@ docker run -d --name searxng-local -p 8080:8080 \
 
 公共实例随时可能关 JSON 或挂掉，**不能作为验收依据**；只能当"快速冒烟"。
 
+### 4.3.1 本机实测：公共实例不可用（2026-11-14）
+
+```text
+control (api.github.com)          200
+searx.be/search?format=json       000 (timeout 10s)
+search.bus-hit.me/...             000 (timeout)
+priv.au/...                       000 (timeout)
+searxng.site/...                  000 (timeout)
+```
+
+对照 `api.github.com` 返回 200，说明不是 URL 写错，而是本机网络到这些公共实例不可达。
+即使可达，公共实例通常也关闭 JSON 或对数据中心 IP 返回 CAPTCHA。**因此公共实例只能当冒烟，不能作为验收依据；验收必须用自建实例。**
+
 ### 4.4 验收条件（严格定义"通用网页搜索已验证"）
 
 | # | 条件 | 判定 |
@@ -234,6 +263,7 @@ docker run -d --name searxng-local -p 8080:8080 \
 
 | 阶段 | 谁做 | 依赖 | 产出 |
 |---|---|---|---|
+| S0 验证"无 Secret 不会假通过" | 已完成 | — | run 43613257891：3 个 provider 全 SKIP，job 失败并报 `No provider secret`（见 §1.4） |
 | S1 Tavily/博查 Secret | **你**（GitHub UI） | 一个 Key | Secret 存在 |
 | S2 触发 live workflow | 我（gh CLI） | S1 | run URL + 真实 URL |
 | S3 结论回填 | 我（新分支 + PR） | S2 绿色 | `live_tested` + 证据链接 |
