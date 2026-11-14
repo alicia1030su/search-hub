@@ -1013,6 +1013,13 @@ function ResultRow({ result, rank }: { result: SearchResult; rank: number }) {
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
             <Badge tone="outline">{result.providerName}</Badge>
             <Badge tone="muted">{result.providerType}</Badge>
+            {result.upstream?.providerName || result.upstream?.provider ? (
+              <Badge tone="info">
+                {t("lab.result.upstream", {
+                  name: result.upstream.providerName ?? result.upstream.provider ?? "",
+                })}
+              </Badge>
+            ) : null}
             {result.score ? <Badge tone="muted">{t("lab.result.score")} {result.score.toFixed(3)}</Badge> : null}
             {result.fusionScore !== undefined ? (
               <Badge tone="info">
@@ -1040,6 +1047,13 @@ function ResultRow({ result, rank }: { result: SearchResult; rank: number }) {
                   <li key={`${source.providerId}-${source.rank}`} className="flex items-center gap-1.5 text-[10px]">
                     <span className="font-mono text-muted-foreground">#{source.rank}</span>
                     <span>{source.providerName}</span>
+                    {source.upstream?.providerName || source.upstream?.provider ? (
+                      <span className="text-muted-foreground">
+                        {t("lab.result.upstream", {
+                          name: source.upstream.providerName ?? source.upstream.provider ?? "",
+                        })}
+                      </span>
+                    ) : null}
                     <a
                       href={source.url}
                       target="_blank"

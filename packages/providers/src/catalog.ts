@@ -71,7 +71,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
       "调用一个独立运行的旧版 Search Hub 的 REST 搜索接口（默认 POST /api/search），把它的结果作为本平台的一个搜索源。",
     verification: "documented",
     notes:
-      "兼容适配器：只读调用旧服务，不修改、不迁移、不写入；删除本平台的该搜索源实例即可完全撤销接入。path 与 mode 可配置（默认 /api/search、rrf）。未连接任何真实旧实例，测试使用本地 fake。",
+      "兼容适配器，目前只实现 REST（transport 仅接受 rest），未核实真实 44475 的协议；path/mode 可配置，未实现 MCP。只读调用，不修改/迁移/写入旧服务，删除实例即可完全撤销。容器内 127.0.0.1 指容器自身，宿主机请用 host.docker.internal 或网关 IP，跨服务器用可达地址；目标需加入私有主机白名单。未连接真实旧实例，测试使用本地 fake。",
   },
   {
     type: "mock",

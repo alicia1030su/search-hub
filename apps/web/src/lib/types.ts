@@ -285,6 +285,13 @@ export interface SearchRequest {
   chatModelId?: string;
 }
 
+export interface UpstreamAttribution {
+  provider?: string;
+  providerName?: string;
+  source?: string;
+  sources?: string[];
+}
+
 export interface SearchResult {
   id: string;
   title: string;
@@ -300,6 +307,7 @@ export interface SearchResult {
   fusionScore?: number;
   rerankScore?: number;
   language?: string;
+  upstream?: UpstreamAttribution;
   sources: Array<{
     providerId: string;
     providerName: string;
@@ -307,6 +315,7 @@ export interface SearchResult {
     rank: number;
     score?: number;
     url: string;
+    upstream?: UpstreamAttribution;
   }>;
 }
 
@@ -321,6 +330,8 @@ export interface ProviderAttemptStat {
   keyId?: string;
   errorCode?: string;
   errorMessage?: string;
+  /** Non-fatal upstream degradation reported by a gateway provider. */
+  warning?: string;
   attempts: number;
 }
 

@@ -289,6 +289,119 @@ describe("legacy Search Hub adapter: error mapping", () => {
   });
 });
 
+describe("legacy Search Hub adapter: upstream status envelopes", () => {
+  it("fails on status=failed even when results is an empty array", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({
+        status: "failed",
+        results: [],
+        errors: [{ providerName: "brave-legacy", code: "rate_limited", message: "quota" }],
+      }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const error = await legacySearchHubAdapter
+      .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "rate_limited" });
+    expect((error as Error).message).toContain("reported failure");
+  });
+
+  it("keeps results but returns a warning on status=partial", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({
+        status: "partial",
+        results: [RESULT],
+        errors: [{ providerName: "bocha-legacy", code: "timeout", message: "slow" }],
+      }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const output = await legacySearchHubAdapter.search(
+      { query: "x", limit: 5, signal: ctx.signal },
+      ctx,
+    );
+    expect(output.results).toHaveLength(1);
+    expect(output.warnings?.[0]).toContain("status=partial");
+    expect(output.warnings?.[0]).toContain("bocha-legacy");
+  });
+
+  it("treats status=completed with zero results as a legitimate empty result", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({ status: "completed", results: [], errors: [] }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const output = await legacySearchHubAdapter.search(
+      { query: "x", limit: 5, signal: ctx.signal },
+      ctx,
+    );
+    expect(output.results).toEqual([]);
+    expect(output.warnings).toBeUndefined();
+  });
+
+  it("accepts the envelope under data.* including status", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({ data: { status: "failed", results: [], errors: [{ code: "server_error" }] } }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const error = await legacySearchHubAdapter
+      .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "server_error", retryable: true });
+  });
+});
+
+describe("legacy Search Hub adapter: upstream attribution", () => {
+  it("preserves provider/providerName/source/sources verbatim", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({
+        results: [
+          {
+            ...RESULT,
+            provider: "brave",
+            providerName: "Brave Search",
+            source: "brave-web",
+            sources: [{ providerName: "brave" }, "news"],
+          },
+        ],
+      }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const output = await legacySearchHubAdapter.search(
+      { query: "x", limit: 5, signal: ctx.signal },
+      ctx,
+    );
+    expect(output.results[0]!.upstream).toEqual({
+      provider: "brave",
+      providerName: "Brave Search",
+      source: "brave-web",
+      sources: ["brave", "news"],
+    });
+  });
+
+  it("does not invent upstream attribution when the gateway omits it", async () => {
+    const { provider: _provider, ...bare } = RESULT;
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({ results: [bare] }),
+    }));
+    const ctx = makeCtx({ baseUrl });
+    const output = await legacySearchHubAdapter.search(
+      { query: "x", limit: 5, signal: ctx.signal },
+      ctx,
+    );
+    expect(output.results[0]!.upstream).toBeUndefined();
+  });
+});
+
+describe("legacy Search Hub adapter: transport extensibility", () => {
+  it("fails fast for an unimplemented transport instead of silently using REST", async () => {
+    const ctx = makeCtx({ baseUrl: "http://127.0.0.1:9", config: { transport: "mcp" } });
+    const error = await legacySearchHubAdapter
+      .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "unsupported", statusCode: 501 });
+    expect((error as Error).message).toContain('Only "rest"');
+  });
+});
+
 describe("legacy Search Hub adapter: registry wiring", () => {
   it("is registered and listed with its honest verification status", () => {
     expect(getAdapter("search-hub-legacy")).toBe(legacySearchHubAdapter);

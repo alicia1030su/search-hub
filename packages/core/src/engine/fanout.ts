@@ -146,6 +146,10 @@ export async function runProvider(
     if (nowMs() >= deadline) break;
 
     let lease: KeyLease | null = null;
+    // Set when the caller aborted while we were waiting for a lease; the
+    // acquire path can resolve after the signal fires, so a lease obtained this
+    // way must still be returned instead of leaking a slot.
+    if (options.signal.aborted) break;
     if (adapter.requiresKey || scheduler.hasKeys()) {
       const acquired = await scheduler.acquireWithReason({
         maxWaitMs: Math.min(2_000, Math.max(0, deadline - nowMs())),
@@ -161,11 +165,25 @@ export async function runProvider(
         break;
       }
       usedKeyId = lease.keyId;
+      // The wait can resolve after the caller aborted. Return the slot without
+      // counting a failure; retrying a cancelled request is never correct.
+      if (options.signal.aborted) {
+        lease.release({ ok: false, cancelled: true });
+        lastCode = "cancelled";
+        lastMessage = "Search cancelled by caller";
+        break;
+      }
     }
 
     let apiKey: string | undefined;
     if (lease) {
-      apiKey = await options.credentials.getKeyValue(lease.keyId);
+      try {
+        apiKey = await options.credentials.getKeyValue(lease.keyId);
+      } catch (error) {
+        // A credential-store failure must not leak the slot.
+        lease.release({ ok: false, cancelled: true });
+        throw error;
+      }
       if (!apiKey) {
         lease.release({ ok: false, code: "auth_invalid", message: "API key not found" });
         lastCode = "auth_invalid";
@@ -218,6 +236,9 @@ export async function runProvider(
           latencyMs,
           resultCount: output.results.length,
           ...(usedKeyId === undefined ? {} : { keyId: usedKeyId }),
+          ...(output.warnings && output.warnings.length > 0
+            ? { warning: output.warnings.join("; ").slice(0, 500) }
+            : {}),
           attempts,
         },
       };
@@ -236,7 +257,12 @@ export async function runProvider(
       lastMessage = timedOutByProvider ? "Provider exceeded its timeout budget" : classified.message;
       statusCode = error instanceof ProviderError ? error.statusCode : undefined;
 
-      if (isAbortError(error) && options.signal.aborted) {
+      // Two cancellation paths reach this catch:
+      //  - an undici AbortError (raw abort), and
+      //  - a SearchHubError("cancelled") from safe-fetch (our structured abort).
+      // Both must release the slot without counting a failure, otherwise a
+      // user cancel pollutes key stats and can push a healthy key toward cooldown.
+      if (lastCode === "cancelled" || (isAbortError(error) && options.signal.aborted)) {
         lease?.release({ ok: false, cancelled: true });
         lastCode = "cancelled";
         lastMessage = "Search cancelled by caller";

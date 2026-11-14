@@ -13,6 +13,7 @@ import {
 import { fanoutProviders, type CredentialResolver, type FanoutResult, type ProviderRuntime } from "./fanout.js";
 import { RetryBudget, classifyError } from "../errors/classify.js";
 import { baseScore, dedupeResults, fuseWithRrf, type CandidateResult, type DedupDrop } from "../fusion/fuse.js";
+import type { RawSearchResult } from "@search-hub/shared";
 
 export interface SearchEngineDeps {
   runtimes: ProviderRuntime[];
@@ -195,6 +196,7 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
       score: Number((rawScore / maxScore).toFixed(6)),
       fusionScore: Number(rawScore.toFixed(8)),
       ...(item.language === undefined ? {} : { language: item.language }),
+      ...(item.upstream === undefined ? {} : { upstream: item.upstream }),
       sources: item.sources,
       ...(request.includeRaw && item.raw !== undefined ? { metadata: { raw: item.raw } } : {}),
     };
@@ -205,12 +207,16 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
     .filter((outcome) => !outcome.ok && outcome.error)
     .map((outcome) => outcome.error!);
 
+  // A gateway can report "partial" while still returning rows. Treat that as
+  // partial, not completed: the caller must be able to tell that some upstream
+  // sources failed even though the request itself succeeded.
+  const degradedCount = outcomes.filter((outcome) => outcome.ok && outcome.stat.warning).length;
   const status: SearchResponse["status"] =
     input.cancelled
       ? "failed"
       : okCount === 0
         ? "failed"
-        : errorSummaries.length > 0
+        : errorSummaries.length > 0 || degradedCount > 0
           ? "partial"
           : "completed";
 
@@ -251,15 +257,7 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
 }
 
 function normalizeRawResult(
-  raw: {
-    title?: string;
-    url?: string;
-    snippet?: string;
-    publishedAt?: string;
-    score?: number;
-    language?: string;
-    raw?: unknown;
-  },
+  raw: Pick<RawSearchResult, "title" | "url" | "snippet" | "publishedAt" | "score" | "language" | "raw" | "upstream">,
   outcome: FanoutResult,
   rank: number,
   retrievedAt: string,
@@ -293,8 +291,12 @@ function normalizeRawResult(
         rank,
         ...(raw.score === undefined ? {} : { score: raw.score }),
         url,
+        ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
       },
     ],
+    // Gateway adapters report which upstream provider actually produced this
+    // row. It is copied as-is and never inferred from the URL or domain.
+    ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
   };
 
   return {
@@ -306,6 +308,7 @@ function normalizeRawResult(
       ...(raw.publishedAt ? { publishedAt: raw.publishedAt } : {}),
       ...(raw.language ? { language: raw.language } : {}),
       ...(raw.score === undefined ? {} : { score: raw.score }),
+      ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
       ...(raw.raw === undefined ? {} : { raw: raw.raw }),
     },
   };

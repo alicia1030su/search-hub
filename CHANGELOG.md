@@ -182,6 +182,29 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### PR #1 compatibility review (2026-11-14)
+
+- **Protocol honesty**: `search-hub-legacy` now has a closed `transport`
+  allow-list (`rest` only). Any other value fails with `unsupported` (501)
+  instead of silently falling back; MCP compatibility is explicitly documented
+  as a separate, unimplemented adapter.
+- **Upstream attribution preserved**: gateway rows carry
+  `upstream: {provider, providerName, source, sources}` copied verbatim from the
+  old service, through dedupe, fusion and `SearchResult.sources[]`. Nothing is
+  inferred from the URL/domain; absent upstream fields stay absent.
+- **Envelope status**: `status:"failed"` (even with `results: []`) is an error,
+  `status:"partial"` keeps rows but marks the search `partial` with a per-provider
+  warning, and `status:"completed"` with zero rows stays a legitimate empty
+  result. A failed envelope is never reported as success.
+- **Cancellation accounting**: a caller abort now releases the key lease as
+  cancelled without incrementing failure counters, and the acquire path checks
+  for an abort after the wait, so a late lease cannot leak. Fixed in
+  `fanout.ts`; covered by a scheduler regression test and an API integration test.
+- **Networking docs/UI**: the base-URL hint and `docs/deployment.md` explain
+  container vs host vs cross-server addresses, and state that the SSRF
+  allowlist is an explicit declaration, not a workaround.
+- Tests: 397 (23 legacy contract + 5 legacy API integration + cancellation).
+
 ### Verified in GitHub Actions (2026-11-14)
 
 - Repository: <https://github.com/alicia1030su/search-hub> (public, default branch `main`).

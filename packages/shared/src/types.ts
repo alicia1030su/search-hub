@@ -85,6 +85,8 @@ export interface ResultSource {
   rank: number;
   score?: number;
   url: string;
+  /** Upstream attribution when this row arrived through a gateway. */
+  upstream?: UpstreamAttribution;
 }
 
 export interface SearchResult {
@@ -104,6 +106,8 @@ export interface SearchResult {
   language?: string;
   metadata?: Record<string, unknown>;
   sources: ResultSource[];
+  /** Upstream attribution when this row arrived through a gateway adapter. */
+  upstream?: UpstreamAttribution;
   raw?: unknown;
 }
 
@@ -118,6 +122,8 @@ export interface ProviderAttemptStat {
   keyId?: string;
   errorCode?: ProviderErrorCode;
   errorMessage?: string;
+  /** Non-fatal upstream degradation, e.g. a legacy gateway reported "partial". */
+  warning?: string;
   attempts: number;
 }
 
@@ -211,6 +217,22 @@ export interface ProviderSearchInput {
   signal: AbortSignal;
 }
 
+/**
+ * Attribution reported by an upstream gateway (for example a legacy Search Hub
+ * instance). Every field is optional and is copied verbatim from the upstream
+ * payload; the platform never derives a provider/source from a URL or domain.
+ */
+export interface UpstreamAttribution {
+  /** Upstream provider id/type as reported by the gateway (e.g. "brave"). */
+  provider?: string;
+  /** Upstream display name, when the gateway reports one separately. */
+  providerName?: string;
+  /** Upstream `source` string, when present. */
+  source?: string;
+  /** Upstream source list, flattened to strings. */
+  sources?: string[];
+}
+
 export interface RawSearchResult {
   title: string;
   url: string;
@@ -218,6 +240,8 @@ export interface RawSearchResult {
   publishedAt?: string;
   score?: number;
   language?: string;
+  /** Set only by gateway adapters that can see upstream attribution. */
+  upstream?: UpstreamAttribution;
   raw?: unknown;
 }
 

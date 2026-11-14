@@ -198,3 +198,30 @@ describe("KeyScheduler key health state machine", () => {
     expect(scheduler.tryAcquire()).toBeNull();
   });
 });
+
+describe("cancellation releases the slot without cooling a healthy key", () => {
+  it("a lease released as cancelled frees inFlight and keeps the key healthy", async () => {
+    const scheduler = makeScheduler({
+      keys: [key("k1")],
+      perKeyConcurrency: 1,
+    });
+
+    const lease = await scheduler.acquire({ maxWaitMs: 200 });
+    expect(lease).not.toBeNull();
+    // With the only slot held, a second acquire must time out: this proves the
+    // counter is real, so releasing it later is meaningful.
+    const blocked = await scheduler.acquire({ maxWaitMs: 20 });
+    expect(blocked).toBeNull();
+
+    lease!.release({ ok: false, cancelled: true });
+
+    const after = await scheduler.acquire({ maxWaitMs: 200 });
+    expect(after).not.toBeNull();
+    const snapshot = scheduler.snapshot().find((item) => item.id === "k1")!;
+    expect(snapshot.status).toBe("healthy");
+    expect(snapshot.failureCount).toBe(0);
+    expect(snapshot.consecutiveFailures).toBe(0);
+    expect(snapshot.inFlight).toBe(1);
+    after!.release({ ok: true, latencyMs: 1 });
+  });
+});
