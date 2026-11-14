@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-11-14
+
+Development round focused on real integration options, honest docs and CI
+runtime hygiene. No security threshold was relaxed and no provider was promoted
+to `live_tested` without a real credential.
+
+### Added
+
+- **Legacy Search Hub compatibility adapter** (`search-hub-legacy`): calls an
+  independently deployed old instance via `POST /api/search` (path and mode
+  configurable), forwards `freshness`/`language`, accepts both `{results:[]}`
+  and `{data:{results:[]}}` envelopes, and maps 401/403/429/5xx/timeout to the
+  existing provider error codes. Read-only and reversible: deleting the provider
+  instance reverts the integration; nothing is written to the old service. 16
+  contract tests use a local fake; **no real 44475 instance was contacted**.
+  See `docs/legacy-44475-integration.md`.
+- **Provider contract coverage** for the compat adapter plus explicit tests for
+  Chinese language mapping, freshness forwarding and URL preservation.
+
+### Fixed
+
+- **Caller cancellation was reported as a network error.** `safe-fetch` mapped
+  an aborted caller signal to `network` (`retryable: true`), which could mark a
+  healthy provider/key as failing and retry a request the caller had abandoned.
+  It now maps to `cancelled` (`retryable: false`), with a regression test.
+
+### Changed
+
+- **GitHub Actions runtime**: checkout/setup-node/upload-artifact/pnpm-setup/
+  buildx/build-push upgraded to versions that declare `using: node24`, removing
+  the Node.js 20 deprecation warning without changing any gate.
+- **Version** bumped to `0.1.3` across the workspace, API `/api/health` and the
+  three SKILL.md metadata files.
+- **Docs**: local Docker (still unavailable on this Windows host) and CI Docker
+  (executed, 24/24 PASS in run 43582011942) are now stated separately in every
+  status document; no unverified provider was upgraded.
+
 ## [Unreleased]
 
 ### Planned

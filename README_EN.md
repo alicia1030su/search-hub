@@ -4,9 +4,9 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: 0.1.2 · public preview, not production-ready.**
+> **Status: 0.1.3 · public preview, not production-ready.**
 >
-> Core search, key scheduling, admin UI, REST, MCP (both protocol eras) and Skills are implemented and covered by 367 automated tests. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave and SearXNG are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
+> Core search, key scheduling, admin UI, REST, MCP (both protocol eras) and Skills are implemented and covered by 384 automated tests. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave and SearXNG are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
 >
 > Evidence and gaps: [Verification](#verification), [provider matrix](./docs/provider-matrix.md), [capability inventory](./docs/capability-inventory.md), [release readiness](./docs/release-readiness.md). Nothing untested is described as verified.
 
@@ -56,7 +56,7 @@ Search Hub packages that as a deployable service:
 
 **Catalogued but not implemented**: DuckDuckGo, Baidu, Metaso, AnySearch, Gemini, Grok, MiniMax, MiMo, DeepSeek, Doubao, Tencent Yuanbao, Alibaba Bailian, Baidu Qianfan, StepFun, plus seven private gateway presets. They either have no publicly verifiable official API or need a separate AI-search adapter. The UI labels them “catalog only · not implemented” and **refuses to create them**. Private gateways can be wired through `generic-http`.
 
-> The catalog has 28 entries: 7 usable adapters, 12 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 28 providers. Per-provider live-test gaps: [docs/provider-matrix.md](./docs/provider-matrix.md).
+> The catalog has 29 entries: 8 usable adapters, 12 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 29 providers. Per-provider live-test gaps: [docs/provider-matrix.md](./docs/provider-matrix.md).
 
 ## Quick start
 
@@ -176,7 +176,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- 367 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- 384 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
 - A 16-row acceptance matrix (PASS 11 / PARTIAL 4 / BLOCKED 1) generated from `docs/ac-matrix.json`: [docs/ac-matrix.md](./docs/ac-matrix.md).
 - `tests/scripts/smoke.sh`: setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize.
 - Playwright: first-run, login, add source, search lab, theme, settings, integrations.

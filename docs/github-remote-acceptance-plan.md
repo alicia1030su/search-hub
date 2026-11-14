@@ -225,7 +225,7 @@ git push -u origin main     # 首次推送，非强推
 
 | 证据 | 位置 | 用途 |
 |---|---|---|
-| CI run URL | Actions → CI | 367 测试、typecheck、lint、E2E、audit、secret scan |
+| CI run URL | Actions → CI | 384 测试、typecheck、lint、E2E、audit、secret scan |
 | Docker run URL | Actions → Docker | quality → e2e → container 全链路 |
 | 镜像 digest / size | Docker job 日志 `image=... id=... size=...` | 发布说明 |
 | 11 项验收结果 | job summary + `docker-verification-<run_id>` artifact | 逐项 PASS/FAIL |

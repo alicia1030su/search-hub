@@ -11,6 +11,7 @@ A provider is a plugin that turns the Search Hub query into a vendor request and
 | `brave` | Built-in | Yes | Documented; **not live-tested** (no subscription key, and `api.search.brave.com` is unreachable from the dev network) |
 | `searxng` | Built-in | Optional | Documented; **not live-tested** (no instance) |
 | `hackernews` | Built-in | No | `live_tested` (v0.1.1), technical-community search only |
+| `search-hub-legacy` | Built-in compat | Optional | Calls an existing Search Hub REST `/api/search`; path/mode configurable; read-only, reversible. See [legacy integration](./legacy-44475-integration.md) |
 | `generic-http` | Built-in, declarative | Optional | Tested against local mock servers |
 | `mock` | Built-in, deterministic | No | Used by the test suite |
 

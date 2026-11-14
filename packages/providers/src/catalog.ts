@@ -61,6 +61,19 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     notes: "仅支持声明式映射，不执行任意代码。",
   },
   {
+    type: "search-hub-legacy",
+    name: "旧版 Search Hub（兼容）",
+    category: "compat",
+    authType: "api_key",
+    implementation: "builtin",
+    defaultBaseUrl: "http://127.0.0.1:44475",
+    description:
+      "调用一个独立运行的旧版 Search Hub 的 REST 搜索接口（默认 POST /api/search），把它的结果作为本平台的一个搜索源。",
+    verification: "documented",
+    notes:
+      "兼容适配器：只读调用旧服务，不修改、不迁移、不写入；删除本平台的该搜索源实例即可完全撤销接入。path 与 mode 可配置（默认 /api/search、rrf）。未连接任何真实旧实例，测试使用本地 fake。",
+  },
+  {
     type: "mock",
     name: "Mock（测试用）",
     category: "custom",

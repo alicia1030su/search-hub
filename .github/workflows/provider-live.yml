@@ -27,16 +27,16 @@ jobs:
     timeout-minutes: 15
     environment: provider-live
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.1
         with:
           version: 12.18.0
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22.22.2
           cache: pnpm
@@ -92,7 +92,7 @@ jobs:
       # instead of uploading them as long-lived artifacts.
       - name: Upload provider logs (7 days)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: provider-live-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: provider-*.log

@@ -112,7 +112,7 @@ still equals the counts derived from the JSON, so the two files cannot drift.
 | Tavily / Bocha live API | Adapters implemented and covered by local contract tests (`tests/unit/providers-web-search.test.ts`); no account key, so `provider-live.mjs` exits 2 (SKIPPED) | **BLOCKED** (no credential) |
 | Metaso | Catalog-only, no verified official endpoint | NOT IMPLEMENTED |
 | OpenAI/Anthropic/Gemini/Jina/Cohere live | No vendor keys. Reachability probed from this host: Cohere answers 403 for a bad key (<3s), Jina/OpenAI time out at 12s | Contract verified with local servers only |
-| Docker image build / container restart | Docker Engine unavailable on this host (WSL blocked by host security policy) | **BLOCKED locally** — automated in CI, see `docs/docker-verification.md` |
+| Docker image build / container restart | **本机** Docker Engine unavailable (WSL blocked by host security policy) | **BLOCKED locally; PASS in GitHub Actions** — run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942), 24/24, see `docs/docker-verification.md` §3.2 |
 | Multi-instance quota | Redis coordination not implemented | Out of scope |
 | Soak / memory-leak testing | No soak harness yet | Planned |
 | Browser matrix | Chromium only | Firefox/WebKit not run |

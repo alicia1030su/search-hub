@@ -65,7 +65,14 @@ AC-05 原文要求「总耗时 ≈ ⌈100/6⌉ × 单次延迟（±20%）」。�
 
 | 场景 | RSS | Private | 线程 | 句柄 |
 |---|---|---|---|---|
-| 空载 | 81.8 MB | 81.6 MB | 16 | 257 |
-| 50 次搜索后 | 86.4 MB | 85.3 MB | — | 254 |
+| 空载（原生进程） | 81.8 MB | 81.6 MB | 16 | 257 |
+| 50 次搜索后（原生进程） | 86.4 MB | 85.3 MB | — | 254 |
 
-容器内 `docker stats` 基线 **BLOCKED**（本机无 Docker Engine），由 `scripts/docker-verify.sh` 第 8 项在 CI 回填。
+**容器内实测（2026-11-14，CI run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942) 第 8 项）：** `docker stats --no-stream`，镜像 `search-hub:ci`，1 GiB 上限，50/50 次搜索成功。
+
+| 场景 | CPU% | MEM USAGE / LIMIT | MEM% |
+|---|---|---|---|
+| 容器空载 | 0.01–0.08% | **58.43 MiB / 1 GiB** | **5.71%** |
+| 50 次搜索后（mock 源，5ms） | 同区间 | **60.41 MiB / 1 GiB** | **5.90%** |
+
+容器内基线不再是 BLOCKED：本机 Docker Engine 仍不可用，但同一脚本已在远端 Runner 取得实测值。

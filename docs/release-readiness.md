@@ -19,7 +19,7 @@
 
 | 套件 | 结果 | 命令 |
 |---|---|---|
-| Vitest 单元 + 集成 | **367 passed / 25 files**，exit 0 | `corepack pnpm test` |
+| Vitest 单元 + 集成 | **384 passed / 25 files**，exit 0 | `corepack pnpm test` |
 | Playwright E2E | **5 passed**，exit 0 | `corepack pnpm test:e2e` |
 | TypeScript | **0 error** | `corepack pnpm typecheck` |
 | Lint（oxlint） | **0 warning / 0 error**，127 files | `corepack pnpm lint` |
@@ -143,7 +143,7 @@ C1（Docker 容器验收）已在 GitHub Actions 真实通过，因此此前"0 �
 
 **A 档证据（可对外引用）**
 
-- **367** 个 Vitest + 5 个 Playwright，本地与 GitHub Runner 双处全绿；typecheck / lint 0 错误。
+- **384** 个 Vitest + 5 个 Playwright，本地与 GitHub Runner 双处全绿；typecheck / lint 0 错误。
 - **镜像真实构建**：`search-hub:ci`，506 MB，`docker build` 在 ubuntu-latest 成功。
 - **11 项容器验收 24/24 PASS**：compose 启动、非 root uid 1001、web 产物、health、setup token、初始化、真实 HN 搜索、Key 掩码、重启一致、持久化、资源、崩溃恢复（RestartCount 0→1）、Trivy（CRITICAL=0 HIGH=0）、MCP（9 tools / 真实 URL / REST 一致 / 401）。
 - **CI 4 个 job 全绿**：quality、build、e2e、security（含全历史密钥扫描）。

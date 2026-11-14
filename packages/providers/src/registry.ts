@@ -3,6 +3,7 @@ import { bochaAdapter } from "./builtin/bocha.js";
 import { braveAdapter } from "./builtin/brave.js";
 import { genericHttpAdapter } from "./builtin/generic.js";
 import { hackerNewsAdapter } from "./builtin/hackernews.js";
+import { legacySearchHubAdapter } from "./builtin/legacy-search-hub.js";
 import { mockAdapter } from "./builtin/mock.js";
 import { searxngAdapter } from "./builtin/searxng.js";
 import { tavilyAdapter } from "./builtin/tavily.js";
@@ -15,6 +16,7 @@ const ADAPTERS: SearchProviderAdapter[] = [
   searxngAdapter,
   hackerNewsAdapter,
   genericHttpAdapter,
+  legacySearchHubAdapter,
   mockAdapter,
 ];
 
