@@ -10,7 +10,7 @@
 |---|---|
 | 分支 | `master` |
 | HEAD | 功能提交 `4a5ef8e`（基线 `a2e4b4a`）；报告自身在其后的 docs 提交中更新，精确 HEAD 以 `git rev-parse --short HEAD` 为准 |
-| 本轮提交 | `9d43665` 文档一致性、`4a5ef8e` RC 验收强化 |
+| 本轮提交 | `9d43665` 文档一致性、`4a5ef8e` RC 验收强化、`9dec043` 远端验收准备 |
 | 远端 | **无 remote**（`git remote -v` 为空），未 push、未打 tag、未建 Release |
 | 工作区 | 干净（除团队成员并行改动） |
 | 历史改写 | 无 |
