@@ -1,7 +1,10 @@
+import { randomBytes } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 const EMAIL = "admin@example.com";
-const PASSWORD = "E2E-Admin-Password-1";
+// Random per run: a failure trace is uploaded as an artifact, and a fixed
+// password would make that artifact look like a reusable credential.
+const PASSWORD = `E2E-${randomBytes(9).toString("base64url")}`;
 
 async function completeSetup(page: Page): Promise<void> {
   await page.goto("/");

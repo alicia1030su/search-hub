@@ -18,7 +18,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (366 tests, 25 files)
+## What is covered (367 tests, 25 files)
 
 **Scheduler and quotas** — `tests/unit/scheduler.test.ts`, `tests/unit/key-limits.test.ts`
 

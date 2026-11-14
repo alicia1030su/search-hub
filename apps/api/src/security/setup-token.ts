@@ -14,8 +14,9 @@ export interface SetupTokenState {
  * Goal: whoever reaches a fresh instance first must not be able to claim the
  * administrator account. When `SEARCH_HUB_SETUP_TOKEN` is not provided we
  * generate a random one and persist it with 0600 permissions next to the
- * database. The value is printed once at startup so the operator can read it
- * from `docker compose logs` or the file.
+ * database. The file path is logged, never the value: a CI log artifact is
+ * readable by anyone with repository access, and a valid setup token would let
+ * them claim a fresh instance.
  *
  * `none` is only returned when the instance is already initialized.
  */

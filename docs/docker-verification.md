@@ -135,7 +135,7 @@ SEARCH_HUB_VERIFY_MAX_HIGH=0 SEARCH_HUB_VERIFY_MAX_CRITICAL=0 TRIVY_IGNORE_UNFIX
 
 `.github/workflows/docker.yml`，触发条件：PR / 推送到 `main`（相关路径变更时）、`workflow_dispatch`。
 
-流水线：`quality job（checkout → pnpm install --frozen-lockfile → typecheck → lint → test → build）→ container job（checkout → setup-buildx（GHA 层缓存）→ build（load 到本地）→ docker compose config → 安装 trivy（v0.76.2，固定版本）→ scripts/docker-verify.sh（11 项）→ 上传报告 artifact → 失败时抓日志 → 清理容器/卷/镜像）`。container 通过 `needs: quality` 依赖前者，代码不绿时不会构建镜像。
+流水线：`quality job（checkout → pnpm install --frozen-lockfile → typecheck → lint → test → build）→ e2e job（Playwright Chromium）→ container job（checkout → setup-buildx（GHA 层缓存）→ build（load 到本地）→ docker compose config → 安装 trivy（v0.76.2，固定版本）→ scripts/docker-verify.sh（11 项）→ 上传报告 artifact → 失败时抓日志 → 清理容器/卷/镜像）`。container 通过 `needs: [quality, e2e]` 依赖前两者，代码不绿时不会构建镜像。
 
 要点：
 

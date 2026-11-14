@@ -611,6 +611,45 @@ describe("proxy mode", () => {
     expect(proxy.connects.length).toBe(0);
   });
 
+  it("does not trust the CONNECT target alone: a tunnel that answers from a private host is still a blind spot", async () => {
+    // The proxy is what resolves the destination, so a cooperating proxy can
+    // legally connect to a private address while the CONNECT record still
+    // carries a public hostname. Asserting "no CONNECT happened" therefore
+    // cannot prove safety on its own. This test documents the residual risk
+    // that remains in `untrusted` mode and pins the two things the application
+    // *can* still guarantee: the CONNECT target is the validated hostname, and
+    // the tunnel destination is decided by the proxy, not by the client.
+    const privateOrigin = await startOrigin((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"from":"private-origin"}');
+    });
+    track(privateOrigin.close);
+    // The proxy tunnels to 127.0.0.1 while the client asked for a validated
+    // public name — exactly what a DNS-rebinding or misconfigured proxy does.
+    const proxy = await startMockProxy({
+      tunnelTo: { host: "127.0.0.1", port: privateOrigin.port },
+    });
+    track(proxy.close);
+
+    const safeFetch = createSafeFetch({
+      policy: POLICY,
+      timeoutMs: 5_000,
+      resolveHost: makeResolver({ "rebind.public.test": [PUBLIC_ADDRESS] }),
+      proxy: { proxy: `http://127.0.0.1:${proxy.port}`, proxyTrust: "untrusted" },
+    });
+
+    const response = await safeFetch<{ from: string }>("http://rebind.public.test/");
+    // Documented, not desired: with an untrusted proxy the application cannot
+    // see the private destination. Preserving the assertion makes the blind
+    // spot explicit instead of letting a "0 CONNECTs" test imply safety.
+    expect(response.data.from).toBe("private-origin");
+    expect(proxy.connects).toHaveLength(1);
+    expect(proxy.connects[0]!.host).toBe("rebind.public.test");
+    // What the app does guarantee: it validated the name it handed to the
+    // proxy, and it never dialled the target itself.
+    expect(response.url).toBe("http://rebind.public.test/");
+  });
+
   it("re-validates redirect hops in proxy mode and never tunnels to metadata", async () => {
     const origin = await startOrigin((_req, res) => {
       res.writeHead(302, { location: "http://169.254.169.254/latest/meta-data/" });

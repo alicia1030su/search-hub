@@ -19,7 +19,7 @@
 
 | 套件 | 结果 | 命令 |
 |---|---|---|
-| Vitest 单元 + 集成 | **366 passed / 25 files**，exit 0 | `corepack pnpm test` |
+| Vitest 单元 + 集成 | **367 passed / 25 files**，exit 0 | `corepack pnpm test` |
 | Playwright E2E | **5 passed**，exit 0 | `corepack pnpm test:e2e` |
 | TypeScript | **0 error** | `corepack pnpm typecheck` |
 | Lint（oxlint） | **0 warning / 0 error**，127 files | `corepack pnpm lint` |
@@ -28,7 +28,7 @@
 
 ## 3. Docker CI 实际执行情况
 
-**未执行（BLOCKED）。** 本机 Docker Engine 不可用：
+**未执行（BLOCKED）。** `docker.yml` 已具备 `quality → e2e → container` 三级门禁，但本机 Docker Engine 不可用：
 
 ```text
 $ docker info
@@ -101,6 +101,9 @@ exit code 1
 | 10 | `prod-deps` 从含 devDeps 的层裁剪 | vite/esbuild 可能进入运行时 | 已修（独立全新安装） |
 | 11 | 上游错误正文拼进 message | 凭据可能进日志/响应 | 已修（按本次请求 header 值精确清洗 + 已知形态兜底） |
 | 12 | `deep-research/SKILL.md` 让 search-scope token 调 `/api/admin/models` | 技能按文档执行必然 403；用户会以为 token 坏了 | 已修：文档改为索取 `chatModelId`，并新增回归断言 |
+| 13 | 首次初始化的 setup token 被写入启动日志 | 公开仓库的 Actions 日志/产物会暴露一次性 token，未初始化实例可被抢占 | 已修：只打印 token 文件路径，不再打印值 |
+| 14 | E2E 使用固定管理员密码，失败 trace 会上传 | 固定口令进入公开 artifact | 已修：每次运行随机生成 |
+| 15 | `push` 只监听 `main`，仓库分支是 `master` | 首次推送后 CI/Docker 工作流不会触发 | 已修：两个工作流同时监听 main/master |
 
 代理安全边界（本轮复审中，见 §9 未完成项）：默认 `untrusted` 下回环/RFC1918/CGNAT/链路本地/`.local`/云元数据在**发起代理请求前**被拒，mock 代理 CONNECT 计数为 0；`NO_PROXY` 命中走带连接期守卫的直连；代理凭据不可枚举、不落日志。
 
@@ -138,7 +141,7 @@ exit code 1
 
 **支持发布的事实（A 档证据）**
 
-- **366** 个 Vitest + 5 个 Playwright 全绿；typecheck / lint 0 错误；构建成功。
+- **367** 个 Vitest + 5 个 Playwright 全绿；typecheck / lint 0 错误；构建成功。
 - 真实网络搜索链路可用（HN 真实返回真实 URL，REST 与 MCP 结果一致，20/20）。
 - 密钥不泄漏三重扫描 18/18；工作区与全 ref 密钥扫描 0 命中；`pnpm audit` 无已知漏洞。
 - 备份用 Online Backup API，并发写入下 57/57 检查通过；新版本数据库拒绝启动生效。

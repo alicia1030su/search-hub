@@ -115,7 +115,8 @@ export function createContext(config: AppConfig): AppContext {
       { source: setupToken.source, file: setupToken.source === "generated" ? setupToken.filePath : undefined },
       setupToken.source === "env"
         ? "First-run setup is protected by SEARCH_HUB_SETUP_TOKEN."
-        : "First-run setup token generated. Open /setup and paste this token: " + setupToken.value,
+        : "First-run setup token generated at " + setupToken.filePath +
+          " (mode 0600). Read it from the file; the value is never written to the log.",
     );
   }
 

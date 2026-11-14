@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: "22.20.0"
+  NODE_VERSION: "22.22.2"
   PNPM_VERSION: "12.18.0"
 
 jobs:
@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -60,6 +62,7 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v4
+        with:/n          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -87,6 +90,9 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --prod
           test ! -d node_modules/vite
+          # The bundle keeps third-party packages external. Prove every import
+          # resolves from apps/api/dist in the production tree, before boot.
+          node scripts/check-runtime-imports.mjs
           SEARCH_HUB_DATA_DIR="$RUNNER_TEMP/sh-prod" \
           SEARCH_HUB_PORT=8788 \
           SEARCH_HUB_COOKIE_SECURE=false \
@@ -100,7 +106,7 @@ jobs:
           test -f "$RUNNER_TEMP/sh-prod/setup-token"
           kill "$SERVER_PID" || true
 
-      # The container image, the compose stack and the 10-item container
+      # The container image, the compose stack and the 11-item container
       # acceptance run live in .github/workflows/docker.yml. They are kept out
       # of this job on purpose: `pnpm install --prod` above prunes the workspace
       # node_modules, and a container build in the same job would make it
@@ -113,6 +119,7 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v4
+        with:/n          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -143,11 +150,15 @@ jobs:
           retention-days: 7
 
   security:
-    name: Dependency audit
+    name: Dependency audit and secret scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Full history: the scanner checks every reachable commit, not just HEAD.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -163,3 +174,6 @@ jobs:
 
       - name: pnpm audit (high and critical)
         run: pnpm audit --audit-level high
+
+      - name: Secret scan (working tree and every git ref)
+        run: node scripts/secret-scan.mjs

@@ -11,7 +11,7 @@ name: Docker
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "Dockerfile"
       - ".dockerignore"
@@ -71,7 +71,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - name: Print toolchain versions
@@ -101,13 +101,54 @@ jobs:
           test -f packages/mcp/dist/stdio.mjs
           test -d apps/web/dist
 
+  e2e:
+    name: Browser end-to-end (Playwright)
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.18.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web and server bundles
+        run: pnpm build
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run the E2E suite
+        run: pnpm test:e2e
+
   container:
     name: Image, compose stack, MCP and 11-item acceptance
     runs-on: ubuntu-latest
-    needs: quality
+    needs: [quality, e2e]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js (used by the verification script's JSON helper)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -137,7 +178,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/trivy" --version
 
-      - name: Run the 10-item container acceptance
+      - name: Run the 11-item container acceptance
         env:
           # Reuse the image built above; the script still runs every other item.
           SEARCH_HUB_VERIFY_SKIP_BUILD: "1"
@@ -158,7 +199,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: docker-verification-${{ github.run_id }}
+          name: docker-verification-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/docker-report
           if-no-files-found: warn
           retention-days: 14
