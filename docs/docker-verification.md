@@ -153,7 +153,7 @@ SEARCH_HUB_CONTAINER_NAME=sh-manual SEARCH_HUB_HOST_PORT=18100 \
   docker compose -p sh-manual up -d --build
 curl -sS http://127.0.0.1:18100/api/health
 docker exec sh-manual cat /app/data/setup-token     # 初始化完成后该文件消失
-docker kill sh-manual                               # restart: unless-stopped 会拉起
+docker exec sh-manual sh -c 'for p in /proc/[0-9]*; do grep -qa "apps/api/dist/server.mjs" "$p/cmdline" && kill -9 "${p#/proc/}"; done'  # 模拟进程崩溃
 docker compose -p sh-manual down -v                 # 收尾
 ```
 
@@ -202,7 +202,7 @@ docker compose -p sh-manual down -v                 # 收尾
 | 6 | 重启一致性 | `compose restart` → 对比 providers / dashboard | `hn-live` 计数不变、`searches` 不变、`session=200` | 配置在 SQLite，会话在 SQLite，均应存活 |
 | 7 | 持久化 | `compose down`（不删卷）→ `up` | 卷存在、providers 与 searches 不变、`initialized=true` | 命名卷 `search-hub-data` 生效 |
 | 8 | 资源 | `docker stats --no-stream` 空闲 vs 50 次搜索后 | 50/50 成功 | 记录 `cpu% \| mem \| mem%`（基线见 §3.1） |
-| 9 | 崩溃恢复 | `docker kill <c>` → 轮询 health | 自动拉起，`RestartCount` 递增，health `200` | 再调 `POST /api/admin/maintenance/checkpoint`（`wal_checkpoint(TRUNCATE)`）须 `200`，providers/searches 不丢 |
+| 9 | 崩溃恢复 | 在容器内 kill 掉 `server.mjs` 进程（模拟崩溃，而不是 `docker kill` 的显式停止）→ 轮询 health | 自动拉起，`RestartCount` 递增，health `200` | 再调 `POST /api/admin/maintenance/checkpoint`（`wal_checkpoint(TRUNCATE)`）须 `200`，providers/searches 不丢。`docker kill` 属于显式停止，`unless-stopped` 按设计不会拉起，不能用它验崩溃恢复 |
 | 10 | 漏洞扫描 | `trivy image --severity HIGH,CRITICAL` | `CRITICAL=0`、`HIGH=0`（可配置） | 缺失扫描器且 `REQUIRE_SCAN=1` → FAIL |
 | 11 | MCP Streamable HTTP | `POST /mcp`：initialize → tools/list → tools/call | tools ≥9；search_web 返回真实 URL + provider 归因 | REST 同 query 必须包含 MCP 首条 URL；无效 token 401/403 |
 

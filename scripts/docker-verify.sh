@@ -492,9 +492,22 @@ fi
 
 # ------------------------------------------------------------ 9. crash recovery
 line
-log "=== item 9: docker kill -> restart policy -> health and data intact ==="
+log "=== item 9: in-container process kill -> restart policy -> health and data intact ==="
 RESTART_BEFORE=$(docker inspect -f '{{.RestartCount}}' "$CONTAINER" 2>/dev/null || echo 0)
-docker kill "$CONTAINER" >>"$REPORT" 2>&1 || true
+# `docker kill` is an explicit stop from Docker's point of view, so the
+# `unless-stopped` policy deliberately does NOT restart the container. Crash
+# recovery has to kill the application process from inside the container: the
+# container then exits as a failure and the restart policy applies.
+# `/proc` scanning avoids relying on pgrep/ps being present in the slim image.
+docker exec "$CONTAINER" sh -c '
+  for p in /proc/[0-9]*; do
+    pid="${p#/proc/}"
+    [ "$pid" = "$$" ] && continue
+    if grep -qa "apps/api/dist/server.mjs" "$p/cmdline" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
+' >>"$REPORT" 2>&1 || true
 RECOVERED=0
 STATE="?"
 for i in $(seq 1 45); do

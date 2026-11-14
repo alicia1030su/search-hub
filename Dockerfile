@@ -69,6 +69,18 @@ ENV SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations
 RUN groupadd --system --gid 1001 searchhub \
     && useradd --system --uid 1001 --gid searchhub --home-dir /app searchhub
 
+# The runtime only executes `node apps/api/dist/server.mjs`; it never installs
+# or resolves packages. Remove npm/corepack from the runtime stage:
+#   * they are dead weight (and their bundled dependency tree is the source of
+#     every HIGH finding Trivy reported for this image);
+#   * keeping a package manager in a production container gives an attacker a
+#     ready-made tool for fetching second-stage payloads.
+# The build stages keep them, so the image is still fully reproducible.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+           /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+    && node --version
+
 # --chown on every COPY keeps the image small: a separate `chown -R` would copy
 # every file again into a new layer. Only the data directory needs to be
 # writable at runtime; everything else is read-only for uid 1001.
