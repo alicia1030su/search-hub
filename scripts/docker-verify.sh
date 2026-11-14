@@ -637,9 +637,32 @@ if [ -n "$MCP_TOKEN" ]; then
   mcp_rpc "$WORK/mcp-call.raw" "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_web\",\"arguments\":{\"query\":\"$MCP_QUERY\",\"limit\":3}}}"
   sed -n 's/^data: //p' "$WORK/mcp-call.raw" > "$WORK/mcp-call.json" 2>/dev/null || true
   [ -s "$WORK/mcp-call.json" ] || cp "$WORK/mcp-call.raw" "$WORK/mcp-call.json"
-  MCP_IS_ERROR=$(jget "$WORK/mcp-call.json" result.isError)
-  MCP_URL=$(grep -o '"url":"https\?://[^"]*"' "$WORK/mcp-call.json" | head -1 | cut -d'"' -f4)
-  MCP_PROVIDER=$(grep -o '"provider":"[^"]*"' "$WORK/mcp-call.json" | head -1 | cut -d'"' -f4)
+  # tools/call returns MCP content blocks: the search payload is JSON encoded
+  # inside result.content[0].text, so a plain grep for "url":"https" does not
+  # match (slashes are escaped). Parse the outer JSON, then the inner payload.
+  MCP_FIELDS=$(node -e '
+    const fs = require("fs");
+    const raw = fs.readFileSync(process.argv[1], "utf8");
+    let out = { isError: "parseerror", url: "", provider: "" };
+    try {
+      const envelope = JSON.parse(raw);
+      const result = envelope.result || {};
+      const text = (result.content || []).find((c) => c.type === "text")?.text || "";
+      let payload = {};
+      try { payload = JSON.parse(text); } catch {}
+      const first = (payload.results || [])[0] || {};
+      out = {
+        isError: result.isError === true ? "true" : "false",
+        url: first.url || "",
+        provider: first.provider || first.providerName || "",
+      };
+    } catch {}
+    process.stdout.write([out.isError, out.url, out.provider].join("|"));
+  ' "$WORK/mcp-call.json")
+  MCP_IS_ERROR=${MCP_FIELDS%%|*}
+  MCP_REST=${MCP_FIELDS#*|}
+  MCP_URL=${MCP_REST%%|*}
+  MCP_PROVIDER=${MCP_REST#*|}
   log "  tools/call search_web -> isError=${MCP_IS_ERROR:-false} firstUrl=${MCP_URL:-none} provider=${MCP_PROVIDER:-none}"
   if [ "$MCP_IS_ERROR" != "true" ] && [ -n "$MCP_URL" ] && [ -n "$MCP_PROVIDER" ]; then
     record PASS "11d. mcp tools/call" "search_web returned a real URL with provider attribution (${MCP_PROVIDER})"
