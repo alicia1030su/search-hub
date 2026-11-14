@@ -100,7 +100,7 @@ export const yourAdapter: SearchProviderAdapter = {
 ## 6. 真实联调
 
 ```bash
-node tests/scripts/provider-live.mjs --provider <name> --key "$YOUR_KEY"
+PROVIDER_API_KEY=... pnpm exec tsx tests/scripts/provider-live.mjs --provider <name>
 ```
 
 - 无 Key：脚本输出 `SKIPPED: no credential`，退出码 **2**（不是 0）。

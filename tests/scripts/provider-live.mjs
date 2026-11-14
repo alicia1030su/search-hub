@@ -7,13 +7,12 @@
  * no mocks, no fixtures.
  *
  * Usage (tsx is required because the adapters are TypeScript sources):
- *   corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider tavily --key "$TAVILY_API_KEY"
- *   corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider bocha  --key "$BOCHA_API_KEY"
- *   corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider brave  --key "$BRAVE_API_KEY"
+ *   TAVILY_API_KEY=... corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider tavily
+ *   BOCHA_API_KEY=...  corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider bocha
+ *   BRAVE_API_KEY=...  corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider brave
  *
  * Options:
  *   --provider tavily|bocha|brave   (required)
- *   --key <value>                   falls back to TAVILY_API_KEY / BOCHA_API_KEY / BRAVE_API_KEY
  *   --base-url <url>                override the official endpoint (staging/proxy)
  *   --limit <n>                     results per query (default 5)
  *
@@ -22,9 +21,18 @@
  *   1  FAIL — auth, transport or mapping problem (details printed, no secret)
  *   2  SKIPPED: no credential — deliberately NOT 0 so CI cannot read it as a pass
  *
- * The key is read from --key or the environment, passed straight to the adapter,
- * and never printed, logged or written to disk.
+ * CREDENTIAL HANDLING (deliberately strict):
+ * - The key is read ONLY from the process environment. There is no --key
+ *   option: a command-line value would appear in argv of this process AND of
+ *   any re-exec child, and could be echoed by shell tracing.
+ * - Every string that may contain third-party data (upstream error bodies,
+ *   titles, URLs, dates) is passed through `scrub()` before it is printed.
+ *   GitHub masks registered secret values in job logs, but it does NOT mask
+ *   URL-encoded/base64/transformed echoes, and it does NOT mask artifact files.
+ * - The workflow therefore does not upload raw logs as artifacts.
  */
+
+import { redactText, providerKeysFromEnv } from "./redact-secrets.mjs";
 
 const PROVIDERS = {
   tavily: { env: "TAVILY_API_KEY", label: "Tavily" },
@@ -41,6 +49,22 @@ const QUERIES = [
   { label: "en-tech", query: "typescript monorepo best practices" },
 ];
 
+/** All configured keys, so a cross-provider echo is redacted too. */
+const CONFIGURED_KEYS = providerKeysFromEnv();
+
+/** Scrub anything that may contain third-party data before printing it. */
+function scrub(text) {
+  return redactText(text, CONFIGURED_KEYS);
+}
+
+function say(message) {
+  console.log(scrub(message));
+}
+
+function warn(message) {
+  console.error(scrub(message));
+}
+
 function arg(name) {
   const index = process.argv.indexOf(`--${name}`);
   if (index === -1) return undefined;
@@ -49,7 +73,7 @@ function arg(name) {
 }
 
 function fail(message) {
-  console.error(`FAIL: ${message}`);
+  warn(`FAIL: ${message}`);
   process.exit(1);
 }
 
@@ -77,9 +101,9 @@ async function main() {
 
   // Credential gate runs BEFORE any import/network work: a missing key must be a
   // cheap, unambiguous SKIPPED (exit 2), never a silent success.
-  const key = arg("key") ?? process.env[provider.env] ?? "";
+  const key = process.env[provider.env] ?? "";
   if (!key) {
-    console.log(`SKIPPED: no credential (pass --key or set ${provider.env})`);
+    say(`SKIPPED: no credential (set ${provider.env})`);
     process.exit(2);
   }
 
@@ -94,6 +118,9 @@ async function main() {
     // Plain `node` cannot import the TypeScript sources (the workspace uses
     // `.js` specifiers that tsx remaps). Re-exec once through tsx so the
     // documented `node tests/scripts/provider-live.mjs ...` invocation works.
+    // The child inherits the environment (that is the only credential channel)
+    // and receives no credential in argv. CI runs through `pnpm exec tsx`
+    // directly, so this child never exists there.
     if (process.env["PROVIDER_LIVE_TSX"] !== "1") {
       const { spawnSync } = await import("node:child_process");
       const reexec = spawnSync(
@@ -106,11 +133,9 @@ async function main() {
       );
       process.exit(reexec.status ?? 1);
     }
-    console.error("FAIL: the TypeScript adapters could not be loaded.");
-    console.error(
-      `Run through tsx: corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider ${providerName} --key $${provider.env}`,
-    );
-    console.error(error instanceof Error ? error.message : String(error));
+    warn("FAIL: the TypeScript adapters could not be loaded.");
+    warn(`Run through tsx: ${provider.env}=... corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider ${providerName}`);
+    warn(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 
@@ -122,8 +147,8 @@ async function main() {
   const safeFetch = shared.createSafeFetch({ timeoutMs: 20_000 });
   const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
-  console.log(`LIVE: provider=${providerName} endpoint=${baseUrl ?? "official default"} limit=${limit}`);
-  console.log("LIVE: credential loaded (value never printed)");
+  say(`LIVE: provider=${providerName} endpoint=${baseUrl ?? "official default"} limit=${limit}`);
+  say("LIVE: credential loaded (value never printed)");
 
   const failures = [];
 
@@ -168,7 +193,7 @@ async function main() {
       const code = error && typeof error === "object" && "code" in error ? error.code : "unknown";
       const message = error instanceof Error ? error.message : String(error);
       failures.push(`${query.label}: ${code} — ${message}`);
-      console.error(`FAIL ${query.label}: ${code} — ${message}`);
+      warn(`FAIL ${query.label}: ${code} — ${message}`);
       continue;
     } finally {
       controller.abort();
@@ -176,52 +201,52 @@ async function main() {
 
     const latencyMs = Date.now() - started;
     const results = result.results ?? [];
-    console.log(
-      `\n[${query.label}] "${query.query}" -> ${results.length} result(s) in ${latencyMs}ms`,
-    );
+    say(`\n[${query.label}] "${query.query}" -> ${results.length} result(s) in ${latencyMs}ms`);
     if (results.length === 0) {
       failures.push(`${query.label}: returned zero results`);
-      console.error(`FAIL ${query.label}: returned zero results`);
+      warn(`FAIL ${query.label}: returned zero results`);
       continue;
     }
 
     results.slice(0, 3).forEach((item, index) => {
-      console.log(`  ${index + 1}. ${item.title}`);
-      console.log(`     ${item.url}`);
-      if (item.publishedAt) console.log(`     published: ${item.publishedAt}`);
+      say(`  ${index + 1}. ${item.title}`);
+      say(`     ${item.url}`);
+      if (item.publishedAt) say(`     published: ${item.publishedAt}`);
     });
 
     const badUrl = results.map((item) => ({ item, check: isUsableUrl(item.url) })).find((entry) => !entry.check.ok);
     if (badUrl) {
       failures.push(`${query.label}: unusable url ${badUrl.item.url} (${badUrl.check.reason})`);
-      console.error(`FAIL ${query.label}: unusable url ${badUrl.item.url} (${badUrl.check.reason})`);
+      warn(`FAIL ${query.label}: unusable url ${badUrl.item.url} (${badUrl.check.reason})`);
     }
     const missingTitle = results.find((item) => !item.title || item.title.trim().length === 0);
     if (missingTitle) {
       failures.push(`${query.label}: a result is missing a title`);
-      console.error(`FAIL ${query.label}: a result is missing a title`);
+      warn(`FAIL ${query.label}: a result is missing a title`);
     }
     const duplicateUrls = results.length - new Set(results.map((item) => item.url)).size;
     if (duplicateUrls > 0) {
       failures.push(`${query.label}: ${duplicateUrls} duplicate url(s) in one response`);
-      console.error(`FAIL ${query.label}: ${duplicateUrls} duplicate url(s) in one response`);
+      warn(`FAIL ${query.label}: ${duplicateUrls} duplicate url(s) in one response`);
     }
   }
 
   if (failures.length > 0) {
-    console.log(`\nLIVE FAILED: ${failures.length} problem(s)`);
-    failures.forEach((entry) => console.log(`  - ${entry}`));
+    say(`\nLIVE FAILED: ${failures.length} problem(s)`);
+    failures.forEach((entry) => say(`  - ${entry}`));
     process.exit(1);
   }
 
-  console.log(
+  say(
     `\nLIVE PASSED — ${provider.label} answered both queries with real https results. ` +
-      "Record this run before changing the catalog to live_tested.",
+      "Record this run before changing the catalog to live_tested. " +
+      "This verifies the ADAPTER only, not the REST/MCP end-to-end chain.",
   );
 }
 
 main().catch((error) => {
-  // Never echo the key: provider errors carry codes/messages only.
-  console.error(`FAIL: ${error instanceof Error ? error.message : String(error)}`);
+  // Never echo the key: provider errors carry codes/messages only, and scrub()
+  // handles transformed third-party echoes as well.
+  warn(`FAIL: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });

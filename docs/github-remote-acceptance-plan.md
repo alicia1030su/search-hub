@@ -264,7 +264,7 @@ gh run download <run-id> -n docker-verification-<run-id> -D /tmp/docker-report
 | item 9 | 崩溃恢复 | `docker kill` + `docker ps -a` + checkpoint |
 | item 10 | Trivy | `trivy image --severity HIGH,CRITICAL <image>` |
 | item 11 | MCP | 看 `mcp-*.json` 原始响应 |
-| `provider-live` | 厂商 401/429/超时 | 本地 `provider-live.mjs --provider <name> --key ...` |
+| `provider-live` | 厂商 401/429/超时 | 本地 `PROVIDER_API_KEY=... provider-live.mjs --provider <name>`（环境变量，不用 `--key`） |
 
 ### 7.3 修复与重跑
 
