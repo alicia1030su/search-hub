@@ -24,7 +24,7 @@ assignees: []
 
 Search Hub only marks a provider `live_tested` after a recorded real call. Pick one:
 
-- [ ] I have a key and I am willing to run `node tests/scripts/provider-live.mjs --provider <name> --key "$KEY"` and paste the result (URLs only, no key).
+- [ ] I have a dedicated, revocable test key and can run `PROVIDER_API_KEY=... pnpm exec tsx tests/scripts/provider-live.mjs --provider <name>` (env only, never `--key`, never paste the key).
 - [ ] I do not have a key. Implement it as `documented` with contract tests only.
 
 ## Response shape (if known)

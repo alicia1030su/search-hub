@@ -73,9 +73,9 @@ These are names imported from the previous private gateway. They have **no built
 
 ```bash
 # Missing key => prints "SKIPPED: no credential" and exits 2 (never 0).
-corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider tavily --key "$TAVILY_API_KEY"
-corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider bocha  --key "$BOCHA_API_KEY"
-corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider brave  --key "$BRAVE_API_KEY"
+TAVILY_API_KEY=... corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider tavily
+BOCHA_API_KEY=... corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider bocha
+BRAVE_API_KEY=... corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider brave
 ```
 
 Exit codes: `0` = LIVE PASSED (both queries returned non-empty, `https`, non-placeholder URLs); `1` = FAIL (auth/transport/mapping); `2` = SKIPPED (no credential). The script never prints or writes the key.

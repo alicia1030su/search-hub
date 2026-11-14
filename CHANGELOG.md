@@ -182,6 +182,28 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### Live-provider hardening (PR #2, 2026-11-15)
+
+- Environment `provider-live` now uses Selected branches (**main only**) and
+  `can_admins_bypass: false`. Verified: a `workflow_dispatch` from a non-main
+  branch is rejected before any Secret is injected.
+- Removed the `--key` CLI option from `provider-live.mjs`; credentials come
+  only from the environment. Shared redaction (`redact-secrets.mjs`) scrubs
+  literal, Bearer, URL-encoded, base64 and known-prefix key shapes from every
+  printed line, and `scrub-provider-logs.mjs` scrubs the log files **in place
+  before** they are uploaded as artifacts (fail-closed: no upload if scrubbing
+  fails). CI runs through `pnpm exec tsx` so no re-exec child holds the key.
+- Documented the six leak paths and the residual risk of arbitrary transformed
+  credential echoes; a dedicated revocable test key is required.
+- SearXNG acceptance no longer requires three runs to differ: A (interface
+  availability) + B (real upstream request and failure reporting) are the
+  gates, C (cache behaviour) and D (domain breadth) are observations only.
+- Legacy 44475 identification is explicitly non-destructive: metadata first,
+  search calls gated behind separate authorisation because they may consume
+  quota, update statistics and populate caches.
+- Added an evidence-level ladder: L1 adapter live verification must not be
+  reported as L2/L3 REST/MCP full-chain verification.
+
 ### PR #1 compatibility review (2026-11-14)
 
 - **Protocol honesty**: `search-hub-legacy` now has a closed `transport`
@@ -203,7 +225,7 @@ of being counted by hand.
 - **Networking docs/UI**: the base-URL hint and `docs/deployment.md` explain
   container vs host vs cross-server addresses, and state that the SSRF
   allowlist is an explicit declaration, not a workaround.
-- Tests: 408 (23 legacy contract + 5 legacy API integration + cancellation).
+- Tests: 417 (23 legacy contract + 5 legacy API integration + cancellation).
 
 ### Verified in GitHub Actions (2026-11-14)
 
