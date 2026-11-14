@@ -4,7 +4,11 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> 状态：`0.1.2`。核心搜索闭环、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过自动化测试；Hacker News 已用真实网络完成端到端联调，代理出网与 SQLite 在线备份已完成加固。真实第三方搜索 API 的联调状态见下方[验证状态](#验证状态)与[Provider 状态矩阵](./docs/provider-matrix.md)，未联调的能力不会被描述为“已验证”。
+> **状态：0.1.2 · 公开预览（Public Preview），不是 production-ready。**
+>
+> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 367 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与容器验收仍待首次远端执行**（本机 Docker Engine 不可用），因此不要把下面的 Compose 方式当作已验证部署路径。
+>
+> 逐项证据与缺口见[验证状态](#验证状态)、[Provider 状态矩阵](./docs/provider-matrix.md)、[能力清单](./docs/capability-inventory.md) 与[发布就绪报告](./docs/release-readiness.md)。未联调的能力不会被描述为“已验证”。
 
 ---
 
@@ -59,8 +63,7 @@ Search Hub 把这些做成一个可部署的服务：
 ### Docker Compose（推荐）
 
 ```bash
-# 将 <your-org> 替换为实际托管地址；仓库尚未发布官方镜像/Release
-git clone https://github.com/<your-org>/search-hub.git
+git clone https://github.com/alicia1030su/search-hub.git
 cd search-hub
 cp .env.example .env
 # 强烈建议写入一个固定主密钥：openssl rand -hex 32
@@ -117,6 +120,8 @@ corepack pnpm start          # 以编译产物运行（生产形态）
   }
 }
 ```
+
+> `search.example.com` 与 `sh_your_token` 是示例值，部署时替换为你的域名与真实令牌。
 
 令牌需要 `mcp:use` 与 `search` 权限；使用 `get_search_sources` 还需要 `sources:read`（界面默认勾选这三项）。在 **集成 → 访问令牌** 创建，只显示一次。
 

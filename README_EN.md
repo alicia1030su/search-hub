@@ -4,7 +4,11 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> Status: `0.1.2`. Core search, key scheduling, admin UI, REST, MCP (both protocol eras), and Skills are implemented and covered by automated tests; Hacker News has been verified end to end over the real network, and proxy egress plus SQLite online backup have been hardened. Live third-party verification status is listed under [Verification](#verification) and [the provider matrix](./docs/provider-matrix.md); nothing untested is described as verified.
+> **Status: 0.1.2 · public preview, not production-ready.**
+>
+> Core search, key scheduling, admin UI, REST, MCP (both protocol eras) and Skills are implemented and covered by 367 automated tests. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave and SearXNG are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and container acceptance have not been executed yet** (no Docker Engine on the development host), so the Compose path below is not a verified deployment path.
+>
+> Evidence and gaps: [Verification](#verification), [provider matrix](./docs/provider-matrix.md), [capability inventory](./docs/capability-inventory.md), [release readiness](./docs/release-readiness.md). Nothing untested is described as verified.
 
 ---
 
@@ -59,7 +63,7 @@ Search Hub packages that as a deployable service:
 ### Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/<your-org>/search-hub.git
+git clone https://github.com/alicia1030su/search-hub.git
 cd search-hub
 cp .env.example .env
 # Strongly recommended: set a stable master key
@@ -111,6 +115,8 @@ Each provider can have multiple independent instances (`brave-eu`, `brave-us`) w
   }
 }
 ```
+
+> `search.example.com` and `sh_your_token` are placeholders; replace them with your hostname and a real token.
 
 The token needs `mcp:use` and `search`; `get_search_sources` also needs `sources:read` (all three are preselected in the UI). It is shown once when created.
 

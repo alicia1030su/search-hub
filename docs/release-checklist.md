@@ -47,7 +47,7 @@
 - [ ] `docs/acceptance-report.md` 引用 `docs/ac-matrix.md`，不再维护第二份手工统计
 - [ ] Provider 矩阵状态与 `catalog.ts` 的 `verification` 一致
 - [ ] 部署文档的安装顺序、备份、代理边界与代码一致
-- [ ] 所有 `<your-org>` 占位符已替换（仅发布时）
+- [x] 所有 `<your-org>` 占位符已替换为 `alicia1030su`（2026-11-14）
 - [ ] 未实现的能力仍在 UI/文档中标注"未实现"
 
 ## 5. 发布动作（需维护者授权，缺一不可）

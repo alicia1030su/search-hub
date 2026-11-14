@@ -6,8 +6,8 @@ Search Hub stores API credentials for third-party services and can reach arbitra
 
 Do **not** open a public issue for a security problem.
 
-- Use GitHub's private vulnerability reporting on the repository ("Security" → "Report a vulnerability").
-- Or email the maintainers listed in `SECURITY.md`'s maintainer block with: affected version, reproduction steps, impact, and whether you need credit.
+- Use GitHub's private vulnerability reporting on this repository: <https://github.com/alicia1030su/search-hub/security/advisories/new>.
+- Include the affected version, reproduction steps, impact, and whether you need credit.
 
 We aim to acknowledge within 3 working days and to ship a fix or mitigation within 30 days for high-severity issues. Please give us that window before public disclosure.
 
@@ -152,7 +152,7 @@ Rate limiting is a **safety** feature, not a bug:
 - [ ] Set a fixed `SEARCH_HUB_ENCRYPTION_KEY` and back it up.
 - [ ] Serve over HTTPS via a reverse proxy; set `SEARCH_HUB_COOKIE_SECURE=true` and `SEARCH_HUB_TRUST_PROXY=true` (loopback-only) or an explicit proxy CIDR such as `172.17.0.0/16`.
 - [ ] Set `SEARCH_HUB_PUBLIC_URL` and, if you use additional hostnames, `SEARCH_HUB_ALLOWED_HOSTS`.
-- [ ] Set `SEARCH_HUB_SETUP_TOKEN` before exposing the instance publicly, or read the generated token from the log/file and keep it private.
+- [ ] Set `SEARCH_HUB_SETUP_TOKEN` before exposing the instance publicly, or read the generated token from `data/setup-token` and keep it private. The token value is never written to the log.
 - [ ] Do not expose port 8787 directly to the internet.
 - [ ] Create one token per integration with the narrowest scope; revoke unused tokens.
 - [ ] Review `/api/admin/audit` periodically for unexpected admin actions.
@@ -162,4 +162,4 @@ Rate limiting is a **safety** feature, not a bug:
 
 ## Maintainers
 
-Security contact: the maintainers listed in the repository's `CODEOWNERS` / GitHub organisation profile. Replace this line with a monitored address before publishing a release.
+Maintainer: [@alicia1030su](https://github.com/alicia1030su). Security reports must use the private advisory link above, not a public issue or a direct message.

@@ -163,7 +163,7 @@ exit code 1
 | C2 | Release notes 明确写明：仅 Hacker News 完成真实联调；Tavily/Bocha/Brave/SearXNG 为"按官方文档实现、未联调" |
 | C3 | Release notes 明确写明：Docker 镜像验收在发布环境未执行（若 C1 未完成） |
 | C4 | 至少 1 个通用网页搜索（Tavily 或 Bocha）用真实 Key 跑通 `provider-live.mjs` 并把状态升为 `live_tested`（**强烈建议，非硬性**） |
-| C5 | 替换 README 中 `<your-org>` 与 `search.example.com` 占位符为真实地址，并确认 LICENSE 版权主体 |
+| C5 | ~~替换 README 中 `<your-org>` 占位符~~ 已完成（`alicia1030su`）；`search.example.com` 保留为示例域名并已标注；LICENSE 为 MIT |
 
 **明确不允许的表述**
 
