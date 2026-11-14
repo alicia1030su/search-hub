@@ -2,6 +2,8 @@
 
 日期：2026-11-13 ｜ 范围：v0.1.1 生产可用性补强与真实环境验收 ｜ 仓库：`search-hub`（本地仓库路径已移除，发布前不应携带个人路径）
 
+> **状态提示（2026-11-14）**：本报告正文是 2026-11-13 的历史记录。其中 Docker 相关结论「BLOCKED」**只描述当时那台 Windows 本机**；容器验收已于 2026-11-14 在 GitHub Actions 真实执行并通过（run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942)，24/24）。阅读 Docker 段落时以 **§6 顶部的「2026-11-14 更新」块**为准；其余 BLOCKED 项（Brave / SearXNG / Tavily / 博查 / 秘塔 真实联调、大模型厂商、AC-13、AC-05 缺口）**不因这次更新而改变**。
+
 ## 0. v0.1.2 增量（本轮）
 
 - **验收矩阵**：[`docs/ac-matrix.md`](./ac-matrix.md)（由 `docs/ac-matrix.json` 生成，固定 16 项）
@@ -11,14 +13,14 @@
 - **Provider（P1-1）**：Tavily、博查 Bocha 按官方文档实现并加契约测试，保持 `documented`；Brave/SearXNG 仍无真实凭证/实例。
 - **模型链路（P1-3）**：Base URL 走同一 SafeFetch、Key 不落响应/导出/备份、维度校验、Rerank 映射、引用过滤、失败降级全部通过；真实厂商联调仍 BLOCKED。
 - **质量验证（P1-2）**：`tests/scripts/search-quality.mjs` 可重复运行，结果写入 [`docs/search-quality-report.md`](./search-quality-report.md) + 同名 JSON；当前只有 HN 一个真实源（8/8 请求成功），en-tech 原始 13→去重 12→返回 10，中文时事与 freshness=week 均为 0 条（HN 垂直索引的预期结果），原始重复率 7.7%、返回行内重复率 0%。报告只给数字、不做 provider 排名，并写明「条数不是质量分」。
-- **Docker（P0-3）**：仍 **BLOCKED**（Engine 无法启动，WSL 被宿主安全策略禁止）；新增 `scripts/docker-verify.sh` 与 `.github/workflows/docker.yml`，10 项验收可在 Linux/CI 一键复现，本机未执行。
+- **Docker（P0-3）**：**本机 BLOCKED / CI PASS（2026-11-14 更新）**。本机 Docker Engine 无法启动（WSL 被宿主安全策略禁止）；新增 `scripts/docker-verify.sh` 与 `.github/workflows/docker.yml`，11 项验收（脚本汇总 24 个检查点）可在 Linux/CI 一键复现。容器验收已在 GitHub Actions 真实执行并通过：run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942)（ubuntu-latest），24/24，镜像 `search-hub:ci` 506 MB，Trivy CRITICAL=0 / HIGH=0，容器内存空载 58.43 MiB、50 次搜索后 60.41 MiB（1 GiB 上限），崩溃恢复 `RestartCount` 0→1；本机至今未执行，原因见 §6。
 - **测试总数**：Vitest **367** 项（25 文件）、Playwright **5** 项；`typecheck` 与 `lint` 均 0 错误。新增脚本：`backup-restore.mjs`、`search-quality.mjs`、`ac05-concurrency.mjs`、`provider-live.mjs`、`docker-verify.sh`、`ac-matrix.mjs`、`secret-scan.mjs`。
 - **本轮修复的真实缺陷 10 项**：`::ffff:` 十六进制映射 SSRF 绕过；`blocked` 被误报为 `auth_invalid`；模型 Key 被上游回显后进入数据库与备份；模型 Base URL 只在调用时校验；降级阶段耗时写到 `stats` 而非 `stats.timing`；`/api/health` 泄露代理地址；Key 掩码只有末 4 位；`clean-install.mjs` 未声明变量导致重启段被静默跳过；Dockerfile `chown -R` 使镜像接近翻倍；`prod-deps` 把 dev 依赖带进运行时。
 - **本地提交**：`0182ab2`（未 push、未打 tag、未创建 Release、未改写历史）。
 
 ## 1. 一句话结论
 
-v0.1.1 在**无 Docker 的本机环境**完成了真实网络搜索链路、干净生产安装、重启持久化与备份恢复；Hacker News（官方 Algolia API）是唯一完成真实联调的搜索源。**Docker 镜像构建与容器级验收为 BLOCKED**：本机 Docker Engine 无法启动（WSL 被宿主安全策略拦截），已提供复现命令与错误输出。
+v0.1.1 在**无 Docker 的本机环境**完成了真实网络搜索链路、干净生产安装、重启持久化与备份恢复；Hacker News（官方 Algolia API）是唯一完成真实联调的搜索源。~~**Docker 镜像构建与容器级验收为 BLOCKED**~~ **（已被 2026-11-14 的 CI 结果取代，见 §6 更新块）**：当时本机 Docker Engine 无法启动（WSL 被宿主安全策略拦截），故本机未执行；容器级验收随后在 GitHub Actions（run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942)）真实执行并通过 24/24。**本机 Docker 仍为 BLOCKED**，这两种状态必须分开理解。
 
 ## 2. 状态总表
 
@@ -42,7 +44,7 @@ v0.1.1 在**无 Docker 的本机环境**完成了真实网络搜索链路、干�
 | 缓存默认关闭且可绕过 | **PASS** | `search-errors.test.ts`；实验室强制 `skipCache` |
 | 旧版迁移（不泄密、不覆盖） | **PASS** | `legacy-migration.test.ts` 4 项 |
 | Web E2E | **PASS** | Playwright 5/5（含 setup token 与目录未实现标注） |
-| **Docker 镜像构建 / compose 启动 / 容器重启** | **BLOCKED** | 见 §6 |
+| **Docker 镜像构建 / compose 启动 / 容器重启** | **PASS（CI）** ｜ 本机 BLOCKED | GitHub Actions run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942)：24/24，镜像 506 MB，Trivy 0/0，崩溃恢复 0→1（见 §6 更新块与 [`docs/docker-verification.md`](./docker-verification.md) §3.2）。本机 Docker Engine 仍不可用 |
 | Brave / SearXNG / Tavily / 博查 / 秘塔 真实联调 | **BLOCKED / NOT IMPLEMENTED** | 无凭证/实例；部分主机不可达 |
 | PostgreSQL / Redis 多实例 / 向量库 | **NOT IMPLEMENTED** | 文档与 UI 均标注未实现 |
 | MCP SSE 流式 | **NOT IMPLEMENTED** | `responseMode: "json"` |
@@ -61,7 +63,7 @@ v0.1.1 在**无 Docker 的本机环境**完成了真实网络搜索链路、干�
 | 6 | 熔断打开被报成 `server_error` | 与真实 5xx 混淆 | 新增 `circuit_open` 码 | `fault-matrix.test.ts` |
 | 7 | MCP 工具结果缺 `provider/providerName/source` | 客户端无法做来源归因 | `toToolResult` 补齐 | `mcp-live.mjs` 归因断言 |
 | 8 | UI 令牌默认不含 `sources:read` | `get_search_sources` 返回 403 | 默认勾选并加入可选项 | 官方客户端 20/20 |
-| 9 | Dockerfile 从**构建上下文**取 `apps/web/dist` | 干净 `docker build` 必然失败 | 改为从 build stage 复制 | 代码审查（镜像构建本身为 BLOCKED） |
+| 9 | Dockerfile 从**构建上下文**取 `apps/web/dist` | 干净 `docker build` 必然失败 | 改为从 build stage 复制 | 代码审查；修复后镜像构建已在 CI 通过（run 43582011942） |
 | 10 | `pnpm install --prod` 后再 `pnpm build` 不可行 | 部署文档给出的顺序无法执行 | 改为 install → build → prod install → 运行 bundle | `clean-install.mjs` 28/28 |
 | 11 | 备份指引只拷 `.db` | WAL 中 383 KB 数据丢失（实测） | 文档改为 db+wal+shm，新增 checkpoint 与备份接口 | 恢复演练 |
 | 12 | stdio 需要 `tsx` 与源码 | 干净生产环境跑不起来 | esbuild 产出 `stdio.mjs` | 官方客户端直接 spawn |
@@ -162,9 +164,29 @@ SMOKE TEST PASSED
 MCP server: search-hub protocol: 2025-11-25
 ```
 
-## 6. BLOCKED：Docker
+## 6. Docker：本机 BLOCKED（历史记录，结论已被 CI 取代）
 
-### 6.1 诊断
+> ### 2026-11-14 更新：Docker 验收状态变更
+>
+> **本节正文（6.1、6.2）是 2026-11-13 的本机诊断记录，其结论「BLOCKED」只对本机成立，已不是 Docker 验收的最终结论。**
+>
+> | 事实 | 状态 | 证据 |
+> |---|---|---|
+> | 本机（Windows + WSL 被宿主安全策略拦截）Docker Engine 不可用 | **BLOCKED（本机）** | 6.1 的命令与退出码；该状态至 2026-11-14 未改变 |
+> | 镜像构建、compose 启动、非 root、静态产物、health、setup token、真实搜索、Key 掩码、重启一致性、持久化、资源、崩溃恢复、MCP、漏洞扫描 | **PASS（CI）** | GitHub Actions run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942)（ubuntu-latest）：**24/24** 检查点，`items=24 skipped=0 failed=0 RESULT: PASS` |
+>
+> 关键数字（全部来自该 run 的日志/artifact）：
+>
+> - 镜像 `search-hub:ci`，id `75927d54c37d`，**506 MB**；
+> - Trivy `CRITICAL=0`、`HIGH=0`（`MAX_HIGH=0`、`MAX_CRITICAL=0`、`ignore-unfixed=1`，阈值未放宽）；
+> - 容器内存：空载 **58.43 MiB / 1 GiB（5.71%）**，50 次搜索后 **60.41 MiB（5.90%）**，CPU 0.01–0.08%；
+> - 崩溃恢复：容器内 `SIGKILL` 掉 `server.mjs` 后自动拉起，`RestartCount` **0→1**，`checkpoint` 200，`searches=51` 未丢。
+>
+> 随后一次 run **43583109812**（commit `ddd1c6e`）同样通过。完整逐项输出见 [`docs/docker-verification.md`](./docker-verification.md) §3.2 与 §7。
+>
+> **这两个事实必须分开表述**：`本机 BLOCKED` 说的是这台 Windows 主机无法运行 Docker Engine；`CI PASS` 说的是同一套验收脚本在 ubuntu-latest 上真实执行并全部通过。既不因为 CI 通过就删掉本机诊断，也不因为本机跑不了就继续宣称「Docker 验收 BLOCKED」。
+
+### 6.1 诊断（2026-11-13 本机，历史记录）
 
 ```text
 $ docker version
@@ -194,29 +216,44 @@ wsl --status → PROGRAM BLOCKED BY SECURITY POLICY: wsl.exe
 （sandbox 禁止启动 WSL，无法批准或绕过）
 ```
 
-因此容器构建、`docker compose up`、容器停止/重启、`docker stats` 资源测量**均无法执行**，标记 **BLOCKED**，不宣称成功。
+**在本机**，容器构建、`docker compose up`、容器停止/重启、`docker stats` 资源测量**均无法执行**，当时标记 **BLOCKED**，不宣称成功。（**2026-11-14 更新**：这四类操作已在 CI 的 ubuntu-latest 上逐一执行并通过，见本节顶部的更新块。本机仍然无法执行，两者不矛盾。）
 
-### 6.2 已完成的替代验证
+### 6.2 当时（本机不可用期间）的替代验证
+
+下表是 2026-11-13 在无引擎条件下能拿出的最好证据，**已被 2026-11-14 的容器实跑取代**；保留它是因为它准确记录了当时的证据等级。
 
 | Docker 验收项 | 替代证据 | 结论 |
 |---|---|---|
-| 干净环境构建镜像 | 干净目录 install → build → prod-only → 运行 bundle | 等价 PASS |
-| Compose 启动 | `docker compose config --quiet` 通过；compose 语法/卷/健康检查静态校验 | 部分 PASS |
+| 干净环境构建镜像 | 干净目录 install → build → prod-only → 运行 bundle | 等价 PASS（现已被 CI `docker build` 实跑取代） |
+| Compose 启动 | `docker compose config --quiet` 通过；compose 语法/卷/健康检查静态校验 | 部分 PASS（现已被 CI `compose up` 实跑取代） |
 | 首次初始化 | 干净安装脚本 | PASS |
 | 数据库持久化 | 同进程重启 + 独立目录重启对比 | PASS |
 | 密钥加密恢复 | 备份含密文、恢复后可解密并真实调用 | PASS |
 | 统计持久化 | `searches` 1→1 | PASS |
 | 备份恢复 | `GET /api/admin/backup` → 恢复并搜索 | PASS |
-| 资源占用 | 原生进程：空载 **81.8 MB** RSS / 257 句柄；50 次搜索后 **86.4 MB** / 254 句柄 / CPU 1.7s | PASS（非容器） |
+| 资源占用 | 原生进程：空载 **81.8 MB** RSS / 257 句柄；50 次搜索后 **86.4 MB** / 254 句柄 / CPU 1.7s | PASS（非容器；容器数据见 §7） |
 
 ## 7. 资源占用实测
+
+### 7.1 本机原生进程（Windows）
 
 | 场景 | RSS | Private | 线程 | 句柄 |
 |---|---|---|---|---|
 | 启动后空载（`node apps/api/dist/server.mjs`） | 81.8 MB | 81.6 MB | 16 | 257 |
 | 50 次 RRF 搜索后 | 86.4 MB | 85.3 MB | — | 254 |
 
-说明：这是 **Windows + Node 22.22.2 原生进程**数据，不是容器数据；容器 `docker stats` 因 §6 无法获取。2C2G 主机在此量级有充足余量，但**未做容器内压测**。
+说明：这是 **Windows + Node 22.22.2 原生进程**数据，不是容器数据。
+
+### 7.2 容器内 `docker stats`（CI，2026-11-14 补充）
+
+| 场景 | MEM USAGE / LIMIT | MEM% |
+|---|---|---|
+| 容器空载（初始化 + 1 次搜索后） | **58.43 MiB / 1 GiB** | **5.71%** |
+| 50 次搜索后（mock 源，5ms 延迟） | **60.41 MiB / 1 GiB** | **5.90%** |
+
+来源：GitHub Actions run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942) 第 8 项（`docker stats --no-stream`），CPU 0.01–0.08%，50/50 成功；镜像 `search-hub:ci` 506 MB。
+
+**更新说明**：v0.1.1 当时的原话是「容器 `docker stats` 因 §6 无法获取」——那指的是**本机**取不到，这一点至今未变（本机 Docker Engine 仍不可用）。容器内的数字现在有了，来源是 CI，不是本机。两组数字口径不同（原生进程 RSS vs 容器 MEM USAGE，后者含容器内 Node 与基础镜像开销），不要互相换算。2C2G 主机在 60 MiB 量级有充足余量；**容器内并发压测仍未做**（AC-05 维持 PARTIAL，见 [`docs/performance-baseline.md`](./performance-baseline.md) §5）。
 
 ## 8. 文档与实际代码的对账（本轮修正）
 
@@ -227,7 +264,7 @@ wsl --status → PROGRAM BLOCKED BY SECURITY POLICY: wsl.exe
 | `docs/api.md` | CSRF 描述覆盖 Bearer 请求；503 错误码不全；缺新接口 | 明确 CSRF 仅 Cookie 请求；补 `queue_timeout`/`circuit_open`；补 backup/migration/cache/degraded |
 | `docs/deployment.md` | `install --prod` 后 `build` 并用 `tsx` 启动；备份只拷 `.db` | 改为 install → build → prod → bundle；补 WAL 三文件与备份接口；补 setup token、Host 白名单、代理 CIDR |
 | `docs/mcp.md` | `npx tsx src/stdio.ts`；称"handler 不做 Host 校验" | 改为 `node dist/stdio.mjs`；补 Host 前置校验与 Bearer-only |
-| `README.md` / `README_EN.md` | 仓库 URL 指向未创建的 `search-hub/search-hub`；`4 类`/`26 条`/`139 项`/`0.1.0` | 改为 `<your-org>` 占位；5 类 / 27 条 / 177 项 / 0.1.1；补 setup token 步骤与 Docker BLOCKED 说明 |
+| `README.md` / `README_EN.md` | 仓库 URL 指向未创建的 `search-hub/search-hub`；`4 类`/`26 条`/`139 项`/`0.1.0` | 改为 `<your-org>` 占位；5 类 / 27 条 / 177 项 / 0.1.1；补 setup token 步骤与 Docker 状态说明（原文为「BLOCKED」，该表述已于 2026-11-14 由 CI 实跑结果取代，README 的同步更新由维护者在发布侧完成） |
 | `docs/testing.md` | 139 项清单，未含本轮测试 | 177 项、17 文件，新增脚本表与 BLOCKED 清单 |
 | `docs/architecture-decisions.md` | D-5 队列上限 512、E-1 目录 26/4 | 1024、27/5；新增 E-3/E-4/E-5 |
 | `CHANGELOG.md` | 无 0.1.1 | 完整 0.1.1（Fixed/Added/Changed/Limitations） |
@@ -263,7 +300,7 @@ wsl --status → PROGRAM BLOCKED BY SECURITY POLICY: wsl.exe
 
 | 项 | 状态 |
 |---|---|
-| `docker build` 与 `docker compose up` | 需在可用 Docker 环境执行（CI `build` job 已写好，未在本地跑通） |
+| `docker build` 与 `docker compose up` | **已完成（CI PASS，2026-11-14）**：GitHub Actions run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942) 24/24，镜像 506 MB，Trivy 0/0。**本机仍未跑通**（Docker Engine 不可用），如需本机复现需换 Linux 主机 |
 | Brave / SearXNG 真实联调 | 需 Key / 实例 |
 | 大模型、Embedding、Rerank 真实厂商联调 | 需 Key；当前仅本地模拟服务验证契约 |
 | 仓库地址与组织名 | README 使用 `<your-org>` 占位，发布时替换 |

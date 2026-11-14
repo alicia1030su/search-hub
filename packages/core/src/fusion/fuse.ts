@@ -1,3 +1,4 @@
+import type { UpstreamAttribution } from "@search-hub/shared";
 import {
   extractDomain,
   jaccardSimilarity,
@@ -13,6 +14,8 @@ export interface CandidateResult {
   publishedAt?: string;
   score?: number;
   language?: string;
+  /** Upstream attribution when the row arrived through a gateway adapter. */
+  upstream?: UpstreamAttribution;
   raw?: unknown;
   providerId: string;
   providerName: string;
@@ -78,6 +81,7 @@ export function dedupeResults(
         rank: candidate.rank,
         ...(candidate.score === undefined ? {} : { score: candidate.score }),
         url: candidate.url,
+        ...(candidate.upstream === undefined ? {} : { upstream: candidate.upstream }),
       });
       if (candidate.snippet.length > existing.snippet.length) {
         existing.snippet = candidate.snippet;
@@ -111,6 +115,7 @@ export function dedupeResults(
         rank: candidate.rank,
         ...(candidate.score === undefined ? {} : { score: candidate.score }),
         url: candidate.url,
+        ...(candidate.upstream === undefined ? {} : { upstream: candidate.upstream }),
       });
       dropped.push({ url: candidate.url, keptUrl: nearDuplicate.url, reason: "near_title" });
       continue;
@@ -128,6 +133,7 @@ export function dedupeResults(
           rank: candidate.rank,
           ...(candidate.score === undefined ? {} : { score: candidate.score }),
           url: candidate.url,
+          ...(candidate.upstream === undefined ? {} : { upstream: candidate.upstream }),
         },
       ],
     });

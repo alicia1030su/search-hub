@@ -222,6 +222,7 @@ export function ProviderForm({
 
   const isEdit = provider !== null;
   const isGeneric = state.type === "generic-http";
+  const isLegacy = state.type === "search-hub-legacy";
 
   const createTypes = useMemo(() => {
     const implemented = adapters.length > 0 ? new Set(adapters) : null;
@@ -480,12 +481,21 @@ export function ProviderForm({
             </div>
           ) : null}
 
-          <Field label={t("providers.form.baseUrl")} htmlFor="provider-base" hint={t("providers.form.baseUrlHint")} required={isGeneric}>
+          <Field
+            label={t("providers.form.baseUrl")}
+            htmlFor="provider-base"
+            hint={
+              isLegacy
+                ? t("providers.form.baseUrlHintLegacy")
+                : t("providers.form.baseUrlHint")
+            }
+            required={isGeneric}
+          >
             <Input
               id="provider-base"
               value={state.baseUrl}
               onChange={(event) => update("baseUrl", event.target.value)}
-              placeholder="https://api.example.com"
+              placeholder={isLegacy ? "http://host.docker.internal:44475" : "https://api.example.com"}
               spellCheck={false}
             />
           </Field>

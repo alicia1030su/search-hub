@@ -1,5 +1,7 @@
 # Docker 部署验证（v0.1.2 / P0-3）
 
+**当前状态（2026-11-14）：本机 BLOCKED / CI PASS。** 本机 Windows 起不来 Docker Engine（§1 有完整诊断）；同一套 11 项脚本（24 个检查点）已在 GitHub Actions `ubuntu-latest` 上真实执行并**全部通过**：run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942)，`items=24 skipped=0 failed=0`，镜像 `search-hub:ci` 506 MB，Trivy CRITICAL=0 / HIGH=0，容器内存 58.43 MiB（空载）/ 60.41 MiB（50 次搜索后），崩溃恢复 `RestartCount` 0→1。逐项输出见 **§3.2**，状态勾选表见 **§7**。这两个结论不是矛盾的：BLOCKED 只描述**本机**，PASS 描述**验收本身**。
+
 本文件记录三件事：本机为什么**跑不了**容器级验收（证据，不是结论）、
 在任何有 Docker 的 Linux / CI 上**怎么一键跑**、以及每一项**应该看到什么**。
 
@@ -15,10 +17,11 @@
 |---|---|---|---|---|
 | **A. 实跑证据** | 真的执行了命令，有退出码/输出 | `docker version` / `docker info` / `docker build`（全部 exit 1）；`docker compose config --quiet`（exit 0）；`bash -n`；真实进程 + `curl /api/health` 实测 health 字段 | 引擎不可用这个**事实**；编排文件合法 | 镜像能构建、能运行 |
 | **B. 静态/替身证据** | 读代码、语法检查、用 docker/curl 替身跑脚本逻辑 | Dockerfile 审查、`.dockerignore` 审查、workflow YAML 解析、`docker-verify.sh` 的 PASS/FAIL/SKIP 三分支 | 配置正确、脚本逻辑正确 | 镜像行为、真实容器状态 |
-| **C. BLOCKED** | 根本没执行 | `docker build` 成功、`docker run`、重启/持久化/资源/崩溃恢复/漏洞扫描 的**实测** | — | 全部 |
+| **C. 本机 BLOCKED** | **本机**根本没执行（不等于项目没验证过） | 本机上的 `docker build` 成功、`docker run`、重启/持久化/资源/崩溃恢复/漏洞扫描 的**实测** | — | 全部 |
+| **D. 远端实跑（CI）** | 在 GitHub Actions `ubuntu-latest` 上真的执行了同一套脚本 | 镜像构建、`compose up`、重启、持久化、资源、崩溃恢复、trivy 扫描、MCP，共 **24/24** 检查点（§3.2） | 镜像能构建、容器能运行、上述功能与安全门禁全部通过 | 本机 Windows 环境下的行为（这台机器仍然起不来引擎，§1） |
 
 **一句话**：`docker compose config --quiet` exit 0 **不等于**镜像能构建；`bash -n` 通过
-**不等于**脚本能跑通真实容器。凡标注 BLOCKED 的项，本机**没有任何实测数据**。
+**不等于**脚本能跑通真实容器。凡标注本机 BLOCKED 的项，**本机**没有任何实测数据——但这不等于"没验证过"：**D 级证据（CI 实跑）已经取得，见 §3.2**。BLOCKED 在本文件里始终只描述这台 Windows 主机，不描述项目状态。
 
 ---
 
@@ -28,7 +31,7 @@
 
 > **2026-11-14 更新**：11 项验收已在 GitHub Actions 真实执行并通过（见 §3.2）。本章保留为本机诊断记录：它解释为什么必须用远端 Runner，而不是说验收没做。
 
-本机容器级 11 项验收**一项也没有执行**，因为引擎起不来。
+本机容器级 11 项验收**一项也没有执行**，因为引擎起不来（**同一套 11 项 / 24 个检查点已在 CI 上全部通过，见 §3.2**——本段只解释本机为什么不行）。
 以下命令全部原样执行，退出码为实测值。
 
 | # | 命令 | 退出码 | 关键输出（原文） |
@@ -220,17 +223,18 @@ docker compose -p sh-manual down -v                 # 收尾
 
 ### 3.1 资源基线
 
-本机 BLOCKED，**没有任何实测数字**，不做估算冒充测量。首次在 CI 跑通后，
-把工作流 artifact 里的 `docker stats` 两行（idle / 50 次搜索后）填到这里：
+**已有实测数字（2026-11-14，CI）**：GitHub Actions run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942) 第 8 项，`docker stats --no-stream`，镜像 `search-hub:ci`，1 GiB 内存上限，50/50 次搜索成功：
 
 | 场景 | CPU% | MEM USAGE / LIMIT | MEM% |
 |---|---|---|---|
-| 容器空闲（初始化 + 1 次搜索后） | 待测 | 待测 | 待测 |
-| 50 次搜索后（mock 源，5ms 延迟） | 待测 | 待测 | 待测 |
+| 容器空闲（初始化 + 1 次搜索后） | 0.01–0.08%（两次采样的合并区间，原始输出未逐行拆分） | **58.43 MiB / 1 GiB** | **5.71%** |
+| 50 次搜索后（mock 源，5ms 延迟） | 同上 | **60.41 MiB / 1 GiB** | **5.90%** |
 
-`compose.yaml` 已声明 `deploy.resources.limits.memory: 1g`；2C2G 主机上
-SQLite + 单进程 Node 的合理区间应在数百 MB 量级。若实测触顶或被 OOM kill，
-先调 `--max-old-space-size` 与该项 limit，而不是直接加机器。
+读法：50 次搜索后内存只到 **60.41 MiB**，占 1 GiB 上限的 **5.90%**，余量充足；CPU 全程 0.01–0.08%。这组数字同时说明 `compose.yaml` 声明的 1 GiB 上限**确实被采用**（`MEM USAGE / LIMIT` 的 `LIMIT` 列就是 `1GiB`）。
+
+本机 Docker Engine 仍不可用，**上面这些数字本机取不到，也从未在本机复现**；它们来自 CI 的 Linux 容器，不是 Windows 原生进程（原生进程数据见 [`docs/acceptance-report.md`](./acceptance-report.md) §7.1，两者口径不同，不要互相换算）。
+
+`compose.yaml` 已声明 `deploy.resources.limits.memory: 1g`；2C2G 主机上 SQLite + 单进程 Node 的合理区间应在数百 MB 量级，实测 60 MiB 远低于该区间。若日后实测触顶或被 OOM kill，先调 `--max-old-space-size` 与该项 limit，而不是直接加机器。
 
 ---
 

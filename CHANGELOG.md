@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-11-14
+
+Development round focused on real integration options, honest docs and CI
+runtime hygiene. No security threshold was relaxed and no provider was promoted
+to `live_tested` without a real credential.
+
+### Added
+
+- **Legacy Search Hub compatibility adapter** (`search-hub-legacy`): calls an
+  independently deployed old instance via `POST /api/search` (path and mode
+  configurable), forwards `freshness`/`language`, accepts both `{results:[]}`
+  and `{data:{results:[]}}` envelopes, and maps 401/403/429/5xx/timeout to the
+  existing provider error codes. Read-only and reversible: deleting the provider
+  instance reverts the integration; nothing is written to the old service. 16
+  contract tests use a local fake; **no real 44475 instance was contacted**.
+  See `docs/legacy-44475-integration.md`.
+- **Provider contract coverage** for the compat adapter plus explicit tests for
+  Chinese language mapping, freshness forwarding and URL preservation.
+
+### Fixed
+
+- **Caller cancellation was reported as a network error.** `safe-fetch` mapped
+  an aborted caller signal to `network` (`retryable: true`), which could mark a
+  healthy provider/key as failing and retry a request the caller had abandoned.
+  It now maps to `cancelled` (`retryable: false`), with a regression test.
+
+### Changed
+
+- **GitHub Actions runtime**: checkout/setup-node/upload-artifact/pnpm-setup/
+  buildx/build-push upgraded to versions that declare `using: node24`, removing
+  the Node.js 20 deprecation warning without changing any gate.
+- **Version** bumped to `0.1.3` across the workspace, API `/api/health` and the
+  three SKILL.md metadata files.
+- **Docs**: local Docker (still unavailable on this Windows host) and CI Docker
+  (executed, 24/24 PASS in run 43582011942) are now stated separately in every
+  status document; no unverified provider was upgraded.
+
 ## [Unreleased]
 
 ### Planned
@@ -144,6 +181,29 @@ of being counted by hand.
   1.22–1.30 on a loaded host. The claim is not upgraded.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
+
+### PR #1 compatibility review (2026-11-14)
+
+- **Protocol honesty**: `search-hub-legacy` now has a closed `transport`
+  allow-list (`rest` only). Any other value fails with `unsupported` (501)
+  instead of silently falling back; MCP compatibility is explicitly documented
+  as a separate, unimplemented adapter.
+- **Upstream attribution preserved**: gateway rows carry
+  `upstream: {provider, providerName, source, sources}` copied verbatim from the
+  old service, through dedupe, fusion and `SearchResult.sources[]`. Nothing is
+  inferred from the URL/domain; absent upstream fields stay absent.
+- **Envelope status**: `status:"failed"` (even with `results: []`) is an error,
+  `status:"partial"` keeps rows but marks the search `partial` with a per-provider
+  warning, and `status:"completed"` with zero rows stays a legitimate empty
+  result. A failed envelope is never reported as success.
+- **Cancellation accounting**: a caller abort now releases the key lease as
+  cancelled without incrementing failure counters, and the acquire path checks
+  for an abort after the wait, so a late lease cannot leak. Fixed in
+  `fanout.ts`; covered by a scheduler regression test and an API integration test.
+- **Networking docs/UI**: the base-URL hint and `docs/deployment.md` explain
+  container vs host vs cross-server addresses, and state that the SSRF
+  allowlist is an explicit declaration, not a workaround.
+- Tests: 408 (23 legacy contract + 5 legacy API integration + cancellation).
 
 ### Verified in GitHub Actions (2026-11-14)
 

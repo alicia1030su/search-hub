@@ -15,11 +15,24 @@
 | 工作区 | 干净（除团队成员并行改动） |
 | 历史改写 | 无 |
 
+## 1.1 v0.1.3 增量（2026-11-14）
+
+| 项 | 结果 |
+|---|---|
+| 测试 | **408**（v0.1.2 为 367），新增 16 项旧版兼容契约 + 1 项取消语义回归 |
+| 旧版 Search Hub 兼容适配器 | 已实现；`documented`；**未连接真实 44475**（未授权） |
+| 取消语义 | 修复：调用方 abort 由 `network`（可重试）改为 `cancelled`（不可重试） |
+| Actions | 全部升级到 `using: node24`，Node.js 20 弃用告警消失 |
+| 真实通用搜索 | **仍无进展**：无 Tavily/Bocha/Brave/SearXNG 凭证；不升级为 `live_tested` |
+| AC 矩阵 | **PASS 11 / PARTIAL 4 / BLOCKED 1**，与 v0.1.2 相同（没有用测试数量冒充验收状态） |
+
+v0.1.3 的目标是「把可做的集成与文档做对」，不是把未验证项写成已验证。剩余缺口与 §9 一致。
+
 ## 2. 测试总数与通过情况
 
 | 套件 | 结果 | 命令 |
 |---|---|---|
-| Vitest 单元 + 集成 | **367 passed / 25 files**，exit 0 | `corepack pnpm test` |
+| Vitest 单元 + 集成 | **408 passed / 25 files**，exit 0 | `corepack pnpm test` |
 | Playwright E2E | **5 passed**，exit 0 | `corepack pnpm test:e2e` |
 | TypeScript | **0 error** | `corepack pnpm typecheck` |
 | Lint（oxlint） | **0 warning / 0 error**，127 files | `corepack pnpm lint` |
@@ -143,7 +156,7 @@ C1（Docker 容器验收）已在 GitHub Actions 真实通过，因此此前"0 �
 
 **A 档证据（可对外引用）**
 
-- **367** 个 Vitest + 5 个 Playwright，本地与 GitHub Runner 双处全绿；typecheck / lint 0 错误。
+- **408** 个 Vitest + 5 个 Playwright，本地与 GitHub Runner 双处全绿；typecheck / lint 0 错误。
 - **镜像真实构建**：`search-hub:ci`，506 MB，`docker build` 在 ubuntu-latest 成功。
 - **11 项容器验收 24/24 PASS**：compose 启动、非 root uid 1001、web 产物、health、setup token、初始化、真实 HN 搜索、Key 掩码、重启一致、持久化、资源、崩溃恢复（RestartCount 0→1）、Trivy（CRITICAL=0 HIGH=0）、MCP（9 tools / 真实 URL / REST 一致 / 401）。
 - **CI 4 个 job 全绿**：quality、build、e2e、security（含全历史密钥扫描）。

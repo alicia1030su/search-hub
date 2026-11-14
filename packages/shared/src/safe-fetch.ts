@@ -472,6 +472,16 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
             status: 504,
           });
         }
+        // A caller-supplied signal is a cancellation, not a network failure.
+        // Reporting it as `network` would mark the provider/key as failing and
+        // retry a request the caller already abandoned.
+        if (init.signal?.aborted) {
+          throw new SearchHubError("cancelled", "Request cancelled by caller", {
+            cause: error,
+            retryable: false,
+            status: 499,
+          });
+        }
         if (error instanceof SearchHubError) throw error;
         const mapped = hopProxy ? proxyFailure(hopProxy, error, currentUrl) : null;
         if (mapped) throw mapped;

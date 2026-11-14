@@ -192,7 +192,7 @@ export function loadConfig(): AppConfig {
     encryptionKey: env("SEARCH_HUB_ENCRYPTION_KEY"),
     staticDir: existsSync(staticDir) ? staticDir : null,
     migrationsDir,
-    version: "0.1.2",
+    version: "0.1.3",
     rateLimitPerMin: Number(env("SEARCH_HUB_RATE_LIMIT_PER_MIN") ?? 300),
     maxBackupUploadBytes: Math.min(
       // Clamp: too small makes verification useless, too large lets one upload

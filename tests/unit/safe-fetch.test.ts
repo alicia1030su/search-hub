@@ -120,3 +120,16 @@ describe("upstream error redaction", () => {
     expect(redactSecrets(text, [undefined, null, "short"])).toBe(text);
   });
 });
+
+describe("caller cancellation", () => {
+  it("reports a caller abort as cancelled, not as a network failure", async () => {
+    // A cancelled request must not mark the provider/key as failing or be
+    // retried. Before this case existed, an aborted caller signal fell through
+    // to the generic network mapping (retryable: true).
+    const controller = new AbortController();
+    const safeFetch = createSafeFetch({ policy, timeoutMs: 5_000 });
+    const pending = safeFetch(`http://127.0.0.1:${port}/json`, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "cancelled", retryable: false });
+  });
+});

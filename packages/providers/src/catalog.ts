@@ -61,6 +61,19 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     notes: "仅支持声明式映射，不执行任意代码。",
   },
   {
+    type: "search-hub-legacy",
+    name: "旧版 Search Hub（兼容）",
+    category: "compat",
+    authType: "api_key",
+    implementation: "builtin",
+    defaultBaseUrl: "http://127.0.0.1:44475",
+    description:
+      "调用一个独立运行的旧版 Search Hub 的 REST 搜索接口（默认 POST /api/search），把它的结果作为本平台的一个搜索源。",
+    verification: "documented",
+    notes:
+      "兼容适配器，目前只实现 REST（transport 仅接受 rest），未核实真实 44475 的协议；path/mode 可配置，未实现 MCP。只读调用，不修改/迁移/写入旧服务，删除实例即可完全撤销。容器内 127.0.0.1 指容器自身，宿主机请用 host.docker.internal 或网关 IP，跨服务器用可达地址；目标需加入私有主机白名单。未连接真实旧实例，测试使用本地 fake。",
+  },
+  {
     type: "mock",
     name: "Mock（测试用）",
     category: "custom",

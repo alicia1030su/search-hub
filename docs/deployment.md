@@ -364,6 +364,23 @@ Direct connections (no proxy configured, or a `NO_PROXY` match) keep the connect
 
 `GET /api/admin/outbound` shows the effective policy: redacted proxy endpoint, `NO_PROXY` list and count, whether the private host allowlist is honoured, and a one-line `residualRisk`. Proxy credentials are never logged or returned: the display form is `scheme://host:port`. `/api/health` is anonymous, so it only reports the coarse `mode` / `proxyTrust` / `proxyTrustDeclared` triple.
 
+## Connecting to a service on the host or another server
+
+A provider `baseUrl` such as `http://127.0.0.1:44475` is resolved **from inside the process that issues the request**. In a container that is the container's own loopback, not your host. Pick the address by deployment shape:
+
+| Where Search Hub runs | Where the target runs | Address to enter |
+|---|---|---|
+| Bare metal / `pnpm start` | same machine | `http://127.0.0.1:<port>` |
+| Container (Compose) | the **host** (Docker Desktop) | `http://host.docker.internal:<port>` |
+| Container (Compose) | the **host** (Linux) | the host bridge address, usually `http://172.17.0.1:<port>` — confirm with `ip route \| grep default` |
+| Compose service in the same network | another compose service | `http://<service-name>:<port>` |
+| Any | another server | `http://<reachable hostname or IP>:<port>`, with the firewall open |
+| Container | target listens on host loopback only | make the target listen on a container-reachable interface, or run it with `network_mode: host`. Do **not** disable SSRF validation to "make it work" |
+
+Private, loopback and link-local targets are rejected by the SSRF policy unless the operator adds them to **Settings → Security → private host allowlist**. That allowlist is a deliberate declaration "this host is an intended internal destination", not a generic switch: every operator who can edit a provider can then reach that host.
+
+The same applies to the legacy Search Hub adapter: see [legacy integration](./legacy-44475-integration.md) for the three network scenarios and the exact failure modes.
+
 ## Resource notes
 
 - SQLite WAL + short transactions; network calls never run inside a transaction.
