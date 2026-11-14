@@ -6,6 +6,29 @@
 
 ---
 
+## 0. 执行结果（2026-11-14）
+
+本方案已执行，结果如下。
+
+| 项 | 结果 |
+|---|---|
+| 仓库 | <https://github.com/alicia1030su/search-hub> |
+| Owner | `alicia1030su`（当前登录的个人账号） |
+| 可见性 / 默认分支 | Public / `main` |
+| 首次推送 | 成功，保留 22 个提交的完整历史（非强推） |
+| 本地 / 远端 HEAD | `44e8720` 一致（后续仅追加文档提交） |
+| CI | run [43582011967](https://github.com/alicia1030su/search-hub/actions/runs/43582011967) — 4/4 success |
+| Docker | run [43582011942](https://github.com/alicia1030su/search-hub/actions/runs/43582011942) — 3/3 success，容器验收 24/24 |
+| 镜像 | `search-hub:ci`，506 MB，Trivy CRITICAL=0 HIGH=0 |
+| 安全设置 | Secret Scanning、Push Protection、Dependabot alerts 已启用；`GITHUB_TOKEN` 默认只读；`main` 5 个必需检查 + 禁止强推/删除 |
+| Tag / Release / 镜像推送 | **未执行**（未授权） |
+
+失败与修复（均为验收脚本缺陷，不是产品缺陷）：
+
+1. `ci.yml` 中两处字面 `/n` 破坏了 YAML → 修复后 CI 全绿。
+2. Docker run 1：`docker kill` 属于显式停止，`unless-stopped` 按设计不拉起；改为容器内 SIGKILL server 进程。MCP `tools/call` 的 payload 在 `content[0].text` 内且斜杠转义，grep 改为 JSON 解析。
+3. Docker run 2：Trivy 10 个 HIGH 全部来自基础镜像自带 npm/corepack 依赖树；运行时阶段移除 npm/corepack（运行时不安装包），阈值未放宽。
+
 ## 1. Git 仓库只读审计（结论：适合推送）
 
 | 检查项 | 结果 |

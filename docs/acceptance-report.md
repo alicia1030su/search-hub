@@ -5,7 +5,7 @@
 ## 0. v0.1.2 增量（本轮）
 
 - **验收矩阵**：[`docs/ac-matrix.md`](./ac-matrix.md)（由 `docs/ac-matrix.json` 生成，固定 16 项）
-  — **PASS 10 / PARTIAL 5 / BLOCKED 1**（PARTIAL：AC-01 容器、AC-02 Brave/SearXNG 真实自检、AC-05 端到端耗时带宽、AC-09 容器重启、AC-16 真实厂商；BLOCKED：AC-13 Agent 客户端）。
+  — **PASS 11 / PARTIAL 4 / BLOCKED 1**（PARTIAL：AC-01 仅缺“未就绪”徽标、AC-02 Brave/SearXNG 真实自检、AC-05 客户端 wall 带宽、AC-16 真实厂商；BLOCKED：AC-13 Agent 客户端）。
 - **代理出网（P0-1）**：新增显式代理配置与信任边界；真实代理模式联调通过（HN 查询 6 条真实结果，`mode=proxy`）；本地 mock 代理断言被拒目标**从未到达代理**；修复 IPv4-mapped IPv6（`::ffff:7f00:1`）SSRF 绕过。
 - **SQLite 备份（P0-2）**：改为 Online Backup API + `integrity_check` + 原子发布；并发写入下 57/57 检查通过；新版 schema 启动拒绝生效。
 - **Provider（P1-1）**：Tavily、博查 Bocha 按官方文档实现并加契约测试，保持 `documented`；Brave/SearXNG 仍无真实凭证/实例。
@@ -308,5 +308,5 @@ PASS: MCP carries provider attribution — prv_... vs prv_...
 
 - 固定 16 项（AC-05b 并入 AC-05 的子项），每项只有一个总体状态；
 - PASS 必须有可复现 evidence，PARTIAL/BLOCKED 必须写缺口，脚本会拒绝不合规的条目；
-- 统计数字只保留 §0 一处（PASS 10 / PARTIAL 5 / BLOCKED 1），且由 `tests/unit/ac-matrix.test.ts` 断言与 `docs/ac-matrix.json` 完全一致；一旦矩阵变动而报告未同步，测试会失败。
+- 统计数字只保留 §0 一处（PASS 11 / PARTIAL 4 / BLOCKED 1），且由 `tests/unit/ac-matrix.test.ts` 断言与 `docs/ac-matrix.json` 完全一致；一旦矩阵变动而报告未同步，测试会失败。
 

@@ -25,7 +25,7 @@ services:
       # If unset, a key is generated once in /app/data/master.key.
       SEARCH_HUB_ENCRYPTION_KEY: ${SEARCH_HUB_ENCRYPTION_KEY:-}
       # Optional: pin the one-time setup token. When empty, the server
-      # generates ./data/setup-token and prints it to the container log.
+      # generates ./data/setup-token; read it from the volume (the value is never logged).
       SEARCH_HUB_SETUP_TOKEN: ${SEARCH_HUB_SETUP_TOKEN:-}
       # Extra hostnames accepted in the Host header (comma separated).
       # IP literals and localhost are always accepted.

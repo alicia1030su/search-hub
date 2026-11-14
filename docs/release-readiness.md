@@ -8,10 +8,10 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `master` |
-| HEAD | 功能提交 `4a5ef8e`（基线 `a2e4b4a`）；报告自身在其后的 docs 提交中更新，精确 HEAD 以 `git rev-parse --short HEAD` 为准 |
-| 本轮提交 | `9d43665` 文档一致性、`4a5ef8e` RC 验收强化、`9dec043` 远端验收准备 |
-| 远端 | **无 remote**（`git remote -v` 为空），未 push、未打 tag、未建 Release |
+| 分支 | `main`（远端默认分支） |
+| HEAD | `44e8720`（Docker 验收通过的提交；其后仅追加文档提交，精确值见 GitHub） |
+| 本轮提交 | `9d43665` 文档一致性、`4a5ef8e` RC 验收强化、`9dec043` 远端验收准备、`44e8720` Docker 验收修复 |
+| 远端 | <https://github.com/alicia1030su/search-hub>（Public，已 push；未打 tag、未建 Release） |
 | 工作区 | 干净（除团队成员并行改动） |
 | 历史改写 | 无 |
 
@@ -28,33 +28,34 @@
 
 ## 3. Docker CI 实际执行情况
 
-**未执行（BLOCKED）。** `docker.yml` 已具备 `quality → e2e → container` 三级门禁，但本机 Docker Engine 不可用：
+**已执行，通过。** GitHub Actions `Docker` 工作流在 ubuntu-latest 上跑通全链路：
 
-```text
-$ docker info
-failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine;
-check if the path is correct and if the daemon is running:
-open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.
-exit code 1
-```
+Run: <https://github.com/alicia1030su/search-hub/actions/runs/43582011942> ｜ commit `44e8720`
 
-根因（已取证，非推测）：`com.docker.service` 为 `Stopped/Manual` 且当前进程非管理员（`OpenError`）；`desktop-linux` context 的命名管道由 Docker Desktop Linux 引擎创建，后者依赖 WSL2，而 `wsl.exe` 被宿主安全策略列入黑名单（`PROGRAM BLOCKED BY SECURITY POLICY ... cannot be approved or bypassed`）。**未尝试任何绕过。**
-
-已交付可复现链路（B 档：静态与替身验证）：
-
-| 文件 | 作用 |
+| Job | 结果 |
 |---|---|
-| `.github/workflows/docker.yml` | GitHub ubuntu-latest：`quality` job（install/typecheck/lint/test/build）+ `container` job（镜像构建 + compose + 11 项验收 + trivy），后者 `needs: quality` |
-| `scripts/docker-verify.sh` | 任意 Linux + Docker 主机执行 `bash scripts/docker-verify.sh` |
-| `docs/docker-verification.md` | BLOCKED 证据、跑法、每项期望输出、证据等级定义 |
+| Install, typecheck, lint, test and build | **success** |
+| Browser end-to-end (Playwright) | **success** |
+| Image, compose stack, MCP and 11-item acceptance | **success**（items=24 skipped=0 failed=0） |
 
-**CI 实际执行链接：无**（仓库没有远端，工作流从未被 GitHub 调度）。这是本报告最关键的缺口：Docker 镜像构建与 11 项容器验收只有 B 档证据（YAML 解析、`bash -n`、`docker compose config --quiet` exit 0、脚本替身三分支）。
+`CI` 工作流同一提交：<https://github.com/alicia1030su/search-hub/actions/runs/43582011967> — 4 个 job 全部 success。
+
+本机 Docker Engine 仍不可用（`npipe:////./pipe/dockerDesktopLinuxEngine` 不存在，`wsl.exe` 被宿主策略阻断），因此容器证据**全部来自远端 Runner**，本机未做任何绕过。
 
 ## 4. 实际构建镜像信息
 
-**未构建（BLOCKED）。** `docker build -t search-hub:v0.1.2 .` → exit 1（同上错误）。无镜像 ID、无体积、无层信息可报。
+| 项 | 值 |
+|---|---|
+| 镜像 | `search-hub:ci` |
+| Image ID | `75927d54c37d` |
+| 体积 | **506 MB** |
+| 基础镜像 | `node:22-bookworm-slim`（运行时已移除 npm/corepack） |
+| 运行用户 | uid 1001 `searchhub` |
+| 卷 | `sh-ci-43582011942-1_search-hub-data` |
+| Trivy | **CRITICAL=0 / HIGH=0**（`ignore-unfixed=1`，阈值 MAX 0/0，未放宽） |
 
-替代证据（等价执行路径，B 档）：`node tests/scripts/clean-install.mjs` 在干净目录完成 `install → build → --prod 裁剪 → node apps/api/dist/server.mjs → /api/health 200`，与镜像内执行路径一致（镜像 `COPY --from=build` 产物 + 仅生产依赖）。**但这不等于镜像可构建**，两者在评审里是不同证据等级。
+容器实测资源：空载 **58.43 MiB / 1 GiB（5.71%）**，50 次搜索后 **60.41 MiB（5.90%）**，CPU 0.01–0.08%。
+崩溃恢复：容器内 SIGKILL server 进程 → restart policy **0→1** 拉起，checkpoint 200，`searches=51` 数据完整。
 
 ## 5. 真实 Provider 联调状态
 
@@ -78,8 +79,8 @@ exit code 1
 
 | 状态 | 数量 | 项目 |
 |---|---|---|
-| PASS | 10 | AC-03、AC-04、AC-06、AC-07、AC-08、AC-10、AC-11、AC-12、AC-14、AC-15 |
-| PARTIAL | 5 | AC-01（容器未验）、AC-02（无 Key）、AC-05（端到端耗时带宽）、AC-09（容器重启未验）、AC-16（无真实厂商 Key） |
+| PASS | 11 | AC-03、AC-04、AC-06、AC-07、AC-08、**AC-09（容器 restart + 崩溃恢复）**、AC-10、AC-11、AC-12、AC-14、AC-15 |
+| PARTIAL | 4 | AC-01（仅缺字面“未就绪”徽标）、AC-02（无 Brave/SearXNG 凭证）、AC-05（客户端 wall 超带）、AC-16（无真实模型厂商 Key） |
 | BLOCKED | 1 | AC-13（无真实 Agent 客户端） |
 | FAIL / NOT_IMPLEMENTED | 0 | — |
 
@@ -111,66 +112,67 @@ exit code 1
 
 | 场景 | RSS | Private | 线程 | 句柄 |
 |---|---|---|---|---|
-| 空载（`node apps/api/dist/server.mjs`） | 81.8 MB | 81.6 MB | 16 | 257 |
-| 50 次 RRF 搜索后 | 86.4 MB | 85.3 MB | — | 254 |
+| 原生进程空载 | 81.8 MB | 81.6 MB | 16 | 257 |
+| 原生进程 50 次搜索后 | 86.4 MB | 85.3 MB | — | 254 |
+| **容器空载** | **58.43 MiB / 1 GiB（5.71%）** | — | — | — |
+| **容器 50 次搜索后** | **60.41 MiB / 1 GiB（5.90%）** | — | — | — |
 
 - 这是 **Windows + Node 22 原生进程**数据，不是容器数据；`docker stats` 因无引擎无法获取。
 - AC-05 端到端：调度器层 ratio 0.97–1.06（带内）；本轮分层测量显示 SQLite 写入 P50 0.8ms、融合 0ms、HTTP 开销 2.6ms，**服务端**流水线 ratio 0.93–1.00，但**客户端 wall** 1.26–1.39 仍超带，故 AC-05 保持 PARTIAL。
 - 性能分层与 P50/P95/P99 见 [`docs/performance-baseline.md`](./performance-baseline.md)：SQLite 写入 P50 0.8ms、融合 0ms、HTTP 框架 2.6ms —— 三者都不是 1.2–1.4 超额的原因。
 
-## 9. 当前所有 BLOCKED 项
+## 9. 当前仍未验证的项
 
-| # | 项 | 缺什么 | 谁能解 |
+| # | 项 | 缺什么 | 状态 |
 |---|---|---|---|
-| 1 | Docker 镜像构建 | Docker Engine（本机 WSL 被策略阻断） | 任意有 Docker 的 Linux 主机或 GitHub Actions |
-| 2 | `docker compose up` / 管理员初始化 / REST / MCP / 持久化 / 重启 / 资源 / Trivy | 同上 | 同上 |
-| 3 | GitHub Actions 实际执行（quality + 11 项容器验收） | 仓库没有远端；工作流从未被调度 | 用户授权 push 到远端后自动触发 |
-| 4 | 镜像漏洞扫描（HIGH/CRITICAL） | 无引擎、本机无 trivy | CI（`docker.yml` 已配 trivy 门禁） |
-| 5 | Tavily / Bocha 真实联调 | 有效 API Key | 提供 Key 后用 `tests/scripts/provider-live.mjs` |
-| 6 | Brave 真实联调 | 订阅 Key **且**网络可达 | Key + 换网络环境 |
-| 7 | SearXNG 真实联调 | 启用 JSON 输出的可达实例 | 自建实例 |
-| 8 | 模型厂商真实联调（Chat/Embedding/Rerank） | OpenAI/Anthropic/Gemini/Cohere/Jina 任一 Key | 提供 Key |
-| 9 | AC-13 Agent Skills 被真实客户端加载 | Claude Desktop / Cursor 等 MCP 客户端 | 在客户端安装并执行 |
-| 10 | AC-05 端到端耗时带宽 | 隔离、空闲的机器复测（含容器内） | 有 Docker 的环境 |
+| 1 | ~~Docker 镜像构建 / compose / 初始化 / REST / MCP / 重启 / 持久化 / 资源 / Trivy~~ | ~~Docker Engine~~ | **已由 GitHub Actions 完成**（run 43582011942，24/24 PASS） |
+| 2 | Tavily / Bocha 真实搜索联调 | 有效 API Key | **BLOCKED**（端点已证实可达：401） |
+| 3 | Brave 真实联调 | 订阅 Key **且**网络可达 | **BLOCKED** |
+| 4 | SearXNG 真实联调 | 启用 JSON 输出的可达实例 | **BLOCKED** |
+| 5 | 模型厂商真实联调（Chat/Embedding/Rerank） | 任一厂商 Key | **BLOCKED** |
+| 6 | AC-13 Agent Skills 被真实客户端加载 | Claude Desktop / Cursor | **BLOCKED** |
+| 7 | AC-05 客户端 wall 耗时带宽 | 隔离空闲机器复测 | **PARTIAL**（服务端在带内，客户端 1.26–1.39） |
+
+只有 2–7 仍缺证据；**1 已被远端 Runner 的真实执行取代**，不再算 BLOCKED。
 
 ## 10. 是否达到公开测试版发布条件
 
-### 结论：**CONDITIONAL**
+### 结论：**READY（公开预览），仍非 production-ready**
 
-不是 READY，也不是 NOT READY。理由如下。
+C1（Docker 容器验收）已在 GitHub Actions 真实通过，因此此前"0 项容器验收"这一最大缺口已经关闭。剩余缺口的性质是**外部凭证与第三方环境**，不是代码或部署缺陷。
 
-**支持发布的事实（A 档证据）**
+**A 档证据（可对外引用）**
 
-- **367** 个 Vitest + 5 个 Playwright 全绿；typecheck / lint 0 错误；构建成功。
-- 真实网络搜索链路可用（HN 真实返回真实 URL，REST 与 MCP 结果一致，20/20）。
-- 密钥不泄漏三重扫描 18/18；工作区与全 ref 密钥扫描 0 命中；`pnpm audit` 无已知漏洞。
-- 备份用 Online Backup API，并发写入下 57/57 检查通过；新版本数据库拒绝启动生效。
-- 16 项 AC 中 10 项 PASS，无 FAIL、无 NOT_IMPLEMENTED。
+- **367** 个 Vitest + 5 个 Playwright，本地与 GitHub Runner 双处全绿；typecheck / lint 0 错误。
+- **镜像真实构建**：`search-hub:ci`，506 MB，`docker build` 在 ubuntu-latest 成功。
+- **11 项容器验收 24/24 PASS**：compose 启动、非 root uid 1001、web 产物、health、setup token、初始化、真实 HN 搜索、Key 掩码、重启一致、持久化、资源、崩溃恢复（RestartCount 0→1）、Trivy（CRITICAL=0 HIGH=0）、MCP（9 tools / 真实 URL / REST 一致 / 401）。
+- **CI 4 个 job 全绿**：quality、build、e2e、security（含全历史密钥扫描）。
+- 密钥三重泄漏扫描 18/18；工作区与全 ref 扫描 0 命中；`pnpm audit` 无已知漏洞。
+- Repo 侧：Secret Scanning 与 Push Protection 已启用，Dependabot alerts 已启用，`GITHUB_TOKEN` 默认只读，`main` 分支已设 5 个必需检查且禁止强推/删除。
 
-**阻止 READY 的事实**
+**仍未验证（发布说明必须写明）**
 
-1. **Docker / 容器验收 0 项执行**：镜像从未构建，compose 从未启动，Trivy 从未跑。这是公开测试版最核心的交付形态（README 首推 `docker compose up`），它只有 B 档证据。**任何"可以发布"的说法都必须以"接受这一项未验证"为前提。**
-2. **通用网页搜索 0 个真实联调**：Tavily/Bocha/Brave/SearXNG 全部 `documented`。公开用户按 README 配 Key 后能否真正搜到中文/英文结果，本轮没有证据。
-3. **AC-05 端到端性能未达标**：服务端流水线在带内，客户端 wall 1.26–1.39 超带，只保留 PARTIAL。
-4. **AC-13 完全 BLOCKED**：无真实 Agent 客户端。
-5. **CI 从未运行**：没有远端，工作流是"配置完成"，不是"验证完成"。
+1. **通用网页搜索 0 个真实联调**：Tavily/Bocha/Brave/SearXNG 全部 `documented`。Hacker News 已真实联调，但它是垂直检索，不能代表通用网页搜索。
+2. **模型厂商 0 个真实联调**：全部 `NOT VERIFIED — no credential`。
+3. **AC-13 BLOCKED**：无真实 Agent 客户端加载 SKILL.md。
+4. **AC-05 PARTIAL**：客户端 wall 1.26–1.39，服务端流水线 0.93–1.00。
 
-**给出 CONDITIONAL 的条件（必须全部满足才可对外称"测试版"）**
+**对外表述规则**
 
-| 条件 | 验收方式 |
-|---|---|
-| C1 | 在任一有 Docker 的 Linux 主机执行 `bash scripts/docker-verify.sh` 并 exit 0（或 GitHub Actions 跑通 `docker.yml`） |
-| C2 | Release notes 明确写明：仅 Hacker News 完成真实联调；Tavily/Bocha/Brave/SearXNG 为"按官方文档实现、未联调" |
-| C3 | Release notes 明确写明：Docker 镜像验收在发布环境未执行（若 C1 未完成） |
-| C4 | 至少 1 个通用网页搜索（Tavily 或 Bocha）用真实 Key 跑通 `provider-live.mjs` 并把状态升为 `live_tested`（**强烈建议，非硬性**） |
-| C5 | ~~替换 README 中 `<your-org>` 占位符~~ 已完成（`alicia1030su`）；`search.example.com` 保留为示例域名并已标注；LICENSE 为 MIT |
+允许：
 
-**明确不允许的表述**
+- 「公开预览版。Hacker News 已真实联调；Docker 镜像与容器验收已在 GitHub Actions 通过。」
+- 「Tavily / 博查 / Brave / SearXNG 按官方文档实现，尚未完成真实搜索联调。」
+- 「模型增强为可选能力，尚未与真实厂商联调。」
 
-- 不得称"支持 28 个搜索源"（实为 7 个适配器 + 21 条目录条目）。
-- 不得称"通用网页搜索已验证"。
-- 不得称"Docker 部署已验证"（在 C1 完成前）。
-- 不得称"生产就绪 / production-ready"。
+禁止：
+
+- 「支持 28 个搜索源」（实为 7 个适配器 + 21 条目录条目）
+- 「通用网页搜索已验证」
+- 「生产就绪 / production-ready」
+- 「AI 摘要已在生产验证」
+
+**发布动作边界**：本轮只完成 push 与 Actions 验收。**未打 Tag、未创建 Release、未发布容器镜像**，这些需要单独授权。
 
 ## 11. 发布前检查清单（可执行）
 

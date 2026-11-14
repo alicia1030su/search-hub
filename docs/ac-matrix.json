@@ -3,7 +3,7 @@
     "id": "AC-01",
     "title": "首次安装与就绪",
     "status": "PARTIAL",
-    "summary": "原生路径完整通过：全新目录 install→build→prod-only install→boot，/api/health 200、迁移 1 条、匿名 setup 403、一次性 token 文件创建后删除。容器路径仍未验证。",
+    "summary": "原生路径 28/28；容器路径已在 GitHub Actions 真实通过：compose up 6s、health 200、管理员初始化、setup-token 删除。仅剩字面『未就绪』徽标未实现。",
     "evidence": [
       {
         "command": "node tests/scripts/clean-install.mjs",
@@ -16,11 +16,14 @@
       {
         "command": "docker version / docker ps / docker build -t search-hub:qa-probe .",
         "result": "failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine（daemon 未运行，exit 1）"
+      },
+      {
+        "command": "GitHub Actions Docker run 43582011942（ubuntu-latest）",
+        "result": "PASS 1 build image 506MB；2a compose up health starting→healthy；3b /api/health 200 status=ok；4a token length=25 mode=600；4b setup 200；4c token removed；5b HN 真实搜索 5 条"
       }
     ],
     "gaps": [
-      "容器路径未验证：`compose up → /api/health 200 ≤120s` 从未实测，Docker Engine 在本机不可用",
-      "未实现字面『未就绪』状态徽标；未配置源时仅有空状态文案（「还没有搜索源。先到『搜索源』页面添加一个。」/「当前时间范围内没有搜索记录。」）"
+      "未实现字面『未就绪』状态徽标；未配置源时仅有空状态文案"
     ]
   },
   {
@@ -210,27 +213,27 @@
   {
     "id": "AC-09",
     "title": "【红线】重启后配置保留",
-    "status": "PARTIAL",
-    "summary": "原生进程重启后 providers 逐项相等、迁移版本不变、调用计数不归零、备份恢复可解密；`docker restart` 未执行。",
+    "status": "PASS",
+    "summary": "容器内 compose restart 后 providers/searches/key 逐项相等、session 200；SIGKILL 掉 server 进程后 restart policy 自动拉起（RestartCount 0→1），checkpoint 200，数据完整；原生进程与备份恢复此前已通过。",
     "evidence": [
       {
-        "command": "node tests/scripts/clean-install.mjs（23:02 运行，修复脚本缺陷后）",
-        "result": "PASS: restart: providers identical — hn-live:hackernews:true；restart: counters preserved (not reset) — 1 -> 1；backup 180224 bytes 不含明文 Key；恢复后登录 200 且可继续真实搜索（28/28）"
+        "command": "GitHub Actions Docker run 43582011942 item 6",
+        "result": "PASS restart consistency: providers=1 searches=1 key=sk-V…1234 session=200 (unchanged)"
       },
       {
-        "command": "docker restart search-hub",
-        "result": "BLOCKED：Docker daemon 不可连接（npipe 不存在），命令无法执行"
+        "command": "同 run item 9（容器内 SIGKILL server 进程，非 docker kill）",
+        "result": "PASS auto-restarted 0→1, checkpoint 200, session 200, providers=1, searches=51 intact"
       },
       {
-        "command": "node tests/scripts/clean-install.mjs（00:37 重跑，v0.1.2 工作树）",
-        "result": "exit 3 INCONCLUSIVE：本地 install→build→prod→boot→setup 15/15 全通过，但本机到 hn.algolia.com 超时（curl 15s 无响应），live search/restart/backup/restore 未执行；脚本已改为「网络不可达 → SKIP + exit 3」，不再把网络故障算成代码失败"
+        "command": "node tests/scripts/backup-restore.mjs（原生进程）",
+        "result": "57/57：并发写入、三次下载、恢复后可解密、新版本 schema 拒绝启动"
+      },
+      {
+        "command": "node tests/scripts/clean-install.mjs",
+        "result": "28/28：重启后 providers 相同、counters 1→1、备份恢复可搜索"
       }
     ],
-    "gaps": [
-      "AC 明确要求 `docker restart` 后逐项相等；容器路径无法执行（Docker daemon 不可用），SIGTERM flush 只在原生进程上验证过",
-      "00:37 重跑 clean-install 时本机到 hn.algolia.com 15s 超时，restart/backup/restore 段未执行（脚本按设计以 exit 3 报 INCONCLUSIVE，不算通过）",
-      "kill -9（不在承诺内）未测试"
-    ]
+    "gaps": []
   },
   {
     "id": "AC-10",

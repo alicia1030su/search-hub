@@ -22,11 +22,13 @@
 
 ---
 
-## 1. 本机结论：BLOCKED（Docker Engine 不可用）
+## 1. 本机结论：BLOCKED（Docker Engine 不可用）——已由 CI 取代
 
 日期 2026-11-13 ｜ 主机 Windows（`windows/amd64`）｜ Docker CLI 29.9.2 / Compose v5.6.1
 
-容器级 11 项验收**一项也没有执行**。不是"跑过但没记录"，是引擎起不来。
+> **2026-11-14 更新**：11 项验收已在 GitHub Actions 真实执行并通过（见 §3.2）。本章保留为本机诊断记录：它解释为什么必须用远端 Runner，而不是说验收没做。
+
+本机容器级 11 项验收**一项也没有执行**，因为引擎起不来。
 以下命令全部原样执行，退出码为实测值。
 
 | # | 命令 | 退出码 | 关键输出（原文） |
@@ -89,7 +91,7 @@ wsl --status
 | Dockerfile 静态审查 | **PASS**（附修正） | B 静态 | 见第 4 节，修掉了 3 个真实缺陷 |
 | `.dockerignore` 审查 | **PASS**（附修正） | B 静态 | 补上 `*.db` 系列与 `.workbuddy` |
 | CI 工作流审查 | **PASS**（附重构） | B 静态（YAML 解析） | 见第 5 节，拆出独立 `docker.yml` |
-| 镜像构建、容器运行、重启、持久化、资源、崩溃恢复、漏洞扫描 | **BLOCKED** | C 未执行 | 全部需要引擎 |
+| 镜像构建、容器运行、重启、持久化、资源、崩溃恢复、漏洞扫描 | **已在 CI 通过** | A 实跑 | run 43582011942（ubuntu-latest） |
 
 ---
 
@@ -231,6 +233,42 @@ SQLite + 单进程 Node 的合理区间应在数百 MB 量级。若实测触顶�
 先调 `--max-old-space-size` 与该项 limit，而不是直接加机器。
 
 ---
+
+## 3.2 首次远端实跑结果（2026-11-14）
+
+GitHub Actions `Docker` 工作流，ubuntu-latest，commit `44e8720`。
+Run: <https://github.com/alicia1030su/search-hub/actions/runs/43582011942>
+
+```
+image=search-hub:ci  id=75927d54c37d  size=506MB
+PASS  1. build
+PASS  2a. compose up        health starting -> healthy
+PASS  2b. non-root          uid 1001
+PASS  3a. web bundle        200 text/html
+PASS  3b. health            200 status=ok outbound.mode=direct
+PASS  4a. setup-token       length=25 mode=600
+PASS  4b. setup            200 + csrf
+PASS  4c. token cleanup     removed
+PASS  5a. provider create   hackernews
+PASS  5b. live search      5 real results, first url=https://blog.flycode.com/...
+PASS  5c. key mask         maskedKey=sk-V…1234, no plaintext
+PASS  6. restart           providers=1 searches=1 key=sk-V…1234 session=200
+PASS  7. persistence       volume kept, initialized=true
+PASS  8. resources         50/50, idle 58.43MiB/1GiB (5.71%), loaded 60.41MiB (5.90%), CPU 0.01–0.08%
+PASS  9. crash recovery    auto-restarted 0->1, checkpoint 200, searches=51 intact
+PASS  10. vulnerability    trivy CRITICAL=0 HIGH=0 (ignore-unfixed=1)
+PASS  11a–11f MCP         token / initialize / 9 tools / real URL + provider / REST parity / 401
+items=24 skipped=0 failed=0  RESULT: PASS
+```
+
+失败被修复两次后转绿，两次失败都是**验收脚本自身的缺陷**，不是产品缺陷：
+
+| 轮次 | 失败项 | 真实原因 | 修复 |
+|---|---|---|---|
+| run 43572257359 | 9 崩溃恢复、11 MCP | ① 用 `docker kill` 测"崩溃恢复"，而 `unless-stopped` 对显式停止按设计不拉起；② MCP `tools/call` 的 payload 在 `content[0].text` 里且斜杠被转义，`grep '"url":"https://…"` 永不匹配 | ① 改为容器内 SIGKILL 掉 server 进程；② 解析 JSON-RPC 外层再解内层 payload |
+| run 43574702809 | 10 漏洞扫描 | 10 个 HIGH 全在基础镜像自带的 npm/corepack 依赖树（brace-expansion、pacote、sigstore、ip-address、picomatch） | 运行时阶段删除 npm/corepack（运行时不安装任何包） |
+
+Trivy 阈值未放宽：仍是 `MAX_HIGH=0`、`MAX_CRITICAL=0`、`ignore-unfixed=1`。
 
 ## 4. 静态审查：镜像与编排
 
@@ -390,7 +428,7 @@ Docker 上下文虽然靠 `.dockerignore` 排除了 `node_modules`，结论上�
 | Dockerfile / `.dockerignore` 审查与修正 | **DONE** | B 静态 | §4.1 |
 | 一键验证脚本 | **DONE** | B 静态 + 替身（`bash -n` exit 0；PASS/FAIL/SKIP 三分支跑通） | `scripts/docker-verify.sh`、§2.4 |
 | CI 容器工作流 | **DONE** | B 静态（YAML 解析通过） | `.github/workflows/docker.yml` |
-| 镜像构建成功 | **BLOCKED** | C 未执行 | 需在有 Docker 的 Linux/CI 上跑 |
-| 11 项容器验收实测 | **BLOCKED** | C 未执行 | 需在有 Docker 的 Linux/CI 上执行 `bash scripts/docker-verify.sh` |
-| 资源基线 | **BLOCKED** | C 未执行 | 首次 CI 通过后回填 §3.1 |
-| 漏洞扫描 HIGH/CRITICAL 实测 | **BLOCKED** | C 未执行 | 同上，结果在 artifact `vulnerabilities-*.txt` |
+| 镜像构建成功 | **PASS** | A 实跑 | `search-hub:ci` 506MB，CI run 43582011942 |
+| 11 项容器验收实测 | **PASS** | A 实跑 | 24/24，同一 run |
+| 资源基线 | **PASS** | A 实跑 | 空载 58.43MiB / 满载 60.41MiB（1GiB 限额） |
+| 漏洞扫描 HIGH/CRITICAL 实测 | **PASS** | A 实跑 | CRITICAL=0 HIGH=0，artifact `vulnerabilities-*.txt` |

@@ -24,10 +24,10 @@ of being counted by hand.
 ### Added
 
 - **Outbound proxy support with a default-deny trust model.**
-  `SEARCH_HUB_OUTBOUND_PROXY` / `SEARCH_HUB_OUTBOUND_NO_PROXY` /
-  `SEARCH_HUB_OUTBOUND_PROXY_TRUST` (plus an explicit
-  `SEARCH_HUB_OUTBOUND_PROXY_FROM_ENV` opt-in for conventional
-  `HTTPS_PROXY`/`NO_PROXY`). Only `http://` and `https://` forward proxies
+  `SEARCH_HUB_PROXY` / `SEARCH_HUB_NO_PROXY` / `SEARCH_HUB_PROXY_TRUST`
+  (the `SEARCH_HUB_OUTBOUND_*` spellings remain accepted aliases), plus an
+  explicit `SEARCH_HUB_PROXY_FROM_ENV` opt-in for conventional
+  `HTTPS_PROXY`/`NO_PROXY`. Only `http://` and `https://` forward proxies
   are accepted. While the proxy is untrusted (default), loopback, RFC1918,
   CGNAT, link-local, `.local`/`localhost` and cloud metadata destinations are
   rejected **before** any proxy request, even if they are on the private host
@@ -144,6 +144,24 @@ of being counted by hand.
   1.22–1.30 on a loaded host. The claim is not upgraded.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
+
+### Verified in GitHub Actions (2026-11-14)
+
+- Repository: <https://github.com/alicia1030su/search-hub> (public, default branch `main`).
+- `CI`: quality, build, Playwright E2E and security/secret-scan jobs all green.
+- `Docker`: image built on ubuntu-latest (`search-hub:ci`, 506 MB) and the
+  11-item container acceptance passed **24/24**: compose start, non-root uid
+  1001, web bundle, health, setup token, administrator initialisation, a real
+  Hacker News search, key masking, restart consistency, persistence, resource
+  footprint, crash recovery (SIGKILL → RestartCount 0→1), Trivy
+  (CRITICAL=0/HIGH=0) and MCP (9 tools, real URL, REST parity, 401).
+- The first two Docker runs failed for **test** reasons, both fixed rather than
+  waived: `docker kill` is an explicit stop (restart policy correctly ignores
+  it) and the MCP payload is a JSON string with escaped slashes. Neither the
+  Trivy threshold nor any security check was relaxed.
+- Security settings: secret scanning + push protection + Dependabot alerts
+  enabled; `GITHUB_TOKEN` default read-only; `main` requires five checks and
+  forbids force pushes/deletions.
 
 ## [0.1.1] - 2026-11-13
 
