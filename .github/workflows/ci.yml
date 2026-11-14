@@ -62,7 +62,8 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v4
-        with:/n          persist-credentials: false
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -119,7 +120,8 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v4
-        with:/n          persist-credentials: false
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
