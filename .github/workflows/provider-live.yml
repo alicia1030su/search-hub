@@ -44,9 +44,11 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
-      # Each key is passed to the single step that needs it. The script refuses
-      # to run with an empty key (exit 2) and never echoes the value. A missing
-      # secret is reported as SKIP, not as a pass.
+      # Keys are provided ONLY through the environment. The script reads
+      # TAVILY_API_KEY / BOCHA_API_KEY / BRAVE_API_KEY itself, so the value never
+      # appears in argv (process arguments are readable by other processes on
+      # the runner) and never in the command echo. A missing secret is SKIP
+      # (exit 2), not a pass.
       - name: Call the configured providers
         env:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
@@ -69,7 +71,7 @@ jobs:
             fi
             ran=$((ran + 1))
             echo "::group::$name"
-            if node tests/scripts/provider-live.mjs --provider "$name" --key "$key" 2>&1 | tee -a "provider-$name.log"; then
+            if node tests/scripts/provider-live.mjs --provider "$name" 2>&1 | tee -a "provider-$name.log"; then
               echo "LIVE PASSED: $name"
             else
               echo "::error::$name live call failed"
