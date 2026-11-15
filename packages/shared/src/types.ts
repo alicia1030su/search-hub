@@ -558,7 +558,11 @@ export interface ProviderCatalogEntry {
   docsUrl?: string;
   description: string;
   /** Honest verification status. Never set this to verified without a recorded live test. */
-  verification: "documented" | "live_tested" | "unverified" | "no_official_api";
+  /**
+   * `mock_verified` means "contract-tested against a local double only" — it
+   * must never be reported as a real vendor integration.
+   */
+  verification: "documented" | "live_tested" | "mock_verified" | "unverified" | "no_official_api";
   notes?: string;
 }
 

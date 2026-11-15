@@ -5,6 +5,9 @@ import { genericHttpAdapter } from "./builtin/generic.js";
 import { hackerNewsAdapter } from "./builtin/hackernews.js";
 import { legacySearchHubAdapter } from "./builtin/legacy-search-hub.js";
 import { duckduckgoAdapter } from "./builtin/duckduckgo.js";
+import { metasoAdapter } from "./builtin/metaso.js";
+import { metasoMcpAdapter } from "./builtin/metaso-mcp.js";
+import { minimaxAdapter } from "./builtin/minimax.js";
 import { genericMcpAdapter } from "./builtin/generic-mcp.js";
 import { anthropicWebSearchAdapter } from "./builtin/anthropic-websearch.js";
 import { crossrefAdapter } from "./builtin/crossref.js";
@@ -49,6 +52,9 @@ import { tavilyAdapter } from "./builtin/tavily.js";
 import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
 
 const ADAPTERS: SearchProviderAdapter[] = [
+  minimaxAdapter,
+  metasoAdapter,
+  metasoMcpAdapter,
   duckduckgoAdapter,
   genericMcpAdapter,
   perplexitySearchAdapter,

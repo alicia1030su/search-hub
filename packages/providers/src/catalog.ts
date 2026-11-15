@@ -90,8 +90,9 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     authType: "none",
     implementation: "builtin",
     description: "确定性测试源，支持延迟与故障注入，用于验证并发额度、故障隔离与融合逻辑。",
-    verification: "live_tested",
-    notes: "仅用于测试与演示，不代表真实搜索能力。",
+    verification: "mock_verified",
+    notes:
+      "这是内置测试替身（mock），不发起任何网络请求，因此不能算作真实厂商联调（live_tested）。仅用于测试与演示，不代表真实搜索能力。",
   },
   {
     type: "duckduckgo",
@@ -126,16 +127,6 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     description: "百度通用网页搜索本身没有公开 API；请使用「百度千帆 AI 搜索」（qianfan-search），它提供官方的 references[] 网页结果。",
     verification: "no_official_api",
     notes: "已由 qianfan-search 覆盖：POST /v2/ai_search/web_search。本条目仅作为说明保留，不可创建。",
-  },
-  {
-    type: "metaso",
-    name: "秘塔搜索（MetaSo）",
-    category: "general",
-    authType: "api_key",
-    implementation: "planned",
-    description: "官方控制台显示 POST /api/v1/search（参数 q / scope / size / page），但完整请求域名、鉴权头与响应结构未能在本项目内核实。",
-    verification: "unverified",
-    notes: "已核对：官方 playground 的路径（/api/v1/search）与查询参数（q/scope/size/page）；未核实：请求 host、鉴权方式、响应字段。核实前不提供原生适配器。可用 Generic HTTP 接入：method=POST、path=/api/v1/search、keyInjection 按你的控制台说明填写（header 名需自行确认）、resultsPath 需按实际响应填写，并在搜索源名称里写清协议来源。",
   },
   {
     type: "exa",
@@ -912,16 +903,6 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
       { key: "allowedDomains", label: "限定域名", type: "text", target: "config", placeholder: "docs.x.ai,python.org", help: "最多 5 个，与排除域名互斥。" },
       { key: "excludedDomains", label: "排除域名", type: "text", target: "config", placeholder: "example.com", help: "最多 5 个。" },
     ],
-  },
-  {
-    type: "minimax",
-    name: "MiniMax",
-    category: "ai",
-    authType: "api_key",
-    implementation: "planned",
-    docsUrl: "https://platform.minimaxi.com",
-    description: "目标兼容源。需确认其联网搜索/Agent 接口的具体形态。",
-    verification: "unverified",
   },
   {
     type: "mimo",

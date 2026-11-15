@@ -7,7 +7,12 @@
 export type ProviderCategory = "general" | "ai" | "vertical" | "compat" | "custom";
 export type ProviderAuthType = "none" | "api_key" | "bearer" | "basic";
 export type ProviderImplementation = "builtin" | "generic" | "planned" | "unavailable";
-export type ProviderVerification = "documented" | "live_tested" | "unverified" | "no_official_api";
+export type ProviderVerification =
+  | "documented"
+  | "live_tested"
+  | "mock_verified"
+  | "unverified"
+  | "no_official_api";
 export type ProviderType = string;
 
 export type KeyStrategy = "round_robin" | "random" | "weighted_random" | "least_used" | "failover";

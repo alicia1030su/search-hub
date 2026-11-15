@@ -655,13 +655,14 @@ describe("v0.1.4 provider catalog is actually creatable", () => {
     expect((after.json().providers as Array<{ enabled: boolean }>).filter((item) => item.enabled)).toHaveLength(0);
   });
 
-  it("an unverified catalog entry cannot be created", async () => {
+  it("a catalog entry without an adapter cannot be created", async () => {
+    // `baidu` has no public general web-search API, so it has no adapter.
     const response = await app.inject({
       method: "POST",
       url: "/api/admin/providers",
       cookies: { sh_session: cookie },
       headers: { "x-csrf-token": csrf },
-      payload: { name: "metaso-probe", type: "metaso", enabled: true },
+      payload: { name: "baidu-probe", type: "baidu", enabled: true },
     });
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
   });

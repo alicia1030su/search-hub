@@ -471,7 +471,8 @@ const zh = {
   "implementation.unavailable": "无官方接口",
 
   "verification.documented": "按文档实现",
-  "verification.live_tested": "已联调",
+  "verification.live_tested": "已真实联调",
+  "verification.mock_verified": "契约测试（本地替身）",
   "verification.unverified": "待验证",
   "verification.no_official_api": "无官方 API",
 
@@ -909,6 +910,7 @@ export const implementationLabels: Record<ProviderImplementation, string> = {
 export const verificationLabels: Record<ProviderVerification, string> = {
   documented: zh["verification.documented"],
   live_tested: zh["verification.live_tested"],
+  mock_verified: zh["verification.mock_verified"],
   unverified: zh["verification.unverified"],
   no_official_api: zh["verification.no_official_api"],
 };

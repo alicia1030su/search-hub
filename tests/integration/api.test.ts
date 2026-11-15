@@ -140,8 +140,9 @@ describe("provider and key management", () => {
       method: "POST",
       url: "/api/admin/providers",
       ...adminHeaders(harness),
-      // `metaso` is still catalog-only (planned); `bocha` gained a real adapter in v0.1.2.
-      payload: { name: "metaso", type: "metaso" },
+      // `baidu` is catalog-only (no public general web-search API); `metaso`
+      // gained a real adapter in v0.1.4.
+      payload: { name: "baidu", type: "baidu" },
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().error.code).toBe("not_implemented");
