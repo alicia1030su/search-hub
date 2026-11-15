@@ -387,7 +387,10 @@ test.describe("Search Hub 管理后台端到端", () => {
 
     // Delete exactly the instance just added: the newest one sits last.
     await arxivRows.last().getByRole("button", { name: /删除/ }).click();
-    await page.getByRole("button", { name: "删除", exact: true }).last().click();
+    // Scope the confirmation to the dialog: the table also has per-row delete
+    // buttons with the same label.
+    const dialog = page.getByRole("dialog").filter({ hasText: "删除" }).last();
+    await dialog.getByRole("button", { name: "删除", exact: true }).click();
 
     await expect(arxivRows).toHaveCount(afterInstall - 1, { timeout: 20_000 });
     // Another instance still exists, so the delete was scoped to one row.
