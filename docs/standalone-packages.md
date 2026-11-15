@@ -21,6 +21,10 @@ PACKAGE_TARGET=linux-arm64 PACKAGE_NODE_BIN=/path/to/arm64/node node packaging/b
 
 产物：`dist/package/search-hub-v<版本>-<target>.{zip,tar.gz}` 与同名 `.sha256`。
 
+正式发布由 `.github/workflows/release.yml` 完成：打 tag（如 `v0.1.4-beta.5`）后，
+在 windows-latest、ubuntu-latest、ubuntu-24.04-arm 上分别构建并跑同一套验收，
+三个平台全部通过才会创建 prerelease 并上传 `SHA256SUMS`。
+
 ## 包内结构
 
 ```

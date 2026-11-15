@@ -77,6 +77,36 @@ Search Hub 把这些做成一个可部署的服务：
 
 > 目录共 59 条：49 个可用适配器、1 个无官方接口、7 个 generic 兼容入口。全新安装不含任何搜索源，需从市场添加。项目**不声称支持 59 个搜索源**。逐源的联调缺口见 [docs/provider-matrix.md](./docs/provider-matrix.md)。
 
+## 下载安装（v0.1.4-beta.5）
+
+三种形态，同一套搜索核心、数据库模型与管理后台。
+
+| 平台 | 下载 | 需要什么 |
+|---|---|---|
+| Windows x64 | [`search-hub-v0.1.4-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.5/search-hub-v0.1.4-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | [`search-hub-v0.1.4-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.5/search-hub-v0.1.4-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
+| Linux arm64 | [`search-hub-v0.1.4-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.5/search-hub-v0.1.4-linux-arm64.tar.gz) | **无** |
+
+校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.5/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+
+**Windows**：解压 → 双击 `SearchHub.exe` → 浏览器自动打开 `http://127.0.0.1:8787`。
+首次启动的 Setup Token 写在 `%LOCALAPPDATA%\SearchHub\setup-token`。
+`--service` 为后台模式（Windows Server 关闭会话也不停），`--status / --stop / --logs / --autostart` 见包内 README.txt。
+
+**Linux**：
+
+```bash
+mkdir search-hub && tar -xzf search-hub-v0.1.4-linux-x64.tar.gz -C search-hub
+cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
+```
+
+长期运行用包内 `search-hub.service`（非 root、`ProtectSystem=strict`、数据在 `/var/lib/search-hub`）。
+
+**Docker** 仍是最简方式：`docker compose up -d`，详见[部署文档](./docs/deployment.md)。
+独立包与三种形态的差异见[独立部署包文档](./docs/standalone-packages.md)。
+
+> 发布产物在真实 Windows 与 Linux（x64 / arm64）上各自解压启动并通过同一套验收：健康检查 → 首次初始化 → REST 搜索 → MCP initialize/tools.list/tools.call → 数据库与主密钥落盘 → 停止 → 重启后数据仍在。
+
 ## 快速开始
 
 ### Docker Compose（推荐）
