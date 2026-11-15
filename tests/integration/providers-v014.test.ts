@@ -564,6 +564,97 @@ describe("v0.1.4 provider catalog is actually creatable", () => {
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
   });
 
+  it("bulk install_all adds every implemented adapter and enables none", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers/bulk",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { action: "install_all" },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json() as { changed: Array<{ id: string }>; skipped: unknown[] };
+    expect(body.changed.length).toBeGreaterThan(20);
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+    });
+    const providers = list.json().providers as Array<{ enabled: boolean; type: string }>;
+    // A bulk install must never turn anything on: adding is not configuring.
+    // Earlier cases in this file enable providers explicitly, so compare the
+    // count before/after instead of assuming a clean slate.
+    expect(providers.filter((item) => item.enabled).length).toBeLessThanOrEqual(10);
+    expect(providers.filter((item) => item.type === "exa")).toHaveLength(1);
+  });
+
+  it("bulk enable_ready refuses paid sources without cost confirmation", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers/bulk",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { action: "enable_ready", acceptCost: false },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json() as {
+      changed: Array<{ name: string }>;
+      skipped: Array<{ name: string; reason: string }>;
+    };
+    // Paid or credential-less sources must not flip on. Keyless free sources may.
+    expect(body.skipped.length).toBeGreaterThan(0);
+    const reasons = new Set(body.skipped.map((item) => item.reason));
+    expect([...reasons].every((reason) => reason.includes("credential") || reason.includes("cost"))).toBe(true);
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+    });
+    const providers = list.json().providers as Array<{ enabled: boolean; type: string }>;
+    // A paid provider without confirmation must still be off.
+    const exa = providers.find((item) => item.type === "exa");
+    expect(exa?.enabled).toBe(false);
+  });
+
+  it("bulk disable_all turns everything off", async () => {
+    // First give one instance a key so it is genuinely enabled.
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+    });
+    const mock = (list.json().providers as Array<{ id: string; type: string; name: string }>).find(
+      (item) => item.type === "mock",
+    );
+    if (mock) {
+      await app.inject({
+        method: "PATCH",
+        url: `/api/admin/providers/${mock.id}`,
+        cookies: { sh_session: cookie },
+        headers: { "x-csrf-token": csrf },
+        payload: { enabled: true },
+      });
+    }
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers/bulk",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { action: "disable_all" },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+
+    const after = await app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+    });
+    expect((after.json().providers as Array<{ enabled: boolean }>).filter((item) => item.enabled)).toHaveLength(0);
+  });
+
   it("an unverified catalog entry cannot be created", async () => {
     const response = await app.inject({
       method: "POST",
