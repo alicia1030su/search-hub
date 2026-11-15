@@ -237,8 +237,8 @@ function readme(target, version) {
 
 ## 安装（不需要 Node.js / pnpm）
 
-    tar -xzf ${archiveName(target, version)}
-    cd ${targetDir(target, version)}
+    mkdir search-hub && tar -xzf ${archiveName(target, version)} -C search-hub
+    cd search-hub
     ./bin/search-hub
 
 首次启动会打印访问地址 http://127.0.0.1:${port} 与 Setup Token 的位置。
@@ -311,10 +311,6 @@ function archiveName(target, version) {
   return `search-hub-v${version}-${target}.${IS_WINDOWS ? "zip" : "tar.gz"}`;
 }
 
-function targetDir(target, version) {
-  return `search-hub-v${version}-${target}`;
-}
-
 function makeArchive(fromDir, toFile) {
   mkdirSync(dirname(toFile), { recursive: true });
   const parent = dirname(fromDir);
@@ -327,7 +323,10 @@ function makeArchive(fromDir, toFile) {
     log(`wrote ${toFile}`);
     return;
   }
-  run("tar", ["-czf", toFile, "-C", parent, base], { cwd: parent });
+  // Create the archive from *inside* the directory ("./"), so its entries sit at
+  // the archive root exactly like the Windows zip. Wrapping everything in a
+  // top-level folder made the extracted layout differ per platform.
+  run("tar", ["-czf", toFile, "-C", fromDir, "."], { cwd: parent });
 }
 
 function sha256(file) {
