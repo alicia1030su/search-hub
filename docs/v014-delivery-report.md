@@ -158,3 +158,64 @@ PASS pubmed     rows=3 2586ms  https://pubmed.ncbi.nlm.nih.gov/39422983/
 3. 没有合并 PR、没有打 Tag/Release、没有推送 GHCR 镜像。
 
 合并后若要继续提升可信度，唯一有效动作是给真实 Key：从 cost 最低的 Exa 或 Serper 开始，逐个把 `documented` 升为 `live_tested`。
+
+---
+
+## 追加交付（Beta 发布，2026-11-16）
+
+| 项 | 结果 |
+|---|---|
+| PR #3 | **已合并**，main = `a0a1e4c` |
+| Tag | `v0.1.4-beta.5`（前序 beta.1–beta.4 是修复过程中的中间 tag，均未发布资产） |
+| Release | **Prerelease 已发布**：https://github.com/alicia1030su/search-hub/releases/tag/v0.1.4-beta.5 |
+| 资产 | `windows-x64.zip` 71MB、`linux-x64.tar.gz` 48MB、`linux-arm64.tar.gz` 48MB、`SHA256SUMS` |
+
+### MiniMax
+
+协议取自官方 MCP 源码（`minimax_mcp/server.py` + `client.py`）：
+`POST {host}/v1/coding_plan/search`、body `{"q":…}`、`Authorization: Bearer` +
+`MM-API-Source: Minimax-MCP`。按 `base_resp.status_code` 判定业务结果：
+1004 = 密钥无效**或密钥与 host 区域不匹配**，2038 = 账号无 Coding Plan 权限。
+区域：`api.minimaxi.com`（大陆）/ `api.minimax.io`（国际）。
+
+### 秘塔
+
+`POST https://metaso.cn/api/v1/search`，Bearer 鉴权，参数 `q/scope/size/page`，
+响应 `webpages[]`。真实无鉴权探测返回 **HTTP 200 + `{"errCode":2005}`**，因此错误在
+响应体而非状态码。`scope≠webpage` 会明确提示那是专有索引。另有 `metaso-mcp`
+兼容已部署的 MCP 服务（预置 `q`/`webpages` 映射），**不主动连接旧实例**。
+
+### Windows / Linux 独立包
+
+- `SearchHub.exe` 是 Node SEA 的启动器；服务端仍是子进程——`better_sqlite3.node`
+  无法从 SEA blob 内加载，把服务塞进单文件会牺牲数据库可靠性。
+- 包内只带一个 bundle 后的 `server.mjs` + 该平台的原生 `.node`：pnpm 的 9 万文件
+  树超过 ZIP 的 65,535 条目上限，也无法作为下载物。
+- 启动器负责数据目录、端口冲突、单实例锁、健康检查、浏览器跳转、
+  `--status/--stop/--logs/--autostart/--service/--lan`，并把 SIGTERM 转发给子进程。
+
+### 平台验收（真实执行，不是"能构建"）
+
+`packaging/verify-package.mjs` 在 **PATH 移除 node/pnpm** 后启动解压包，依次验证：
+健康检查 → 首次初始化 → 创建 Provider → REST 搜索 → MCP initialize/tools.list/
+tools.call → 数据库与主密钥落盘 → 停止 → 重启后管理员仍在。
+
+三个平台在各自的真实 runner 上通过（Windows x64、Linux x64、Linux arm64）。
+
+**发布资产再验证**：本机下载 `windows-x64.zip`，`sha256sum -c` 全部 OK；
+解压后 `SearchHub.exe --status`、首次初始化、REST 搜索（2 条结果）、
+MCP 三件套、`search-hub.db` 与 `master.key` 落盘全部通过。
+
+### 过程中修掉的三个真实缺陷
+
+1. **tar 包多包了一层目录** → Linux 验收在根目录找不到 `bin/search-hub`。
+2. **ESM 没有 `__dirname`** → Linux 启动器把根解析成 `runtime/`，找不到 `app/`。
+3. **launcher 未转发 SIGTERM** → systemd 停止时启动器退出而服务仍在跑，`--stop` 假成功。
+
+这三个都是"构建成功但启动失败"的典型，只有真正跑起来才会暴露。
+
+### 验证状态口径
+
+`verification` 新增 `mock_verified`：内置 mock 不再被算作真实联调。
+当前分布：`live_tested` 5（hackernews、crossref、openalex、pubmed、mock 已独立分类）、
+`mock_verified` 1（mock）、`documented` 43、`unavailable` 1（baidu）。
