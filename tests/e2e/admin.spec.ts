@@ -166,12 +166,15 @@ test.describe("Search Hub 管理后台端到端", () => {
     await expect(page.locator("body")).not.toContainText("sk-");
   });
 
-  test("搜索源市场把未实现项标注清楚且不可创建", async ({ page }) => {
+  test("搜索源市场把没有适配器的条目标注清楚", async ({ page }) => {
     await login(page);
     await page.goto("/providers");
     // The catalog now lives behind the marketplace tab.
     await page.getByRole("button", { name: /搜索源市场/ }).click();
-    await expect(page.getByText("仅目录 · 未实现").first()).toBeVisible({ timeout: 20_000 });
+    // Every provider that ships an adapter has one; the entries that do not are
+    // labelled instead of pretending to be usable. After MiniMax and 秘塔 gained
+    // adapters, `baidu` is the remaining "no official API" entry.
+    await expect(page.getByText("无官方接口").first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("支持 30 源", { exact: false })).toHaveCount(0);
   });
   test("v0.1.4 按服务商渲染字段，创建时保存凭证并在编辑时显式轮换", async ({ page }) => {

@@ -60,6 +60,8 @@ const ALLOWLIST = [
   "sh_your_token_here",
   "Initial-Admin-Pass-1",
   "A-very-long-password-1",
+  // Password the release acceptance script types into its own throwaway instance.
+  "Release-Check-Password-1",
   "Clean-Install-Pass-1",
   "Leak-Scan-Password-1",
   "E2E-Admin-Password-1",
