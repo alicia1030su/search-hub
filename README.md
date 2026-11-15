@@ -6,7 +6,7 @@
 
 > **状态：0.1.4 · 公开预览（Public Preview），不是 production-ready。**
 >
-> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 548 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 558 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
 > 逐项证据与缺口见[验证状态](#验证状态)、[Provider 状态矩阵](./docs/provider-matrix.md)、[能力清单](./docs/capability-inventory.md) 与[发布就绪报告](./docs/release-readiness.md)。未联调的能力不会被描述为“已验证”。
 
@@ -51,6 +51,9 @@ Search Hub 把这些做成一个可部署的服务：
 | `serper` | API Key | Serper.dev Google SERP，`organic[]`，支持 `page` 分页 | 按官方文档实现；**无真实 Key，未联调** |
 | `github` | 可选 Token | GitHub 搜索（仓库/Issue/代码），垂直索引 | 按官方文档实现；**未联调** |
 | `arxiv` | 无 | arXiv Atom API，学术预印本垂直索引 | 按官方文档实现；**未联调** |
+| `minimax` | API Key | MiniMax Coding Plan `web_search`：`POST /v1/coding_plan/search`，`organic[]`；错误按 `base_resp` 判定（1004 区域不匹配 / 2038 无权限） | 协议取自官方 MCP 源码；**无 Coding Plan 凭证，未联调** |
+| `metaso` | API Key | 秘塔搜索：`POST https://metaso.cn/api/v1/search`，`webpages[]` | 路径与错误码经真实请求确认（2005=密钥无效）；**无 Key，成功响应未实测** |
+| `metaso-mcp` | 无 | 已部署的秘塔 MCP 服务（Streamable HTTP，默认 127.0.0.1:44454） | 复用 Generic MCP，预置 q/webpages 映射；不主动连接旧实例 |
 | `gemini` | API Key | Gemini generateContent + `google_search` 工具，返回 `groundingChunks` 引用；未联网时明确标记 | 按官方文档实现；**无真实 Key，未联调** |
 | `grok` | API Key | xAI Responses API + `web_search`，要求存在 `web_search_call` 才算联网 | 按官方文档实现；**无真实 Key，未联调** |
 | `mimo` | API Key | 小米 MiMo `tools:[{type:"web_search"}]`，引用在 `annotations` | 按官方文档实现；**无真实 Key，未联调** |
@@ -72,7 +75,7 @@ Search Hub 把这些做成一个可部署的服务：
 
 **目录中列出但尚未实现**：DuckDuckGo、秘塔、MiniMax，以及 Search Gateway 等兼容网关。它们要么没有可公开验证的官方接口，要么需要单独的 AI 联网适配层；界面会明确标注实际协议，`metaso` / `duckduckgo` 等未核实项**不能创建**，可通过 `generic-http` 自行接入并标注来源。
 
-> 目录共 34 条：23 个可用适配器、2 个 planned、2 个无官方接口、7 个 generic 兼容入口。全新安装不含任何搜索源，需从市场添加。项目**不声称支持 34 个搜索源**。逐源的联调缺口见 [docs/provider-matrix.md](./docs/provider-matrix.md)。
+> 目录共 59 条：49 个可用适配器、1 个无官方接口、7 个 generic 兼容入口。全新安装不含任何搜索源，需从市场添加。项目**不声称支持 59 个搜索源**。逐源的联调缺口见 [docs/provider-matrix.md](./docs/provider-matrix.md)。
 
 ## 快速开始
 

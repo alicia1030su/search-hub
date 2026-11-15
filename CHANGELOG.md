@@ -239,6 +239,38 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### MiniMax, Metaso and standalone packages (2026-11-15)
+
+**MiniMax Coding Plan** — protocol taken from the official MCP source rather than
+the marketing docs: `POST {host}/v1/coding_plan/search`, body `{q}`, headers
+`Authorization: Bearer` + `MM-API-Source: Minimax-MCP`. The HTTP status is not
+enough: `base_resp.status_code` decides, and the adapter distinguishes
+1004 (key/host **region mismatch**) from 2038 (no Coding Plan entitlement) so a
+permission problem is never reported as an invalid key.
+
+**Metaso (秘塔)** — `POST https://metaso.cn/api/v1/search` with Bearer auth and
+`q/scope/size/page`; response `webpages[]`. Confirmed by a real unauthenticated
+call returning HTTP 200 with `{"errCode":2005}`, so errors are read from the body.
+A non-`webpage` scope is warned about (proprietary index, not the web). A second
+provider `metaso-mcp` reuses the Generic MCP client with 秘塔 presets and never
+contacts the legacy deployment.
+
+**mock is now `mock_verified`** — a test double is not a vendor integration. The
+verification scale is `live_tested` / `mock_verified` / `documented`, and the UI
+labels them separately.
+
+**Standalone packages** — `SearchHub.exe` (Node SEA) plus a bundled runtime for
+Windows, `tar.gz` + systemd template for Linux x64/arm64. The server is a child
+process on purpose: `better_sqlite3.node` cannot load from a SEA blob. The
+package ships one bundled `server.mjs` (pnpm's 90k-file tree exceeds the ZIP
+entry limit) and a dependency-free ZIP writer with correct CRCs.
+
+**Acceptance** — `packaging/verify-package.mjs` launches the extracted package
+with node/pnpm removed from PATH and checks health → setup → provider → REST →
+MCP initialize/tools.list/tools.call → DB + master.key → stop → restart
+persistence. The `Release packages` workflow runs it on real Windows and Linux
+runners before any prerelease is published.
+
 ### Provider ecosystem, Generic MCP and UI pass (2026-11-15, same PR)
 
 **22 new native providers** (all `documented`, contract-tested, no live credential):
