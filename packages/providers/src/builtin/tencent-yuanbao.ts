@@ -68,6 +68,83 @@ interface TencentPage {
   score?: unknown;
 }
 
+/**
+ * Tencent Cloud signs the `host` header, so the host must be exactly what the
+ * request uses. A wrong host produces an AuthFailure from the service rather
+ * than a clear local error, and a wrong port would silently sign the wrong host.
+ *
+ * Accepted:
+ * - `https://wsa.tencentcloudapi.com` (default port 443), and
+ * - `http://127.0.0.1:<port>` / `http://localhost:<port>` for a local TLS-
+ *   terminating or test gateway. The signature is identical; only transport
+ *   security differs, and this is an explicit, narrow exception.
+ *
+ * Rejected: any other scheme, userinfo, path/query/fragment, and https on a
+ * non-443 port (the signed host would not match `host:443`).
+ */
+export function resolveTencentEndpoint(baseUrl: string | null | undefined): {
+  url: string;
+  host: string;
+} {
+  if (!baseUrl || !baseUrl.trim()) {
+    return { url: `https://${DEFAULT_HOST}/`, host: DEFAULT_HOST };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl.trim());
+  } catch {
+    throw new ProviderError(
+      "tencent-yuanbao",
+      "tencent-yuanbao",
+      "bad_request",
+      "Tencent Base URL must be an absolute URL, e.g. https://wsa.tencentcloudapi.com",
+    );
+  }
+  const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+    throw new ProviderError(
+      "tencent-yuanbao",
+      "tencent-yuanbao",
+      "bad_request",
+      "Tencent Base URL must use https. A plain-http URL is accepted only for 127.0.0.1/localhost test gateways.",
+    );
+  }
+  if (parsed.username || parsed.password) {
+    throw new ProviderError(
+      "tencent-yuanbao",
+      "tencent-yuanbao",
+      "bad_request",
+      "Tencent Base URL must not contain credentials.",
+    );
+  }
+  if (parsed.protocol === "https:" && parsed.port && parsed.port !== "443") {
+    throw new ProviderError(
+      "tencent-yuanbao",
+      "tencent-yuanbao",
+      "bad_request",
+      `Tencent Base URL port ${parsed.port} is not supported; the signed host would not match the request.`,
+    );
+  }
+  if ((parsed.pathname && parsed.pathname !== "/") || parsed.search || parsed.hash) {
+    throw new ProviderError(
+      "tencent-yuanbao",
+      "tencent-yuanbao",
+      "bad_request",
+      "Tencent Base URL must not contain a path, query or fragment; the API is served at /.",
+    );
+  }
+  if (!parsed.hostname) {
+    throw new ProviderError(
+      "tencent-yuanbao",
+      "tencent-yuanbao",
+      "bad_request",
+      "Tencent Base URL is missing a hostname.",
+    );
+  }
+  const host = parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
+  return { url: `${parsed.protocol}//${host}/`, host };
+}
+
 export const tencentYuanbaoAdapter: SearchProviderAdapter = {
   type: "tencent-yuanbao",
   requiresKey: true,
@@ -87,17 +164,25 @@ export const tencentYuanbaoAdapter: SearchProviderAdapter = {
 
     // Preserve the configured scheme: tests and private deployments may point
     // at an HTTP gateway; production uses the official HTTPS host.
-    const configuredBase = (ctx.config.baseUrl ?? `https://${DEFAULT_HOST}`).replace(/\/+$/, "");
-    const scheme = configuredBase.startsWith("http://") ? "http" : "https";
-    const host = configuredBase.replace(/^https?:\/\//, "");
+    const endpoint = resolveTencentEndpoint(ctx.config.baseUrl);
+    const host = endpoint.host;
+    // The web form submits select values as strings ("0"/"1"/"2"). Coercing
+    // here keeps the adapter correct regardless of the transport, instead of
+    // silently falling back to mode 0 and ignoring the user's choice.
     const modeRaw = ctx.config.config["mode"];
-    const mode = typeof modeRaw === "number" ? modeRaw : 0;
+    const parsedMode =
+      typeof modeRaw === "number"
+        ? modeRaw
+        : typeof modeRaw === "string" && modeRaw.trim() !== ""
+          ? Number(modeRaw)
+          : 0;
+    const mode = [0, 1, 2].includes(parsedMode) ? parsedMode : 0;
     const site = ctx.config.config["site"];
     const industry = ctx.config.config["industry"];
 
     const payload: Record<string, unknown> = {
       Query: input.query,
-      Mode: [0, 1, 2].includes(mode) ? mode : 0,
+      Mode: mode,
       Cnt: bucketCount(input.limit),
     };
     if (typeof site === "string" && site.trim()) payload["Site"] = site.trim();
@@ -119,7 +204,7 @@ export const tencentYuanbaoAdapter: SearchProviderAdapter = {
     });
 
     const response = await callJson(ctx, {
-      url: `${scheme}://${host}/`,
+      url: endpoint.url,
       method: "POST",
       headers: {
         authorization: headers.authorization,
@@ -188,7 +273,7 @@ export const tencentYuanbaoAdapter: SearchProviderAdapter = {
       .filter((item): item is NonNullable<typeof item> => item !== null)
       .slice(0, input.limit);
 
-    return { results, requestUrl: `${scheme}://${host}/` };
+    return { results, requestUrl: endpoint.url };
   },
 
   async test(ctx: ProviderContext): Promise<ProviderTestResult> {

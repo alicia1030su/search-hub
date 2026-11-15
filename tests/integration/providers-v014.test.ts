@@ -195,6 +195,124 @@ describe("v0.1.4 provider catalog is actually creatable", () => {
     expect(test.body).not.toContain("plaintext-should-not-leak");
   });
 
+  it("creates provider and credential atomically, and rolls back on failure", async () => {
+    // Success path: one request writes both rows.
+    const ok = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: {
+        name: "atomic-ok",
+        type: "deepseek-search",
+        enabled: true,
+        timeoutMs: 5000,
+        maxConcurrency: 2,
+        maxRetries: 0,
+        rpmLimit: 60,
+        credential: { label: "主凭证", key: "sk-atomic-test-value-1234", weight: 100, enabled: true },
+      },
+    });
+    expect(ok.statusCode, ok.body).toBe(200);
+    const providerId = ok.json().provider.id as string;
+    const keys = await app.inject({
+      method: "GET",
+      url: `/api/admin/providers/${providerId}/keys`,
+      cookies: { sh_session: cookie },
+    });
+    expect(keys.json()).toHaveLength(1);
+    expect(keys.body).not.toContain("atomic-test-value");
+
+    // Failure path: a credential that the schema rejects must not leave a
+    // provider behind.
+    const before = (
+      await app.inject({
+        method: "GET",
+        url: "/api/admin/providers",
+        cookies: { sh_session: cookie },
+      })
+    ).json().providers.length as number;
+
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: {
+        name: "atomic-rollback",
+        type: "deepseek-search",
+        enabled: true,
+        timeoutMs: 5000,
+        maxConcurrency: 2,
+        maxRetries: 0,
+        rpmLimit: 60,
+        credential: { label: "", key: "", weight: 100, enabled: true },
+      },
+    });
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400);
+
+    const after = (
+      await app.inject({
+        method: "GET",
+        url: "/api/admin/providers",
+        cookies: { sh_session: cookie },
+      })
+    ).json().providers.length as number;
+    expect(after).toBe(before);
+    const names = (
+      await app.inject({
+        method: "GET",
+        url: "/api/admin/providers",
+        cookies: { sh_session: cookie },
+      })
+    )
+      .json()
+      .providers.map((item: { name: string }) => item.name);
+    expect(names).not.toContain("atomic-rollback");
+  });
+
+  it("never exposes credentials in config export, backups or logs", async () => {
+    // Create a provider with a live-looking secret through the atomic path.
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: {
+        name: "export-secret-check",
+        type: "gemini",
+        enabled: true,
+        timeoutMs: 5000,
+        maxConcurrency: 2,
+        maxRetries: 0,
+        rpmLimit: 60,
+        config: { model: "gemini-3.8-flash" },
+        credential: { label: "主凭证", key: "AIza-EXPORT-FINGERPRINT-123456", weight: 100, enabled: true },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+
+    const exported = await app.inject({
+      method: "GET",
+      url: "/api/admin/config/export",
+      cookies: { sh_session: cookie },
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.body).not.toContain("AIza-EXPORT-FINGERPRINT-123456");
+
+    // Audit log entries must not contain the value either.
+    const auditRows = ctx.sqlite
+      .prepare("select detail_json from audit_logs order by created_at desc limit 40")
+      .all() as Array<{ detail_json: string }>;
+    expect(JSON.stringify(auditRows)).not.toContain("AIza-EXPORT-FINGERPRINT-123456");
+
+    // A provider summary is what the UI sees; it carries no plaintext.
+    const summary = (
+      await app.inject({ method: "GET", url: "/api/admin/providers", cookies: { sh_session: cookie } })
+    ).body;
+    expect(summary).not.toContain("AIza-EXPORT-FINGERPRINT-123456");
+  });
+
   it("an unverified catalog entry cannot be created", async () => {
     const response = await app.inject({
       method: "POST",

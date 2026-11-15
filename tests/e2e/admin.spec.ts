@@ -1,10 +1,15 @@
-import { randomBytes } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 const EMAIL = "admin@example.com";
-// Random per run: a failure trace is uploaded as an artifact, and a fixed
-// password would make that artifact look like a reusable credential.
-const PASSWORD = `E2E-${randomBytes(9).toString("base64url")}`;
+/**
+ * Fixed, test-only password for the throwaway database created by
+ * `tests/scripts/e2e-server.mjs`. It must be stable across the whole run:
+ * Playwright restarts the worker after a failure, which re-evaluates the module,
+ * and a freshly randomised password would then no longer match the admin that
+ * the first test created. This credential only exists in `.data/e2e`, which is
+ * deleted at the start of every run.
+ */
+const PASSWORD = "E2E-Local-Only-Password-1";
 
 async function completeSetup(page: Page): Promise<void> {
   await page.goto("/");
@@ -16,6 +21,37 @@ async function completeSetup(page: Page): Promise<void> {
   await page.locator("#setup-confirm").fill(PASSWORD);
   await page.getByRole("button", { name: "创建管理员并进入" }).click();
   await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
+}
+
+/**
+ * The suite logs in once per test. The default login throttle is 10/min and
+ * applies per IP, so a longer run would start failing on the throttle rather
+ * than on the behaviour under test. Raise it for this test database only.
+ */
+async function raiseLoginThrottle(page: Page): Promise<void> {
+  const csrf = await page.evaluate(async () => {
+    const response = await fetch("/api/auth/session", {
+      credentials: "include",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { csrfToken?: string };
+    return data.csrfToken ?? null;
+  });
+  if (!csrf) throw new Error("no CSRF token after setup");
+  const status = await page.evaluate(
+    async (token) => {
+      const response = await fetch("/api/admin/settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "content-type": "application/json", "x-csrf-token": token },
+        body: JSON.stringify({ security: { loginRateLimitPerMin: 100 } }),
+      });
+      return response.status;
+    },
+    csrf,
+  );
+  if (status !== 200) throw new Error(`raising login throttle failed with HTTP ${status}`);
 }
 
 async function login(page: Page): Promise<void> {
@@ -41,6 +77,7 @@ async function addMockProvider(page: Page, name: string, namespace: string): Pro
 test.describe("Search Hub 管理后台端到端", () => {
   test("首次安装 → 添加搜索源 → 搜索实验室 → 设置 → 保留", async ({ page }) => {
     await completeSetup(page);
+    await raiseLoginThrottle(page);
 
     // 1. Dashboard shows real metrics (zero state, not fake numbers).
     await expect(page.getByText("搜索总数")).toBeVisible();
@@ -122,5 +159,79 @@ test.describe("Search Hub 管理后台端到端", () => {
     await page.goto("/providers");
     await expect(page.getByText("仅目录 · 未实现").first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("支持 30 源", { exact: false })).toHaveCount(0);
+  });
+  test("v0.1.4 按服务商渲染字段，创建时保存凭证并在编辑时显式轮换", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: "新增搜索源" }).first().click();
+
+    await page.locator("#provider-name").fill("e2e-v014");
+    await page.locator("#provider-type").selectOption("deepseek-search");
+    await expect(page.getByText("该服务商需要额外参数")).toBeVisible();
+    await expect(page.locator("#provider-base")).toHaveValue("https://api.deepseek.com");
+
+    await page.locator("input[type=password]").first().fill("sk-e2e-secret-value-123456");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText("e2e-v014", { exact: false }).filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
+
+    // The credential was saved with the provider, and is masked.
+    const row = page.locator("tr", { hasText: "e2e-v014" }).first();
+    await row.getByRole("button", { name: "Key" }).click();
+    await expect(page.getByText("主凭证")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("sk-e2e-secret-value-123456");
+    await page.keyboard.press("Escape");
+
+    // Edit without action keeps exactly one key.
+    await row.getByRole("button", { name: "编辑" }).click();
+    await expect(page.getByText("凭证操作")).toBeVisible();
+    await expect(page.getByLabel("保持不变（不新增 Key）")).toBeChecked();
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText("e2e-v014", { exact: false }).filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
+
+    // Explicit rotation adds a second key.
+    await page.locator("tr", { hasText: "e2e-v014" }).first().getByRole("button", { name: "编辑" }).click();
+    await page.getByLabel("新增一个 Key（可用于轮换）").check();
+    await page.locator("input[type=password]").first().fill("sk-e2e-rotated-value-654321");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText("e2e-v014", { exact: false }).filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
+
+    await page.locator("tr", { hasText: "e2e-v014" }).first().getByRole("button", { name: "Key" }).click();
+    await expect(page.getByText("轮换凭证")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("sk-e2e-rotated-value-654321");
+  });
+
+  test("v0.1.4 切换服务商重置 Base URL 与已填凭证", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: "新增搜索源" }).first().click();
+
+    await page.locator("#provider-name").fill("e2e-switch");
+    await page.locator("#provider-type").selectOption("deepseek-search");
+    await page.locator("input[type=password]").first().fill("sk-e2e-switch-value-0002");
+    await page.locator("#provider-type").selectOption("doubao");
+    await expect(page.getByText("切换服务商会重置配置")).toBeVisible();
+    await page.getByRole("button", { name: "切换到新服务商" }).click();
+
+    await expect(page.locator("#provider-base")).toHaveValue("https://open.feedcoopapi.com");
+    await expect(page.locator("input[type=password]").first()).toHaveValue("");
+  });
+
+  test("v0.1.4 腾讯元宝必须成对凭证", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: "新增搜索源" }).first().click();
+
+    await page.locator("#provider-name").fill("e2e-tencent");
+    await page.locator("#provider-type").selectOption("tencent-yuanbao");
+    await expect(page.locator("#provider-base")).toHaveValue("https://wsa.tencentcloudapi.com");
+
+    // SecretId only: the pair is incomplete and must not save.
+    await page.locator("#field-secretId").fill("test-secret-id-only");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText("请填写该服务商要求的凭证字段。")).toBeVisible();
+
+    await page.locator("#field-secretKey").fill("test-secret-key-only");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText("e2e-tencent", { exact: false }).filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
   });
 });

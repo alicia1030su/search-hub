@@ -6,7 +6,7 @@
 
 > **Status: 0.1.4 · public preview, not production-ready.**
 >
-> Core search, key scheduling, admin UI, REST, MCP (both protocol eras) and Skills are implemented and covered by 452 automated tests. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave and SearXNG are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
+> Core search, key scheduling, admin UI, REST, MCP (both protocol eras) and Skills are implemented and covered by 471 automated tests. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave and SearXNG are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
 >
 > Evidence and gaps: [Verification](#verification), [provider matrix](./docs/provider-matrix.md), [capability inventory](./docs/capability-inventory.md), [release readiness](./docs/release-readiness.md). Nothing untested is described as verified.
 
@@ -176,7 +176,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- 452 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- 471 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
 - A 16-row acceptance matrix (PASS 11 / PARTIAL 4 / BLOCKED 1) generated from `docs/ac-matrix.json`: [docs/ac-matrix.md](./docs/ac-matrix.md).
 - `tests/scripts/smoke.sh`: setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize.
 - Playwright: first-run, login, add source, search lab, theme, settings, integrations.

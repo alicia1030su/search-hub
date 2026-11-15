@@ -19,7 +19,7 @@
 
 | 项 | 结果 |
 |---|---|
-| 测试 | **452**（v0.1.2 为 367）：v0.1.3 逐步加入旧版兼容契约、取消语义回归与脱敏回归 |
+| 测试 | **471**（v0.1.2 为 367）：v0.1.3 逐步加入旧版兼容契约、取消语义回归与脱敏回归 |
 | 旧版 Search Hub 兼容适配器 | 已实现；`documented`；**未连接真实 44475**（未授权） |
 | 取消语义 | 修复：调用方 abort 由 `network`（可重试）改为 `cancelled`（不可重试） |
 | Actions | 全部升级到 `using: node24`，Node.js 20 弃用告警消失 |
@@ -32,7 +32,7 @@ v0.1.3 的目标是「把可做的集成与文档做对」，不是把未验证�
 
 | 套件 | 结果 | 命令 |
 |---|---|---|
-| Vitest 单元 + 集成 | **452 passed / 25 files**，exit 0 | `corepack pnpm test` |
+| Vitest 单元 + 集成 | **471 passed / 25 files**，exit 0 | `corepack pnpm test` |
 | Playwright E2E | **5 passed**，exit 0 | `corepack pnpm test:e2e` |
 | TypeScript | **0 error** | `corepack pnpm typecheck` |
 | Lint（oxlint） | **0 warning / 0 error**，127 files | `corepack pnpm lint` |
@@ -156,7 +156,7 @@ C1（Docker 容器验收）已在 GitHub Actions 真实通过，因此此前"0 �
 
 **A 档证据（可对外引用）**
 
-- **452** 个 Vitest + 5 个 Playwright，本地与 GitHub Runner 双处全绿；typecheck / lint 0 错误。
+- **471** 个 Vitest + 5 个 Playwright，本地与 GitHub Runner 双处全绿；typecheck / lint 0 错误。
 - **镜像真实构建**：`search-hub:ci`，506 MB，`docker build` 在 ubuntu-latest 成功。
 - **11 项容器验收 24/24 PASS**：compose 启动、非 root uid 1001、web 产物、health、setup token、初始化、真实 HN 搜索、Key 掩码、重启一致、持久化、资源、崩溃恢复（RestartCount 0→1）、Trivy（CRITICAL=0 HIGH=0）、MCP（9 tools / 真实 URL / REST 一致 / 401）。
 - **CI 4 个 job 全绿**：quality、build、e2e、security（含全历史密钥扫描）。

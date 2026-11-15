@@ -8,7 +8,7 @@ import {
   providerCreateSchema,
   providerUpdateSchema,
 } from "@search-hub/shared";
-import { apiKeys, providerInstances, searchGroups } from "@search-hub/db";
+import { apiKeys, providerInstances, searchGroups, withTransaction } from "@search-hub/db";
 import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
 import { audit, jsonFor, parseInput } from "../http.js";
@@ -67,36 +67,74 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
 
       const now = new Date().toISOString();
       const id = newId("prv");
-      ctx.db
-        .insert(providerInstances)
-        .values({
-          id,
-          name: input.name,
-          type: input.type,
-          enabled: input.enabled,
-          baseUrl: input.baseUrl ?? null,
-          timeoutMs: input.timeoutMs,
-          maxConcurrency: input.maxConcurrency,
-          priority: input.priority,
-          weight: input.weight,
-          maxRetries: input.maxRetries,
-          language: input.language ?? null,
-          freshness: input.freshness ?? null,
-          resultsPerPage: input.resultsPerPage,
-          rpmLimit: input.rpmLimit,
-          dailyQuota: input.dailyQuota ?? null,
-          keyStrategy: input.keyStrategy,
-          cooldownMs: input.cooldownMs,
-          breakerThreshold: input.breakerThreshold,
-          breakerCooldownMs: input.breakerCooldownMs,
-          configJson: JSON.stringify(input.config ?? {}),
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run();
+      const keyId = input.credential ? newId("key") : null;
 
+      // Provider + first credential are one unit. If the credential cannot be
+      // encrypted or written, the provider insert is rolled back too; otherwise
+      // the UI would show a saved provider that can never authenticate.
+      withTransaction(ctx.sqlite, () => {
+        ctx.db
+          .insert(providerInstances)
+          .values({
+            id,
+            name: input.name,
+            type: input.type,
+            enabled: input.enabled,
+            baseUrl: input.baseUrl ?? null,
+            timeoutMs: input.timeoutMs,
+            maxConcurrency: input.maxConcurrency,
+            priority: input.priority,
+            weight: input.weight,
+            maxRetries: input.maxRetries,
+            language: input.language ?? null,
+            freshness: input.freshness ?? null,
+            resultsPerPage: input.resultsPerPage,
+            rpmLimit: input.rpmLimit,
+            dailyQuota: input.dailyQuota ?? null,
+            keyStrategy: input.keyStrategy,
+            cooldownMs: input.cooldownMs,
+            breakerThreshold: input.breakerThreshold,
+            breakerCooldownMs: input.breakerCooldownMs,
+            configJson: JSON.stringify(input.config ?? {}),
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
+
+        if (input.credential && keyId) {
+          const box = ctx.secrets.encrypt(input.credential.key);
+          ctx.db
+            .insert(apiKeys)
+            .values({
+              id: keyId,
+              providerId: id,
+              label: input.credential.label,
+              keyCiphertext: box.ciphertext,
+              keyIv: box.iv,
+              keyTag: box.tag,
+              keyVersion: box.version,
+              keyHint: ctx.secrets.hint(input.credential.key),
+              weight: input.credential.weight,
+              enabled: input.credential.enabled,
+              status: "unknown",
+              createdAt: now,
+              updatedAt: now,
+            })
+            .run();
+        }
+      });
+
+      // Reload only after the transaction committed, so the cache never exposes
+      // a provider whose credential failed to persist.
       ctx.providers.reload();
-      audit(ctx, actorLabel(actor), "provider.create", id, { name: input.name, type: input.type }, request.ip);
+      audit(
+        ctx,
+        actorLabel(actor),
+        "provider.create",
+        id,
+        { name: input.name, type: input.type, withCredential: Boolean(input.credential) },
+        request.ip,
+      );
       return { provider: ctx.providers.providerSummaries().find((item) => item.id === id) };
     }),
   );

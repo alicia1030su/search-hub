@@ -31,8 +31,24 @@ export interface Tc3Headers {
 const ALGORITHM = "TC3-HMAC-SHA256";
 const CONTENT_TYPE = "application/json; charset=utf-8";
 
+/** Tencent rejects requests whose timestamp drifts more than ~5 minutes. */
+const MAX_CLOCK_SKEW_SECONDS = 300;
+
 export function tc3SignedHeaders(input: Tc3Input): Tc3Headers {
-  const timestamp = input.timestamp ?? Math.floor(Date.now() / 1000);
+  const now = Math.floor(Date.now() / 1000);
+  const timestamp = input.timestamp ?? now;
+  if (!Number.isInteger(timestamp) || timestamp <= 0) {
+    throw new Error("TC3 timestamp must be a positive integer number of seconds");
+  }
+  // Production does not pass a timestamp, so this catches a skewed host clock
+  // before the service rejects it as an opaque AuthFailure. A caller that passes
+  // an explicit timestamp (replay, tests) has taken responsibility for it.
+  if (input.timestamp === undefined && Math.abs(now - timestamp) > MAX_CLOCK_SKEW_SECONDS) {
+    throw new Error(
+      `TC3 signature timestamp is ${Math.abs(now - timestamp)}s away from the local clock ` +
+        `(max ${MAX_CLOCK_SKEW_SECONDS}s). Check the system time; Tencent Cloud rejects skewed requests as AuthFailure.`,
+    );
+  }
   const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
   const signedHeaderNames = ["content-type", "host", "x-tc-action"];
   const canonicalHeaders =

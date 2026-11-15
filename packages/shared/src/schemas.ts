@@ -73,9 +73,21 @@ export const providerCreateSchema = z.object({
   breakerThreshold: z.number().int().min(1).max(100).default(5),
   breakerCooldownMs: z.number().int().min(1000).max(3_600_000).default(60_000),
   config: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Optional first credential, created in the same transaction as the provider.
+   * Without this a failed key write would leave a provider with no credential.
+   */
+  credential: z
+    .object({
+      label: z.string().trim().min(1).max(80).default("主凭证"),
+      key: z.string().trim().min(1).max(8192),
+      weight: z.number().int().min(1).max(1000).default(100),
+      enabled: z.boolean().default(true),
+    })
+    .optional(),
 });
 
-export const providerUpdateSchema = providerCreateSchema.partial();
+export const providerUpdateSchema = providerCreateSchema.partial().omit({ credential: true });
 
 export const keyCreateSchema = z.object({
   label: z.string().trim().min(1).max(80),

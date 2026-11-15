@@ -112,7 +112,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     implementation: "planned",
     description: "官方控制台显示 POST /api/v1/search（参数 q / scope / size / page），但完整请求域名、鉴权头与响应结构未能在本项目内核实。",
     verification: "unverified",
-    notes: "已核对：官方 playground 的路径与查询参数；未核实：请求 host、鉴权方式、响应字段。核实前不提供原生适配器；可先用 Generic HTTP 自行接入并明确标注协议。",
+    notes: "已核对：官方 playground 的路径（/api/v1/search）与查询参数（q/scope/size/page）；未核实：请求 host、鉴权方式、响应字段。核实前不提供原生适配器。可用 Generic HTTP 接入：method=POST、path=/api/v1/search、keyInjection 按你的控制台说明填写（header 名需自行确认）、resultsPath 需按实际响应填写，并在搜索源名称里写清协议来源。",
   },
   {
     type: "tavily",
@@ -169,23 +169,39 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     type: "gemini",
     name: "Google Gemini（搜索 grounding）",
     category: "ai",
+    capability: "grounded_answer",
     authType: "api_key",
-    implementation: "planned",
+    implementation: "builtin",
+    defaultBaseUrl: "https://generativelanguage.googleapis.com",
     docsUrl: "https://ai.google.dev/gemini-api/docs/google-search",
-    description: "通过 Gemini API 的 Google Search grounding 获取带引用的联网结果；与普通网页搜索 API 的返回结构不同。",
+    description:
+      "Gemini generateContent + google_search 工具：返回模型回答与 groundingChunks 引用（uri/title），可判断是否真的联网。",
     verification: "documented",
-    notes: "需要单独的 AI 搜索适配层，计划在 Phase 2 实现。",
+    notes:
+      "官方文档已核对（2026-11-15）：POST /v1beta/models/{model}:generateContent，x-goog-api-key 鉴权，tools:[{google_search:{}}]；引用在 candidates[0].groundingMetadata.groundingChunks[].web。默认模型 gemini-3.8-flash，可改。无真实 Key，未联调。",
+    fields: [
+      { key: "model", label: "Model ID", type: "text", target: "model", required: true, placeholder: "gemini-3.8-flash", help: "Google 会下线旧模型；以官方模型页为准。" },
+    ],
   },
   {
     type: "grok",
-    name: "xAI Grok（Live Search）",
+    name: "xAI Grok（web_search）",
     category: "ai",
+    capability: "grounded_answer",
     authType: "api_key",
-    implementation: "planned",
-    docsUrl: "https://docs.x.ai/docs/guides/live-search",
-    description: "xAI Live Search 通过 Chat Completions 的 search 参数联网；返回为模型回答与引用。",
+    implementation: "builtin",
+    defaultBaseUrl: "https://api.x.ai",
+    docsUrl: "https://docs.x.ai/developers/tools/web-search",
+    description:
+      "xAI Responses API + web_search 服务端工具：返回回答与 url_citation 注解，并能判断是否真的触发 web_search_call。",
     verification: "documented",
-    notes: "属于模型联网搜索，不是独立 SERP API。",
+    notes:
+      "官方文档已核对（2026-11-15）：POST /v1/responses，tools:[{type:'web_search'}]，include:['web_search_call.action.sources']；引用在 output[].content[].annotations[type=url_citation] 与 web_search_call.action.sources。allowed/excluded domains 互斥且各限 5 个。默认模型 grok-4.7。无真实 Key，未联调。",
+    fields: [
+      { key: "model", label: "Model ID", type: "text", target: "model", required: true, placeholder: "grok-4.7" },
+      { key: "allowedDomains", label: "限定域名", type: "text", target: "config", placeholder: "docs.x.ai,python.org", help: "最多 5 个，与排除域名互斥。" },
+      { key: "excludedDomains", label: "排除域名", type: "text", target: "config", placeholder: "example.com", help: "最多 5 个。" },
+    ],
   },
   {
     type: "minimax",
@@ -199,12 +215,24 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   },
   {
     type: "mimo",
-    name: "小米 MiMo",
+    name: "小米 MiMo（web_search）",
     category: "ai",
+    capability: "grounded_answer",
     authType: "api_key",
-    implementation: "planned",
-    description: "目标兼容源。未确认可公开验证的联网搜索接口。",
-    verification: "unverified",
+    implementation: "builtin",
+    defaultBaseUrl: "https://api.xiaomimimo.com",
+    docsUrl: "https://mimo.mi.com/docs/zh-CN/api/chat/openai-api-post",
+    description:
+      "MiMo Chat Completions + web_search 工具：引用在 message.annotations[].web_search tool call。",
+    verification: "documented",
+    notes:
+      "官方文档已核对（2026-11-15）：POST /v1/chat/completions，tools:[{type:'web_search',force_search,max_keyword,limit}]（不是 function 工具）；annotations 里含 title/url/summary/site_name/publish_time。需先在小米控制台开通联网插件。默认模型 mimo-v2.6-pro。无真实 Key，未联调。",
+    fields: [
+      { key: "model", label: "Model ID", type: "text", target: "model", required: true, placeholder: "mimo-v2.6-pro" },
+      { key: "forceSearch", label: "强制联网", type: "boolean", target: "config", default: false, help: "关闭时由模型判断是否需要搜索。" },
+      { key: "maxKeyword", label: "最大关键词数", type: "number", target: "config", default: 5, min: 1, max: 50 },
+      { key: "searchLimit", label: "单次结果条数", type: "number", target: "config", default: 5, min: 1, max: 50 },
+    ],
   },
   {
     type: "deepseek-search",
@@ -279,13 +307,29 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   },
   {
     type: "bailian",
-    name: "阿里云百炼",
+    name: "阿里云百炼（联网搜索）",
     category: "ai",
+    capability: "grounded_answer",
     authType: "api_key",
-    implementation: "planned",
-    docsUrl: "https://help.aliyun.com/zh/model-studio",
-    description: "目标兼容源。百炼提供模型服务与检索增强组件，具体联网搜索接口需按官方文档核实。",
-    verification: "unverified",
+    implementation: "builtin",
+    docsUrl: "https://help.aliyun.com/zh/model-studio/web-search",
+    description:
+      "百炼 DashScope 原生联网搜索：返回模型回答与 search_info.search_results（title/url/site_name）。",
+    verification: "documented",
+    notes:
+      "官方文档已核对（2026-11-15）：OpenAI 兼容通道无法返回搜索来源，因此本适配器使用 DashScope 原生 /api/v1/services/aigc/text-generation/generation，parameters.result_format=message + enable_search + enable_source。baseUrl 必须是 https://{WorkspaceId}.{region}.maas.aliyuncs.com，不能硬编码单一地域。无真实 Key，未联调。",
+    fields: [
+      { key: "model", label: "Model ID", type: "text", target: "model", required: true, placeholder: "qwen-plus" },
+      { key: "endpoint", label: "工作空间地址", type: "text", target: "baseUrl", required: true, placeholder: "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com", help: "按你的业务空间与地域填写；不同地域地址不同。" },
+      { key: "searchStrategy", label: "搜索策略", type: "select", target: "config", default: "turbo", options: [
+        { value: "turbo", label: "turbo（日常查询）" },
+        { value: "max", label: "max（高精度）" },
+        { value: "agent", label: "agent（研究型，仅部分模型）" },
+        { value: "agent_max", label: "agent_max（含抓取，仅部分模型）" },
+      ] },
+      { key: "forcedSearch", label: "强制联网", type: "boolean", target: "config", default: false },
+      { key: "assignedSites", label: "限定站点", type: "text", target: "config", placeholder: "baidu.com,sina.cn", help: "最多 25 个，仅 turbo 策略生效。" },
+    ],
   },
   {
     type: "qianfan-search",
@@ -312,13 +356,27 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   },
   {
     type: "stepfun",
-    name: "阶跃星辰 StepFun",
-    category: "ai",
+    name: "阶跃星辰（网页搜索）",
+    category: "general",
+    capability: "raw_search",
     authType: "api_key",
-    implementation: "planned",
-    docsUrl: "https://platform.stepfun.com",
-    description: "目标兼容源。需确认其联网搜索接口与返回结构。",
-    verification: "unverified",
+    implementation: "builtin",
+    defaultBaseUrl: "https://api.stepfun.com",
+    docsUrl: "https://platform.stepfun.com/docs/zh/api-reference/Search/search",
+    description:
+      "阶跃星辰独立网页搜索接口：返回 url/position/title/time/snippet/content，可按场景分类检索。",
+    verification: "documented",
+    notes:
+      "官方文档已核对（2026-11-15）：POST /v1/search，query 必填，n 取 1–20，category 支持 programming/research/gov/business。文档说明 step-5-preview 等模型不支持 Chat Completions 内置 web_search，官方推荐先调本接口再把结果交给模型，因此这里是 raw_search 而不是 grounded_answer。另有远程 MCP（/step_plan/v1/mcp/web_search/mcp）未在本轮接入。无真实 Key，未联调。",
+    fields: [
+      { key: "category", label: "检索场景", type: "select", target: "config", options: [
+        { value: "", label: "全部场景" },
+        { value: "programming", label: "programming" },
+        { value: "research", label: "research" },
+        { value: "gov", label: "gov" },
+        { value: "business", label: "business" },
+      ] },
+    ],
   },
   {
     type: "search-gateway",

@@ -12,7 +12,7 @@ import type {
   ProviderInput,
   ProviderSummary,
 } from "../../lib/types";
-import { Sheet } from "../../components/overlay";
+import { ConfirmDialog, Sheet } from "../../components/overlay";
 import {
   Alert,
   Badge,
@@ -247,6 +247,10 @@ export function ProviderForm({
   const [error, setError] = useState<ApiError | null>(null);
   const [formErrors, setFormErrors] = useState<string[]>([]);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  // Edit mode defaults to "do not touch the stored credential". Filling the
+  // fields without choosing an action was the silent no-op this fixes.
+  const [credentialMode, setCredentialMode] = useState<"none" | "add">("none");
+  const [pendingType, setPendingType] = useState<string | null>(null);
   const [configCheck, setConfigCheck] = useState<{
     ok: boolean;
     message: string;
@@ -269,6 +273,32 @@ export function ProviderForm({
     [catalog, state.type],
   );
 
+  // A provider that needs a key but does not declare explicit credential
+  // fields still needs a place to type it. Without this the create form had no
+  // credential input at all for DeepSeek/Doubao/Qianfan, so the only way to add
+  // a key was to save first and then open Key management.
+  const credentialFields = useMemo<ProviderCatalogField[]>(() => {
+    const declared = (selectedCatalog?.fields ?? []).filter(
+      (field) => (field.target ?? "config") === "credential",
+    );
+    if (declared.length > 0) return declared;
+    if (!selectedCatalog || selectedCatalog.authType === "none") return [];
+    return [
+      {
+        key: "apiKey",
+        label: selectedCatalog.credentialKind === "pair" ? "API Key" : "API Key",
+        type: "password",
+        required: false,
+        target: "credential",
+        placeholder: "留空表示稍后在 Key 管理中添加",
+      },
+    ];
+  }, [selectedCatalog]);
+
+  const hasConfigFields = (selectedCatalog?.fields ?? []).some(
+    (field) => (field.target ?? "config") !== "credential",
+  );
+
   const setConfigField = (fieldKey: string, value: unknown) => {
     setState((current) => {
       let parsed: Record<string, unknown> = {};
@@ -283,6 +313,34 @@ export function ProviderForm({
       return { ...current, config: prettyJson(parsed) };
     });
     setConfigCheck(null);
+  };
+
+  const applyType = (type: string) => {
+    const entry = catalog.find((item) => item.type === type) ?? null;
+    setState((current) => ({
+      ...current,
+      type,
+      // Reset instead of inheriting the previous provider's endpoint/config:
+      // keeping them produced a provider that pointed at the wrong host.
+      baseUrl: entry?.defaultBaseUrl ?? "",
+      config: type === "generic-http" ? prettyJson(GENERIC_TEMPLATE) : "{}",
+      name: current.name && current.name !== (selectedCatalog?.name ?? "") ? current.name : (entry?.name ?? ""),
+    }));
+    setCredentials({});
+    setCredentialMode("none");
+    setConfigCheck(null);
+    setPendingType(null);
+  };
+
+  const typeHasUnsavedInput = () =>
+    Object.values(credentials).some((value) => value.trim().length > 0) ||
+    (state.baseUrl ?? "") !== (selectedCatalog?.defaultBaseUrl ?? "") ||
+    state.config.trim() !== (isGeneric ? prettyJson(GENERIC_TEMPLATE) : "{}").trim();
+
+  const requestTypeChange = (type: string) => {
+    if (type === state.type) return;
+    if (typeHasUnsavedInput()) setPendingType(type);
+    else applyType(type);
   };
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
@@ -400,10 +458,6 @@ export function ProviderForm({
       config: (configJson.value ?? {}) as Record<string, unknown>,
     };
 
-    // Provider-specific credentials declared in the catalog.
-    const credentialFields = (selectedCatalog?.fields ?? []).filter(
-      (field) => (field.target ?? "config") === "credential",
-    );
     const credentialValue = buildCredentialValue(credentialFields, credentials, selectedCatalog?.credentialKind);
     if (!isEdit && credentialFields.some((field) => field.required) && credentialValue === null) {
       errors.push(t("providers.form.credentialRequired"));
@@ -418,19 +472,33 @@ export function ProviderForm({
         const patch: Partial<ProviderInput> = { ...payload };
         delete patch.type;
         await api.updateProvider(provider.id, patch);
-      } else {
-        const created = await api.createProvider(payload);
-        // A key can only be attached after the provider exists; creating it here
-        // means "save the provider with its credential" is one user action.
-        const newId = created.provider?.id;
-        if (newId && credentialValue !== null) {
-          await api.createKey(newId, {
-            label: t("providers.form.primaryCredential"),
+        if (credentialMode === "add" && credentialValue !== null) {
+          // An explicit action, recorded as its own key row. Editing never
+          // overwrites an existing key silently.
+          await api.createKey(provider.id, {
+            label: t("providers.form.rotatedCredential"),
             key: credentialValue,
             weight: 100,
             enabled: true,
           });
         }
+      } else {
+        // The credential travels with the provider create request so the server
+        // can roll both back together; a separate second call could leave a
+        // provider saved with no working credential.
+        await api.createProvider({
+          ...payload,
+          ...(credentialValue === null
+            ? {}
+            : {
+                credential: {
+                  label: t("providers.form.primaryCredential"),
+                  key: credentialValue,
+                  weight: 100,
+                  enabled: true,
+                },
+              }),
+        });
       }
       onSaved();
       onClose();
@@ -503,20 +571,7 @@ export function ProviderForm({
                   id="provider-type"
                   required
                   value={state.type}
-                  onChange={(event) => {
-                    const entry = catalog.find((item) => item.type === event.target.value);
-                    setState((current) => ({
-                      ...current,
-                      type: event.target.value,
-                      baseUrl: current.baseUrl || entry?.defaultBaseUrl || "",
-                      name: current.name || entry?.name || "",
-                      config:
-                        event.target.value === "generic-http" && current.config.trim() === "{}"
-                          ? prettyJson(GENERIC_TEMPLATE)
-                          : current.config,
-                    }));
-                    setConfigCheck(null);
-                  }}
+                  onChange={(event) => requestTypeChange(event.target.value)}
                 >
                   <option value="">{t("providers.form.type")}</option>
                   {createTypes.map((entry) => (
@@ -552,7 +607,7 @@ export function ProviderForm({
             </div>
           ) : null}
 
-          {selectedCatalog && selectedCatalog.fields && selectedCatalog.fields.length > 0 ? (
+          {selectedCatalog && (hasConfigFields || credentialFields.length > 0) ? (
             <div className="space-y-3 rounded-md border bg-card p-3">
               <div>
                 <p className="text-xs font-semibold">{t("providers.form.providerFields")}</p>
@@ -560,10 +615,47 @@ export function ProviderForm({
                   {t("providers.form.providerFieldsHint")}
                 </p>
               </div>
+              {isEdit && credentialFields.length > 0 ? (
+                <div className="space-y-1.5 rounded-md border bg-muted/25 p-2.5">
+                  <p className="text-[11px] font-medium">{t("providers.form.credentialAction")}</p>
+                  <div className="flex flex-wrap gap-3">
+                    <label className="flex items-center gap-1.5 text-[11px]">
+                      <input
+                        type="radio"
+                        name="credential-mode"
+                        value="none"
+                        checked={credentialMode === "none"}
+                        onChange={() => {
+                          setCredentialMode("none");
+                          setCredentials({});
+                        }}
+                      />
+                      {t("providers.form.credentialKeep")}
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[11px]">
+                      <input
+                        type="radio"
+                        name="credential-mode"
+                        value="add"
+                        checked={credentialMode === "add"}
+                        onChange={() => setCredentialMode("add")}
+                      />
+                      {t("providers.form.credentialAdd")}
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">{t("providers.form.credentialActionHint")}</p>
+                </div>
+              ) : null}
               <div className="grid gap-3 sm:grid-cols-2">
-                {selectedCatalog.fields.map((field) => {
+                {[
+                  ...(selectedCatalog.fields ?? []).filter(
+                    (field) => (field.target ?? "config") !== "credential",
+                  ),
+                  ...credentialFields,
+                ].map((field) => {
                   const target = field.target ?? "config";
                   if (target === "credential") {
+                    const disabled = isEdit && credentialMode === "none";
                     return (
                       <Field
                         key={field.key}
@@ -575,6 +667,7 @@ export function ProviderForm({
                         <Input
                           id={`field-${field.key}`}
                           type={field.type === "password" ? "password" : "text"}
+                          disabled={disabled}
                           value={credentials[field.key] ?? ""}
                           onChange={(event) =>
                             setCredentials((current) => ({
@@ -589,7 +682,32 @@ export function ProviderForm({
                       </Field>
                     );
                   }
-                  if (target === "baseUrl") return null;
+                  if (target === "baseUrl") {
+                    return (
+                      <Field key={field.key} label={field.label} htmlFor={`field-${field.key}`} required={field.required} hint={field.help}>
+                        <Input
+                          id={`field-${field.key}`}
+                          value={state.baseUrl}
+                          onChange={(event) => update("baseUrl", event.target.value)}
+                          placeholder={field.placeholder}
+                          spellCheck={false}
+                        />
+                      </Field>
+                    );
+                  }
+                  if (target === "model") {
+                    return (
+                      <Field key={field.key} label={field.label} htmlFor={`field-${field.key}`} required={field.required} hint={field.help}>
+                        <Input
+                          id={`field-${field.key}`}
+                          value={String(readConfigValue(state.config, field.key) ?? field.default ?? "")}
+                          onChange={(event) => setConfigField(field.key, event.target.value)}
+                          placeholder={field.placeholder}
+                          spellCheck={false}
+                        />
+                      </Field>
+                    );
+                  }
                   if (field.type === "boolean") {
                     return (
                       <div
@@ -933,6 +1051,18 @@ export function ProviderForm({
           ) : null}
         </section>
       </form>
+
+      <ConfirmDialog
+        open={pendingType !== null}
+        onClose={() => setPendingType(null)}
+        onConfirm={() => {
+          if (pendingType) applyType(pendingType);
+        }}
+        title={t("providers.form.switchTitle")}
+        description={t("providers.form.switchDescription")}
+        confirmLabel={t("providers.form.switchConfirm")}
+        tone="default"
+      />
     </Sheet>
   );
 }

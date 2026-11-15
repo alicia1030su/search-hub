@@ -213,6 +213,13 @@ export interface ProviderInput {
   breakerThreshold: number;
   breakerCooldownMs: number;
   config: Record<string, unknown>;
+  /** Only accepted on create; the server writes provider + key atomically. */
+  credential?: {
+    label: string;
+    key: string;
+    weight: number;
+    enabled: boolean;
+  };
 }
 
 export interface KeyInput {

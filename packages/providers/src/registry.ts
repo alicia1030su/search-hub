@@ -4,6 +4,11 @@ import { braveAdapter } from "./builtin/brave.js";
 import { genericHttpAdapter } from "./builtin/generic.js";
 import { hackerNewsAdapter } from "./builtin/hackernews.js";
 import { legacySearchHubAdapter } from "./builtin/legacy-search-hub.js";
+import { geminiAdapter } from "./builtin/gemini.js";
+import { grokAdapter } from "./builtin/grok.js";
+import { mimoAdapter } from "./builtin/mimo.js";
+import { bailianAdapter } from "./builtin/bailian.js";
+import { stepfunAdapter } from "./builtin/stepfun.js";
 import { tencentYuanbaoAdapter } from "./builtin/tencent-yuanbao.js";
 import { doubaoAdapter } from "./builtin/doubao.js";
 import { deepseekSearchAdapter } from "./builtin/deepseek-search.js";
@@ -15,6 +20,11 @@ import { tavilyAdapter } from "./builtin/tavily.js";
 import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
 
 const ADAPTERS: SearchProviderAdapter[] = [
+  geminiAdapter,
+  grokAdapter,
+  mimoAdapter,
+  bailianAdapter,
+  stepfunAdapter,
   tencentYuanbaoAdapter,
   doubaoAdapter,
   deepseekSearchAdapter,

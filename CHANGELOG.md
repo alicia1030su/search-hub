@@ -239,6 +239,50 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### Second batch — AI grounded search (2026-11-15)
+
+Added five providers after re-checking each vendor's current official docs:
+
+| Type | Capability | Verified protocol |
+|---|---|---|
+| `gemini` | grounded_answer | `generateContent` + `tools:[{google_search:{}}]`; citations from `groundingMetadata.groundingChunks[].web` |
+| `grok` | grounded_answer | `POST /v1/responses` + `tools:[{type:"web_search"}]`; `url_citation` annotations + `web_search_call.action.sources` |
+| `mimo` | grounded_answer | `POST /v1/chat/completions` + `tools:[{type:"web_search",force_search,max_keyword,limit}]`; `message.annotations[].web_search tool call` |
+| `bailian` | grounded_answer | DashScope native `text-generation/generation` with `result_format=message` + `enable_source`; `search_info.search_results[]` |
+| `stepfun` | **raw_search** | `POST /v1/search`; `results[]` with url/position/title/time/snippet/content |
+
+Protocol points that would have been wrong if copied from older docs:
+
+- Gemini uses `google_search`, not the legacy `google_search_retrieval`; the model id is user-editable because Google retires ids frequently.
+- Grok: `web_search` being available does not mean it ran. The adapter requires an
+  actual `web_search_call` item, otherwise `toolInvoked=false`.
+- MiMo's `tools[]` entry is `{type:"web_search"}` (not a function tool).
+- Bailian's OpenAI-compatible channel **cannot return sources**; the adapter uses the
+  native endpoint because citations are the whole point.
+- StepFun explicitly documents that some models cannot use a built-in `web_search`
+  tool, so its standalone search endpoint is `raw_search`, not grounded.
+
+Capability contract: `SearchResponse.answers[]` stays separate from `results[]`;
+MCP `search_web` and the lab UI render an answer with `toolInvoked=false` or empty
+citations as an explicit warning, never as search success.
+
+Not implemented, with reasons: `minimax` (official web search is a local stdio MCP
+launched via uvx — accepting that from a browser user would be command injection),
+`metaso` (only path + query params verified).
+
+Fixes carried in this round (see the first part of the PR):
+
+- Editing a provider could lose a newly typed API key; credential actions are now explicit
+  ("keep" / "add a key for rotation") and editing never silently overwrites a key.
+- Switching provider type kept the previous Base URL/config/credential; switching now
+  resets to the new provider's defaults and asks first when there is unsaved input.
+- Provider + first credential are written in one transaction, so a failed key write
+  cannot leave a provider that can never authenticate.
+- Tencent `mode` submitted as a string from the form is coerced (it silently fell back to 0).
+- TC3: base URL must be https (loopback http allowed only for tests), no path/query/userinfo,
+  non-443 ports rejected, and a skewed local clock fails fast instead of causing AuthFailure.
+- Browser E2E now fills a credential, creates, edits, rotates and verifies masking.
+
 ### Live-provider hardening (PR #2, 2026-11-15)
 
 - Environment `provider-live` now uses Selected branches (**main only**) and
