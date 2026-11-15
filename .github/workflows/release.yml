@@ -69,7 +69,9 @@ jobs:
 
   linux:
     name: Linux ${{ matrix.arch }} package
-    runs-on: ubuntu-latest
+    # arm64 packages must be verified on arm64 hardware: a binary that only
+    # builds is not evidence that it starts.
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -146,7 +148,7 @@ jobs:
       - name: Create the prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           prerelease: true
           generate_release_notes: true
           files: |
