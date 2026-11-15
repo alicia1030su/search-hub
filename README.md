@@ -6,7 +6,7 @@
 
 > **状态：0.1.4 · 公开预览（Public Preview），不是 production-ready。**
 >
-> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 513 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 548 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
 > 逐项证据与缺口见[验证状态](#验证状态)、[Provider 状态矩阵](./docs/provider-matrix.md)、[能力清单](./docs/capability-inventory.md) 与[发布就绪报告](./docs/release-readiness.md)。未联调的能力不会被描述为“已验证”。
 
@@ -42,7 +42,7 @@ Search Hub 把这些做成一个可部署的服务：
 
 ## 支持的搜索源
 
-**已实现适配器（23 类）**
+**已实现适配器（47 类）**
 
 | 类型 | 鉴权 | 说明 | 验证状态 |
 |---|---|---|---|

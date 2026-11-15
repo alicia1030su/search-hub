@@ -177,6 +177,12 @@ const zh = {
   "range.7d": "近 7 天",
   "range.30d": "近 30 天",
 
+  "dashboard.onboard.empty": "还没有安装任何搜索源",
+  "dashboard.onboard.emptyHint": "Search Hub 默认不预装搜索源。去搜索源市场挑选需要的服务，填好凭证再启用。",
+  "dashboard.onboard.cta": "去搜索源市场",
+  "dashboard.onboard.notEnabled": "已有搜索源，但还没有一个处于就绪状态",
+  "dashboard.onboard.notEnabledHint": "共有 {{count}} 个实例，请补充凭证或手动启用后再搜索。",
+  "dashboard.onboard.manage": "管理我的搜索源",
   "dashboard.title": "仪表盘",
   "dashboard.subtitle": "搜索调用、搜索源健康度与 Key 池的实时概览。",
   "dashboard.metric.searches": "搜索总数",

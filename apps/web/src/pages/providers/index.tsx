@@ -288,6 +288,9 @@ export function ProvidersPage() {
         });
       }
       providers.reload();
+      // After a bulk install the useful next step is configuring what was just
+      // added, so show those instances instead of leaving the market open.
+      if (action === "install_all" && result.changed.length > 0) setTab("installed");
     } catch (caught) {
       const apiError = toApiError(caught);
       toast.error({ title: apiError.message, description: apiError.code });

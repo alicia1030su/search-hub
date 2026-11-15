@@ -239,6 +239,55 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### Provider ecosystem, Generic MCP and UI pass (2026-11-15, same PR)
+
+**22 new native providers** (all `documented`, contract-tested, no live credential):
+perplexity-search, youcom, jina-search, parallel-search, linkup-search, serpapi,
+searchapi, dataforseo, openai-websearch, anthropic-websearch,
+mistral-websearch, perplexity-sonar, naver, kakao, yandex, wikipedia,
+crossref, openalex, pubmed, semanticscholar, europepmc, gdelt.
+Plus `github`, `arxiv`, `duckduckgo` (Instant Answer only) and `generic-mcp`.
+
+Protocol details that were easy to get wrong:
+
+- Perplexity's retrieval endpoint and Sonar are different products, so they are
+  two providers; an AI answer can never appear in the web-result list.
+- DataForSEO needs Basic `login:password` and a task array; a bearer token is
+  rejected, so the adapter builds the header itself.
+- Naver needs two headers (client id + secret); Kakao uses `KakaoAK` and exposes
+  `meta.is_end` as the authoritative stop signal.
+- OpenAlex returns `abstract_inverted_index`; it is rebuilt into text or the
+  snippet would be raw JSON.
+- GDELT's `seendate` is `YYYYMMDDTHHMMSSZ` and is converted to ISO.
+- Crossref/OpenAlex/PubMed need no credential and were **live-tested**; their
+  manifest status is now `live_tested` with recorded output.
+
+**Generic MCP** (`packages/providers/src/mcp-client.ts` + `generic-mcp.ts`):
+Streamable HTTP only — initialize → notifications/initialized → tools/list →
+tools/call, JSON and SSE responses, `mcp-session-id` handling, tool
+auto-discovery, `{{query}}`/`{{limit}}` argument templates and configurable
+result field mapping. No stdio transport: a web user must not be able to make
+the server spawn a local process.
+
+**Marketplace**: `POST /api/admin/providers/bulk` with `install_all`,
+`enable_ready` (paid sources require explicit cost confirmation) and
+`disable_all`; every action returns per-item results. The UI gained category and
+auth filters, a sticky batch bar and a first-run empty state on the dashboard.
+
+**Provider form**: scheduling, account budget and adapter JSON are grouped behind
+a 高级设置 toggle; Generic HTTP/MCP/mock/legacy open it automatically because
+those cannot be configured without it. Search parameters stay visible.
+
+**Modes**: `web` / `grounded` / `research` are enforced server-side so REST, MCP
+and Skills cannot drift.
+
+**E2E**: the suite hit the production per-IP rate limit (300/min) after ~15
+tests, which surfaced as raw JSON in the SPA; the test server now raises
+`SEARCH_HUB_RATE_LIMIT_PER_MIN` and `login()` reports the redirect target instead
+of a silent locator timeout.
+
+Tests: 548 Vitest, 17 Playwright.
+
 ### Marketplace and Provider Manifest (2026-11-15, same PR)
 
 - **Provider Manifest**: one declarative document per provider (capability, auth,
