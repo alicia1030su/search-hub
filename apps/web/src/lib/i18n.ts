@@ -313,6 +313,8 @@ const zh = {
   "providers.form.accountDailyQuota": "账户日额度",
   "providers.form.accountDailyHint": "整个账户组每日请求数。",
   "providers.form.accountUnlimited": "留空不限制",
+  "providers.form.advanced": "高级设置（请求调度、账户额度、适配器配置）",
+  "providers.form.advancedHint": "普通使用无需修改；需要调整并发、额度或适配器原始配置时再展开。",
   "providers.form.requestSection": "请求参数",
   "providers.form.schedulingSection": "调度与配额",
   "providers.form.breakerSection": "熔断保护",

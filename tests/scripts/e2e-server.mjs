@@ -27,6 +27,9 @@ const child = spawn(
       SEARCH_HUB_COOKIE_SECURE: "false",
       // Fixed first-run token so the Playwright flow is deterministic.
       SEARCH_HUB_SETUP_TOKEN: "e2e-setup-token",
+      // The suite drives many navigations per minute; the production default
+      // (300/min) is a real gate for deployments, not for the test harness.
+      SEARCH_HUB_RATE_LIMIT_PER_MIN: "20000",
     },
     stdio: "inherit",
   },

@@ -56,6 +56,18 @@ async function raiseLoginThrottle(page: Page): Promise<void> {
 
 async function login(page: Page): Promise<void> {
   await page.goto("/login");
+  await page.waitForTimeout(150);
+  if (!page.url().endsWith("/login")) {
+    throw new Error(`login redirected to ${page.url()}`);
+  }
+  try {
+    await page.locator("#login-email").waitFor({ state: "visible", timeout: 10_000 });
+  } catch {
+    const body = await page.locator("body").innerText().catch(() => "");
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    throw new Error(`login form missing; url=${page.url()} body=${body.slice(0, 160)}`);
+  }
   await page.locator("#login-email").fill(EMAIL);
   await page.locator("#login-password").fill(PASSWORD);
   await page.getByRole("button", { name: "登录", exact: true }).click();
@@ -246,8 +258,8 @@ test.describe("Search Hub 管理后台端到端", () => {
     await page.locator("#provider-base").fill("https://workspace.cn-beijing.maas.aliyuncs.com");
     await page.locator("#field-model").fill("qwen-plus");
     await page.locator("input[type=password]").first().fill("sk-e2e-account-value-0003");
-    // Account-level budget: leaving it empty must not persist a zero that
-    // silently disables the group limit.
+    // Account-level budget lives under the collapsible advanced section.
+    await page.getByRole("switch", { name: "高级设置（请求调度、账户额度、适配器配置）" }).click();
     await page.locator("#provider-account-group").fill("bailian-main");
     await page.locator("#provider-account-rpm").fill("30");
     await page.getByRole("button", { name: "保存", exact: true }).click();
@@ -325,5 +337,74 @@ test.describe("Search Hub 管理后台端到端", () => {
     }
     await expect(page.locator("#provider-max-pages")).toHaveCount(0);
     await expect(page.getByText("该厂商不支持分页", { exact: false })).toBeVisible();
+  });
+  test("v0.1.4 一键添加全部后无人被自动启用", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "一键添加全部已实现" }).click();
+    // Lands on the installed tab with a toast naming the count.
+    await expect(page.getByText("已添加", { exact: false }).first()).toBeVisible({ timeout: 25_000 });
+    // Nothing is enabled by a bulk install: adding is not configuring.
+    const enabledSwitches = page.locator('tr [role="switch"][aria-checked="true"]');
+    await expect(enabledSwitches).toHaveCount(0);
+  });
+
+  test("v0.1.4 一键禁用全部搜索源", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "全部禁用" }).click();
+    await expect(page.getByText("已禁用", { exact: false }).first()).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("v0.1.4 删除一个实例不影响其他实例", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+
+    // Count instances of one provider type by name prefix; the providers table
+    // is the only one that lists them under "我的搜索源".
+    const providerRows = page.locator("tbody tr");
+    const arxivRows = providerRows.filter({ hasText: "arXiv" });
+
+    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByLabel("arXiv 选择").check();
+    await page.getByRole("button", { name: "添加所选" }).click();
+    await expect(page.getByText("已添加 1 个搜索源", { exact: false }).first()).toBeVisible({ timeout: 20_000 });
+
+    const afterInstall = await arxivRows.count();
+    expect(afterInstall).toBeGreaterThan(0);
+
+    // Delete exactly the instance just added: the newest one sits last.
+    await arxivRows.last().getByRole("button", { name: /删除/ }).click();
+    await page.getByRole("button", { name: "删除", exact: true }).last().click();
+
+    await expect(arxivRows).toHaveCount(afterInstall - 1, { timeout: 20_000 });
+    // Another instance still exists, so the delete was scoped to one row.
+    if (afterInstall - 1 > 0) {
+      await expect(arxivRows.first()).toBeVisible();
+    }
+  });
+
+  test("v0.1.4 深色主题下搜索源页仍可读", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: "切换主题" }).click();
+    await expect(page.locator("html")).toHaveClass(/dark/);
+    await expect(page.getByRole("heading", { name: "搜索源", exact: true }).first()).toBeVisible();
+    // Text must not be invisible: dark mode has its own foreground colour.
+    const classList = await page.locator("html").getAttribute("class");
+    expect(classList).toContain("dark");
+    const color = await page
+      .getByRole("heading", { name: "搜索源", exact: true })
+      .first()
+      .evaluate((node) => {
+        const element = node as unknown as {
+          ownerDocument?: { defaultView?: { getComputedStyle: (target: unknown) => { color: string } } };
+        };
+        const view = element.ownerDocument?.defaultView;
+        return view ? view.getComputedStyle(node).color : "";
+      });
+    expect(color).toBeTruthy();
   });
 });

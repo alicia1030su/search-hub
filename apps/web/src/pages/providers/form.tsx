@@ -282,6 +282,11 @@ export function ProviderForm({
   // fields without choosing an action was the silent no-op this fixes.
   const [credentialMode, setCredentialMode] = useState<"none" | "add">("none");
   const [pendingType, setPendingType] = useState<string | null>(null);
+  // Advanced settings (scheduling, account budget, adapter JSON) are collapsed
+  // for ordinary providers; Generic HTTP/MCP need them immediately.
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => provider?.type === "generic-http" || provider?.type === "generic-mcp",
+  );
   const [configCheck, setConfigCheck] = useState<{
     ok: boolean;
     message: string;
@@ -292,6 +297,13 @@ export function ProviderForm({
 
   const isEdit = provider !== null;
   const isGeneric = state.type === "generic-http";
+  // A source whose only configuration *is* the advanced block must not hide it.
+  const advancedVisible =
+    advancedOpen ||
+    isGeneric ||
+    state.type === "generic-mcp" ||
+    state.type === "mock" ||
+    state.type === "search-hub-legacy";
   const isLegacy = state.type === "search-hub-legacy";
 
   const createTypes = useMemo(() => {
@@ -848,6 +860,19 @@ export function ProviderForm({
           </div>
         </section>
 
+        <div className="flex items-center justify-between rounded-md border bg-muted/20 px-3 py-2">
+          <div>
+            <p className="text-xs font-medium">{t("providers.form.advanced")}</p>
+            <p className="text-[11px] text-muted-foreground">{t("providers.form.advancedHint")}</p>
+          </div>
+          <Switch
+            checked={advancedVisible}
+            onChange={(value) => setAdvancedOpen(value)}
+            label={t("providers.form.advanced")}
+          />
+        </div>
+
+        <div className={advancedVisible ? "space-y-5" : "hidden"}>
         <section className="space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("providers.form.requestSection")}</h3>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -895,6 +920,7 @@ export function ProviderForm({
             </Field>
           </div>
         </section>
+        </div>
 
         <section className="space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("providers.form.schedulingSection")}</h3>
@@ -1175,6 +1201,7 @@ export function ProviderForm({
           </section>
         ) : null}
 
+        <div className={advancedVisible ? "space-y-5" : "hidden"}>
         <section className="space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {t("providers.form.accountSection")}
@@ -1226,7 +1253,9 @@ export function ProviderForm({
             </Field>
           </div>
         </section>
+        </div>
 
+        <div className={advancedVisible ? "space-y-5" : "hidden"}>
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1307,6 +1336,7 @@ export function ProviderForm({
             )
           ) : null}
         </section>
+        </div>
       </form>
 
       <ConfirmDialog
