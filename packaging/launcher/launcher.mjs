@@ -23,16 +23,32 @@ import { dirname, join, resolve } from "node:path";
 
 
 const IS_WINDOWS = platform() === "win32";
-// Inside a Node SEA the embedded script runs as CommonJS and __dirname is the
-// executable's directory, which is exactly what we want. When the file is run
-// directly by node (development), fall back to the executable's directory too.
-const HERE = typeof __dirname === "string" ? __dirname : dirname(process.execPath);
+/**
+ * Directory of this launcher.
+ *
+ * Three cases:
+ * - Node SEA (Windows exe): the embedded script is CommonJS, `__dirname` is the
+ *   executable's directory.
+ * - `node bin/search-hub.mjs` (Linux): `__dirname` does not exist in ESM, but
+ *   `process.argv[1]` is the script path.
+ * - Anything else: fall back to the runtime's directory.
+ */
+const HERE =
+  typeof __dirname === "string"
+    ? __dirname
+    : process.argv[1]
+      ? dirname(resolve(process.argv[1]))
+      : dirname(process.execPath);
 
 function findRoot() {
-  // SEA reports the executable's directory; a plain node run reports the file.
-  const candidates = [HERE, dirname(process.execPath)];
-  for (const candidate of candidates) {
+  // Walk upwards a few levels: the launcher lives in `bin/` on Linux and next to
+  // the executable on Windows, and the manifest is always at the package root.
+  let candidate = HERE;
+  for (let depth = 0; depth < 4; depth += 1) {
     if (existsSync(join(candidate, "launcher.json"))) return candidate;
+    const parent = dirname(candidate);
+    if (parent === candidate) break;
+    candidate = parent;
   }
   return resolve(HERE, "..");
 }
