@@ -338,16 +338,23 @@ test.describe("Search Hub 管理后台端到端", () => {
     await expect(page.locator("#provider-max-pages")).toHaveCount(0);
     await expect(page.getByText("该厂商不支持分页", { exact: false })).toBeVisible();
   });
-  test("v0.1.4 一键添加全部后无人被自动启用", async ({ page }) => {
+  test("v0.1.4 一键添加全部不会额外启用任何实例", async ({ page }) => {
     await login(page);
     await page.goto("/providers");
+
+    // Earlier cases deliberately enable a few instances, so the assertion is
+    // relative: a bulk install must not change the enabled count at all.
+    // Wait for the table first, otherwise the "before" count is read while the
+    // list is still loading and is always zero.
+    await expect(page.locator("tbody tr").first()).toBeVisible({ timeout: 20_000 });
+    const enabledSwitches = page.locator('tr [role="switch"][aria-checked="true"]');
+    const enabledBefore = await enabledSwitches.count();
+
     await page.getByRole("button", { name: /搜索源市场/ }).click();
     await page.getByRole("button", { name: "一键添加全部已实现" }).click();
-    // Lands on the installed tab with a toast naming the count.
     await expect(page.getByText("已添加", { exact: false }).first()).toBeVisible({ timeout: 25_000 });
-    // Nothing is enabled by a bulk install: adding is not configuring.
-    const enabledSwitches = page.locator('tr [role="switch"][aria-checked="true"]');
-    await expect(enabledSwitches).toHaveCount(0);
+
+    await expect(enabledSwitches).toHaveCount(enabledBefore, { timeout: 20_000 });
   });
 
   test("v0.1.4 一键禁用全部搜索源", async ({ page }) => {
