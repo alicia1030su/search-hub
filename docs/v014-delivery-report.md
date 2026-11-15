@@ -122,8 +122,8 @@ PASS pubmed     rows=3 2586ms  https://pubmed.ncbi.nlm.nih.gov/39422983/
 
 | 项 | 结果 |
 |---|---|
-| CI（7 项必需检查） | 全部 pass — https://github.com/alicia1030su/search-hub/actions/runs/43720160284 |
-| Docker 容器验收 | 24/24，Trivy CRITICAL=0 HIGH=0 — https://github.com/alicia1030su/search-hub/actions/runs/43720160307 |
+| CI（7 项必需检查） | 全部 pass — https://github.com/alicia1030su/search-hub/actions/runs/43722518688 |
+| Docker 容器验收 | 24/24，Trivy CRITICAL=0 HIGH=0 — https://github.com/alicia1030su/search-hub/actions/runs/43722518707 |
 
 ## 6. 安全审计
 
@@ -138,7 +138,7 @@ PASS pubmed     rows=3 2586ms  https://pubmed.ncbi.nlm.nih.gov/39422983/
 
 ## 7. PR 最新 SHA
 
-`dcbb3e6`（`feat/v0.1.4-search-providers`），PR #3 state=OPEN。
+`08a2354`（`feat/v0.1.4-search-providers`），PR #3 state=OPEN，mergeStateStatus=CLEAN。
 
 ## 8. 无法完成的事项与阻塞证据
 
