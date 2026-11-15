@@ -239,6 +239,33 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### Marketplace and Provider Manifest (2026-11-15, same PR)
+
+- **Provider Manifest**: one declarative document per provider (capability, auth,
+  endpoint, supported parameters with vendor limits, pagination, account-quota
+  scope, result mapping, docs, verification status), derived from the catalog so
+  the two cannot disagree, served at `GET /api/admin/providers → manifests`.
+  Data only: a manifest cannot carry code or execute anything.
+- **Per-source search parameters**: new `search_config_json` column (migration
+  0002) with targetResults / maxPages / maxRequestsPerSearch / region /
+  safeSearch / searchDepth / includeDomains / excludeDomains / sort / locked.
+  Unsupported parameters are rejected with the vendor's reason instead of being
+  stored and ignored.
+- **Real pagination**: Brave offset paging (page size 20, max 10 pages) fetches
+  50 rows in 3 requests, stops early on a short page and reports the rows and
+  requests actually used. Serper pages `page` 1-based. Non-paginated vendors
+  (Exa, Firecrawl, GitHub, arXiv) declare it and refuse `maxPages`.
+- **Marketplace**: fresh installs have zero providers; batch install never
+  auto-enables a source that lacks its credential; batch enable skips not-ready
+  instances with a stated reason; `ready` / `notReadyReason` in the summary.
+- **UI**: providers split into 我的搜索源 / 搜索源市场 with selection, sticky
+  batch bars and a first-run empty state; the form renders search parameters
+  from the manifest so unsupported fields never appear.
+- **Search presets**: `web` (raw_search only), `grounded` (grounded only),
+  `research` (both), enforced server-side for REST, MCP and Skills alike.
+- **New adapters**: exa, firecrawl, serper, github (vertical), arxiv (vertical).
+  All `documented` with contract tests; no real credential was used.
+
 ### Grounding review round (2026-11-15, same PR)
 
 **状态契约.** `GroundedAnswer.status` 现在是五个独立事实，而不是一个布尔：

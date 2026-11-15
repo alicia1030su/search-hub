@@ -6,7 +6,7 @@
 
 > **状态：0.1.4 · 公开预览（Public Preview），不是 production-ready。**
 >
-> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 487 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 513 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
 > 逐项证据与缺口见[验证状态](#验证状态)、[Provider 状态矩阵](./docs/provider-matrix.md)、[能力清单](./docs/capability-inventory.md) 与[发布就绪报告](./docs/release-readiness.md)。未联调的能力不会被描述为“已验证”。
 
@@ -42,10 +42,15 @@ Search Hub 把这些做成一个可部署的服务：
 
 ## 支持的搜索源
 
-**已实现适配器（18 类）**
+**已实现适配器（23 类）**
 
 | 类型 | 鉴权 | 说明 | 验证状态 |
 |---|---|---|---|
+| `exa` | API Key | Exa Search，`POST /search`，标量结果+正文摘要，单次上限 100 | 按官方文档实现；**无真实 Key，未联调** |
+| `firecrawl` | API Key | Firecrawl Search，`POST /v2/search`，`data.web[]` | 按官方文档实现；**无真实 Key，未联调** |
+| `serper` | API Key | Serper.dev Google SERP，`organic[]`，支持 `page` 分页 | 按官方文档实现；**无真实 Key，未联调** |
+| `github` | 可选 Token | GitHub 搜索（仓库/Issue/代码），垂直索引 | 按官方文档实现；**未联调** |
+| `arxiv` | 无 | arXiv Atom API，学术预印本垂直索引 | 按官方文档实现；**未联调** |
 | `gemini` | API Key | Gemini generateContent + `google_search` 工具，返回 `groundingChunks` 引用；未联网时明确标记 | 按官方文档实现；**无真实 Key，未联调** |
 | `grok` | API Key | xAI Responses API + `web_search`，要求存在 `web_search_call` 才算联网 | 按官方文档实现；**无真实 Key，未联调** |
 | `mimo` | API Key | 小米 MiMo `tools:[{type:"web_search"}]`，引用在 `annotations` | 按官方文档实现；**无真实 Key，未联调** |
@@ -67,7 +72,7 @@ Search Hub 把这些做成一个可部署的服务：
 
 **目录中列出但尚未实现**：DuckDuckGo、秘塔、MiniMax，以及 Search Gateway 等兼容网关。它们要么没有可公开验证的官方接口，要么需要单独的 AI 联网适配层；界面会明确标注实际协议，`metaso` / `duckduckgo` 等未核实项**不能创建**，可通过 `generic-http` 自行接入并标注来源。
 
-> 目录共 29 条：18 个可用适配器、2 个 planned、2 个无官方接口、7 个 generic 兼容入口。项目**不声称支持 29 个搜索源**。逐源的联调缺口见 [docs/provider-matrix.md](./docs/provider-matrix.md)。
+> 目录共 34 条：23 个可用适配器、2 个 planned、2 个无官方接口、7 个 generic 兼容入口。全新安装不含任何搜索源，需从市场添加。项目**不声称支持 34 个搜索源**。逐源的联调缺口见 [docs/provider-matrix.md](./docs/provider-matrix.md)。
 
 ## 快速开始
 
