@@ -1,4 +1,9 @@
 import type { KeyStatus, KeyStrategy } from "@search-hub/shared";
+import {
+  AccountQuotaRegistry,
+  accountQuotaRegistry,
+  type AccountQuotaLimits,
+} from "./account-quota.js";
 
 /** Upper bound on parked callers; beyond this we reject instead of growing unbounded. */
 const MAX_WAITERS = 1024;
@@ -85,6 +90,14 @@ export interface KeySchedulerOptions {
   breakerThreshold: number;
   keys: SchedulerKeySeed[];
   onDirty?: (snapshot: KeyRuntimeSnapshot) => void;
+  /**
+   * Account group shared by every provider instance that bills the same vendor
+   * account. When set, per-key limits still apply **and** the group budget is
+   * enforced, so N keys cannot multiply the vendor's rate limit.
+   */
+  accountGroup?: string | null;
+  accountLimits?: AccountQuotaLimits | null;
+  registry?: AccountQuotaRegistry;
 }
 
 const MAX_COOLDOWN_MS = 10 * 60_000;
@@ -110,8 +123,14 @@ function nextUtcMidnight(now: number): number {
  *  - Multi-instance deployments are NOT coordinated by this class. A Redis
  *    backend is required (documented limitation, not silently ignored).
  */
+
 export class KeyScheduler {
   readonly providerId: string;
+  private accountGroup: string | null;
+  private accountLimits: AccountQuotaLimits | null;
+  private readonly registry: AccountQuotaRegistry;
+  /** True when the last tryAcquire was rejected by the account budget. */
+  accountDenied = false;
   private keys: RuntimeKey[] = [];
   private cursor = 0;
   private strategy: KeyStrategy;
@@ -134,6 +153,9 @@ export class KeyScheduler {
     this.cooldownMs = options.cooldownMs;
     this.breakerThreshold = Math.max(1, options.breakerThreshold);
     this.onDirty = options.onDirty;
+    this.accountGroup = options.accountGroup ?? null;
+    this.accountLimits = options.accountLimits ?? null;
+    this.registry = options.registry ?? accountQuotaRegistry;
     this.keys = options.keys.map((seed) => this.toRuntimeKey(seed));
   }
 
@@ -143,6 +165,33 @@ export class KeyScheduler {
 
   hasKeys(): boolean {
     return this.keys.length > 0;
+  }
+
+  /** Rewires the account group without recreating the scheduler. */
+  setAccount(group: string | null, limits: AccountQuotaLimits | null): void {
+    this.accountGroup = group;
+    this.accountLimits = limits;
+    // The reserved/denied flag belongs to the previous group; drop it so a UI
+    // warning does not survive a config change.
+    this.accountDenied = false;
+  }
+
+  /** Account-level budget state, for the admin UI. Null when no group is set. */
+  accountSnapshot(now: number = Date.now()) {
+    if (!this.accountGroup) return null;
+    const snapshot = this.registry.snapshot(this.accountGroup, now);
+    if (snapshot) return snapshot;
+    // The group exists in configuration but no request has used it yet. Return
+    // a zeroed snapshot so the UI can show the configured limits instead of
+    // pretending the group is not configured.
+    return {
+      group: this.accountGroup,
+      rpmUsed: 0,
+      rpmLimit: this.accountLimits?.rpmLimit ?? 0,
+      quotaUsedToday: 0,
+      dailyQuota: this.accountLimits?.dailyQuota ?? null,
+      lastDeniedAt: null,
+    };
   }
 
   totalInFlight(): number {
@@ -210,9 +259,12 @@ export class KeyScheduler {
    */
   async acquireWithReason(
     options: { maxWaitMs?: number; signal?: AbortSignal } = {},
-  ): Promise<{ lease: KeyLease | null; reason?: "no_key" | "queue_timeout" }> {
+  ): Promise<{ lease: KeyLease | null; reason?: "no_key" | "queue_timeout" | "account_quota" }> {
     const immediate = this.tryAcquire();
     if (immediate) return { lease: immediate };
+    // The account budget, not the key pool, is the blocker. Waiting cannot help
+    // until the account window rolls over, so fail fast with a precise reason.
+    if (this.accountDenied) return { lease: null, reason: "account_quota" };
 
     // Distinguish "temporarily saturated" from "permanently unavailable".
     if (!this.hasPotentiallyUsableKey(Date.now())) return { lease: null, reason: "no_key" };
@@ -313,8 +365,25 @@ export class KeyScheduler {
    * Returns null when no key can serve the request right now.
    */
   tryAcquire(now: number = Date.now()): KeyLease | null {
+    // The account budget is consumed BEFORE a key slot: if the account is out of
+    // quota, holding a key slot would only delay other requests that also cannot
+    // succeed.
+    if (this.accountGroup && this.accountLimits) {
+      if (!this.registry.tryConsume(this.accountGroup, this.accountLimits, now)) {
+        this.accountDenied = true;
+        return null;
+      }
+    }
+    this.accountDenied = false;
+
     const available = this.availableKeys(now);
-    if (available.length === 0) return null;
+    if (available.length === 0) {
+      // Return the reserved slot: no request will be made against the vendor.
+      if (this.accountGroup && this.accountLimits) {
+        this.registry.refund(this.accountGroup, this.accountLimits, now);
+      }
+      return null;
+    }
 
     const selected = this.pick(available);
     if (!selected) return null;

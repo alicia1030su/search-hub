@@ -9,6 +9,11 @@ export const searchModeSchema = z.enum([
   "embedding_rerank",
   "rerank_summary",
   "deep",
+  // User-facing presets. They only change provider selection and fusion, not
+  // the security or scheduling path.
+  "web",
+  "grounded",
+  "research",
 ]);
 export const keyStrategySchema = z.enum([
   "round_robin",
@@ -22,6 +27,7 @@ export const searchRequestSchema = z.object({
   query: z.string().trim().min(1, "query is required").max(2000),
   providers: z.array(z.string().min(1)).max(50).optional(),
   group: z.string().min(1).max(100).optional(),
+  capability: z.enum(["raw_search", "grounded_answer"]).optional(),
   limit: z.number().int().min(1).max(100).default(20),
   perProviderLimit: z.number().int().min(1).max(50).optional(),
   language: z.string().min(1).max(24).optional(),
@@ -73,9 +79,79 @@ export const providerCreateSchema = z.object({
   breakerThreshold: z.number().int().min(1).max(100).default(5),
   breakerCooldownMs: z.number().int().min(1000).max(3_600_000).default(60_000),
   config: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Platform-level search parameters for this instance. Validated against the
+   * provider manifest, so a vendor-unsupported field is rejected instead of
+   * silently ignored.
+   */
+  searchConfig: z
+    .object({
+      targetResults: z.number().int().min(1).max(100).optional(),
+      maxPages: z.number().int().min(1).max(50).optional(),
+      maxRequestsPerSearch: z.number().int().min(1).max(50).optional(),
+      region: z.string().trim().max(16).optional(),
+      safeSearch: z.enum(["off", "moderate", "strict"]).optional(),
+      searchDepth: z.enum(["fast", "balanced", "deep"]).optional(),
+      includeDomains: z.string().trim().max(2000).optional(),
+      excludeDomains: z.string().trim().max(2000).optional(),
+      sort: z.string().trim().max(32).optional(),
+      /**
+       * When true, a single search request may not override these values. An
+       * administrator can thus guarantee cost and rate bounds.
+       */
+      locked: z.boolean().optional(),
+    })
+    .default({}),
+  /**
+   * Optional first credential, created in the same transaction as the provider.
+   * Without this a failed key write would leave a provider with no credential.
+   */
+  credential: z
+    .object({
+      label: z.string().trim().min(1).max(80).default("主凭证"),
+      key: z.string().trim().min(1).max(8192),
+      weight: z.number().int().min(1).max(1000).default(100),
+      enabled: z.boolean().default(true),
+    })
+    .optional(),
 });
 
-export const providerUpdateSchema = providerCreateSchema.partial();
+export const providerUpdateSchema = providerCreateSchema.partial().omit({ credential: true });
+
+/**
+ * Marketplace batch install. Each item is a provider type plus an optional name;
+ * the server generates a unique name when the caller omits one.
+ */
+export const providerBatchCreateSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        type: z.string().trim().min(1).max(64),
+        name: z.string().trim().min(1).max(80).optional(),
+        enabled: z.boolean().default(false),
+      }),
+    )
+    .min(1)
+    .max(50),
+});
+
+/**
+ * One-click marketplace actions. Kept as an explicit enum instead of a free-form
+ * action string so an unknown value cannot be silently ignored.
+ */
+export const providerBulkSchema = z.object({
+  action: z.enum(["install_all", "enable_ready", "disable_all"]),
+  /**
+   * Only meaningful for `enable_ready`: the caller confirms that paid sources may
+   * issue billable requests. Without it the server refuses to enable paid ones.
+   */
+  acceptCost: z.boolean().default(false),
+});
+
+export const providerBatchStateSchema = z.object({
+  ids: z.array(z.string().trim().min(1)).min(1).max(200),
+  enabled: z.boolean(),
+});
 
 export const keyCreateSchema = z.object({
   label: z.string().trim().min(1).max(80),

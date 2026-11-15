@@ -203,6 +203,10 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
   });
 
   const okCount = outcomes.filter((outcome) => outcome.ok).length;
+  const answers = outcomes
+    .map((outcome) => outcome.answer)
+    .filter((answer): answer is NonNullable<typeof answer> => answer !== undefined);
+
   const errorSummaries: SearchErrorSummary[] = outcomes
     .filter((outcome) => !outcome.ok && outcome.error)
     .map((outcome) => outcome.error!);
@@ -244,6 +248,7 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
       partial: errorSummaries.length > 0,
     },
     errors: errorSummaries,
+    ...(answers.length > 0 ? { answers } : {}),
     failedSources: errorSummaries.map((item) => ({ id: item.providerId, code: item.code })),
     debug: {
       providerQueries: outcomes.map((outcome) => ({
@@ -257,7 +262,7 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
 }
 
 function normalizeRawResult(
-  raw: Pick<RawSearchResult, "title" | "url" | "snippet" | "publishedAt" | "score" | "language" | "raw" | "upstream">,
+  raw: Pick<RawSearchResult, "title" | "url" | "snippet" | "publishedAt" | "score" | "language" | "raw" | "upstream" | "upstreamRank">,
   outcome: FanoutResult,
   rank: number,
   retrievedAt: string,
@@ -297,6 +302,7 @@ function normalizeRawResult(
     // Gateway adapters report which upstream provider actually produced this
     // row. It is copied as-is and never inferred from the URL or domain.
     ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
+    ...(raw.upstreamRank === undefined ? {} : { upstreamRank: raw.upstreamRank }),
   };
 
   return {
@@ -309,6 +315,7 @@ function normalizeRawResult(
       ...(raw.language ? { language: raw.language } : {}),
       ...(raw.score === undefined ? {} : { score: raw.score }),
       ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
+      ...(raw.upstreamRank === undefined ? {} : { upstreamRank: raw.upstreamRank }),
       ...(raw.raw === undefined ? {} : { raw: raw.raw }),
     },
   };

@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-11-15
+
+Provider expansion round. Every entry below is either implemented and covered
+by contract tests against the vendor's documented wire format, or explicitly
+left unverified. No provider is marked `live_tested` without a recorded run.
+
+### Added — native search providers (first batch)
+
+| Type | Endpoint | Auth | Documented response |
+|---|---|---|---|
+| `tencent-yuanbao` | `POST https://wsa.tencentcloudapi.com/` (SearchPro, 2025-05-08) | TC3-HMAC-SHA256, SecretId+SecretKey pair | `Response.Pages[]`, each a JSON string |
+| `doubao` | `POST https://open.feedcoopapi.com/search_api/web_search` | Bearer | `Result.WebResults[]` (PascalCase) |
+| `deepseek-search` | `POST https://api.deepseek.com/v1/tools/search` | Bearer | `results[]` |
+| `qianfan-search` | `POST https://qianfan.baidubce.com/v2/ai_search/web_search` | Bearer | `references[]` |
+| `anysearch` | `POST https://api.anysearch.com/v1/search` | optional Bearer | `{code,data:{results[]}}` |
+
+- All five are `raw_search`: they return verifiable web pages, never an AI
+  answer. `deepseek-search` uses the standalone search API, not chat completions.
+- Tencent uses a **credential pair** stored as one JSON credential, so key
+  rotation switches both halves atomically. A single half is rejected.
+- Quota vs auth is mapped per vendor: Volcengine 10406/10408/10409/10410/10412
+  and DeepSeek 402 are quota errors, not invalid keys.
+- Date parsing for Tencent is pinned to +08:00 because the source string has no
+  timezone; otherwise the same value would differ between a local and a CI run.
+
+### Added — capability contract
+
+- `ProviderCapability = raw_search | grounded_answer`, `GroundedAnswer` with
+  `citations[]` and `toolInvoked`.
+- `SearchResponse.answers[]` is a separate channel from `results[]`; MCP and the
+  lab UI surface it separately. An answer with `toolInvoked=false` or no
+  citations is never presented as search success.
+
+### Added — web configuration
+
+- Catalog entries now carry declarative `fields[]` (text/password/number/select/
+  boolean), rendered per provider instead of one generic JSON box.
+- Saving a provider with credential fields creates the key in the same action;
+  pair credentials are joined into one key value.
+- Catalog cards show capability (`原始检索` / `模型联网`), `凭证对`, and
+  `可无 Key 使用` badges.
+
+### Changed
+
+- `baidu` catalog entry now points at `qianfan-search` (the actual official
+  endpoint) instead of claiming no API exists.
+- `metaso` stays `planned`: only the path and query params could be verified;
+  host, auth header and response shape could not, so no adapter was written.
+
+### Not done (honest gaps)
+
+- Gemini / Grok / MiMo / Bailian / MiniMax / Stepfun grounded adapters: not
+  implemented in this round.
+- Generic MCP search: not implemented.
+- Metaso: protocol partially verified only.
+- No provider is `live_tested`; no real key was used.
+
 ## [0.1.3] - 2026-11-14
 
 Development round focused on real integration options, honest docs and CI
@@ -181,6 +238,197 @@ of being counted by hand.
   1.22–1.30 on a loaded host. The claim is not upgraded.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
+
+### MiniMax, Metaso and standalone packages (2026-11-15)
+
+**MiniMax Coding Plan** — protocol taken from the official MCP source rather than
+the marketing docs: `POST {host}/v1/coding_plan/search`, body `{q}`, headers
+`Authorization: Bearer` + `MM-API-Source: Minimax-MCP`. The HTTP status is not
+enough: `base_resp.status_code` decides, and the adapter distinguishes
+1004 (key/host **region mismatch**) from 2038 (no Coding Plan entitlement) so a
+permission problem is never reported as an invalid key.
+
+**Metaso (秘塔)** — `POST https://metaso.cn/api/v1/search` with Bearer auth and
+`q/scope/size/page`; response `webpages[]`. Confirmed by a real unauthenticated
+call returning HTTP 200 with `{"errCode":2005}`, so errors are read from the body.
+A non-`webpage` scope is warned about (proprietary index, not the web). A second
+provider `metaso-mcp` reuses the Generic MCP client with 秘塔 presets and never
+contacts the legacy deployment.
+
+**mock is now `mock_verified`** — a test double is not a vendor integration. The
+verification scale is `live_tested` / `mock_verified` / `documented`, and the UI
+labels them separately.
+
+**Standalone packages** — `SearchHub.exe` (Node SEA) plus a bundled runtime for
+Windows, `tar.gz` + systemd template for Linux x64/arm64. The server is a child
+process on purpose: `better_sqlite3.node` cannot load from a SEA blob. The
+package ships one bundled `server.mjs` (pnpm's 90k-file tree exceeds the ZIP
+entry limit) and a dependency-free ZIP writer with correct CRCs.
+
+**Acceptance** — `packaging/verify-package.mjs` launches the extracted package
+with node/pnpm removed from PATH and checks health → setup → provider → REST →
+MCP initialize/tools.list/tools.call → DB + master.key → stop → restart
+persistence. The `Release packages` workflow runs it on real Windows and Linux
+runners before any prerelease is published.
+
+### Provider ecosystem, Generic MCP and UI pass (2026-11-15, same PR)
+
+**22 new native providers** (all `documented`, contract-tested, no live credential):
+perplexity-search, youcom, jina-search, parallel-search, linkup-search, serpapi,
+searchapi, dataforseo, openai-websearch, anthropic-websearch,
+mistral-websearch, perplexity-sonar, naver, kakao, yandex, wikipedia,
+crossref, openalex, pubmed, semanticscholar, europepmc, gdelt.
+Plus `github`, `arxiv`, `duckduckgo` (Instant Answer only) and `generic-mcp`.
+
+Protocol details that were easy to get wrong:
+
+- Perplexity's retrieval endpoint and Sonar are different products, so they are
+  two providers; an AI answer can never appear in the web-result list.
+- DataForSEO needs Basic `login:password` and a task array; a bearer token is
+  rejected, so the adapter builds the header itself.
+- Naver needs two headers (client id + secret); Kakao uses `KakaoAK` and exposes
+  `meta.is_end` as the authoritative stop signal.
+- OpenAlex returns `abstract_inverted_index`; it is rebuilt into text or the
+  snippet would be raw JSON.
+- GDELT's `seendate` is `YYYYMMDDTHHMMSSZ` and is converted to ISO.
+- Crossref/OpenAlex/PubMed need no credential and were **live-tested**; their
+  manifest status is now `live_tested` with recorded output.
+
+**Generic MCP** (`packages/providers/src/mcp-client.ts` + `generic-mcp.ts`):
+Streamable HTTP only — initialize → notifications/initialized → tools/list →
+tools/call, JSON and SSE responses, `mcp-session-id` handling, tool
+auto-discovery, `{{query}}`/`{{limit}}` argument templates and configurable
+result field mapping. No stdio transport: a web user must not be able to make
+the server spawn a local process.
+
+**Marketplace**: `POST /api/admin/providers/bulk` with `install_all`,
+`enable_ready` (paid sources require explicit cost confirmation) and
+`disable_all`; every action returns per-item results. The UI gained category and
+auth filters, a sticky batch bar and a first-run empty state on the dashboard.
+
+**Provider form**: scheduling, account budget and adapter JSON are grouped behind
+a 高级设置 toggle; Generic HTTP/MCP/mock/legacy open it automatically because
+those cannot be configured without it. Search parameters stay visible.
+
+**Modes**: `web` / `grounded` / `research` are enforced server-side so REST, MCP
+and Skills cannot drift.
+
+**E2E**: the suite hit the production per-IP rate limit (300/min) after ~15
+tests, which surfaced as raw JSON in the SPA; the test server now raises
+`SEARCH_HUB_RATE_LIMIT_PER_MIN` and `login()` reports the redirect target instead
+of a silent locator timeout.
+
+Tests: 548 Vitest, 17 Playwright.
+
+### Marketplace and Provider Manifest (2026-11-15, same PR)
+
+- **Provider Manifest**: one declarative document per provider (capability, auth,
+  endpoint, supported parameters with vendor limits, pagination, account-quota
+  scope, result mapping, docs, verification status), derived from the catalog so
+  the two cannot disagree, served at `GET /api/admin/providers → manifests`.
+  Data only: a manifest cannot carry code or execute anything.
+- **Per-source search parameters**: new `search_config_json` column (migration
+  0002) with targetResults / maxPages / maxRequestsPerSearch / region /
+  safeSearch / searchDepth / includeDomains / excludeDomains / sort / locked.
+  Unsupported parameters are rejected with the vendor's reason instead of being
+  stored and ignored.
+- **Real pagination**: Brave offset paging (page size 20, max 10 pages) fetches
+  50 rows in 3 requests, stops early on a short page and reports the rows and
+  requests actually used. Serper pages `page` 1-based. Non-paginated vendors
+  (Exa, Firecrawl, GitHub, arXiv) declare it and refuse `maxPages`.
+- **Marketplace**: fresh installs have zero providers; batch install never
+  auto-enables a source that lacks its credential; batch enable skips not-ready
+  instances with a stated reason; `ready` / `notReadyReason` in the summary.
+- **UI**: providers split into 我的搜索源 / 搜索源市场 with selection, sticky
+  batch bars and a first-run empty state; the form renders search parameters
+  from the manifest so unsupported fields never appear.
+- **Search presets**: `web` (raw_search only), `grounded` (grounded only),
+  `research` (both), enforced server-side for REST, MCP and Skills alike.
+- **New adapters**: exa, firecrawl, serper, github (vertical), arxiv (vertical).
+  All `documented` with contract tests; no real credential was used.
+
+### Grounding review round (2026-11-15, same PR)
+
+**状态契约.** `GroundedAnswer.status` 现在是五个独立事实，而不是一个布尔：
+`toolProvided` / `toolInvoked` / `retrievalSucceeded` / `hasVerifiableSources` /
+`answerSupported`。除 `toolProvided` 外都允许 `"unknown"`；证据不足时返回 unknown，
+不猜 true/false。
+
+- **Gemini**: 保留 `webSearchQueries`、`searchEntryPoint`、`groundingChunks`
+  与 `groundingSupports`。`groundingSupports[].groundingChunkIndices` 指向 chunk
+  下标，因此引用**按厂商顺序保留、不去重**——去重会让下标整体错位并高亮错句子。
+  缺 `groundingMetadata` 时是 `unknown`，不是 false。
+- **Google Search Suggestions**: 厂商 HTML **不进入** API 响应或管理后台。解析成
+  `{label, url}` 纯数据后由前端渲染自有元素，`vendorHtmlWithheld=true` 明示。
+- **Grok**: 同时采集 `url_citation` 注解、`web_search_call.action.sources` 和响应级
+  `citations[]`；只有文本锚定的注解才算 `answerSupported=true`（xAI 明确说明
+  all-citations 是审计轨迹，不证明支撑）。
+- **MiMo**: annotations 存在即视为调用了工具（即使没有 URL），未提供时如实标 false；
+  非流式与流式的差异写进适配器注释，本适配器只发非流式请求。
+- **百炼**: 用 `usage.plugins.search.count` 判断是否联网，用
+  `search_info.search_results` 判断是否取到来源，二者都不存在时是 unknown。
+  兼容通道拿不到来源这一事实仍在文档与目录说明里。
+- **StepFun**: `position` 改为 `upstreamRank`，不再冒充
+  `upstream.providerName`（此前 UI 会显示“来源：rank 1”）。该字段贯穿
+  去重、RRF、REST 与 MCP，`source` 始终是真实的 provider 名。
+
+**账户级额度.** 新增 `AccountQuotaRegistry`：显式配置 `accountGroup` +
+`accountRpmLimit` / `accountDailyQuota` 后，同组的多把 Key 共用一份预算，N 把 Key
+不再等于 N 个账户。预算在取 Key 槽位之前扣减，取不到 Key 时退回；耗尽时返回
+`quota_exceeded` 而不是 `no_available_key`。**明确限定为单进程**：多副本各自计数，
+不是分布式协调，UI 文案与文档都这样写。
+
+**Web 实验台.** 分别展示原始结果、AI 回答、五项联网状态、实际引用、无来源/
+未联网/状态未知三种警告、模型名、单次耗时与脱敏错误；Sources 区块标出每条引用
+支撑了哪几段文本（来自 `groundingSupports`）。
+
+**测试.** 新增 12 项：grounding 映射、support 越界丢弃、XSS 净化（script/onclick/
+javascript: 全部拒绝）、StepFun 排名、账户组共享预算/隔离/退款、REST 状态字段、
+MCP `upstreamRank` 透传。Playwright 新增 2 项：账户额度保存回显、实验台初始状态。
+
+### Second batch — AI grounded search (2026-11-15)
+
+Added five providers after re-checking each vendor's current official docs:
+
+| Type | Capability | Verified protocol |
+|---|---|---|
+| `gemini` | grounded_answer | `generateContent` + `tools:[{google_search:{}}]`; citations from `groundingMetadata.groundingChunks[].web` |
+| `grok` | grounded_answer | `POST /v1/responses` + `tools:[{type:"web_search"}]`; `url_citation` annotations + `web_search_call.action.sources` |
+| `mimo` | grounded_answer | `POST /v1/chat/completions` + `tools:[{type:"web_search",force_search,max_keyword,limit}]`; `message.annotations[].web_search tool call` |
+| `bailian` | grounded_answer | DashScope native `text-generation/generation` with `result_format=message` + `enable_source`; `search_info.search_results[]` |
+| `stepfun` | **raw_search** | `POST /v1/search`; `results[]` with url/position/title/time/snippet/content |
+
+Protocol points that would have been wrong if copied from older docs:
+
+- Gemini uses `google_search`, not the legacy `google_search_retrieval`; the model id is user-editable because Google retires ids frequently.
+- Grok: `web_search` being available does not mean it ran. The adapter requires an
+  actual `web_search_call` item, otherwise `toolInvoked=false`.
+- MiMo's `tools[]` entry is `{type:"web_search"}` (not a function tool).
+- Bailian's OpenAI-compatible channel **cannot return sources**; the adapter uses the
+  native endpoint because citations are the whole point.
+- StepFun explicitly documents that some models cannot use a built-in `web_search`
+  tool, so its standalone search endpoint is `raw_search`, not grounded.
+
+Capability contract: `SearchResponse.answers[]` stays separate from `results[]`;
+MCP `search_web` and the lab UI render an answer with `toolInvoked=false` or empty
+citations as an explicit warning, never as search success.
+
+Not implemented, with reasons: `minimax` (official web search is a local stdio MCP
+launched via uvx — accepting that from a browser user would be command injection),
+`metaso` (only path + query params verified).
+
+Fixes carried in this round (see the first part of the PR):
+
+- Editing a provider could lose a newly typed API key; credential actions are now explicit
+  ("keep" / "add a key for rotation") and editing never silently overwrites a key.
+- Switching provider type kept the previous Base URL/config/credential; switching now
+  resets to the new provider's defaults and asks first when there is unsaved input.
+- Provider + first credential are written in one transaction, so a failed key write
+  cannot leave a provider that can never authenticate.
+- Tencent `mode` submitted as a string from the form is coerced (it silently fell back to 0).
+- TC3: base URL must be https (loopback http allowed only for tests), no path/query/userinfo,
+  non-443 ports rejected, and a skewed local clock fails fast instead of causing AuthFailure.
+- Browser E2E now fills a credential, creates, edits, rotates and verifies masking.
 
 ### Live-provider hardening (PR #2, 2026-11-15)
 

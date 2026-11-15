@@ -5,15 +5,24 @@ import {
   groupCreateSchema,
   keyCreateSchema,
   keyUpdateSchema,
+  providerBatchCreateSchema,
+  providerBatchStateSchema,
+  providerBulkSchema,
   providerCreateSchema,
   providerUpdateSchema,
 } from "@search-hub/shared";
-import { apiKeys, providerInstances, searchGroups } from "@search-hub/db";
+import { apiKeys, providerInstances, searchGroups, withTransaction } from "@search-hub/db";
 import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
 import { audit, jsonFor, parseInput } from "../http.js";
 import { newId } from "../security/crypto.js";
-import { getAdapter, PROVIDER_CATALOG } from "@search-hub/providers";
+import {
+  buildManifest,
+  buildManifests,
+  getAdapter,
+  PROVIDER_CATALOG,
+  validateSearchConfig,
+} from "@search-hub/providers";
 
 function actorOf(
   request: FastifyRequest,
@@ -38,6 +47,9 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
     status: ctx.providers.runtimeSnapshots(),
     catalog: PROVIDER_CATALOG,
     adapters: PROVIDER_CATALOG.filter((entry) => getAdapter(entry.type)).map((entry) => entry.type),
+    // Manifests are derived from the catalog so the two can never describe a
+    // provider differently. The UI renders forms from these, not from ad-hoc JSX.
+    manifests: buildManifests(PROVIDER_CATALOG),
   });
 
   app.get("/api/providers", jsonFor(app, async (request) => {
@@ -58,6 +70,19 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
       const input = parseInput(providerCreateSchema, request.body);
       ctx.providers.assertImplemented(input.type);
 
+      // Reject parameters this vendor cannot honour instead of storing them and
+      // silently ignoring them at search time.
+      const entry = ctx.providers.catalogFor(input.type);
+      if (entry) {
+        const problems = validateSearchConfig(
+          buildManifest(entry),
+          input.searchConfig as Record<string, unknown>,
+        );
+        if (problems.length > 0) {
+          throw new SearchHubError("validation_error", problems.join("; "), { details: { problems } });
+        }
+      }
+
       const existing = ctx.db
         .select({ id: providerInstances.id })
         .from(providerInstances)
@@ -67,37 +92,311 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
 
       const now = new Date().toISOString();
       const id = newId("prv");
-      ctx.db
-        .insert(providerInstances)
-        .values({
-          id,
-          name: input.name,
-          type: input.type,
-          enabled: input.enabled,
-          baseUrl: input.baseUrl ?? null,
-          timeoutMs: input.timeoutMs,
-          maxConcurrency: input.maxConcurrency,
-          priority: input.priority,
-          weight: input.weight,
-          maxRetries: input.maxRetries,
-          language: input.language ?? null,
-          freshness: input.freshness ?? null,
-          resultsPerPage: input.resultsPerPage,
-          rpmLimit: input.rpmLimit,
-          dailyQuota: input.dailyQuota ?? null,
-          keyStrategy: input.keyStrategy,
-          cooldownMs: input.cooldownMs,
-          breakerThreshold: input.breakerThreshold,
-          breakerCooldownMs: input.breakerCooldownMs,
-          configJson: JSON.stringify(input.config ?? {}),
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run();
+      const keyId = input.credential ? newId("key") : null;
+
+      // Provider + first credential are one unit. If the credential cannot be
+      // encrypted or written, the provider insert is rolled back too; otherwise
+      // the UI would show a saved provider that can never authenticate.
+      withTransaction(ctx.sqlite, () => {
+        ctx.db
+          .insert(providerInstances)
+          .values({
+            id,
+            name: input.name,
+            type: input.type,
+            enabled: input.enabled,
+            baseUrl: input.baseUrl ?? null,
+            timeoutMs: input.timeoutMs,
+            maxConcurrency: input.maxConcurrency,
+            priority: input.priority,
+            weight: input.weight,
+            maxRetries: input.maxRetries,
+            language: input.language ?? null,
+            freshness: input.freshness ?? null,
+            resultsPerPage: input.resultsPerPage,
+            rpmLimit: input.rpmLimit,
+            dailyQuota: input.dailyQuota ?? null,
+            keyStrategy: input.keyStrategy,
+            cooldownMs: input.cooldownMs,
+            breakerThreshold: input.breakerThreshold,
+            breakerCooldownMs: input.breakerCooldownMs,
+            configJson: JSON.stringify(input.config ?? {}),
+            searchConfigJson: JSON.stringify(input.searchConfig ?? {}),
+            installedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
+
+        if (input.credential && keyId) {
+          const box = ctx.secrets.encrypt(input.credential.key);
+          ctx.db
+            .insert(apiKeys)
+            .values({
+              id: keyId,
+              providerId: id,
+              label: input.credential.label,
+              keyCiphertext: box.ciphertext,
+              keyIv: box.iv,
+              keyTag: box.tag,
+              keyVersion: box.version,
+              keyHint: ctx.secrets.hint(input.credential.key),
+              weight: input.credential.weight,
+              enabled: input.credential.enabled,
+              status: "unknown",
+              createdAt: now,
+              updatedAt: now,
+            })
+            .run();
+        }
+      });
+
+      // Reload only after the transaction committed, so the cache never exposes
+      // a provider whose credential failed to persist.
+      ctx.providers.reload();
+      audit(
+        ctx,
+        actorLabel(actor),
+        "provider.create",
+        id,
+        { name: input.name, type: input.type, withCredential: Boolean(input.credential) },
+        request.ip,
+      );
+      return { provider: ctx.providers.providerSummaries().find((item) => item.id === id) };
+    }),
+  );
+
+  /**
+   * Marketplace install: add several providers in one request.
+   *
+   * Deliberately does NOT enable anything that needs a credential. A freshly
+   * added source without a key cannot answer a search, and auto-enabling it
+   * would make the first search fail with "no available key" instead of a
+   * clear "finish configuring this source".
+   */
+  app.post(
+    "/api/admin/providers/batch",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const input = parseInput(providerBatchCreateSchema, request.body);
+
+      const created: Array<{ id: string; type: string; name: string; enabled: boolean }> = [];
+      const skipped: Array<{ type: string; reason: string }> = [];
+
+      withTransaction(ctx.sqlite, () => {
+        const now = new Date().toISOString();
+        for (const item of input.items) {
+          const entry = ctx.providers.catalogFor(item.type);
+          if (!entry || !getAdapter(item.type)) {
+            skipped.push({ type: item.type, reason: "no implemented adapter for this catalog entry" });
+            continue;
+          }
+          const adapter = getAdapter(item.type);
+          const name = uniqueName(ctx, item.name ?? entry.name);
+          const id = newId("prv");
+          // A source that needs a key starts disabled; adding it is not the same
+          // as being able to use it.
+          const enabled = adapter?.requiresKey ? false : item.enabled;
+          ctx.db
+            .insert(providerInstances)
+            .values({
+              id,
+              name,
+              type: item.type,
+              enabled,
+              baseUrl: entry.defaultBaseUrl ?? null,
+              timeoutMs: 12_000,
+              maxConcurrency: 4,
+              priority: 100,
+              weight: 100,
+              maxRetries: 1,
+              language: null,
+              freshness: null,
+              resultsPerPage: 10,
+              rpmLimit: 60,
+              dailyQuota: null,
+              keyStrategy: "round_robin",
+              cooldownMs: 30_000,
+              breakerThreshold: 5,
+              breakerCooldownMs: 60_000,
+              configJson: "{}",
+              searchConfigJson: "{}",
+              installedAt: now,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .run();
+          created.push({ id, type: item.type, name, enabled });
+        }
+      });
 
       ctx.providers.reload();
-      audit(ctx, actorLabel(actor), "provider.create", id, { name: input.name, type: input.type }, request.ip);
-      return { provider: ctx.providers.providerSummaries().find((item) => item.id === id) };
+      audit(ctx, actorLabel(actor), "provider.batch_create", null, {
+        created: created.length,
+        skipped: skipped.length,
+      }, request.ip);
+      return { created, skipped };
+    }),
+  );
+
+  /**
+   * One-click marketplace actions.
+   *
+   * `install_all` adds every implemented adapter that is not installed yet.
+   * `enable_ready` enables only instances that are ready (credential present),
+   * and refuses paid providers unless the caller explicitly accepted the cost.
+   * `disable_all` turns everything off.
+   *
+   * Each action returns per-item results so the UI can show exactly what
+   * happened instead of a single opaque "done".
+   */
+  app.post(
+    "/api/admin/providers/bulk",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const input = parseInput(providerBulkSchema, request.body);
+      const now = new Date().toISOString();
+      const changed: Array<{ id: string; name: string; action: string }> = [];
+      const skipped: Array<{ name: string; reason: string }> = [];
+
+      if (input.action === "install_all") {
+        const installed = new Set(ctx.providers.listRows().map((row) => row.type));
+        const targets = PROVIDER_CATALOG.filter(
+          (entry) => getAdapter(entry.type) && !installed.has(entry.type),
+        );
+        withTransaction(ctx.sqlite, () => {
+          for (const entry of targets) {
+            const adapter = getAdapter(entry.type);
+            const id = newId("prv");
+            const name = uniqueName(ctx, entry.name);
+            ctx.db
+              .insert(providerInstances)
+              .values({
+                id,
+                name,
+                type: entry.type,
+                // Never auto-enable: adding is not configuring.
+                enabled: false,
+                baseUrl: entry.defaultBaseUrl ?? null,
+                timeoutMs: 12_000,
+                maxConcurrency: 4,
+                priority: 100,
+                weight: 100,
+                maxRetries: 1,
+                language: null,
+                freshness: null,
+                resultsPerPage: 10,
+                rpmLimit: 60,
+                dailyQuota: null,
+                keyStrategy: "round_robin",
+                cooldownMs: 30_000,
+                breakerThreshold: 5,
+                breakerCooldownMs: 60_000,
+                configJson: "{}",
+                searchConfigJson: "{}",
+                installedAt: now,
+                createdAt: now,
+                updatedAt: now,
+              })
+              .run();
+            changed.push({ id, name, action: "installed" });
+            void adapter;
+          }
+        });
+      }
+
+      if (input.action === "enable_ready") {
+        for (const row of ctx.providers.listRows()) {
+          const adapter = getAdapter(row.type);
+          if (!adapter) {
+            skipped.push({ name: row.name, reason: "no implemented adapter" });
+            continue;
+          }
+          const needsKey = adapter.requiresKey;
+          const hasKey = ctx.providers.listKeys(row.id).some((key) => key.enabled);
+          if (needsKey && !hasKey) {
+            skipped.push({ name: row.name, reason: "no credential configured" });
+            continue;
+          }
+          if (row.enabled) continue;
+          if (isPaidProvider(row.type) && !input.acceptCost) {
+            // Paid sources are never enabled without an explicit confirmation.
+            skipped.push({ name: row.name, reason: "paid provider requires cost confirmation" });
+            continue;
+          }
+          ctx.db
+            .update(providerInstances)
+            .set({ enabled: true, updatedAt: now })
+            .where(eq(providerInstances.id, row.id))
+            .run();
+          changed.push({ id: row.id, name: row.name, action: "enabled" });
+        }
+      }
+
+      if (input.action === "disable_all") {
+        for (const row of ctx.providers.listRows()) {
+          if (!row.enabled) continue;
+          ctx.db
+            .update(providerInstances)
+            .set({ enabled: false, updatedAt: now })
+            .where(eq(providerInstances.id, row.id))
+            .run();
+          changed.push({ id: row.id, name: row.name, action: "disabled" });
+        }
+      }
+
+      ctx.providers.reload();
+      audit(ctx, actorLabel(actor), `provider.bulk.${input.action}`, null, {
+        changed: changed.length,
+        skipped: skipped.length,
+      }, request.ip);
+      return { changed, skipped };
+    }),
+  );
+
+  /** Batch enable/disable. Refuses to enable an instance that cannot work yet. */
+  app.post(
+    "/api/admin/providers/batch-state",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const input = parseInput(providerBatchStateSchema, request.body);
+      const now = new Date().toISOString();
+
+      const changed: Array<{ id: string; enabled: boolean }> = [];
+      const skipped: Array<{ id: string; name: string; reason: string }> = [];
+
+      for (const id of input.ids) {
+        const row = ctx.providers.getRow(id);
+        if (!row) {
+          skipped.push({ id, name: id, reason: "not found" });
+          continue;
+        }
+        if (input.enabled) {
+          const adapter = getAdapter(row.type);
+          const needsKey = adapter?.requiresKey ?? false;
+          const hasKey = ctx.providers.listKeys(id).some((key) => key.enabled);
+          if (needsKey && !hasKey) {
+            // Enabling a credential-less source would fail at search time; the
+            // operator needs to know why instead of seeing it silently skipped.
+            skipped.push({ id, name: row.name, reason: "no credential configured" });
+            continue;
+          }
+        }
+        ctx.db
+          .update(providerInstances)
+          .set({ enabled: input.enabled, updatedAt: now })
+          .where(eq(providerInstances.id, id))
+          .run();
+        changed.push({ id, enabled: input.enabled });
+      }
+
+      ctx.providers.reload();
+      audit(ctx, actorLabel(actor), "provider.batch_state", null, {
+        enabled: input.enabled,
+        changed: changed.length,
+        skipped: skipped.length,
+      }, request.ip);
+      return { changed, skipped };
     }),
   );
 
@@ -139,6 +438,19 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
         if (value !== undefined) patch[column] = value;
       }
       if (input.config !== undefined) patch["configJson"] = JSON.stringify(input.config);
+      if (input.searchConfig !== undefined) {
+        const entry = ctx.providers.catalogFor(input.type ?? row.type);
+        if (entry) {
+          const problems = validateSearchConfig(
+            buildManifest(entry),
+            input.searchConfig as Record<string, unknown>,
+          );
+          if (problems.length > 0) {
+            throw new SearchHubError("validation_error", problems.join("; "), { details: { problems } });
+          }
+        }
+        patch["searchConfigJson"] = JSON.stringify(input.searchConfig);
+      }
 
       ctx.db.update(providerInstances).set(patch).where(eq(providerInstances.id, id)).run();
       ctx.providers.reload();
@@ -478,4 +790,61 @@ function safeObject(json: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/**
+ * Generates a provider name that is unique among existing instances.
+ * The DB has a unique index on `name`, so a batch install cannot use the plain
+ * catalog label: adding "Brave Search" twice would fail the whole transaction.
+ */
+/**
+ * Providers that bill per request. Kept as an explicit list rather than inferred
+ * from the manifest: whether a vendor charges is a commercial fact, and the
+ * confirmation gate must not silently miss a new paid source.
+ */
+const PAID_PROVIDERS = new Set([
+  "exa",
+  "firecrawl",
+  "serper",
+  "serpapi",
+  "searchapi",
+  "dataforseo",
+  "perplexity-search",
+  "perplexity-sonar",
+  "youcom",
+  "jina-search",
+  "parallel-search",
+  "linkup-search",
+  "tavily",
+  "bocha",
+  "anysearch",
+  "brave",
+  "deepseek-search",
+  "qianfan-search",
+  "doubao",
+  "tencent-yuanbao",
+  "gemini",
+  "grok",
+  "mimo",
+  "bailian",
+  "stepfun",
+  "openai-websearch",
+  "anthropic-websearch",
+  "mistral-websearch",
+  "semanticscholar",
+]);
+
+function isPaidProvider(type: string): boolean {
+  return PAID_PROVIDERS.has(type);
+}
+
+function uniqueName(ctx: AppContext, base: string): string {
+  const existing = new Set(ctx.providers.listRows().map((row) => row.name));
+  const trimmed = base.trim().slice(0, 70) || "Search Source";
+  if (!existing.has(trimmed)) return trimmed;
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${trimmed} (${index})`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return `${trimmed} ${Date.now()}`;
 }

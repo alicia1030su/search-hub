@@ -4,16 +4,24 @@
  * browser build never imports server-side modules.
  */
 
-export type ProviderCategory = "general" | "ai" | "compat" | "custom";
+export type ProviderCategory = "general" | "ai" | "vertical" | "compat" | "custom";
 export type ProviderAuthType = "none" | "api_key" | "bearer" | "basic";
 export type ProviderImplementation = "builtin" | "generic" | "planned" | "unavailable";
-export type ProviderVerification = "documented" | "live_tested" | "unverified" | "no_official_api";
+export type ProviderVerification =
+  | "documented"
+  | "live_tested"
+  | "mock_verified"
+  | "unverified"
+  | "no_official_api";
 export type ProviderType = string;
 
 export type KeyStrategy = "round_robin" | "random" | "weighted_random" | "least_used" | "failover";
 export type KeyStatus = "healthy" | "rate_limited" | "cooldown" | "invalid" | "disabled" | "unknown";
 export type Freshness = "day" | "week" | "month" | "year" | "all";
 export type SearchMode =
+  | "web"
+  | "grounded"
+  | "research"
   | "basic"
   | "rrf"
   | "rerank"
@@ -95,12 +103,71 @@ export interface ProviderSummary {
   keyCount: number;
   healthyKeyCount: number;
   circuitOpen: boolean;
+  /** Platform-level search parameters stored for this instance. */
+  searchConfig: Record<string, unknown>;
+  accountGroup: string | null;
+  accountRpmLimit: number;
+  accountDailyQuota: number | null;
+  /** Enabled AND has a usable credential when the provider needs one. */
+  ready: boolean;
+  notReadyReason: string | null;
+}
+
+export type ProviderCapability = "raw_search" | "grounded_answer";
+export type CatalogFieldType = "text" | "password" | "number" | "select" | "boolean" | "textarea";
+
+export interface ProviderCatalogField {
+  key: string;
+  label: string;
+  type: CatalogFieldType;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: Array<{ value: string; label: string }>;
+  target?: "config" | "baseUrl" | "credential" | "model";
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+}
+
+export interface ProviderManifest {
+  manifestVersion: 1;
+  providerId: string;
+  displayName: string;
+  description: string;
+  category: ProviderCategory;
+  capability: ProviderCapability;
+  version: string;
+  auth: {
+    type: ProviderAuthType;
+    credentialKind: "single" | "pair";
+    required: boolean;
+    fields: ProviderCatalogField[];
+  };
+  configuration: {
+    defaultEndpoint?: string;
+    endpointEditable: boolean;
+    fields: ProviderCatalogField[];
+  };
+  parameters: {
+    supported: string[];
+    limits: Record<string, { min?: number; max?: number; default?: string | number | boolean; pageSize?: number }>;
+  };
+  pagination: { supported: boolean; mode: string; pageSize?: number; maxPages?: number; maxResults?: number };
+  accountQuota: { scope: "none" | "account" | "key"; sharedAcrossKeys: boolean; note?: string };
+  resultMapping: { title: string; url: string; snippet: string; publishedAt?: string; score?: string };
+  documentationUrl?: string;
+  verificationStatus: ProviderVerification;
+  implementationStatus: ProviderImplementation;
 }
 
 export interface ProviderCatalogEntry {
   type: string;
   name: string;
   category: ProviderCategory;
+  capability?: ProviderCapability;
+  credentialKind?: "single" | "pair";
+  fields?: ProviderCatalogField[];
   authType: ProviderAuthType;
   implementation: ProviderImplementation;
   defaultBaseUrl?: string;
@@ -140,6 +207,8 @@ export interface ProvidersResponse {
   status: ProviderRuntimeSnapshot[];
   catalog: ProviderCatalogEntry[];
   adapters?: string[];
+  /** Declarative capability documents; the UI renders forms from these. */
+  manifests?: ProviderManifest[];
 }
 
 export interface ApiKeySummary {
@@ -193,6 +262,15 @@ export interface ProviderInput {
   breakerThreshold: number;
   breakerCooldownMs: number;
   config: Record<string, unknown>;
+  /** Platform-level search parameters, validated against the provider manifest. */
+  searchConfig?: Record<string, unknown>;
+  /** Only accepted on create; the server writes provider + key atomically. */
+  credential?: {
+    label: string;
+    key: string;
+    weight: number;
+    enabled: boolean;
+  };
 }
 
 export interface KeyInput {
@@ -292,6 +370,47 @@ export interface UpstreamAttribution {
   sources?: string[];
 }
 
+export type GroundedSignal = boolean | "unknown";
+
+export interface GroundedStatus {
+  toolProvided: boolean;
+  toolInvoked: GroundedSignal;
+  retrievalSucceeded: GroundedSignal;
+  hasVerifiableSources: GroundedSignal;
+  answerSupported: GroundedSignal;
+}
+
+export interface GroundedDisplay {
+  suggestions: Array<{ label: string; url: string }>;
+  textFallback?: string;
+  vendorHtmlWithheld?: boolean;
+}
+
+export interface GroundedSupport {
+  startIndex: number;
+  endIndex: number;
+  chunkIndices: number[];
+}
+
+export interface GroundedAnswer {
+  text: string;
+  citations: Array<{
+    title: string;
+    url: string;
+    snippet?: string;
+    publishedAt?: string;
+    providerIndex?: number;
+  }>;
+  status: GroundedStatus;
+  model?: string;
+  provider: string;
+  searchQueries?: string[];
+  supports?: GroundedSupport[];
+  display?: GroundedDisplay;
+  latencyMs?: number;
+  degraded?: boolean;
+}
+
 export interface SearchResult {
   id: string;
   title: string;
@@ -308,6 +427,7 @@ export interface SearchResult {
   rerankScore?: number;
   language?: string;
   upstream?: UpstreamAttribution;
+  upstreamRank?: number;
   sources: Array<{
     providerId: string;
     providerName: string;
@@ -362,6 +482,7 @@ export interface SearchResponse {
     partial: boolean;
   };
   errors: Array<{ providerId: string; providerName: string; code: string; message: string }>;
+  answers?: GroundedAnswer[];
   summary?: {
     text: string;
     modelId?: string;

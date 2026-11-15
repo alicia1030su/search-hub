@@ -7,11 +7,13 @@ import type {
   Freshness,
   GenericProviderConfig,
   KeyStrategy,
+  ProviderCatalogField,
   ProviderCatalogEntry,
+  ProviderManifest,
   ProviderInput,
   ProviderSummary,
 } from "../../lib/types";
-import { Sheet } from "../../components/overlay";
+import { ConfirmDialog, Sheet } from "../../components/overlay";
 import {
   Alert,
   Badge,
@@ -123,6 +125,8 @@ interface FormState {
   breakerThreshold: string;
   breakerCooldownMs: string;
   config: string;
+  /** Platform-level search parameters (targetResults, maxPages, safeSearch…). */
+  searchConfig: string;
 }
 
 function toState(provider: ProviderSummary | null, preset: ProviderCatalogEntry | null): FormState {
@@ -147,6 +151,7 @@ function toState(provider: ProviderSummary | null, preset: ProviderCatalogEntry 
       breakerThreshold: String(provider.breakerThreshold),
       breakerCooldownMs: String(provider.breakerCooldownMs),
       config: prettyJson(provider.config ?? {}),
+      searchConfig: prettyJson(provider.searchConfig ?? {}),
     };
   }
   return {
@@ -169,6 +174,7 @@ function toState(provider: ProviderSummary | null, preset: ProviderCatalogEntry 
     breakerThreshold: "5",
     breakerCooldownMs: "60000",
     config: preset?.type === "generic-http" ? prettyJson(GENERIC_TEMPLATE) : "{}",
+    searchConfig: "{}",
   };
 }
 
@@ -189,6 +195,62 @@ function intValue(
   return parsed;
 }
 
+function readJsonValue(json: string, key: string): unknown {
+  try {
+    const parsed = JSON.parse(json || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return (parsed as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+function writeJsonValue(json: string, key: string, value: unknown): string {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const candidate = JSON.parse(json || "{}");
+    parsed = candidate && typeof candidate === "object" && !Array.isArray(candidate) ? candidate : {};
+  } catch {
+    parsed = {};
+  }
+  if (value === "" || value === undefined || value === null) delete parsed[key];
+  else parsed[key] = value;
+  return prettyJson(parsed);
+}
+
+function readConfigValue(config: string, key: string): unknown {
+  try {
+    const parsed = JSON.parse(config || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return (parsed as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Tencent-style providers need a credential *pair*. The pair is stored as one
+ * JSON string so the key scheduler rotates both halves atomically; two
+ * unrelated halves can never be combined.
+ */
+function buildCredentialValue(
+  fields: ProviderCatalogField[],
+  values: Record<string, string>,
+  kind: "single" | "pair" | undefined,
+): string | null {
+  if (fields.length === 0) return null;
+  const filled = fields
+    .map((field) => ({ key: field.key, value: (values[field.key] ?? "").trim() }))
+    .filter((entry) => entry.value.length > 0);
+  if (filled.length === 0) return null;
+  if (kind === "pair") {
+    const missing = fields.some((field) => field.required && !(values[field.key] ?? "").trim());
+    if (missing) return null;
+    return JSON.stringify(Object.fromEntries(filled.map((entry) => [entry.key, entry.value])));
+  }
+  return filled.length === 1 ? filled[0]!.value : JSON.stringify(Object.fromEntries(filled.map((entry) => [entry.key, entry.value])));
+}
+
 export interface ProviderFormProps {
   open: boolean;
   onClose: () => void;
@@ -196,6 +258,8 @@ export interface ProviderFormProps {
   preset: ProviderCatalogEntry | null;
   catalog: ProviderCatalogEntry[];
   adapters: string[];
+  /** All manifests from the server; the form picks the one for the selected type. */
+  manifests?: ProviderManifest[];
   onSaved: () => void;
 }
 
@@ -206,12 +270,23 @@ export function ProviderForm({
   preset,
   catalog,
   adapters,
+  manifests,
   onSaved,
 }: ProviderFormProps) {
   const [state, setState] = useState<FormState>(() => toState(provider, preset));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [formErrors, setFormErrors] = useState<string[]>([]);
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
+  // Edit mode defaults to "do not touch the stored credential". Filling the
+  // fields without choosing an action was the silent no-op this fixes.
+  const [credentialMode, setCredentialMode] = useState<"none" | "add">("none");
+  const [pendingType, setPendingType] = useState<string | null>(null);
+  // Advanced settings (scheduling, account budget, adapter JSON) are collapsed
+  // for ordinary providers; Generic HTTP/MCP need them immediately.
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => provider?.type === "generic-http" || provider?.type === "generic-mcp",
+  );
   const [configCheck, setConfigCheck] = useState<{
     ok: boolean;
     message: string;
@@ -222,6 +297,13 @@ export function ProviderForm({
 
   const isEdit = provider !== null;
   const isGeneric = state.type === "generic-http";
+  // A source whose only configuration *is* the advanced block must not hide it.
+  const advancedVisible =
+    advancedOpen ||
+    isGeneric ||
+    state.type === "generic-mcp" ||
+    state.type === "mock" ||
+    state.type === "search-hub-legacy";
   const isLegacy = state.type === "search-hub-legacy";
 
   const createTypes = useMemo(() => {
@@ -233,6 +315,83 @@ export function ProviderForm({
     () => catalog.find((entry) => entry.type === state.type) ?? null,
     [catalog, state.type],
   );
+
+  // Derived from the *current* type so switching providers in the sheet swaps
+  // the capability contract immediately instead of keeping the opened preset's.
+  const manifest = useMemo(
+    () => (manifests ?? []).find((entry) => entry.providerId === state.type) ?? null,
+    [manifests, state.type],
+  );
+
+  // A provider that needs a key but does not declare explicit credential
+  // fields still needs a place to type it. Without this the create form had no
+  // credential input at all for DeepSeek/Doubao/Qianfan, so the only way to add
+  // a key was to save first and then open Key management.
+  const credentialFields = useMemo<ProviderCatalogField[]>(() => {
+    const declared = (selectedCatalog?.fields ?? []).filter(
+      (field) => (field.target ?? "config") === "credential",
+    );
+    if (declared.length > 0) return declared;
+    if (!selectedCatalog || selectedCatalog.authType === "none") return [];
+    return [
+      {
+        key: "apiKey",
+        label: selectedCatalog.credentialKind === "pair" ? "API Key" : "API Key",
+        type: "password",
+        required: false,
+        target: "credential",
+        placeholder: "留空表示稍后在 Key 管理中添加",
+      },
+    ];
+  }, [selectedCatalog]);
+
+  const hasConfigFields = (selectedCatalog?.fields ?? []).some(
+    (field) => (field.target ?? "config") !== "credential",
+  );
+
+  const setConfigField = (fieldKey: string, value: unknown) => {
+    setState((current) => {
+      let parsed: Record<string, unknown> = {};
+      try {
+        const candidate = JSON.parse(current.config || "{}");
+        parsed = candidate && typeof candidate === "object" && !Array.isArray(candidate) ? candidate : {};
+      } catch {
+        parsed = {};
+      }
+      if (value === "" || value === undefined) delete parsed[fieldKey];
+      else parsed[fieldKey] = value;
+      return { ...current, config: prettyJson(parsed) };
+    });
+    setConfigCheck(null);
+  };
+
+  const applyType = (type: string) => {
+    const entry = catalog.find((item) => item.type === type) ?? null;
+    setState((current) => ({
+      ...current,
+      type,
+      // Reset instead of inheriting the previous provider's endpoint/config:
+      // keeping them produced a provider that pointed at the wrong host.
+      baseUrl: entry?.defaultBaseUrl ?? "",
+      config: type === "generic-http" ? prettyJson(GENERIC_TEMPLATE) : "{}",
+      name: current.name && current.name !== (selectedCatalog?.name ?? "") ? current.name : (entry?.name ?? ""),
+    }));
+    setCredentials({});
+    setCredentialMode("none");
+    setConfigCheck(null);
+    setPendingType(null);
+  };
+
+  const typeHasUnsavedInput = () =>
+    Object.values(credentials).some((value) => value.trim().length > 0) ||
+    (state.baseUrl ?? "") !== (selectedCatalog?.defaultBaseUrl ?? "") ||
+    state.config.trim() !== (isGeneric ? prettyJson(GENERIC_TEMPLATE) : "{}").trim();
+
+  const requestTypeChange = (type: string) => {
+    if (type === state.type) return;
+    if (typeHasUnsavedInput()) setPendingType(type);
+    else applyType(type);
+  };
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setState((current) => ({ ...current, [key]: value }));
@@ -298,6 +457,9 @@ export function ProviderForm({
         errors.push(t("providers.form.baseUrlInvalid"));
       }
     }
+    if (!parseJsonObject(state.searchConfig).ok) {
+      errors.push(t("providers.form.searchConfigInvalid"));
+    }
     if (!configJson.ok) {
       errors.push(t("providers.form.configNotObject"));
     } else if (isGeneric) {
@@ -347,7 +509,13 @@ export function ProviderForm({
         errors,
       ),
       config: (configJson.value ?? {}) as Record<string, unknown>,
+      searchConfig: (parseJsonObject(state.searchConfig).value ?? {}) as Record<string, unknown>,
     };
+
+    const credentialValue = buildCredentialValue(credentialFields, credentials, selectedCatalog?.credentialKind);
+    if (!isEdit && credentialFields.some((field) => field.required) && credentialValue === null) {
+      errors.push(t("providers.form.credentialRequired"));
+    }
 
     setFormErrors(errors);
     if (errors.length > 0) return;
@@ -358,8 +526,33 @@ export function ProviderForm({
         const patch: Partial<ProviderInput> = { ...payload };
         delete patch.type;
         await api.updateProvider(provider.id, patch);
+        if (credentialMode === "add" && credentialValue !== null) {
+          // An explicit action, recorded as its own key row. Editing never
+          // overwrites an existing key silently.
+          await api.createKey(provider.id, {
+            label: t("providers.form.rotatedCredential"),
+            key: credentialValue,
+            weight: 100,
+            enabled: true,
+          });
+        }
       } else {
-        await api.createProvider(payload);
+        // The credential travels with the provider create request so the server
+        // can roll both back together; a separate second call could leave a
+        // provider saved with no working credential.
+        await api.createProvider({
+          ...payload,
+          ...(credentialValue === null
+            ? {}
+            : {
+                credential: {
+                  label: t("providers.form.primaryCredential"),
+                  key: credentialValue,
+                  weight: 100,
+                  enabled: true,
+                },
+              }),
+        });
       }
       onSaved();
       onClose();
@@ -432,20 +625,7 @@ export function ProviderForm({
                   id="provider-type"
                   required
                   value={state.type}
-                  onChange={(event) => {
-                    const entry = catalog.find((item) => item.type === event.target.value);
-                    setState((current) => ({
-                      ...current,
-                      type: event.target.value,
-                      baseUrl: current.baseUrl || entry?.defaultBaseUrl || "",
-                      name: current.name || entry?.name || "",
-                      config:
-                        event.target.value === "generic-http" && current.config.trim() === "{}"
-                          ? prettyJson(GENERIC_TEMPLATE)
-                          : current.config,
-                    }));
-                    setConfigCheck(null);
-                  }}
+                  onChange={(event) => requestTypeChange(event.target.value)}
                 >
                   <option value="">{t("providers.form.type")}</option>
                   {createTypes.map((entry) => (
@@ -481,6 +661,177 @@ export function ProviderForm({
             </div>
           ) : null}
 
+          {selectedCatalog && (hasConfigFields || credentialFields.length > 0) ? (
+            <div className="space-y-3 rounded-md border bg-card p-3">
+              <div>
+                <p className="text-xs font-semibold">{t("providers.form.providerFields")}</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {t("providers.form.providerFieldsHint")}
+                </p>
+              </div>
+              {isEdit && credentialFields.length > 0 ? (
+                <div className="space-y-1.5 rounded-md border bg-muted/25 p-2.5">
+                  <p className="text-[11px] font-medium">{t("providers.form.credentialAction")}</p>
+                  <div className="flex flex-wrap gap-3">
+                    <label className="flex items-center gap-1.5 text-[11px]">
+                      <input
+                        type="radio"
+                        name="credential-mode"
+                        value="none"
+                        checked={credentialMode === "none"}
+                        onChange={() => {
+                          setCredentialMode("none");
+                          setCredentials({});
+                        }}
+                      />
+                      {t("providers.form.credentialKeep")}
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[11px]">
+                      <input
+                        type="radio"
+                        name="credential-mode"
+                        value="add"
+                        checked={credentialMode === "add"}
+                        onChange={() => setCredentialMode("add")}
+                      />
+                      {t("providers.form.credentialAdd")}
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">{t("providers.form.credentialActionHint")}</p>
+                </div>
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2">
+                {[
+                  ...(selectedCatalog.fields ?? []).filter(
+                    (field) => (field.target ?? "config") !== "credential",
+                  ),
+                  ...credentialFields,
+                ].map((field) => {
+                  const target = field.target ?? "config";
+                  if (target === "credential") {
+                    const disabled = isEdit && credentialMode === "none";
+                    return (
+                      <Field
+                        key={field.key}
+                        label={field.label}
+                        htmlFor={`field-${field.key}`}
+                        required={field.required && !isEdit}
+                        hint={field.help}
+                      >
+                        <Input
+                          id={`field-${field.key}`}
+                          type={field.type === "password" ? "password" : "text"}
+                          disabled={disabled}
+                          value={credentials[field.key] ?? ""}
+                          onChange={(event) =>
+                            setCredentials((current) => ({
+                              ...current,
+                              [field.key]: event.target.value,
+                            }))
+                          }
+                          placeholder={field.placeholder}
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </Field>
+                    );
+                  }
+                  if (target === "baseUrl") {
+                    return (
+                      <Field key={field.key} label={field.label} htmlFor={`field-${field.key}`} required={field.required} hint={field.help}>
+                        <Input
+                          id={`field-${field.key}`}
+                          value={state.baseUrl}
+                          onChange={(event) => update("baseUrl", event.target.value)}
+                          placeholder={field.placeholder}
+                          spellCheck={false}
+                        />
+                      </Field>
+                    );
+                  }
+                  if (target === "model") {
+                    return (
+                      <Field key={field.key} label={field.label} htmlFor={`field-${field.key}`} required={field.required} hint={field.help}>
+                        <Input
+                          id={`field-${field.key}`}
+                          value={String(readConfigValue(state.config, field.key) ?? field.default ?? "")}
+                          onChange={(event) => setConfigField(field.key, event.target.value)}
+                          placeholder={field.placeholder}
+                          spellCheck={false}
+                        />
+                      </Field>
+                    );
+                  }
+                  if (field.type === "boolean") {
+                    return (
+                      <div
+                        key={field.key}
+                        className="flex items-center justify-between rounded-md border px-3 py-2.5"
+                      >
+                        <div>
+                          <p className="text-xs font-medium">{field.label}</p>
+                          {field.help ? (
+                            <p className="text-[11px] text-muted-foreground">{field.help}</p>
+                          ) : null}
+                        </div>
+                        <Switch
+                          checked={Boolean(readConfigValue(state.config, field.key) ?? field.default)}
+                          onChange={(value) => setConfigField(field.key, value)}
+                          label={field.label}
+                        />
+                      </div>
+                    );
+                  }
+                  if (field.type === "select") {
+                    return (
+                      <Field
+                        key={field.key}
+                        label={field.label}
+                        htmlFor={`field-${field.key}`}
+                        hint={field.help}
+                      >
+                        <Select
+                          id={`field-${field.key}`}
+                          value={String(readConfigValue(state.config, field.key) ?? field.default ?? "")}
+                          onChange={(event) => setConfigField(field.key, event.target.value)}
+                        >
+                          {(field.options ?? []).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                    );
+                  }
+                  return (
+                    <Field
+                      key={field.key}
+                      label={field.label}
+                      htmlFor={`field-${field.key}`}
+                      hint={field.help}
+                    >
+                      <Input
+                        id={`field-${field.key}`}
+                        type={field.type === "number" ? "number" : "text"}
+                        value={String(readConfigValue(state.config, field.key) ?? "")}
+                        onChange={(event) =>
+                          setConfigField(
+                            field.key,
+                            field.type === "number" && event.target.value !== ""
+                              ? Number(event.target.value)
+                              : event.target.value,
+                          )
+                        }
+                        placeholder={field.placeholder}
+                      />
+                    </Field>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
           <Field
             label={t("providers.form.baseUrl")}
             htmlFor="provider-base"
@@ -509,6 +860,19 @@ export function ProviderForm({
           </div>
         </section>
 
+        <div className="flex items-center justify-between rounded-md border bg-muted/20 px-3 py-2">
+          <div>
+            <p className="text-xs font-medium">{t("providers.form.advanced")}</p>
+            <p className="text-[11px] text-muted-foreground">{t("providers.form.advancedHint")}</p>
+          </div>
+          <Switch
+            checked={advancedVisible}
+            onChange={(value) => setAdvancedOpen(value)}
+            label={t("providers.form.advanced")}
+          />
+        </div>
+
+        <div className={advancedVisible ? "space-y-5" : "hidden"}>
         <section className="space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("providers.form.requestSection")}</h3>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -556,6 +920,7 @@ export function ProviderForm({
             </Field>
           </div>
         </section>
+        </div>
 
         <section className="space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("providers.form.schedulingSection")}</h3>
@@ -673,6 +1038,224 @@ export function ProviderForm({
           </div>
         </section>
 
+        {manifest ? (
+          <section className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {t("providers.form.searchSection")}
+            </h3>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {t("providers.form.searchHint")}
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              {manifest.pagination.supported
+                ? t("providers.form.paginationNote", {
+                    pageSize: manifest.pagination.pageSize ?? 0,
+                    maxPages: manifest.pagination.maxPages ?? 0,
+                    maxResults: manifest.pagination.maxResults ?? 0,
+                  })
+                : t("providers.form.noPaginationNote", {
+                    maxResults: manifest.parameters.limits.targetResults?.max ?? 0,
+                  })}
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label={t("providers.form.targetResults")} htmlFor="provider-target" hint={t("providers.form.targetResultsHint")}>
+                <Input
+                  id="provider-target"
+                  type="number"
+                  min={manifest.parameters.limits.targetResults?.min ?? 1}
+                  max={manifest.parameters.limits.targetResults?.max ?? 100}
+                  value={String(readJsonValue(state.searchConfig, "targetResults") ?? "")}
+                  onChange={(event) =>
+                    update(
+                      "searchConfig",
+                      writeJsonValue(
+                        state.searchConfig,
+                        "targetResults",
+                        event.target.value === "" ? "" : Number(event.target.value),
+                      ),
+                    )
+                  }
+                  placeholder={String(manifest.parameters.limits.targetResults?.default ?? 10)}
+                />
+              </Field>
+              {manifest.pagination.supported ? (
+                <>
+                  <Field label={t("providers.form.maxPages")} htmlFor="provider-max-pages">
+                    <Input
+                      id="provider-max-pages"
+                      type="number"
+                      min={1}
+                      max={manifest.pagination.maxPages ?? 10}
+                      value={String(readJsonValue(state.searchConfig, "maxPages") ?? "")}
+                      onChange={(event) =>
+                        update(
+                          "searchConfig",
+                          writeJsonValue(
+                            state.searchConfig,
+                            "maxPages",
+                            event.target.value === "" ? "" : Number(event.target.value),
+                          ),
+                        )
+                      }
+                      placeholder={String(manifest.pagination.maxPages ?? 3)}
+                    />
+                  </Field>
+                  <Field label={t("providers.form.maxRequestsPerSearch")} htmlFor="provider-max-requests">
+                    <Input
+                      id="provider-max-requests"
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={String(readJsonValue(state.searchConfig, "maxRequestsPerSearch") ?? "")}
+                      onChange={(event) =>
+                        update(
+                          "searchConfig",
+                          writeJsonValue(
+                            state.searchConfig,
+                            "maxRequestsPerSearch",
+                            event.target.value === "" ? "" : Number(event.target.value),
+                          ),
+                        )
+                      }
+                      placeholder="3"
+                    />
+                  </Field>
+                </>
+              ) : null}
+              {manifest.parameters.supported.includes("safeSearch") ? (
+                <Field label={t("providers.form.safeSearch")} htmlFor="provider-safe-search">
+                  <Select
+                    id="provider-safe-search"
+                    value={String(readJsonValue(state.searchConfig, "safeSearch") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "safeSearch", event.target.value))
+                    }
+                  >
+                    <option value="">—</option>
+                    <option value="off">{t("providers.form.safeSearch.off")}</option>
+                    <option value="moderate">{t("providers.form.safeSearch.moderate")}</option>
+                    <option value="strict">{t("providers.form.safeSearch.strict")}</option>
+                  </Select>
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("region") ? (
+                <Field label={t("providers.form.region")} htmlFor="provider-region">
+                  <Input
+                    id="provider-region"
+                    value={String(readJsonValue(state.searchConfig, "region") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "region", event.target.value))
+                    }
+                    placeholder="us / cn"
+                  />
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("sort") ? (
+                <Field label={t("providers.form.sort")} htmlFor="provider-sort">
+                  <Input
+                    id="provider-sort"
+                    value={String(readJsonValue(state.searchConfig, "sort") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "sort", event.target.value))
+                    }
+                    placeholder="relevance"
+                  />
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("includeDomains") ? (
+                <Field label={t("providers.form.includeDomains")} htmlFor="provider-include-domains" hint={t("providers.form.domainsHint")}>
+                  <Input
+                    id="provider-include-domains"
+                    value={String(readJsonValue(state.searchConfig, "includeDomains") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "includeDomains", event.target.value))
+                    }
+                    placeholder="a.com,b.com"
+                  />
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("excludeDomains") ? (
+                <Field label={t("providers.form.excludeDomains")} htmlFor="provider-exclude-domains" hint={t("providers.form.domainsHint")}>
+                  <Input
+                    id="provider-exclude-domains"
+                    value={String(readJsonValue(state.searchConfig, "excludeDomains") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "excludeDomains", event.target.value))
+                    }
+                    placeholder="spam.example"
+                  />
+                </Field>
+              ) : null}
+            </div>
+            <div className="flex items-center justify-between rounded-md border px-3 py-2">
+              <div>
+                <p className="text-xs font-medium">{t("providers.form.lock")}</p>
+                <p className="text-[11px] text-muted-foreground">{t("providers.form.lockHint")}</p>
+              </div>
+              <Switch
+                checked={readJsonValue(state.searchConfig, "locked") === true}
+                onChange={(value) => update("searchConfig", writeJsonValue(state.searchConfig, "locked", value))}
+                label={t("providers.form.lock")}
+              />
+            </div>
+          </section>
+        ) : null}
+
+        <div className={advancedVisible ? "space-y-5" : "hidden"}>
+        <section className="space-y-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("providers.form.accountSection")}
+          </h3>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {t("providers.form.accountHint")}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label={t("providers.form.accountGroup")} htmlFor="provider-account-group" hint={t("providers.form.accountGroupHint")}>
+              <Input
+                id="provider-account-group"
+                value={String(readConfigValue(state.config, "accountGroup") ?? "")}
+                onChange={(event) => setConfigField("accountGroup", event.target.value)}
+                placeholder="bailian-main"
+                spellCheck={false}
+              />
+            </Field>
+            <Field label={t("providers.form.accountRpmLimit")} htmlFor="provider-account-rpm" hint={t("providers.form.accountRpmHint")}>
+              <Input
+                id="provider-account-rpm"
+                type="number"
+                min={0}
+                max={100000}
+                value={String(readConfigValue(state.config, "accountRpmLimit") ?? "")}
+                onChange={(event) =>
+                  setConfigField(
+                    "accountRpmLimit",
+                    event.target.value === "" ? "" : Number(event.target.value),
+                  )
+                }
+                placeholder="0"
+              />
+            </Field>
+            <Field label={t("providers.form.accountDailyQuota")} htmlFor="provider-account-daily" hint={t("providers.form.accountDailyHint")}>
+              <Input
+                id="provider-account-daily"
+                type="number"
+                min={1}
+                max={10000000}
+                value={String(readConfigValue(state.config, "accountDailyQuota") ?? "")}
+                onChange={(event) =>
+                  setConfigField(
+                    "accountDailyQuota",
+                    event.target.value === "" ? "" : Number(event.target.value),
+                  )
+                }
+                placeholder={t("providers.form.accountUnlimited")}
+              />
+            </Field>
+          </div>
+        </section>
+        </div>
+
+        <div className={advancedVisible ? "space-y-5" : "hidden"}>
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -753,7 +1336,20 @@ export function ProviderForm({
             )
           ) : null}
         </section>
+        </div>
       </form>
+
+      <ConfirmDialog
+        open={pendingType !== null}
+        onClose={() => setPendingType(null)}
+        onConfirm={() => {
+          if (pendingType) applyType(pendingType);
+        }}
+        title={t("providers.form.switchTitle")}
+        description={t("providers.form.switchDescription")}
+        confirmLabel={t("providers.form.switchConfirm")}
+        tone="default"
+      />
     </Sheet>
   );
 }

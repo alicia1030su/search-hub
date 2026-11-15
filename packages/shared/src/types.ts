@@ -6,7 +6,7 @@
 
 export const SEARCH_HUB_VERSION = "0.1.0";
 
-export type ProviderCategory = "general" | "ai" | "compat" | "custom";
+export type ProviderCategory = "general" | "ai" | "vertical" | "compat" | "custom";
 export type ProviderAuthType = "none" | "api_key" | "bearer" | "basic";
 export type ProviderImplementation = "builtin" | "generic" | "planned" | "unavailable";
 
@@ -32,6 +32,12 @@ export type SearchMode =
   | "rrf"
   | "rerank"
   | "embedding"
+  /** Preset: raw_search providers only, plain web list. */
+  | "web"
+  /** Preset: grounded_answer providers only, answer + citations. */
+  | "grounded"
+  /** Preset: both families, kept separate in the response. */
+  | "research"
   | "embedding_rerank"
   | "rerank_summary"
   | "deep";
@@ -60,6 +66,11 @@ export interface SearchRequest {
   providers?: string[];
   /** Named provider group. Takes precedence over `providers` when both are set. */
   group?: string;
+  /**
+   * Restricts the search to one capability. `raw_search` returns web pages,
+   * `grounded_answer` returns AI answers with citations. Omit for both.
+   */
+  capability?: ProviderCapability;
   limit?: number;
   perProviderLimit?: number;
   language?: string;
@@ -108,6 +119,8 @@ export interface SearchResult {
   sources: ResultSource[];
   /** Upstream attribution when this row arrived through a gateway adapter. */
   upstream?: UpstreamAttribution;
+  /** Vendor-assigned position, distinct from our own `score` and source rank. */
+  upstreamRank?: number;
   raw?: unknown;
 }
 
@@ -179,6 +192,8 @@ export interface SearchResponse {
     cached?: boolean;
   };
   errors: SearchErrorSummary[];
+  /** AI answers with citations; kept separate from `results` on purpose. */
+  answers?: GroundedAnswer[];
   /** Compact view of failing providers, stable for client assertions. */
   failedSources: FailedSource[];
   summary?: SearchSummary;
@@ -207,6 +222,22 @@ export interface ProviderRuntimeConfig {
   breakerThreshold: number;
   breakerCooldownMs: number;
   config: Record<string, unknown>;
+  /** Platform-level search parameters resolved for this call. */
+  search?: ResolvedSearchConfig;
+}
+
+/** Search parameters after manifest clamping and admin locks are applied. */
+export interface ResolvedSearchConfig {
+  targetResults: number;
+  maxPages: number;
+  maxRequestsPerSearch: number;
+  pageSize: number;
+  region?: string;
+  safeSearch?: "off" | "moderate" | "strict";
+  searchDepth?: "fast" | "balanced" | "deep";
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  sort?: string;
 }
 
 export interface ProviderSearchInput {
@@ -233,6 +264,86 @@ export interface UpstreamAttribution {
   sources?: string[];
 }
 
+/** How a provider produces results. */
+export type ProviderCapability = "raw_search" | "grounded_answer";
+
+/** One citation attached to a grounded answer. URL is always provider-supplied. */
+export interface GroundedCitation {
+  title: string;
+  url: string;
+  snippet?: string;
+  publishedAt?: string;
+  /** 1-based index the vendor uses in its own answer text, when it reports one. */
+  providerIndex?: number;
+}
+
+/**
+ * Five separate facts about one grounded answer. They are deliberately not
+ * collapsed into a single `toolInvoked` boolean: "the tool was offered", "the
+ * model called it", "the call returned content", "the sources are verifiable"
+ * and "the answer is actually supported by those sources" are different claims,
+ * and each can be legitimately unknown.
+ *
+ * `unknown` must be used when the vendor response does not carry enough
+ * evidence. Guessing true/false would fabricate a verification state.
+ */
+export interface GroundedStatus {
+  /** The request included a search tool. For these adapters this is always true. */
+  toolProvided: boolean;
+  /** The model actually emitted a search tool call. */
+  toolInvoked: boolean | "unknown";
+  /** The tool call returned usable content (chunks / results / sources). */
+  retrievalSucceeded: boolean | "unknown";
+  /** At least one citation with a real http(s) URL exists. */
+  hasVerifiableSources: boolean | "unknown";
+  /** The answer text is linked to those sources by the vendor's own mapping. */
+  answerSupported: boolean | "unknown";
+}
+
+/**
+ * Display metadata a vendor requires us to render (Google Search Suggestions).
+ * We never forward vendor HTML: `suggestions` is parsed into plain data and the
+ * UI renders its own elements, so no foreign markup can reach the admin page.
+ */
+export interface GroundedDisplay {
+  /** Human-readable suggestion chips extracted from searchEntryPoint. */
+  suggestions: Array<{ label: string; url: string }>;
+  /** Plain text of the vendor's rendered widget, for operators comparing with docs. */
+  textFallback?: string;
+  /** True when the vendor sent HTML that we deliberately did not forward. */
+  vendorHtmlWithheld?: boolean;
+}
+
+/** A supported text segment: which characters of the answer cite which chunk. */
+export interface GroundedSupport {
+  startIndex: number;
+  endIndex: number;
+  chunkIndices: number[];
+}
+
+/**
+ * An AI-generated answer with verifiable citations. `toolInvoked=false` means
+ * the model answered without calling its search tool; callers must not present
+ * that as a search result.
+ */
+export interface GroundedAnswer {
+  text: string;
+  citations: GroundedCitation[];
+  status: GroundedStatus;
+  model?: string;
+  provider: string;
+  /** Queries the model actually ran, when the vendor reports them. */
+  searchQueries?: string[];
+  /** Character-to-chunk mapping, when the vendor reports it. */
+  supports?: GroundedSupport[];
+  /** Vendor-mandated display data (plain data only, never HTML). */
+  display?: GroundedDisplay;
+  /** Latency of the single vendor call, milliseconds. */
+  latencyMs?: number;
+  /** True when the provider answered without any search call. */
+  degraded?: boolean;
+}
+
 export interface RawSearchResult {
   title: string;
   url: string;
@@ -242,6 +353,11 @@ export interface RawSearchResult {
   language?: string;
   /** Set only by gateway adapters that can see upstream attribution. */
   upstream?: UpstreamAttribution;
+  /**
+   * Position the vendor assigned to this row. Kept separate from `upstream`
+   * because a rank is not a source; it must never be shown as a provider name.
+   */
+  upstreamRank?: number;
   raw?: unknown;
 }
 
@@ -249,6 +365,8 @@ export interface ProviderSearchOutput {
   results: RawSearchResult[];
   requestUrl?: string;
   warnings?: string[];
+  /** Present only for `grounded_answer` providers that actually invoked search. */
+  answer?: GroundedAnswer;
 }
 
 export interface ProviderTestResult {
@@ -291,21 +409,160 @@ export interface SearchProviderAdapter {
   readonly type: string;
   readonly requiresKey: boolean;
   readonly supportsTest: boolean;
+  readonly capability?: ProviderCapability;
   search(input: ProviderSearchInput, ctx: ProviderContext): Promise<ProviderSearchOutput>;
   test?(ctx: ProviderContext): Promise<ProviderTestResult>;
+}
+
+export type CatalogFieldType = "text" | "password" | "number" | "select" | "boolean" | "textarea";
+
+/** Declarative field rendered by the web provider form. */
+export interface ProviderCatalogField {
+  key: string;
+  label: string;
+  type: CatalogFieldType;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: Array<{ value: string; label: string }>;
+  /** Where the value is stored. `credential` fields are joined into the key value. */
+  target?: "config" | "baseUrl" | "credential" | "model";
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+}
+
+/**
+ * Search parameters a provider can accept. The key names are platform-level; each
+ * manifest maps them to the vendor's own field names. Sending a platform key that
+ * a provider does not support is an error at the boundary, not a silent no-op.
+ */
+export type SearchParameterKey =
+  | "targetResults"
+  | "maxPages"
+  | "maxRequestsPerSearch"
+  | "language"
+  | "region"
+  | "freshness"
+  | "safeSearch"
+  | "searchDepth"
+  | "includeDomains"
+  | "excludeDomains"
+  | "sort";
+
+export interface ParameterLimit {
+  min?: number;
+  max?: number;
+  default?: number | string | boolean;
+  /** Vendor's per-request page size, when pagination is supported. */
+  pageSize?: number;
+  step?: number;
+}
+
+export type PaginationMode = "none" | "offset" | "page" | "cursor" | "limit";
+
+export interface PaginationCapability {
+  supported: boolean;
+  mode: PaginationMode;
+  /** Rows per request at the vendor. */
+  pageSize?: number;
+  /** Hard cap on pages the vendor allows (offset 0-9 means 10 pages). */
+  maxPages?: number;
+  /** Absolute cap on rows one search can produce. */
+  maxResults?: number;
+}
+
+export type AccountQuotaScope = "none" | "account" | "key";
+
+export interface AccountQuotaCapability {
+  /** Whether the vendor bills/limits per account rather than per key. */
+  scope: AccountQuotaScope;
+  /** True when several keys of one account share one vendor budget. */
+  sharedAcrossKeys: boolean;
+  note?: string;
+}
+
+export interface ResultMappingSpec {
+  title: string;
+  url: string;
+  snippet: string;
+  publishedAt?: string;
+  score?: string;
+}
+
+/**
+ * Declarative description of one provider. The web UI renders its configuration
+ * form from this document instead of hand-writing a form per vendor, and the
+ * server validates requests against it.
+ *
+ * A manifest is data only: it cannot carry code, shell commands or URLs to
+ * execute. Anything that needs behaviour still lives in a typed adapter.
+ */
+export interface ProviderManifest {
+  manifestVersion: 1;
+  providerId: string;
+  displayName: string;
+  description: string;
+  category: ProviderCategory;
+  capability: ProviderCapability;
+  version: string;
+  auth: {
+    type: ProviderAuthType;
+    credentialKind: "single" | "pair";
+    required: boolean;
+    fields: ProviderCatalogField[];
+  };
+  configuration: {
+    defaultEndpoint?: string;
+    endpointEditable: boolean;
+    fields: ProviderCatalogField[];
+  };
+  parameters: {
+    supported: SearchParameterKey[];
+    limits: Partial<Record<SearchParameterKey, ParameterLimit>>;
+  };
+  pagination: PaginationCapability;
+  accountQuota: AccountQuotaCapability;
+  resultMapping: ResultMappingSpec;
+  documentationUrl?: string;
+  /** Honest verification status; mirrors `ProviderCatalogEntry.verification`. */
+  verificationStatus: "documented" | "live_tested" | "unverified" | "no_official_api" | "mock_verified";
+  implementationStatus: ProviderImplementation;
 }
 
 export interface ProviderCatalogEntry {
   type: string;
   name: string;
   category: ProviderCategory;
+  /** Defaults to `raw_search` when omitted. */
+  capability?: ProviderCapability;
+  /** `pair` means two secrets (e.g. SecretId + SecretKey) stored as one credential. */
+  credentialKind?: "single" | "pair";
+  /** Declarative web-form fields; empty/omitted means the generic fields only. */
+  fields?: ProviderCatalogField[];
+  /** Platform-level search parameters this provider can honour. */
+  parameters?: SearchParameterKey[];
+  /** Per-parameter vendor limits, used by the UI and by request validation. */
+  parameterLimits?: Partial<Record<SearchParameterKey, ParameterLimit>>;
+  /** How many rows one request can return and whether we may page. */
+  pagination?: PaginationCapability;
+  /** Whether the vendor limits per account or per key. */
+  accountQuota?: AccountQuotaCapability;
+  /** Where each result field comes from in the vendor payload. */
+  resultMapping?: ResultMappingSpec;
+  /** Set when the vendor has shut the service down. */
+  deprecated?: boolean;
   authType: ProviderAuthType;
   implementation: ProviderImplementation;
   defaultBaseUrl?: string;
   docsUrl?: string;
   description: string;
   /** Honest verification status. Never set this to verified without a recorded live test. */
-  verification: "documented" | "live_tested" | "unverified" | "no_official_api";
+  /**
+   * `mock_verified` means "contract-tested against a local double only" — it
+   * must never be reported as a real vendor integration.
+   */
+  verification: "documented" | "live_tested" | "mock_verified" | "unverified" | "no_official_api";
   notes?: string;
 }
 
@@ -330,6 +587,18 @@ export interface ProviderInstance {
   breakerThreshold: number;
   breakerCooldownMs: number;
   config: Record<string, unknown>;
+  /**
+   * Shared vendor account this provider draws its quota from. Multiple keys of
+   * the same account must use the same group, otherwise N keys look like N
+   * accounts and the vendor's account-level limit is exceeded.
+   */
+  /** Platform-level search parameters stored for this instance. */
+  searchConfig: Record<string, unknown>;
+  accountGroup: string | null;
+  /** Requests/minute for the whole account group. 0 disables the group limit. */
+  accountRpmLimit: number;
+  /** Requests/day for the whole account group. null disables it. */
+  accountDailyQuota: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -372,6 +641,15 @@ export interface ProviderRuntimeSnapshot {
   healthy: boolean;
   circuitOpen: boolean;
   circuitOpenUntil: string | null;
+  /** Account-group budget usage, when this provider belongs to a group. */
+  account?: {
+    group: string;
+    rpmUsed: number;
+    rpmLimit: number;
+    quotaUsedToday: number;
+    dailyQuota: number | null;
+    lastDeniedAt: string | null;
+  } | null;
   keys: Array<{
     id: string;
     label: string;

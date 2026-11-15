@@ -77,6 +77,9 @@ export function DashboardPage() {
     (signal) => api.dashboard(range, signal),
     [range],
   );
+  // The dashboard is where a fresh install lands, so it must say "you have no
+  // search source yet" instead of showing empty charts with no next step.
+  const providers = useAsyncData((signal) => api.providers(signal), []);
 
   const hasSearches = (data?.totals.searches ?? 0) > 0;
   const keySegments = data
@@ -108,6 +111,9 @@ export function DashboardPage() {
         },
       ]
     : [];
+
+  const providerList = providers.data?.providers ?? [];
+  const enabledCount = providerList.filter((item) => item.ready).length;
 
   return (
     <div className="space-y-6">
@@ -146,6 +152,26 @@ export function DashboardPage() {
           <p className="font-mono">{error.code}</p>
           <p>{error.message}</p>
         </Alert>
+      ) : null}
+
+      {providers.data && enabledCount === 0 ? (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">
+                {providerList.length === 0 ? t("dashboard.onboard.empty") : t("dashboard.onboard.notEnabled")}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {providerList.length === 0
+                  ? t("dashboard.onboard.emptyHint")
+                  : t("dashboard.onboard.notEnabledHint", { count: providerList.length })}
+              </p>
+            </div>
+            <Button size="sm" onClick={() => navigate(providerList.length === 0 ? "/providers" : "/providers")}>
+              {providerList.length === 0 ? t("dashboard.onboard.cta") : t("dashboard.onboard.manage")}
+            </Button>
+          </CardContent>
+        </Card>
       ) : null}
 
       {!data && loading ? (

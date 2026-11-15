@@ -16,6 +16,7 @@ import {
 } from "@search-hub/shared";
 import { backoffDelay, classifyError, RetryBudget } from "../errors/classify.js";
 import type { KeyLease, KeyScheduler } from "../scheduler/key-scheduler.js";
+import type { GroundedAnswer } from "@search-hub/shared";
 
 /** Resolves the decrypted credential for a key id; implementation lives in the API layer. */
 export interface CredentialResolver {
@@ -55,6 +56,8 @@ export interface FanoutResult {
   results: RawSearchResult[];
   stat: ProviderAttemptStat;
   error?: SearchErrorSummary;
+  /** Present only when the adapter returned a grounded answer. */
+  answer?: GroundedAnswer;
 }
 
 function nowMs(): number {
@@ -157,6 +160,16 @@ export async function runProvider(
       });
       lease = acquired.lease;
       if (!lease) {
+        if (acquired.reason === "account_quota") {
+          // The vendor account itself is exhausted: another key in the same
+          // group would not help, so this is a quota error rather than key
+          // exhaustion.
+          lastCode = "quota_exceeded";
+          lastMessage =
+            `Account-level quota for provider "${config.name}" is exhausted. ` +
+            "Keys in the same account group share one vendor budget.";
+          break;
+        }
         const waiting = acquired.reason === "queue_timeout";
         lastCode = waiting ? "queue_timeout" : "no_available_key";
         lastMessage = waiting
@@ -228,6 +241,7 @@ export async function runProvider(
         providerType: config.type,
         ok: true,
         results: output.results,
+        ...(output.answer === undefined ? {} : { answer: output.answer }),
         stat: {
           providerId: config.id,
           providerName: config.name,

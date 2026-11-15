@@ -256,6 +256,21 @@ export const api = {
       method: "PATCH",
       body: input,
     }),
+  batchCreateProviders: (items: Array<{ type: string; name?: string }>) =>
+    request<{ created: Array<{ id: string; type: string; name: string; enabled: boolean }>; skipped: Array<{ type: string; reason: string }> }>(
+      "/admin/providers/batch",
+      { method: "POST", body: { items } },
+    ),
+  bulkProviders: (action: "install_all" | "enable_ready" | "disable_all", acceptCost = false) =>
+    request<{ changed: Array<{ id: string; name: string; action: string }>; skipped: Array<{ name: string; reason: string }> }>(
+      "/admin/providers/bulk",
+      { method: "POST", body: { action, acceptCost } },
+    ),
+  batchSetProviders: (ids: string[], enabled: boolean) =>
+    request<{ changed: Array<{ id: string; enabled: boolean }>; skipped: Array<{ id: string; name: string; reason: string }> }>(
+      "/admin/providers/batch-state",
+      { method: "POST", body: { ids, enabled } },
+    ),
   deleteProvider: (id: string) =>
     request<{ ok: boolean }>(`/admin/providers/${seg(id)}`, { method: "DELETE" }),
   testProvider: (id: string, keyId?: string) =>
