@@ -4,7 +4,7 @@
  * browser build never imports server-side modules.
  */
 
-export type ProviderCategory = "general" | "ai" | "compat" | "custom";
+export type ProviderCategory = "general" | "ai" | "vertical" | "compat" | "custom";
 export type ProviderAuthType = "none" | "api_key" | "bearer" | "basic";
 export type ProviderImplementation = "builtin" | "generic" | "planned" | "unavailable";
 export type ProviderVerification = "documented" | "live_tested" | "unverified" | "no_official_api";
@@ -95,6 +95,14 @@ export interface ProviderSummary {
   keyCount: number;
   healthyKeyCount: number;
   circuitOpen: boolean;
+  /** Platform-level search parameters stored for this instance. */
+  searchConfig: Record<string, unknown>;
+  accountGroup: string | null;
+  accountRpmLimit: number;
+  accountDailyQuota: number | null;
+  /** Enabled AND has a usable credential when the provider needs one. */
+  ready: boolean;
+  notReadyReason: string | null;
 }
 
 export type ProviderCapability = "raw_search" | "grounded_answer";
@@ -112,6 +120,37 @@ export interface ProviderCatalogField {
   default?: string | number | boolean;
   min?: number;
   max?: number;
+}
+
+export interface ProviderManifest {
+  manifestVersion: 1;
+  providerId: string;
+  displayName: string;
+  description: string;
+  category: ProviderCategory;
+  capability: ProviderCapability;
+  version: string;
+  auth: {
+    type: ProviderAuthType;
+    credentialKind: "single" | "pair";
+    required: boolean;
+    fields: ProviderCatalogField[];
+  };
+  configuration: {
+    defaultEndpoint?: string;
+    endpointEditable: boolean;
+    fields: ProviderCatalogField[];
+  };
+  parameters: {
+    supported: string[];
+    limits: Record<string, { min?: number; max?: number; default?: string | number | boolean; pageSize?: number }>;
+  };
+  pagination: { supported: boolean; mode: string; pageSize?: number; maxPages?: number; maxResults?: number };
+  accountQuota: { scope: "none" | "account" | "key"; sharedAcrossKeys: boolean; note?: string };
+  resultMapping: { title: string; url: string; snippet: string; publishedAt?: string; score?: string };
+  documentationUrl?: string;
+  verificationStatus: ProviderVerification;
+  implementationStatus: ProviderImplementation;
 }
 
 export interface ProviderCatalogEntry {
@@ -160,6 +199,8 @@ export interface ProvidersResponse {
   status: ProviderRuntimeSnapshot[];
   catalog: ProviderCatalogEntry[];
   adapters?: string[];
+  /** Declarative capability documents; the UI renders forms from these. */
+  manifests?: ProviderManifest[];
 }
 
 export interface ApiKeySummary {
@@ -213,6 +254,8 @@ export interface ProviderInput {
   breakerThreshold: number;
   breakerCooldownMs: number;
   config: Record<string, unknown>;
+  /** Platform-level search parameters, validated against the provider manifest. */
+  searchConfig?: Record<string, unknown>;
   /** Only accepted on create; the server writes provider + key atomically. */
   credential?: {
     label: string;

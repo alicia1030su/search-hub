@@ -440,6 +440,130 @@ describe("v0.1.4 provider catalog is actually creatable", () => {
     expect([200, 401, 403]).toContain(mcp.statusCode);
   });
 
+  it("batch install keeps credential-requiring sources disabled", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers/batch",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { items: [{ type: "exa" }, { type: "arxiv", enabled: true }] },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json() as {
+      created: Array<{ type: string; enabled: boolean }>;
+      skipped: unknown[];
+    };
+    const exa = body.created.find((item) => item.type === "exa")!;
+    const arxiv = body.created.find((item) => item.type === "arxiv")!;
+    // Needs a key -> arrives disabled even though enabled was not requested.
+    expect(exa.enabled).toBe(false);
+    // Keyless -> may be enabled.
+    expect(arxiv.enabled).toBe(true);
+  });
+
+  it("batch enable skips sources without credentials and says why", async () => {
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+    });
+    const providers = list.json().providers as Array<{ id: string; name: string; type: string }>;
+    const exa = providers.find((item) => item.type === "exa")!;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers/batch-state",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { ids: [exa.id], enabled: true },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json() as {
+      changed: Array<{ id: string }>;
+      skipped: Array<{ id: string; reason: string }>;
+    };
+    expect(body.changed).toHaveLength(0);
+    expect(body.skipped[0]?.reason).toContain("no credential");
+  });
+
+  it("rejects a search parameter the vendor does not support", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: {
+        name: "exa-bad-param",
+        type: "exa",
+        enabled: false,
+        timeoutMs: 5000,
+        maxConcurrency: 2,
+        maxRetries: 0,
+        rpmLimit: 60,
+        // Exa has no offset/page parameter.
+        searchConfig: { maxPages: 3 },
+      },
+    });
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(response.body).toContain("pagination");
+  });
+
+  it("stores a supported search config and echoes it back", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: {
+        name: "brave-search-config",
+        type: "brave",
+        enabled: false,
+        timeoutMs: 5000,
+        maxConcurrency: 2,
+        maxRetries: 0,
+        rpmLimit: 60,
+        searchConfig: { targetResults: 50, maxPages: 3, safeSearch: "strict" },
+      },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().provider.searchConfig).toMatchObject({
+      targetResults: 50,
+      maxPages: 3,
+      safeSearch: "strict",
+    });
+  });
+
+  it("the web preset refuses to run when only grounded providers exist", async () => {
+    // A capability preset is enforced server-side, so an AI-only setup cannot
+    // silently answer a request that asked for plain web results.
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: {
+        name: "gemini-only",
+        type: "gemini",
+        enabled: true,
+        timeoutMs: 5000,
+        maxConcurrency: 2,
+        maxRetries: 0,
+        rpmLimit: 60,
+        config: { model: "gemini-3.8-flash" },
+      },
+    });
+    const providerId = created.json().provider.id as string;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { query: "x", mode: "web", limit: 5, providers: [providerId] },
+    });
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+  });
+
   it("an unverified catalog entry cannot be created", async () => {
     const response = await app.inject({
       method: "POST",

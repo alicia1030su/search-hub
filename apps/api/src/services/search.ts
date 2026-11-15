@@ -29,6 +29,19 @@ export interface SearchServiceDeps {
 
 const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
 
+/**
+ * Maps a user-facing preset onto the provider capability it implies.
+ * `basic` / `rrf` / model modes keep their existing meaning and are not
+ * restricted, so older callers see no behaviour change.
+ */
+function capabilityForMode(
+  mode: SearchRequest["mode"],
+): "raw_search" | "grounded_answer" | null {
+  if (mode === "web") return "raw_search";
+  if (mode === "grounded") return "grounded_answer";
+  return null;
+}
+
 function modeIncludesRerank(mode: SearchRequest["mode"]): boolean {
   return mode === "rerank" || mode === "embedding_rerank" || mode === "rerank_summary";
 }
@@ -61,7 +74,17 @@ export class SearchService {
     }
 
     const providerIds = this.resolveProviderIds(request);
-    const runtimes = this.deps.providers.runtimesFor(providerIds);
+    let runtimes = this.deps.providers.runtimesFor(providerIds);
+
+    // Capability presets: "web" must never return an AI answer, "grounded" must
+    // never return a web page list. Filtering here (not in the UI) keeps REST,
+    // MCP and Skills on the same rule.
+    const capability = capabilityForMode(request.mode) ?? request.capability;
+    if (capability) {
+      runtimes = runtimes.filter(
+        (runtime) => (runtime.adapter.capability ?? "raw_search") === capability,
+      );
+    }
     if (runtimes.length === 0) {
       throw new SearchHubError(
         "validation_error",

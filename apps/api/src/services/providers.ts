@@ -17,7 +17,7 @@ import {
   type ProviderRuntime as EngineProviderRuntime,
   type SchedulerKeySeed,
 } from "@search-hub/core";
-import { getAdapter, getCatalogEntry } from "@search-hub/providers";
+import { getAdapter, getCatalogEntry, buildManifest, resolveSearchConfig } from "@search-hub/providers";
 import type { SecretBox } from "../security/crypto.js";
 
 interface ProviderRuntimeEntry {
@@ -86,6 +86,13 @@ export class ProviderService {
 
       const providerConfig = parseJson<Record<string, unknown>>(row.configJson, {});
       const account = readAccountLimits(providerConfig);
+      const catalogEntry = getCatalogEntry(row.type);
+      const search = catalogEntry
+        ? resolveSearchConfig(
+            buildManifest(catalogEntry),
+            parseJson<Record<string, unknown>>(row.searchConfigJson, {}),
+          )
+        : undefined;
 
       const previous = this.runtimes.get(row.id);
       let scheduler: KeyScheduler;
@@ -134,6 +141,7 @@ export class ProviderService {
           breakerThreshold: row.breakerThreshold,
           breakerCooldownMs: row.breakerCooldownMs,
           config: providerConfig,
+          ...(search === undefined ? {} : { search }),
         },
         adapter,
         scheduler,
@@ -158,9 +166,14 @@ export class ProviderService {
       keyCount: number;
       healthyKeyCount: number;
       circuitOpen: boolean;
+      searchConfig: Record<string, unknown>;
       accountGroup: string | null;
       accountRpmLimit: number;
       accountDailyQuota: number | null;
+      /** True when the instance is enabled AND has a key when one is required. */
+      ready: boolean;
+      /** Why it is not ready; empty when ready. */
+      notReadyReason: string | null;
     }
   > {
     const keyRows = this.db.select().from(apiKeys).all();
@@ -181,6 +194,7 @@ export class ProviderService {
         maxRetries: row.maxRetries,
         language: row.language,
         freshness: row.freshness as Freshness | null,
+        searchConfig: parseJson<Record<string, unknown>>(row.searchConfigJson, {}),
         ...(() => {
           const account = readAccountLimits(parseJson<Record<string, unknown>>(row.configJson, {}));
           return {
@@ -188,6 +202,21 @@ export class ProviderService {
             accountRpmLimit: account.limits?.rpmLimit ?? 0,
             accountDailyQuota: account.limits?.dailyQuota ?? null,
           };
+        })(),
+        ...(() => {
+          // "Ready" means it can actually answer a search right now. A provider
+          // that needs a credential but has none is saved-without-credential,
+          // which must never be auto-enabled.
+          const adapter = getAdapter(row.type);
+          const needsKey = adapter?.requiresKey ?? false;
+          const hasUsableKey = keys.some((key) => key.enabled);
+          const ready = row.enabled && (!needsKey || hasUsableKey);
+          const reason = !row.enabled
+            ? "search source is disabled"
+            : needsKey && !hasUsableKey
+              ? "no credential configured"
+              : null;
+          return { ready, notReadyReason: reason };
         })(),
         resultsPerPage: row.resultsPerPage,
         rpmLimit: row.rpmLimit,

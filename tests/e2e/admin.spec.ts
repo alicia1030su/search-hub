@@ -154,9 +154,11 @@ test.describe("Search Hub 管理后台端到端", () => {
     await expect(page.locator("body")).not.toContainText("sk-");
   });
 
-  test("搜索源目录把未实现项标注清楚且不可创建", async ({ page }) => {
+  test("搜索源市场把未实现项标注清楚且不可创建", async ({ page }) => {
     await login(page);
     await page.goto("/providers");
+    // The catalog now lives behind the marketplace tab.
+    await page.getByRole("button", { name: /搜索源市场/ }).click();
     await expect(page.getByText("仅目录 · 未实现").first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("支持 30 源", { exact: false })).toHaveCount(0);
   });
@@ -268,5 +270,60 @@ test.describe("Search Hub 管理后台端到端", () => {
     await expect(page.getByRole("heading", { name: "搜索实验室" })).toBeVisible();
     await expect(page.locator("body")).not.toContainText("已触发联网");
     await expect(page.locator("body")).not.toContainText("无可验证来源");
+  });
+
+
+  test("v0.1.4 市场批量添加多个源", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: /搜索源市场/ }).click();
+
+    await page.getByLabel("arXiv 选择").check();
+    await page.getByLabel("GitHub 搜索 选择").check();
+    await expect(page.getByText("已选 2 个")).toBeVisible();
+    await page.getByRole("button", { name: "添加所选" }).click();
+
+    await expect(page.getByText("arxiv", { exact: false }).filter({ visible: true }).first()).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByText("github", { exact: false }).filter({ visible: true }).first()).toBeVisible();
+  });
+
+  test("v0.1.4 批量启用跳过未配置凭证的源并说明原因", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByLabel("Exa 选择").check();
+    await page.getByRole("button", { name: "添加所选" }).click();
+    await expect(page.getByText("exa", { exact: false }).filter({ visible: true }).first()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    await page.getByLabel("全选搜索源").check();
+    await page.getByRole("button", { name: "批量启用" }).click();
+    // The refusal states why instead of silently doing nothing.
+    await expect(page.getByText("no credential configured", { exact: false }).first()).toBeVisible({
+      timeout: 20_000,
+    });
+  });
+
+  test("v0.1.4 搜索参数由 Manifest 驱动", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "添加此搜索源" }).first().click();
+
+    await page.locator("#provider-type").selectOption("brave");
+    await expect(page.getByText("搜索参数（按厂商能力）")).toBeVisible();
+    await expect(page.locator("#provider-max-pages")).toBeVisible();
+
+    // Exa has no pagination, so the page controls must disappear. Switching may
+    // ask for confirmation because the previous type had defaults filled in.
+    await page.locator("#provider-type").selectOption("exa");
+    if (await page.getByText("切换服务商会重置配置").count()) {
+      await page.getByRole("button", { name: "切换到新服务商" }).click();
+    }
+    await expect(page.locator("#provider-max-pages")).toHaveCount(0);
+    await expect(page.getByText("该厂商不支持分页", { exact: false })).toBeVisible();
   });
 });

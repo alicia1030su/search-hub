@@ -56,6 +56,10 @@ export const providerInstances = sqliteTable(
     breakerThreshold: integer("breaker_threshold").notNull().default(5),
     breakerCooldownMs: integer("breaker_cooldown_ms").notNull().default(60000),
     configJson: text("config_json").notNull().default("{}"),
+    /** Platform-level search parameters (see ProviderManifest.parameters). */
+    searchConfigJson: text("search_config_json").notNull().default("{}"),
+    /** When this instance was added from the marketplace. */
+    installedAt: text("installed_at"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

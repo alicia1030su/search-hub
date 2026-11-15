@@ -9,6 +9,7 @@ import type {
   KeyStrategy,
   ProviderCatalogField,
   ProviderCatalogEntry,
+  ProviderManifest,
   ProviderInput,
   ProviderSummary,
 } from "../../lib/types";
@@ -124,6 +125,8 @@ interface FormState {
   breakerThreshold: string;
   breakerCooldownMs: string;
   config: string;
+  /** Platform-level search parameters (targetResults, maxPages, safeSearch…). */
+  searchConfig: string;
 }
 
 function toState(provider: ProviderSummary | null, preset: ProviderCatalogEntry | null): FormState {
@@ -148,6 +151,7 @@ function toState(provider: ProviderSummary | null, preset: ProviderCatalogEntry 
       breakerThreshold: String(provider.breakerThreshold),
       breakerCooldownMs: String(provider.breakerCooldownMs),
       config: prettyJson(provider.config ?? {}),
+      searchConfig: prettyJson(provider.searchConfig ?? {}),
     };
   }
   return {
@@ -170,6 +174,7 @@ function toState(provider: ProviderSummary | null, preset: ProviderCatalogEntry 
     breakerThreshold: "5",
     breakerCooldownMs: "60000",
     config: preset?.type === "generic-http" ? prettyJson(GENERIC_TEMPLATE) : "{}",
+    searchConfig: "{}",
   };
 }
 
@@ -188,6 +193,29 @@ function intValue(
     return fallback;
   }
   return parsed;
+}
+
+function readJsonValue(json: string, key: string): unknown {
+  try {
+    const parsed = JSON.parse(json || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return (parsed as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+function writeJsonValue(json: string, key: string, value: unknown): string {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const candidate = JSON.parse(json || "{}");
+    parsed = candidate && typeof candidate === "object" && !Array.isArray(candidate) ? candidate : {};
+  } catch {
+    parsed = {};
+  }
+  if (value === "" || value === undefined || value === null) delete parsed[key];
+  else parsed[key] = value;
+  return prettyJson(parsed);
 }
 
 function readConfigValue(config: string, key: string): unknown {
@@ -230,6 +258,8 @@ export interface ProviderFormProps {
   preset: ProviderCatalogEntry | null;
   catalog: ProviderCatalogEntry[];
   adapters: string[];
+  /** All manifests from the server; the form picks the one for the selected type. */
+  manifests?: ProviderManifest[];
   onSaved: () => void;
 }
 
@@ -240,6 +270,7 @@ export function ProviderForm({
   preset,
   catalog,
   adapters,
+  manifests,
   onSaved,
 }: ProviderFormProps) {
   const [state, setState] = useState<FormState>(() => toState(provider, preset));
@@ -271,6 +302,13 @@ export function ProviderForm({
   const selectedCatalog = useMemo(
     () => catalog.find((entry) => entry.type === state.type) ?? null,
     [catalog, state.type],
+  );
+
+  // Derived from the *current* type so switching providers in the sheet swaps
+  // the capability contract immediately instead of keeping the opened preset's.
+  const manifest = useMemo(
+    () => (manifests ?? []).find((entry) => entry.providerId === state.type) ?? null,
+    [manifests, state.type],
   );
 
   // A provider that needs a key but does not declare explicit credential
@@ -407,6 +445,9 @@ export function ProviderForm({
         errors.push(t("providers.form.baseUrlInvalid"));
       }
     }
+    if (!parseJsonObject(state.searchConfig).ok) {
+      errors.push(t("providers.form.searchConfigInvalid"));
+    }
     if (!configJson.ok) {
       errors.push(t("providers.form.configNotObject"));
     } else if (isGeneric) {
@@ -456,6 +497,7 @@ export function ProviderForm({
         errors,
       ),
       config: (configJson.value ?? {}) as Record<string, unknown>,
+      searchConfig: (parseJsonObject(state.searchConfig).value ?? {}) as Record<string, unknown>,
     };
 
     const credentialValue = buildCredentialValue(credentialFields, credentials, selectedCatalog?.credentialKind);
@@ -969,6 +1011,169 @@ export function ProviderForm({
             </Field>
           </div>
         </section>
+
+        {manifest ? (
+          <section className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {t("providers.form.searchSection")}
+            </h3>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {t("providers.form.searchHint")}
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              {manifest.pagination.supported
+                ? t("providers.form.paginationNote", {
+                    pageSize: manifest.pagination.pageSize ?? 0,
+                    maxPages: manifest.pagination.maxPages ?? 0,
+                    maxResults: manifest.pagination.maxResults ?? 0,
+                  })
+                : t("providers.form.noPaginationNote", {
+                    maxResults: manifest.parameters.limits.targetResults?.max ?? 0,
+                  })}
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label={t("providers.form.targetResults")} htmlFor="provider-target" hint={t("providers.form.targetResultsHint")}>
+                <Input
+                  id="provider-target"
+                  type="number"
+                  min={manifest.parameters.limits.targetResults?.min ?? 1}
+                  max={manifest.parameters.limits.targetResults?.max ?? 100}
+                  value={String(readJsonValue(state.searchConfig, "targetResults") ?? "")}
+                  onChange={(event) =>
+                    update(
+                      "searchConfig",
+                      writeJsonValue(
+                        state.searchConfig,
+                        "targetResults",
+                        event.target.value === "" ? "" : Number(event.target.value),
+                      ),
+                    )
+                  }
+                  placeholder={String(manifest.parameters.limits.targetResults?.default ?? 10)}
+                />
+              </Field>
+              {manifest.pagination.supported ? (
+                <>
+                  <Field label={t("providers.form.maxPages")} htmlFor="provider-max-pages">
+                    <Input
+                      id="provider-max-pages"
+                      type="number"
+                      min={1}
+                      max={manifest.pagination.maxPages ?? 10}
+                      value={String(readJsonValue(state.searchConfig, "maxPages") ?? "")}
+                      onChange={(event) =>
+                        update(
+                          "searchConfig",
+                          writeJsonValue(
+                            state.searchConfig,
+                            "maxPages",
+                            event.target.value === "" ? "" : Number(event.target.value),
+                          ),
+                        )
+                      }
+                      placeholder={String(manifest.pagination.maxPages ?? 3)}
+                    />
+                  </Field>
+                  <Field label={t("providers.form.maxRequestsPerSearch")} htmlFor="provider-max-requests">
+                    <Input
+                      id="provider-max-requests"
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={String(readJsonValue(state.searchConfig, "maxRequestsPerSearch") ?? "")}
+                      onChange={(event) =>
+                        update(
+                          "searchConfig",
+                          writeJsonValue(
+                            state.searchConfig,
+                            "maxRequestsPerSearch",
+                            event.target.value === "" ? "" : Number(event.target.value),
+                          ),
+                        )
+                      }
+                      placeholder="3"
+                    />
+                  </Field>
+                </>
+              ) : null}
+              {manifest.parameters.supported.includes("safeSearch") ? (
+                <Field label={t("providers.form.safeSearch")} htmlFor="provider-safe-search">
+                  <Select
+                    id="provider-safe-search"
+                    value={String(readJsonValue(state.searchConfig, "safeSearch") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "safeSearch", event.target.value))
+                    }
+                  >
+                    <option value="">—</option>
+                    <option value="off">{t("providers.form.safeSearch.off")}</option>
+                    <option value="moderate">{t("providers.form.safeSearch.moderate")}</option>
+                    <option value="strict">{t("providers.form.safeSearch.strict")}</option>
+                  </Select>
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("region") ? (
+                <Field label={t("providers.form.region")} htmlFor="provider-region">
+                  <Input
+                    id="provider-region"
+                    value={String(readJsonValue(state.searchConfig, "region") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "region", event.target.value))
+                    }
+                    placeholder="us / cn"
+                  />
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("sort") ? (
+                <Field label={t("providers.form.sort")} htmlFor="provider-sort">
+                  <Input
+                    id="provider-sort"
+                    value={String(readJsonValue(state.searchConfig, "sort") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "sort", event.target.value))
+                    }
+                    placeholder="relevance"
+                  />
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("includeDomains") ? (
+                <Field label={t("providers.form.includeDomains")} htmlFor="provider-include-domains" hint={t("providers.form.domainsHint")}>
+                  <Input
+                    id="provider-include-domains"
+                    value={String(readJsonValue(state.searchConfig, "includeDomains") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "includeDomains", event.target.value))
+                    }
+                    placeholder="a.com,b.com"
+                  />
+                </Field>
+              ) : null}
+              {manifest.parameters.supported.includes("excludeDomains") ? (
+                <Field label={t("providers.form.excludeDomains")} htmlFor="provider-exclude-domains" hint={t("providers.form.domainsHint")}>
+                  <Input
+                    id="provider-exclude-domains"
+                    value={String(readJsonValue(state.searchConfig, "excludeDomains") ?? "")}
+                    onChange={(event) =>
+                      update("searchConfig", writeJsonValue(state.searchConfig, "excludeDomains", event.target.value))
+                    }
+                    placeholder="spam.example"
+                  />
+                </Field>
+              ) : null}
+            </div>
+            <div className="flex items-center justify-between rounded-md border px-3 py-2">
+              <div>
+                <p className="text-xs font-medium">{t("providers.form.lock")}</p>
+                <p className="text-[11px] text-muted-foreground">{t("providers.form.lockHint")}</p>
+              </div>
+              <Switch
+                checked={readJsonValue(state.searchConfig, "locked") === true}
+                onChange={(value) => update("searchConfig", writeJsonValue(state.searchConfig, "locked", value))}
+                label={t("providers.form.lock")}
+              />
+            </div>
+          </section>
+        ) : null}
 
         <section className="space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

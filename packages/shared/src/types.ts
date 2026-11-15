@@ -6,7 +6,7 @@
 
 export const SEARCH_HUB_VERSION = "0.1.0";
 
-export type ProviderCategory = "general" | "ai" | "compat" | "custom";
+export type ProviderCategory = "general" | "ai" | "vertical" | "compat" | "custom";
 export type ProviderAuthType = "none" | "api_key" | "bearer" | "basic";
 export type ProviderImplementation = "builtin" | "generic" | "planned" | "unavailable";
 
@@ -32,6 +32,12 @@ export type SearchMode =
   | "rrf"
   | "rerank"
   | "embedding"
+  /** Preset: raw_search providers only, plain web list. */
+  | "web"
+  /** Preset: grounded_answer providers only, answer + citations. */
+  | "grounded"
+  /** Preset: both families, kept separate in the response. */
+  | "research"
   | "embedding_rerank"
   | "rerank_summary"
   | "deep";
@@ -60,6 +66,11 @@ export interface SearchRequest {
   providers?: string[];
   /** Named provider group. Takes precedence over `providers` when both are set. */
   group?: string;
+  /**
+   * Restricts the search to one capability. `raw_search` returns web pages,
+   * `grounded_answer` returns AI answers with citations. Omit for both.
+   */
+  capability?: ProviderCapability;
   limit?: number;
   perProviderLimit?: number;
   language?: string;
@@ -211,6 +222,22 @@ export interface ProviderRuntimeConfig {
   breakerThreshold: number;
   breakerCooldownMs: number;
   config: Record<string, unknown>;
+  /** Platform-level search parameters resolved for this call. */
+  search?: ResolvedSearchConfig;
+}
+
+/** Search parameters after manifest clamping and admin locks are applied. */
+export interface ResolvedSearchConfig {
+  targetResults: number;
+  maxPages: number;
+  maxRequestsPerSearch: number;
+  pageSize: number;
+  region?: string;
+  safeSearch?: "off" | "moderate" | "strict";
+  searchDepth?: "fast" | "balanced" | "deep";
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  sort?: string;
 }
 
 export interface ProviderSearchInput {
@@ -405,6 +432,104 @@ export interface ProviderCatalogField {
   max?: number;
 }
 
+/**
+ * Search parameters a provider can accept. The key names are platform-level; each
+ * manifest maps them to the vendor's own field names. Sending a platform key that
+ * a provider does not support is an error at the boundary, not a silent no-op.
+ */
+export type SearchParameterKey =
+  | "targetResults"
+  | "maxPages"
+  | "maxRequestsPerSearch"
+  | "language"
+  | "region"
+  | "freshness"
+  | "safeSearch"
+  | "searchDepth"
+  | "includeDomains"
+  | "excludeDomains"
+  | "sort";
+
+export interface ParameterLimit {
+  min?: number;
+  max?: number;
+  default?: number | string | boolean;
+  /** Vendor's per-request page size, when pagination is supported. */
+  pageSize?: number;
+  step?: number;
+}
+
+export type PaginationMode = "none" | "offset" | "page" | "cursor" | "limit";
+
+export interface PaginationCapability {
+  supported: boolean;
+  mode: PaginationMode;
+  /** Rows per request at the vendor. */
+  pageSize?: number;
+  /** Hard cap on pages the vendor allows (offset 0-9 means 10 pages). */
+  maxPages?: number;
+  /** Absolute cap on rows one search can produce. */
+  maxResults?: number;
+}
+
+export type AccountQuotaScope = "none" | "account" | "key";
+
+export interface AccountQuotaCapability {
+  /** Whether the vendor bills/limits per account rather than per key. */
+  scope: AccountQuotaScope;
+  /** True when several keys of one account share one vendor budget. */
+  sharedAcrossKeys: boolean;
+  note?: string;
+}
+
+export interface ResultMappingSpec {
+  title: string;
+  url: string;
+  snippet: string;
+  publishedAt?: string;
+  score?: string;
+}
+
+/**
+ * Declarative description of one provider. The web UI renders its configuration
+ * form from this document instead of hand-writing a form per vendor, and the
+ * server validates requests against it.
+ *
+ * A manifest is data only: it cannot carry code, shell commands or URLs to
+ * execute. Anything that needs behaviour still lives in a typed adapter.
+ */
+export interface ProviderManifest {
+  manifestVersion: 1;
+  providerId: string;
+  displayName: string;
+  description: string;
+  category: ProviderCategory;
+  capability: ProviderCapability;
+  version: string;
+  auth: {
+    type: ProviderAuthType;
+    credentialKind: "single" | "pair";
+    required: boolean;
+    fields: ProviderCatalogField[];
+  };
+  configuration: {
+    defaultEndpoint?: string;
+    endpointEditable: boolean;
+    fields: ProviderCatalogField[];
+  };
+  parameters: {
+    supported: SearchParameterKey[];
+    limits: Partial<Record<SearchParameterKey, ParameterLimit>>;
+  };
+  pagination: PaginationCapability;
+  accountQuota: AccountQuotaCapability;
+  resultMapping: ResultMappingSpec;
+  documentationUrl?: string;
+  /** Honest verification status; mirrors `ProviderCatalogEntry.verification`. */
+  verificationStatus: "documented" | "live_tested" | "unverified" | "no_official_api" | "mock_verified";
+  implementationStatus: ProviderImplementation;
+}
+
 export interface ProviderCatalogEntry {
   type: string;
   name: string;
@@ -415,6 +540,18 @@ export interface ProviderCatalogEntry {
   credentialKind?: "single" | "pair";
   /** Declarative web-form fields; empty/omitted means the generic fields only. */
   fields?: ProviderCatalogField[];
+  /** Platform-level search parameters this provider can honour. */
+  parameters?: SearchParameterKey[];
+  /** Per-parameter vendor limits, used by the UI and by request validation. */
+  parameterLimits?: Partial<Record<SearchParameterKey, ParameterLimit>>;
+  /** How many rows one request can return and whether we may page. */
+  pagination?: PaginationCapability;
+  /** Whether the vendor limits per account or per key. */
+  accountQuota?: AccountQuotaCapability;
+  /** Where each result field comes from in the vendor payload. */
+  resultMapping?: ResultMappingSpec;
+  /** Set when the vendor has shut the service down. */
+  deprecated?: boolean;
   authType: ProviderAuthType;
   implementation: ProviderImplementation;
   defaultBaseUrl?: string;
@@ -451,6 +588,8 @@ export interface ProviderInstance {
    * the same account must use the same group, otherwise N keys look like N
    * accounts and the vendor's account-level limit is exceeded.
    */
+  /** Platform-level search parameters stored for this instance. */
+  searchConfig: Record<string, unknown>;
   accountGroup: string | null;
   /** Requests/minute for the whole account group. 0 disables the group limit. */
   accountRpmLimit: number;

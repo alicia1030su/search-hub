@@ -52,11 +52,12 @@ import {
 import { ProviderForm } from "./form";
 import { ProviderKeysPanel, TestResultDialog } from "./keys-panel";
 
-const categoryOrder: ProviderCategory[] = ["general", "ai", "compat", "custom"];
+const categoryOrder: ProviderCategory[] = ["general", "ai", "vertical", "compat", "custom"];
 
 const categoryTone: Record<ProviderCategory, "default" | "info" | "warning" | "muted"> = {
   general: "default",
   ai: "info",
+  vertical: "info",
   compat: "warning",
   custom: "muted",
 };
@@ -87,6 +88,12 @@ export function ProvidersPage() {
   const [groupForm, setGroupForm] = useState<SearchGroup | "new" | null>(null);
   const [deletingGroup, setDeletingGroup] = useState<SearchGroup | null>(null);
   const [groupDeletePending, setGroupDeletePending] = useState(false);
+  // Marketplace vs. installed sources: two different questions ("what can I add"
+  // vs "what do I run"), so they get two views instead of one long page.
+  const [tab, setTab] = useState<"installed" | "market">("installed");
+  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
 
   const providers = useAsyncData((signal) => api.providers(signal), []);
   const groups = useAsyncData((signal) => api.groups(signal), []);
@@ -183,6 +190,70 @@ export function ProvidersPage() {
     }
   };
 
+  const toggleType = (type: string) => {
+    setSelectedTypes((current) =>
+      current.includes(type) ? current.filter((item) => item !== type) : [...current, type],
+    );
+  };
+
+  const toggleProvider = (id: string) => {
+    setSelectedProviders((current) =>
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+    );
+  };
+
+  const installSelected = async () => {
+    if (selectedTypes.length === 0) return;
+    setBusy(true);
+    try {
+      const result = await api.batchCreateProviders(selectedTypes.map((type) => ({ type })));
+      const added = result.created.length;
+      const skipped = result.skipped.length;
+      toast.success({
+        title: t("providers.market.added", { count: added }),
+        description:
+          skipped > 0 ? t("providers.market.skipped", { count: skipped }) : t("providers.market.addedHint"),
+      });
+      setSelectedTypes([]);
+      providers.reload();
+      setTab("installed");
+    } catch (caught) {
+      const apiError = toApiError(caught);
+      toast.error({ title: apiError.message, description: apiError.code });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setSelectedEnabled = async (enabled: boolean) => {
+    if (selectedProviders.length === 0) return;
+    setBusy(true);
+    try {
+      const result = await api.batchSetProviders(selectedProviders, enabled);
+      const skipped = result.skipped;
+      if (skipped.length > 0) {
+        // Report exactly why a source was skipped instead of silently doing less.
+        toast.error({
+          title: t("providers.batch.partial", { changed: result.changed.length, skipped: skipped.length }),
+          description: skipped.map((item) => `${item.name}: ${item.reason}`).join("；"),
+        });
+      } else {
+        toast.success({
+          title: enabled
+            ? t("providers.batch.enabled", { count: result.changed.length })
+            : t("providers.batch.disabled", { count: result.changed.length }),
+        });
+      }
+      setSelectedProviders([]);
+      providers.reload();
+    } catch (caught) {
+      const apiError = toApiError(caught);
+      toast.error({ title: apiError.message, description: apiError.code });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const clearFocus = () => {
     const next = new URLSearchParams(searchParams);
     next.delete("focus");
@@ -207,6 +278,28 @@ export function ProvidersPage() {
           </>
         }
       />
+
+      <div className="flex flex-wrap items-center gap-1.5 border-b pb-2">
+        {(["installed", "market"] as const).map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            className={
+              "rounded-md px-3 py-1.5 text-sm transition-colors " +
+              (tab === key
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground")
+            }
+            aria-current={tab === key ? "page" : undefined}
+          >
+            {key === "installed" ? t("providers.tab.installed") : t("providers.tab.market")}
+            {key === "installed" ? (
+              <span className="ml-1.5 text-[11px] opacity-70">{providers.data?.providers.length ?? 0}</span>
+            ) : null}
+          </button>
+        ))}
+      </div>
 
       {providers.error ? (
         <Alert
@@ -236,10 +329,11 @@ export function ProvidersPage() {
 
       {providers.data ? (
         <>
+          {tab === "market" ? (
           <section className="space-y-3">
             <SectionHeader
-              title={t("providers.catalog.title")}
-              description={t("providers.catalog.desc")}
+              title={t("providers.market.title")}
+              description={t("providers.market.desc")}
               actions={
                 <Input
                   value={filter}
@@ -267,10 +361,25 @@ export function ProvidersPage() {
                       const configured = configuredByType.get(entry.type) ?? 0;
                       const addable = canAdd(entry);
                       return (
-                        <Card key={entry.type} className="flex flex-col">
+                        <Card
+                          key={entry.type}
+                          className={
+                            "flex flex-col " +
+                            (selectedTypes.includes(entry.type) ? "ring-2 ring-foreground/30" : "")
+                          }
+                        >
                           <CardContent className="flex h-full flex-col gap-2.5 p-4">
                             <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
+                              {addable ? (
+                                <input
+                                  type="checkbox"
+                                  aria-label={`${entry.name} 选择`}
+                                  checked={selectedTypes.includes(entry.type)}
+                                  onChange={() => toggleType(entry.type)}
+                                  className="mt-0.5 size-3.5 shrink-0"
+                                />
+                              ) : null}
+                              <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-medium">{entry.name}</p>
                                 <p className="truncate font-mono text-[10px] text-muted-foreground">{entry.type}</p>
                               </div>
@@ -349,8 +458,23 @@ export function ProvidersPage() {
                 </div>
               ))
             )}
+            {selectedTypes.length > 0 ? (
+              <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-2 rounded-lg border bg-card px-3 py-2 shadow-lg">
+                <span className="text-xs text-muted-foreground">
+                  {t("providers.market.selected", { count: selectedTypes.length })}
+                </span>
+                <Button size="sm" onClick={() => void installSelected()} loading={busy}>
+                  {t("providers.market.install")}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSelectedTypes([])}>
+                  {t("providers.market.clear")}
+                </Button>
+              </div>
+            ) : null}
           </section>
+          ) : null}
 
+          {tab === "installed" ? (
           <section className="space-y-3">
             <SectionHeader
               title={t("providers.list.title")}
@@ -367,12 +491,12 @@ export function ProvidersPage() {
             {providers.data.providers.length === 0 ? (
               <EmptyState
                 icon={Server}
-                title={t("providers.list.empty")}
-                description={t("providers.list.emptyDesc")}
+                title={t("providers.empty.title")}
+                description={t("providers.empty.desc")}
                 action={
-                  <Button size="sm" onClick={() => setFormState({ provider: null, preset: null })}>
+                  <Button size="sm" onClick={() => setTab("market")}>
                     <Plus aria-hidden />
-                    {t("providers.add")}
+                    {t("providers.empty.cta")}
                   </Button>
                 }
               />
@@ -450,6 +574,24 @@ export function ProvidersPage() {
                   <Table minWidth="min-w-[960px]" caption={t("providers.list.title")}>
                     <THead>
                       <tr>
+                        <TH className="w-8">
+                          <input
+                            type="checkbox"
+                            aria-label={t("providers.batch.selectAll")}
+                            checked={
+                              providers.data.providers.length > 0 &&
+                              selectedProviders.length === providers.data.providers.length
+                            }
+                            onChange={(event) =>
+                              setSelectedProviders(
+                                event.target.checked
+                                  ? providers.data!.providers.map((item) => item.id)
+                                  : [],
+                              )
+                            }
+                            className="size-3.5"
+                          />
+                        </TH>
                         <TH>{t("common.name")}</TH>
                         <TH>{t("common.status")}</TH>
                         <TH>{t("providers.list.healthyKeys")}</TH>
@@ -470,9 +612,25 @@ export function ProvidersPage() {
                             selected={focusId === provider.id}
                           >
                             <TD>
+                              <input
+                                type="checkbox"
+                                aria-label={`${provider.name} ${t("providers.batch.select")}`}
+                                checked={selectedProviders.includes(provider.id)}
+                                onChange={() => toggleProvider(provider.id)}
+                                className="size-3.5"
+                              />
+                            </TD>
+                            <TD>
                               <div className="min-w-0">
                                 <p className="truncate font-medium">{provider.name}</p>
                                 <p className="font-mono text-[10px] text-muted-foreground">{provider.type}</p>
+                                {provider.ready ? (
+                                  <Badge tone="success">{t("providers.ready.yes")}</Badge>
+                                ) : (
+                                  <Badge tone="muted" title={provider.notReadyReason ?? ""}>
+                                    {t("providers.ready.no")}
+                                  </Badge>
+                                )}
                                 {provider.baseUrl ? (
                                   <p className="truncate text-[10px] text-muted-foreground">{provider.baseUrl}</p>
                                 ) : null}
@@ -570,7 +728,22 @@ export function ProvidersPage() {
                 </div>
               </>
             )}
+            {selectedProviders.length > 0 ? (
+              <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-2 rounded-lg border bg-card px-3 py-2 shadow-lg">
+                <span className="text-xs text-muted-foreground">
+                  {t("providers.batch.selected", { count: selectedProviders.length })}
+                </span>
+                <Button size="sm" onClick={() => void setSelectedEnabled(true)} loading={busy}>
+                  {t("providers.batch.enable")}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void setSelectedEnabled(false)} disabled={busy}>
+                  {t("providers.batch.disable")}
+                </Button>
+                <span className="text-[10px] text-muted-foreground">{t("providers.batch.enableHint")}</span>
+              </div>
+            ) : null}
           </section>
+          ) : null}
 
           <section className="space-y-3">
             <SectionHeader
@@ -665,6 +838,7 @@ export function ProvidersPage() {
           preset={formState.preset}
           catalog={providers.data?.catalog ?? []}
           adapters={adapters}
+          manifests={providers.data?.manifests ?? []}
           onSaved={() => {
             toast.success({ title: t("providers.form.saved") });
             providers.reload();

@@ -4,6 +4,11 @@ import { braveAdapter } from "./builtin/brave.js";
 import { genericHttpAdapter } from "./builtin/generic.js";
 import { hackerNewsAdapter } from "./builtin/hackernews.js";
 import { legacySearchHubAdapter } from "./builtin/legacy-search-hub.js";
+import { arxivAdapter } from "./builtin/arxiv.js";
+import { exaAdapter } from "./builtin/exa.js";
+import { firecrawlAdapter } from "./builtin/firecrawl.js";
+import { githubAdapter } from "./builtin/github.js";
+import { serperAdapter } from "./builtin/serper.js";
 import { geminiAdapter } from "./builtin/gemini.js";
 import { grokAdapter } from "./builtin/grok.js";
 import { mimoAdapter } from "./builtin/mimo.js";
@@ -20,6 +25,11 @@ import { tavilyAdapter } from "./builtin/tavily.js";
 import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
 
 const ADAPTERS: SearchProviderAdapter[] = [
+  exaAdapter,
+  firecrawlAdapter,
+  serperAdapter,
+  githubAdapter,
+  arxivAdapter,
   geminiAdapter,
   grokAdapter,
   mimoAdapter,
