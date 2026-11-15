@@ -45,6 +45,7 @@ import {
   Input,
   PageHeader,
   SectionHeader,
+  Select,
   Skeleton,
   Switch,
   Textarea,
@@ -94,6 +95,9 @@ export function ProvidersPage() {
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [costDialog, setCostDialog] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<"all" | ProviderCategory>("all");
+  const [authFilter, setAuthFilter] = useState<"all" | "need" | "none">("all");
 
   const providers = useAsyncData((signal) => api.providers(signal), []);
   const groups = useAsyncData((signal) => api.groups(signal), []);
@@ -108,6 +112,9 @@ export function ProvidersPage() {
 
   const catalogGroups = useMemo(() => {
     const filtered = (providers.data?.catalog ?? []).filter((entry) => {
+      if (categoryFilter !== "all" && entry.category !== categoryFilter) return false;
+      if (authFilter === "need" && entry.authType === "none") return false;
+      if (authFilter === "none" && entry.authType !== "none") return false;
       if (!filter.trim()) return true;
       const needle = filter.trim().toLowerCase();
       return (
@@ -122,7 +129,7 @@ export function ProvidersPage() {
         entries: filtered.filter((entry) => entry.category === category),
       }))
       .filter((group) => group.entries.length > 0);
-  }, [providers.data, filter]);
+  }, [providers.data, filter, categoryFilter, authFilter]);
 
   const runtimeById = useMemo(() => {
     const map = new Map<string, NonNullable<typeof providers.data>["status"][number]>();
@@ -254,6 +261,42 @@ export function ProvidersPage() {
     }
   };
 
+  const runBulk = async (action: "install_all" | "enable_ready" | "disable_all", acceptCost = false) => {
+    setBusy(true);
+    try {
+      const result = await api.bulkProviders(action, acceptCost);
+      const skipped = result.skipped;
+      if (skipped.length > 0) {
+        toast.error({
+          title:
+            action === "install_all"
+              ? t("providers.market.installAllDone", { count: result.changed.length })
+              : t("providers.market.enableReadyDone", {
+                  count: result.changed.length,
+                  skipped: skipped.length,
+                }),
+          description: skipped.map((item) => `${item.name}: ${item.reason}`).join("；"),
+        });
+      } else {
+        toast.success({
+          title:
+            action === "install_all"
+              ? t("providers.market.installAllDone", { count: result.changed.length })
+              : action === "disable_all"
+                ? t("providers.market.disableAllDone", { count: result.changed.length })
+                : t("providers.market.enableReadyDone", { count: result.changed.length, skipped: 0 }),
+        });
+      }
+      providers.reload();
+    } catch (caught) {
+      const apiError = toApiError(caught);
+      toast.error({ title: apiError.message, description: apiError.code });
+    } finally {
+      setBusy(false);
+      setCostDialog(false);
+    }
+  };
+
   const clearFocus = () => {
     const next = new URLSearchParams(searchParams);
     next.delete("focus");
@@ -335,13 +378,47 @@ export function ProvidersPage() {
               title={t("providers.market.title")}
               description={t("providers.market.desc")}
               actions={
-                <Input
-                  value={filter}
-                  onChange={(event) => setFilter(event.target.value)}
-                  placeholder={t("providers.catalog.searchPlaceholder")}
-                  className="h-8 w-48 text-xs"
-                  aria-label={t("providers.catalog.searchPlaceholder")}
-                />
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Input
+                    value={filter}
+                    onChange={(event) => setFilter(event.target.value)}
+                    placeholder={t("providers.catalog.searchPlaceholder")}
+                    className="h-8 w-40 text-xs"
+                    aria-label={t("providers.catalog.searchPlaceholder")}
+                  />
+                  <Select
+                    value={categoryFilter}
+                    onChange={(event) => setCategoryFilter(event.target.value as "all" | ProviderCategory)}
+                    className="h-8 w-28 text-xs"
+                    aria-label={t("providers.market.filterCategory")}
+                  >
+                    <option value="all">{t("providers.market.all")}</option>
+                    {categoryOrder.map((category) => (
+                      <option key={category} value={category}>
+                        {categoryLabels[category]}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={authFilter}
+                    onChange={(event) => setAuthFilter(event.target.value as "all" | "need" | "none")}
+                    className="h-8 w-28 text-xs"
+                    aria-label={t("providers.market.filterAuth")}
+                  >
+                    <option value="all">{t("providers.market.all")}</option>
+                    <option value="need">{t("providers.market.needKey")}</option>
+                    <option value="none">{t("providers.market.noKey")}</option>
+                  </Select>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void runBulk("install_all")}>
+                    {t("providers.market.installAll")}
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setCostDialog(true)}>
+                    {t("providers.market.enableReady")}
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => void runBulk("disable_all")}>
+                    {t("providers.market.disableAll")}
+                  </Button>
+                </div>
               }
             />
 
@@ -466,6 +543,7 @@ export function ProvidersPage() {
                 <Button size="sm" onClick={() => void installSelected()} loading={busy}>
                   {t("providers.market.install")}
                 </Button>
+                <span className="text-[10px] text-muted-foreground">{t("providers.market.addedHint")}</span>
                 <Button size="sm" variant="ghost" onClick={() => setSelectedTypes([])}>
                   {t("providers.market.clear")}
                 </Button>
@@ -631,6 +709,15 @@ export function ProvidersPage() {
                                     {t("providers.ready.no")}
                                   </Badge>
                                 )}
+                                {!provider.ready && provider.notReadyReason === "no credential configured" ? (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setKeyProvider(provider)}
+                                  >
+                                    {t("providers.list.keys")}
+                                  </Button>
+                                ) : null}
                                 {provider.baseUrl ? (
                                   <p className="truncate text-[10px] text-muted-foreground">{provider.baseUrl}</p>
                                 ) : null}
@@ -875,6 +962,16 @@ export function ProvidersPage() {
           </div>
         ) : null}
       </Sheet>
+
+      <ConfirmDialog
+        open={costDialog}
+        onClose={() => setCostDialog(false)}
+        onConfirm={() => void runBulk("enable_ready", true)}
+        title={t("providers.market.costTitle")}
+        description={t("providers.market.costDesc")}
+        confirmLabel={t("providers.market.costConfirm")}
+        tone="default"
+      />
 
       <ConfirmDialog
         open={deleting !== null}

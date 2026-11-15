@@ -135,6 +135,19 @@ export const providerBatchCreateSchema = z.object({
     .max(50),
 });
 
+/**
+ * One-click marketplace actions. Kept as an explicit enum instead of a free-form
+ * action string so an unknown value cannot be silently ignored.
+ */
+export const providerBulkSchema = z.object({
+  action: z.enum(["install_all", "enable_ready", "disable_all"]),
+  /**
+   * Only meaningful for `enable_ready`: the caller confirms that paid sources may
+   * issue billable requests. Without it the server refuses to enable paid ones.
+   */
+  acceptCost: z.boolean().default(false),
+});
+
 export const providerBatchStateSchema = z.object({
   ids: z.array(z.string().trim().min(1)).min(1).max(200),
   enabled: z.boolean(),

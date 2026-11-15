@@ -63,6 +63,10 @@ import {
 } from "../components/ui";
 
 const modes: SearchMode[] = [
+  // User-facing presets first: they change which providers run, not the maths.
+  "web",
+  "grounded",
+  "research",
   "basic",
   "rrf",
   "rerank",

@@ -261,6 +261,11 @@ export const api = {
       "/admin/providers/batch",
       { method: "POST", body: { items } },
     ),
+  bulkProviders: (action: "install_all" | "enable_ready" | "disable_all", acceptCost = false) =>
+    request<{ changed: Array<{ id: string; name: string; action: string }>; skipped: Array<{ name: string; reason: string }> }>(
+      "/admin/providers/bulk",
+      { method: "POST", body: { action, acceptCost } },
+    ),
   batchSetProviders: (ids: string[], enabled: boolean) =>
     request<{ changed: Array<{ id: string; enabled: boolean }>; skipped: Array<{ id: string; name: string; reason: string }> }>(
       "/admin/providers/batch-state",

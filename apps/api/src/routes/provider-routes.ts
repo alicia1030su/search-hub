@@ -7,6 +7,7 @@ import {
   keyUpdateSchema,
   providerBatchCreateSchema,
   providerBatchStateSchema,
+  providerBulkSchema,
   providerCreateSchema,
   providerUpdateSchema,
 } from "@search-hub/shared";
@@ -235,6 +236,121 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
         skipped: skipped.length,
       }, request.ip);
       return { created, skipped };
+    }),
+  );
+
+  /**
+   * One-click marketplace actions.
+   *
+   * `install_all` adds every implemented adapter that is not installed yet.
+   * `enable_ready` enables only instances that are ready (credential present),
+   * and refuses paid providers unless the caller explicitly accepted the cost.
+   * `disable_all` turns everything off.
+   *
+   * Each action returns per-item results so the UI can show exactly what
+   * happened instead of a single opaque "done".
+   */
+  app.post(
+    "/api/admin/providers/bulk",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const input = parseInput(providerBulkSchema, request.body);
+      const now = new Date().toISOString();
+      const changed: Array<{ id: string; name: string; action: string }> = [];
+      const skipped: Array<{ name: string; reason: string }> = [];
+
+      if (input.action === "install_all") {
+        const installed = new Set(ctx.providers.listRows().map((row) => row.type));
+        const targets = PROVIDER_CATALOG.filter(
+          (entry) => getAdapter(entry.type) && !installed.has(entry.type),
+        );
+        withTransaction(ctx.sqlite, () => {
+          for (const entry of targets) {
+            const adapter = getAdapter(entry.type);
+            const id = newId("prv");
+            const name = uniqueName(ctx, entry.name);
+            ctx.db
+              .insert(providerInstances)
+              .values({
+                id,
+                name,
+                type: entry.type,
+                // Never auto-enable: adding is not configuring.
+                enabled: false,
+                baseUrl: entry.defaultBaseUrl ?? null,
+                timeoutMs: 12_000,
+                maxConcurrency: 4,
+                priority: 100,
+                weight: 100,
+                maxRetries: 1,
+                language: null,
+                freshness: null,
+                resultsPerPage: 10,
+                rpmLimit: 60,
+                dailyQuota: null,
+                keyStrategy: "round_robin",
+                cooldownMs: 30_000,
+                breakerThreshold: 5,
+                breakerCooldownMs: 60_000,
+                configJson: "{}",
+                searchConfigJson: "{}",
+                installedAt: now,
+                createdAt: now,
+                updatedAt: now,
+              })
+              .run();
+            changed.push({ id, name, action: "installed" });
+            void adapter;
+          }
+        });
+      }
+
+      if (input.action === "enable_ready") {
+        for (const row of ctx.providers.listRows()) {
+          const adapter = getAdapter(row.type);
+          if (!adapter) {
+            skipped.push({ name: row.name, reason: "no implemented adapter" });
+            continue;
+          }
+          const needsKey = adapter.requiresKey;
+          const hasKey = ctx.providers.listKeys(row.id).some((key) => key.enabled);
+          if (needsKey && !hasKey) {
+            skipped.push({ name: row.name, reason: "no credential configured" });
+            continue;
+          }
+          if (row.enabled) continue;
+          if (isPaidProvider(row.type) && !input.acceptCost) {
+            // Paid sources are never enabled without an explicit confirmation.
+            skipped.push({ name: row.name, reason: "paid provider requires cost confirmation" });
+            continue;
+          }
+          ctx.db
+            .update(providerInstances)
+            .set({ enabled: true, updatedAt: now })
+            .where(eq(providerInstances.id, row.id))
+            .run();
+          changed.push({ id: row.id, name: row.name, action: "enabled" });
+        }
+      }
+
+      if (input.action === "disable_all") {
+        for (const row of ctx.providers.listRows()) {
+          if (!row.enabled) continue;
+          ctx.db
+            .update(providerInstances)
+            .set({ enabled: false, updatedAt: now })
+            .where(eq(providerInstances.id, row.id))
+            .run();
+          changed.push({ id: row.id, name: row.name, action: "disabled" });
+        }
+      }
+
+      ctx.providers.reload();
+      audit(ctx, actorLabel(actor), `provider.bulk.${input.action}`, null, {
+        changed: changed.length,
+        skipped: skipped.length,
+      }, request.ip);
+      return { changed, skipped };
     }),
   );
 
@@ -681,6 +797,47 @@ function safeObject(json: string): Record<string, unknown> {
  * The DB has a unique index on `name`, so a batch install cannot use the plain
  * catalog label: adding "Brave Search" twice would fail the whole transaction.
  */
+/**
+ * Providers that bill per request. Kept as an explicit list rather than inferred
+ * from the manifest: whether a vendor charges is a commercial fact, and the
+ * confirmation gate must not silently miss a new paid source.
+ */
+const PAID_PROVIDERS = new Set([
+  "exa",
+  "firecrawl",
+  "serper",
+  "serpapi",
+  "searchapi",
+  "dataforseo",
+  "perplexity-search",
+  "perplexity-sonar",
+  "youcom",
+  "jina-search",
+  "parallel-search",
+  "linkup-search",
+  "tavily",
+  "bocha",
+  "anysearch",
+  "brave",
+  "deepseek-search",
+  "qianfan-search",
+  "doubao",
+  "tencent-yuanbao",
+  "gemini",
+  "grok",
+  "mimo",
+  "bailian",
+  "stepfun",
+  "openai-websearch",
+  "anthropic-websearch",
+  "mistral-websearch",
+  "semanticscholar",
+]);
+
+function isPaidProvider(type: string): boolean {
+  return PAID_PROVIDERS.has(type);
+}
+
 function uniqueName(ctx: AppContext, base: string): string {
   const existing = new Set(ctx.providers.listRows().map((row) => row.name));
   const trimmed = base.trim().slice(0, 70) || "Search Source";

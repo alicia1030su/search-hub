@@ -14,6 +14,9 @@ export type KeyStrategy = "round_robin" | "random" | "weighted_random" | "least_
 export type KeyStatus = "healthy" | "rate_limited" | "cooldown" | "invalid" | "disabled" | "unknown";
 export type Freshness = "day" | "week" | "month" | "year" | "all";
 export type SearchMode =
+  | "web"
+  | "grounded"
+  | "research"
   | "basic"
   | "rrf"
   | "rerank"

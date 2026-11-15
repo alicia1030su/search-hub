@@ -4,6 +4,30 @@ import { braveAdapter } from "./builtin/brave.js";
 import { genericHttpAdapter } from "./builtin/generic.js";
 import { hackerNewsAdapter } from "./builtin/hackernews.js";
 import { legacySearchHubAdapter } from "./builtin/legacy-search-hub.js";
+import { duckduckgoAdapter } from "./builtin/duckduckgo.js";
+import { genericMcpAdapter } from "./builtin/generic-mcp.js";
+import { anthropicWebSearchAdapter } from "./builtin/anthropic-websearch.js";
+import { crossrefAdapter } from "./builtin/crossref.js";
+import { dataforseoAdapter } from "./builtin/dataforseo.js";
+import { europepmcAdapter } from "./builtin/europepmc.js";
+import { gdeltAdapter } from "./builtin/gdelt.js";
+import { jinaSearchAdapter } from "./builtin/jina-search.js";
+import { kakaoAdapter } from "./builtin/kakao.js";
+import { linkupSearchAdapter } from "./builtin/linkup-search.js";
+import { mistralWebSearchAdapter } from "./builtin/mistral-websearch.js";
+import { naverAdapter } from "./builtin/naver.js";
+import { openaiWebSearchAdapter } from "./builtin/openai-websearch.js";
+import { openalexAdapter } from "./builtin/openalex.js";
+import { parallelSearchAdapter } from "./builtin/parallel-search.js";
+import { perplexitySearchAdapter } from "./builtin/perplexity-search.js";
+import { perplexitySonarAdapter } from "./builtin/perplexity-sonar.js";
+import { pubmedAdapter } from "./builtin/pubmed.js";
+import { searchapiAdapter } from "./builtin/searchapi.js";
+import { semanticscholarAdapter } from "./builtin/semanticscholar.js";
+import { serpapiAdapter } from "./builtin/serpapi.js";
+import { wikipediaAdapter } from "./builtin/wikipedia.js";
+import { yandexAdapter } from "./builtin/yandex.js";
+import { youcomAdapter } from "./builtin/youcom.js";
 import { arxivAdapter } from "./builtin/arxiv.js";
 import { exaAdapter } from "./builtin/exa.js";
 import { firecrawlAdapter } from "./builtin/firecrawl.js";
@@ -25,6 +49,30 @@ import { tavilyAdapter } from "./builtin/tavily.js";
 import { getCatalogEntry, PROVIDER_CATALOG } from "./catalog.js";
 
 const ADAPTERS: SearchProviderAdapter[] = [
+  duckduckgoAdapter,
+  genericMcpAdapter,
+  perplexitySearchAdapter,
+  youcomAdapter,
+  jinaSearchAdapter,
+  parallelSearchAdapter,
+  linkupSearchAdapter,
+  serpapiAdapter,
+  searchapiAdapter,
+  dataforseoAdapter,
+  openaiWebSearchAdapter,
+  anthropicWebSearchAdapter,
+  mistralWebSearchAdapter,
+  perplexitySonarAdapter,
+  naverAdapter,
+  kakaoAdapter,
+  yandexAdapter,
+  wikipediaAdapter,
+  crossrefAdapter,
+  openalexAdapter,
+  pubmedAdapter,
+  semanticscholarAdapter,
+  europepmcAdapter,
+  gdeltAdapter,
   exaAdapter,
   firecrawlAdapter,
   serperAdapter,
