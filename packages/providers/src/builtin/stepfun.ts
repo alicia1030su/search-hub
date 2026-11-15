@@ -90,10 +90,14 @@ export const stepfunAdapter: SearchProviderAdapter = {
           publishedPaths: ["time"],
         });
         if (!mapped) return null;
-        const position = typeof item.position === "number" ? item.position : undefined;
+        // `position` is StepFun's own ranking, not a source. Mapping it to
+        // `upstream.providerName` made the UI claim "来源：rank 1", which is
+        // false. It now travels as `upstreamRank` and leaves attribution empty.
+        const position =
+          typeof item.position === "number" && Number.isFinite(item.position) ? item.position : undefined;
         return {
           ...mapped,
-          ...(position === undefined ? {} : { upstream: { providerName: `rank ${position}` } }),
+          ...(position === undefined ? {} : { upstreamRank: position }),
         };
       })
       .filter((item): item is NonNullable<typeof item> => item !== null)

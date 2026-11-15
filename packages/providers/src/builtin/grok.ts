@@ -28,7 +28,12 @@ const DEFAULT_MODEL = "grok-4.7";
  *   (`url`, `title`, `start_index`, `end_index`) on those output_text blocks.
  *
  * Important: xAI documents that `web_search` being *available* does not mean it
- * was used. When no `web_search_call` item exists, `toolInvoked` is false.
+ * was used. Citations appear in three different places and all are collected:
+ *   1. `output[].content[].annotations[type=url_citation]` (text-anchored),
+ *   2. `output[]` type `web_search_call` → `action.sources[]` (audit trail),
+ *   3. response-level `citations[]` (plain URLs).
+ * Only (1) proves the answer is supported by a source, so `answerSupported` is
+ * true only when annotations exist.
  */
 const DEFAULT_MODEL_FALLBACK = "grok-4.7";
 
@@ -53,6 +58,7 @@ export const grokAdapter: SearchProviderAdapter = {
     if (!ctx.apiKey) {
       throw new ProviderError(ctx.config.id, "grok", "auth_invalid", "xAI Grok requires an API key.");
     }
+    const started = Date.now();
     const baseUrl = (ctx.config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     const model =
       (typeof ctx.config.config["model"] === "string" ? ctx.config.config["model"].trim() : "") ||
@@ -102,8 +108,15 @@ export const grokAdapter: SearchProviderAdapter = {
       .join("\n")
       .trim();
 
-    const citations = [
-      ...messages.flatMap((item) =>
+    // xAI exposes citations in three shapes; losing any of them drops real
+    // sources. 1) inline url_citation annotations, 2) sources on the search
+    // call, 3) response-level plain URL list.
+    const responseCitations = Array.isArray(payload["citations"])
+      ? (payload["citations"] as unknown[])
+          .filter((value): value is string => typeof value === "string")
+          .map((url) => ({ title: "", url }))
+      : [];
+    const annotationCitations = messages.flatMap((item) =>
         (item.content ?? []).flatMap((part) =>
           (part.annotations ?? [])
             .filter((annotation) => annotation.type === "url_citation")
@@ -112,24 +125,54 @@ export const grokAdapter: SearchProviderAdapter = {
               url: textOf(annotation.url) ?? "",
             })),
         ),
-      ),
-      ...searchCalls.flatMap((item) =>
-        (item.action?.sources ?? []).map((source) => ({
-          title: textOf(source.title) ?? "",
-          url: textOf(source.url) ?? "",
-        })),
-      ),
-    ].filter((item) => item.url.length > 0);
+      );
+    const actionCitations = searchCalls.flatMap((item) =>
+      (item.action?.sources ?? []).map((source) => ({
+        title: textOf(source.title) ?? "",
+        url: textOf(source.url) ?? "",
+      })),
+    );
+    const citations = [...annotationCitations, ...actionCitations, ...responseCitations].filter((item) =>
+      /^https?:\/\//i.test(item.url),
+    );
 
-    const toolInvoked = searchCalls.length > 0;
-    const answer = buildAnswer("grok", text, citations, toolInvoked, model);
+    // Evidence-based status. No output at all -> unknown; a message with no
+    // web_search_call means the model answered from its own knowledge.
+    const toolInvoked: boolean | "unknown" =
+      searchCalls.length > 0 ? true : messages.length > 0 ? false : "unknown";
+    const retrievalSucceeded: boolean | "unknown" =
+      toolInvoked === true ? citations.length > 0 : toolInvoked === false ? false : "unknown";
+    const hasVerifiableSources: boolean | "unknown" =
+      toolInvoked === "unknown" ? "unknown" : citations.length > 0;
+    // Inline url_citation annotations are the only text-anchored evidence that
+    // the answer uses a source; a bare sources list is an audit trail.
+    const answerSupported: boolean | "unknown" =
+      annotationCitations.length > 0 ? true : toolInvoked === "unknown" ? "unknown" : false;
+
+    const answer = buildAnswer({
+      provider: "grok",
+      text,
+      citations,
+      status: {
+        toolProvided: true,
+        toolInvoked,
+        retrievalSucceeded,
+        hasVerifiableSources,
+        answerSupported,
+      },
+      model,
+      latencyMs: Date.now() - started,
+    });
 
     return {
       results: [],
       requestUrl: `${baseUrl}/v1/responses`,
-      ...(toolInvoked
-        ? {}
-        : { warnings: ["Grok answered without a web_search_call; this is not a search result."] }),
+      ...(toolInvoked === false
+        ? { warnings: ["Grok answered without a web_search_call; this is not a search result."] }
+        : {}),
+      ...(toolInvoked === true && hasVerifiableSources === false
+        ? { warnings: ["Grok called web_search but returned no citable URL."] }
+        : {}),
       answer,
     };
   },
@@ -142,16 +185,21 @@ export const grokAdapter: SearchProviderAdapter = {
         ctx,
       );
       const answer = output.answer;
+      const citations = answer?.citations ?? [];
+      const status = answer?.status;
       return {
-        ok: Boolean(answer?.toolInvoked && answer.citations.length > 0),
+        ok: Boolean(status?.toolInvoked === true && citations.length > 0),
         latencyMs: Date.now() - started,
-        resultCount: answer?.citations.length ?? 0,
-        message: !answer?.toolInvoked
-          ? "Grok responded without a web_search_call (toolInvoked=false)."
-          : answer.citations.length === 0
-            ? "Grok called web_search but returned no citations."
-            : `Grok grounded answer with ${answer.citations.length} citation(s).`,
-        sample: (answer?.citations ?? []).slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
+        resultCount: citations.length,
+        message:
+          status?.toolInvoked === "unknown"
+            ? "Grok returned no output; search state unknown."
+            : status?.toolInvoked === false
+              ? "Grok responded without a web_search_call (no search)."
+              : citations.length === 0
+                ? "Grok called web_search but returned no citation."
+                : `Grok grounded answer with ${citations.length} citation(s).`,
+        sample: citations.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
       };
     } catch (error) {
       return {

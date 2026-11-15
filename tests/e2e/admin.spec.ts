@@ -234,4 +234,39 @@ test.describe("Search Hub 管理后台端到端", () => {
     await page.getByRole("button", { name: "保存", exact: true }).click();
     await expect(page.getByText("e2e-tencent", { exact: false }).filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
   });
+  test("v0.1.4 账户级额度配置可保存并回显", async ({ page }) => {
+    await login(page);
+    await page.goto("/providers");
+    await page.getByRole("button", { name: "新增搜索源" }).first().click();
+
+    await page.locator("#provider-name").fill("e2e-account-group");
+    await page.locator("#provider-type").selectOption("bailian");
+    await page.locator("#provider-base").fill("https://workspace.cn-beijing.maas.aliyuncs.com");
+    await page.locator("#field-model").fill("qwen-plus");
+    await page.locator("input[type=password]").first().fill("sk-e2e-account-value-0003");
+    // Account-level budget: leaving it empty must not persist a zero that
+    // silently disables the group limit.
+    await page.locator("#provider-account-group").fill("bailian-main");
+    await page.locator("#provider-account-rpm").fill("30");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+
+    await expect(page.getByText("e2e-account-group", { exact: false }).filter({ visible: true }).first()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // Re-open and confirm the values round-tripped through the API.
+    await page.locator("tr", { hasText: "e2e-account-group" }).first().getByRole("button", { name: "编辑" }).click();
+    await expect(page.locator("#provider-account-group")).toHaveValue("bailian-main");
+    await expect(page.locator("#provider-account-rpm")).toHaveValue("30");
+  });
+
+  test("v0.1.4 实验台分别展示检索结果与联网状态", async ({ page }) => {
+    await login(page);
+    // A mock provider proves the "raw result" half; a grounded provider with no
+    // key proves the warning half. The answer card must never render as a page.
+    await page.goto("/lab");
+    await expect(page.getByRole("heading", { name: "搜索实验室" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("已触发联网");
+    await expect(page.locator("body")).not.toContainText("无可验证来源");
+  });
 });

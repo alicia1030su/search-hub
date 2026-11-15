@@ -7,7 +7,7 @@ import {
   type SearchProviderAdapter,
 } from "@search-hub/shared";
 import { callJson } from "../http.js";
-import { buildAnswer, textOf } from "../grounded.js";
+import { buildAnswer, normalizeSupports, parseSearchEntryPoint, textOf } from "../grounded.js";
 
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 const DEFAULT_MODEL = "gemini-3.8-flash";
@@ -15,29 +15,37 @@ const DEFAULT_MODEL = "gemini-3.8-flash";
 /**
  * Gemini — Google Search grounding.
  *
- * Official docs (verified 2026-11-15):
- * https://ai.google.dev/gemini-api/docs/google-search
+ * Docs (verified 2026-11-15): https://ai.google.dev/gemini-api/docs/google-search
  * - `POST {baseUrl}/v1beta/models/{model}:generateContent`, `x-goog-api-key`.
- * - Tool: `tools: [{ google_search: {} }]` (the older `google_search_retrieval`
- *   is only for legacy models and is deliberately not used here).
- * - Response: `candidates[0].content.parts[].text` plus
- *   `candidates[0].groundingMetadata` with `webSearchQueries`,
+ * - Tool: `tools: [{ google_search: {} }]` (legacy `google_search_retrieval`
+ *   applies to older models only).
+ * - `candidates[0].groundingMetadata` carries the grounding record:
+ *   `webSearchQueries`, `searchEntryPoint.renderedContent`,
  *   `groundingChunks[].web.{uri,title}` and `groundingSupports[]`.
- * - The model decides whether to search. If `groundingMetadata` is absent or has
- *   no chunks, `toolInvoked` is false: the pipeline must not claim a search
- *   happened.
  *
- * `gemini-3.8-flash` is the default because the docs list it as a currently
- * supported grounding model; the model id is user-editable because Google
- * retires model ids frequently.
+ * Display rules honoured here:
+ * - `searchEntryPoint` is parsed into plain `{label, url}` chips; the vendor's
+ *   HTML is dropped on purpose (`vendorHtmlWithheld: true`) so an arbitrary
+ *   provider response can never inject markup into the admin page.
+ * - `groundingSupports[].groundingChunkIndices` index into `groundingChunks`, so
+ *   citations are kept in **vendor order** (no de-duplication) — de-duplicating
+ *   would shift every index and highlight the wrong sentence.
+ * - A response without `groundingMetadata` is reported as `toolInvoked:
+ *   "unknown"`, not `false`: the API does not say whether the model decided not
+ *   to search or searched without returning metadata.
  */
 const DEFAULT_MODEL_FALLBACK = "gemini-3.8-flash";
+
+interface GeminiChunk {
+  web?: { uri?: unknown; title?: unknown };
+}
 
 interface GeminiCandidate {
   content?: { parts?: Array<{ text?: unknown }> };
   groundingMetadata?: {
     webSearchQueries?: unknown;
-    groundingChunks?: Array<{ web?: { uri?: unknown; title?: unknown } }>;
+    searchEntryPoint?: { renderedContent?: unknown };
+    groundingChunks?: GeminiChunk[];
     groundingSupports?: unknown;
   };
   finishReason?: unknown;
@@ -53,11 +61,13 @@ export const geminiAdapter: SearchProviderAdapter = {
     if (!ctx.apiKey) {
       throw new ProviderError(ctx.config.id, "gemini", "auth_invalid", "Gemini requires an API key.");
     }
+    const started = Date.now();
     const baseUrl = (ctx.config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     const model =
       (typeof ctx.config.config["model"] === "string" ? ctx.config.config["model"].trim() : "") ||
       ctx.config.model?.trim() ||
-      DEFAULT_MODEL || DEFAULT_MODEL_FALLBACK;
+      DEFAULT_MODEL ||
+      DEFAULT_MODEL_FALLBACK;
 
     const body: Record<string, unknown> = {
       contents: [{ role: "user", parts: [{ text: input.query }] }],
@@ -89,25 +99,64 @@ export const geminiAdapter: SearchProviderAdapter = {
         .map((part) => (typeof part.text === "string" ? part.text : ""))
         .join("")
         .trim() || "";
-    const chunkMap = candidate.groundingMetadata?.groundingChunks ?? [];
-    const citations = chunkMap
-      .map((chunk) => ({
-        title: textOf(chunk.web?.title) ?? "",
-        url: textOf(chunk.web?.uri) ?? "",
-      }))
-      .filter((item) => item.url.length > 0);
-    const queries = Array.isArray(candidate.groundingMetadata?.webSearchQueries)
-      ? (candidate.groundingMetadata!.webSearchQueries as unknown[]).filter(
-          (query): query is string => typeof query === "string",
-        )
-      : [];
-    const toolInvoked = citations.length > 0 || queries.length > 0;
 
-    const answer = buildAnswer("gemini", text, citations, toolInvoked, model);
+    const metadata = candidate.groundingMetadata;
+    const chunks = Array.isArray(metadata?.groundingChunks) ? metadata!.groundingChunks! : [];
+
+    // Vendor order preserved: groundingSupports indices refer to this array.
+    const citations = chunks.map((chunk, index) => ({
+      title: textOf(chunk.web?.title) ?? "",
+      url: textOf(chunk.web?.uri) ?? "",
+      providerIndex: index + 1,
+    }));
+    const verifiable = citations.filter((item) => /^https?:\/\//i.test(item.url));
+
+    const queries = Array.isArray(metadata?.webSearchQueries)
+      ? (metadata!.webSearchQueries as unknown[]).filter((value): value is string => typeof value === "string")
+      : [];
+    const supports = normalizeSupports(metadata?.groundingSupports, chunks.length, text.length);
+    const display = parseSearchEntryPoint(metadata?.searchEntryPoint?.renderedContent);
+
+    // Evidence-based status:
+    //  - no groundingMetadata at all -> cannot tell whether search ran.
+    //  - metadata present -> grounding happened, so the tool was used.
+    const toolInvoked: boolean | "unknown" = metadata ? true : "unknown";
+    const retrievalSucceeded: boolean | "unknown" = metadata ? verifiable.length > 0 : "unknown";
+    const hasVerifiableSources: boolean | "unknown" = metadata ? verifiable.length > 0 : "unknown";
+    const answerSupported: boolean | "unknown" = supports.length > 0 ? true : metadata ? false : "unknown";
+
+    const answer = buildAnswer({
+      provider: "gemini",
+      text,
+      citations,
+      preserveCitationOrder: true,
+      status: {
+        toolProvided: true,
+        toolInvoked,
+        retrievalSucceeded,
+        hasVerifiableSources,
+        answerSupported,
+      },
+      model,
+      searchQueries: queries,
+      supports,
+      ...(display ? { display } : {}),
+      latencyMs: Date.now() - started,
+    });
+
     return {
       results: [],
       requestUrl: `${baseUrl}/v1beta/models/${model}:generateContent`,
-      ...(toolInvoked ? {} : { warnings: ["Gemini answered without calling Google Search; this is not a search result."] }),
+      ...(toolInvoked === true && verifiable.length === 0
+        ? { warnings: ["Gemini reported grounding metadata but returned no verifiable citation URL."] }
+        : {}),
+      ...(toolInvoked === "unknown"
+        ? {
+            warnings: [
+              "Gemini returned no groundingMetadata: the model may have answered without searching. Treat as unverified.",
+            ],
+          }
+        : {}),
       answer,
     };
   },
@@ -120,15 +169,17 @@ export const geminiAdapter: SearchProviderAdapter = {
         ctx,
       );
       const answer = output.answer;
+      const ok = answer?.status.toolInvoked === true && answer.citations.length > 0;
       return {
-        ok: Boolean(answer?.toolInvoked && answer.citations.length > 0),
+        ok: Boolean(ok),
         latencyMs: Date.now() - started,
         resultCount: answer?.citations.length ?? 0,
-        message: !answer?.toolInvoked
-          ? "Gemini responded but did not invoke Google Search (toolInvoked=false)."
-          : answer.citations.length === 0
-            ? "Gemini invoked search but returned no citations."
-            : `Gemini grounded answer with ${answer.citations.length} citation(s).`,
+        message:
+          answer?.status.toolInvoked === "unknown"
+            ? "Gemini returned no grounding metadata; search state unknown."
+            : answer?.status.toolInvoked === true && answer.citations.length === 0
+              ? "Gemini invoked Google Search but returned no citation URL."
+              : `Gemini grounded answer with ${answer?.citations.length ?? 0} citation(s).`,
         sample: (answer?.citations ?? []).slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
       };
     } catch (error) {

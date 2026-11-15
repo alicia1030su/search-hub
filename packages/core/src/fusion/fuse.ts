@@ -16,6 +16,8 @@ export interface CandidateResult {
   language?: string;
   /** Upstream attribution when the row arrived through a gateway adapter. */
   upstream?: UpstreamAttribution;
+  /** Vendor-assigned position; never used as a source name. */
+  upstreamRank?: number;
   raw?: unknown;
   providerId: string;
   providerName: string;
@@ -82,6 +84,7 @@ export function dedupeResults(
         ...(candidate.score === undefined ? {} : { score: candidate.score }),
         url: candidate.url,
         ...(candidate.upstream === undefined ? {} : { upstream: candidate.upstream }),
+        ...(candidate.upstreamRank === undefined ? {} : { upstreamRank: candidate.upstreamRank }),
       });
       if (candidate.snippet.length > existing.snippet.length) {
         existing.snippet = candidate.snippet;
@@ -116,6 +119,7 @@ export function dedupeResults(
         ...(candidate.score === undefined ? {} : { score: candidate.score }),
         url: candidate.url,
         ...(candidate.upstream === undefined ? {} : { upstream: candidate.upstream }),
+        ...(candidate.upstreamRank === undefined ? {} : { upstreamRank: candidate.upstreamRank }),
       });
       dropped.push({ url: candidate.url, keptUrl: nearDuplicate.url, reason: "near_title" });
       continue;
@@ -134,6 +138,7 @@ export function dedupeResults(
           ...(candidate.score === undefined ? {} : { score: candidate.score }),
           url: candidate.url,
           ...(candidate.upstream === undefined ? {} : { upstream: candidate.upstream }),
+          ...(candidate.upstreamRank === undefined ? {} : { upstreamRank: candidate.upstreamRank }),
         },
       ],
     });

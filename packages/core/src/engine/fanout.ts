@@ -160,6 +160,16 @@ export async function runProvider(
       });
       lease = acquired.lease;
       if (!lease) {
+        if (acquired.reason === "account_quota") {
+          // The vendor account itself is exhausted: another key in the same
+          // group would not help, so this is a quota error rather than key
+          // exhaustion.
+          lastCode = "quota_exceeded";
+          lastMessage =
+            `Account-level quota for provider "${config.name}" is exhausted. ` +
+            "Keys in the same account group share one vendor budget.";
+          break;
+        }
         const waiting = acquired.reason === "queue_timeout";
         lastCode = waiting ? "queue_timeout" : "no_available_key";
         lastMessage = waiting

@@ -306,6 +306,9 @@ export function ProvidersPage() {
                               {configured > 0 ? (
                                 <Badge tone="info">{t("providers.catalog.configured", { count: configured })}</Badge>
                               ) : null}
+                              {entry.capability === "grounded_answer" ? (
+                                <Badge tone="outline">{t("lab.capability.grounded")}</Badge>
+                              ) : null}
                             </div>
                             <div className="mt-auto flex items-center justify-between gap-2 pt-1">
                               {entry.docsUrl ? (

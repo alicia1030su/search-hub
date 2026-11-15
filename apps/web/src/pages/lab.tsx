@@ -30,6 +30,8 @@ import {
 } from "../lib/i18n";
 import type {
   Freshness,
+  GroundedAnswer,
+  GroundedSignal,
   ModelConfig,
   SearchMode,
   SearchRequest,
@@ -618,6 +620,51 @@ export function LabPage() {
   );
 }
 
+/**
+ * Renders the five grounding facts separately. "unknown" is shown as such
+ * instead of a green check: claiming a search happened when the vendor did not
+ * say so is exactly the failure this contract exists to prevent.
+ */
+function renderGroundingStatus(answer: GroundedAnswer) {
+  const rows: Array<{ key: string; label: string; value: GroundedSignal }> = [
+    { key: "toolProvided", label: t("lab.answers.grid.toolProvided"), value: answer.status.toolProvided },
+    { key: "toolInvoked", label: t("lab.answers.grid.toolInvoked"), value: answer.status.toolInvoked },
+    {
+      key: "retrievalSucceeded",
+      label: t("lab.answers.grid.retrievalSucceeded"),
+      value: answer.status.retrievalSucceeded,
+    },
+    {
+      key: "hasVerifiableSources",
+      label: t("lab.answers.grid.hasVerifiableSources"),
+      value: answer.status.hasVerifiableSources,
+    },
+    {
+      key: "answerSupported",
+      label: t("lab.answers.grid.answerSupported"),
+      value: answer.status.answerSupported,
+    },
+  ];
+  return (
+    <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+      {rows.map((row) => (
+        <div key={row.key} className="flex items-center justify-between rounded-md border px-2.5 py-1.5">
+          <span className="text-[11px] text-muted-foreground">{row.label}</span>
+          <Badge
+            tone={row.value === true ? "success" : row.value === "unknown" ? "muted" : "warning"}
+          >
+            {row.value === true
+              ? t("lab.answers.value.yes")
+              : row.value === "unknown"
+                ? t("lab.answers.value.unknown")
+                : t("lab.answers.value.no")}
+          </Badge>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SearchResultPanel({
   response,
   clientDuration,
@@ -739,7 +786,7 @@ function SearchResultPanel({
         </CardContent>
       </Card>
 
-      {response.answers && response.answers.length > 0 ? (
+      {response.answers && response.answers.length > 0 ? ((answer) => (
         <Card>
           <CardHeader>
             <div>
@@ -747,53 +794,160 @@ function SearchResultPanel({
                 <Sparkles className="size-4" aria-hidden />
                 {t("lab.answers")}
               </CardTitle>
-              <CardDescription>{response.answers[0]!.provider}</CardDescription>
+              <CardDescription>
+                {answer.provider}
+                {answer.model ? ` · ${answer.model}` : ""}
+              </CardDescription>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
               <Badge tone="info">{t("lab.capability.grounded")}</Badge>
-              {response.answers[0]!.toolInvoked ? (
+              {answer.status.toolInvoked === "unknown" ? (
+                <Badge tone="muted">{t("lab.answers.stateUnknown")}</Badge>
+              ) : answer.status.toolInvoked ? (
                 <Badge tone="success">{t("lab.answers.toolCalls")}</Badge>
               ) : (
                 <Badge tone="warning">{t("lab.answers.noTool")}</Badge>
               )}
             </div>
           </CardHeader>
-          <CardContent className="space-y-2">
-            {!response.answers[0]!.toolInvoked ? (
+          <CardContent className="space-y-3">
+            {renderGroundingStatus(answer)}
+            {answer.status.toolInvoked === false ? (
               <Alert tone="warning" title={t("lab.answers.noTool")}>
-                {t("lab.answers.noTool")}
+                {t("lab.answers.noToolHint")}
               </Alert>
             ) : null}
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{response.answers[0]!.text}</p>
-            {response.answers[0]!.citations.length > 0 ? (
+            {answer.status.toolInvoked === "unknown" ? (
+              <Alert tone="warning" title={t("lab.answers.stateUnknown")}>
+                {t("lab.answers.stateUnknownHint")}
+              </Alert>
+            ) : null}
+            {answer.status.toolInvoked === true &&
+            answer.status.hasVerifiableSources === false ? (
+              <Alert tone="warning" title={t("lab.answers.noCitation")}>
+                {t("lab.answers.noCitationHint")}
+              </Alert>
+            ) : null}
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">{answer.text}</p>
+
+            {answer.searchQueries && answer.searchQueries.length > 0 ? (
               <div>
                 <p className="mb-1 text-[11px] font-medium text-muted-foreground">
-                  {t("lab.result.citations")} ({response.answers[0]!.citations.length})
+                  {t("lab.answers.queries")}
                 </p>
-                <ol className="space-y-1">
-                  {response.answers[0]!.citations.map((citation, index) => (
-                    <li key={`${citation.url}-${index}`} className="flex gap-2 text-xs">
-                      <span className="font-mono text-muted-foreground">[{index + 1}]</span>
-                      <a
-                        href={citation.url}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="min-w-0 truncate hover:underline"
-                      >
-                        {citation.title || citation.url}
-                      </a>
+                <ul className="flex flex-wrap gap-1">
+                  {answer.searchQueries!.map((query) => (
+                    <li key={query}>
+                      <Badge tone="outline">{query}</Badge>
                     </li>
                   ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {answer.citations.length > 0 ? (
+              <div>
+                <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+                  {t("lab.result.citations")} ({answer.citations.length})
+                </p>
+                <ol className="space-y-1">
+                  {answer.citations.map((citation, index) => {
+                    // Supports index into groundingChunks; map back so the UI can
+                    // show which sentence each source backs.
+                    const supportedBy = (answer.supports ?? []).filter((support) =>
+                      support.chunkIndices.includes(index),
+                    );
+                    return (
+                      <li key={`${citation.url}-${index}`} className="flex gap-2 text-xs">
+                        <span className="font-mono text-muted-foreground">[{index + 1}]</span>
+                        <a
+                          href={citation.url}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="min-w-0 truncate hover:underline"
+                        >
+                          {citation.title || citation.url}
+                        </a>
+                        {supportedBy.length > 0 ? (
+                          <Badge tone="muted">
+                            {t("lab.answers.supports", { count: supportedBy.length })}
+                          </Badge>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ol>
               </div>
-            ) : (
-              <Alert tone="warning" title={t("lab.answers.noCitation")}>
-                {t("lab.answers.noCitation")}
-              </Alert>
-            )}
+            ) : null}
+
+            {answer.display && answer.display!.suggestions.length > 0 ? (
+              <div>
+                <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+                  {t("lab.answers.suggestions")}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {answer.display!.suggestions.map((suggestion, index) =>
+                    suggestion.url ? (
+                      <a
+                        key={`${suggestion.label}-${index}`}
+                        href={suggestion.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="rounded-full border px-2.5 py-1 text-[11px] hover:bg-muted"
+                      >
+                        {suggestion.label}
+                      </a>
+                    ) : (
+                      <span
+                        key={`${suggestion.label}-${index}`}
+                        className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground"
+                      >
+                        {suggestion.label}
+                      </span>
+                    ),
+                  )}
+                </div>
+                {answer.display!.vendorHtmlWithheld ? (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    {t("lab.answers.suggestionsSanitized")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {answer.supports && answer.supports.length > 0 ? (
+              <details className="rounded-md border bg-muted/25 px-3 py-2">
+                <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                  {t("lab.answers.supportDetails")} ({answer.supports!.length})
+                </summary>
+                <ul className="mt-1.5 space-y-1">
+                  {answer.supports!.map((support, index) => (
+                    <li key={`${support.startIndex}-${index}`} className="text-[11px]">
+                      <span className="font-mono text-muted-foreground">
+                        [{support.startIndex}-{support.endIndex}]
+                      </span>{" "}
+                      <span className="text-muted-foreground">
+                        {answer.text.slice(support.startIndex, support.endIndex).trim() ||
+                          "—"}
+                      </span>{" "}
+                      <span className="font-mono text-muted-foreground">
+                        → {support.chunkIndices.map((value) => `[${value + 1}]`).join(" ")}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+
+            {answer.latencyMs !== undefined ? (
+              <p className="text-[10px] text-muted-foreground">
+                {t("lab.answers.latency", { value: formatMs(answer.latencyMs!) })}
+              </p>
+            ) : null}
           </CardContent>
         </Card>
-      ) : null}
+      ))(response.answers[0]!)
+      : null}
 
       {response.summary ? (
         <Card>

@@ -84,6 +84,9 @@ export class ProviderService {
           lastErrorMessage: key.lastErrorMessage,
         }));
 
+      const providerConfig = parseJson<Record<string, unknown>>(row.configJson, {});
+      const account = readAccountLimits(providerConfig);
+
       const previous = this.runtimes.get(row.id);
       let scheduler: KeyScheduler;
       if (previous) {
@@ -108,8 +111,13 @@ export class ProviderService {
           breakerThreshold: row.breakerThreshold,
           keys: seeds,
           onDirty: (snapshot) => this.markDirty(snapshot),
+          accountGroup: account.group,
+          accountLimits: account.limits,
         });
       }
+      // Keep the group wiring in sync on reload: changing the group or its
+      // limits must take effect without a restart.
+      scheduler.setAccount(account.group, account.limits);
 
       next.set(row.id, {
         config: {
@@ -125,7 +133,7 @@ export class ProviderService {
           maxRetries: row.maxRetries,
           breakerThreshold: row.breakerThreshold,
           breakerCooldownMs: row.breakerCooldownMs,
-          config: parseJson<Record<string, unknown>>(row.configJson, {}),
+          config: providerConfig,
         },
         adapter,
         scheduler,
@@ -146,7 +154,14 @@ export class ProviderService {
   }
 
   providerSummaries(): Array<
-    ProviderInstance & { keyCount: number; healthyKeyCount: number; circuitOpen: boolean }
+    ProviderInstance & {
+      keyCount: number;
+      healthyKeyCount: number;
+      circuitOpen: boolean;
+      accountGroup: string | null;
+      accountRpmLimit: number;
+      accountDailyQuota: number | null;
+    }
   > {
     const keyRows = this.db.select().from(apiKeys).all();
     return this.listRows().map((row) => {
@@ -166,6 +181,14 @@ export class ProviderService {
         maxRetries: row.maxRetries,
         language: row.language,
         freshness: row.freshness as Freshness | null,
+        ...(() => {
+          const account = readAccountLimits(parseJson<Record<string, unknown>>(row.configJson, {}));
+          return {
+            accountGroup: account.group,
+            accountRpmLimit: account.limits?.rpmLimit ?? 0,
+            accountDailyQuota: account.limits?.dailyQuota ?? null,
+          };
+        })(),
         resultsPerPage: row.resultsPerPage,
         rpmLimit: row.rpmLimit,
         dailyQuota: row.dailyQuota,
@@ -256,6 +279,7 @@ export class ProviderService {
           entry && entry.breaker.openUntilMs !== null
             ? new Date(entry.breaker.openUntilMs).toISOString()
             : null,
+        account: entry?.scheduler.accountSnapshot() ?? null,
         keys: keys.map((key) => ({
           id: key.id,
           label: key.label,
@@ -402,4 +426,28 @@ export class ProviderService {
   private markDirty(snapshot: KeyRuntimeSnapshot): void {
     this.dirtyKeys.set(snapshot.id, snapshot);
   }
+}
+
+/**
+ * Reads the account-level budget from the provider config.
+ *
+ * These live in the config JSON rather than dedicated columns on purpose: they
+ * are billing metadata that varies per vendor and should not force a schema
+ * migration for every new provider.
+ */
+function readAccountLimits(config: Record<string, unknown>): {
+  group: string | null;
+  limits: { rpmLimit: number; dailyQuota: number | null } | null;
+} {
+  const rawGroup = config["accountGroup"];
+  const group = typeof rawGroup === "string" && rawGroup.trim() ? rawGroup.trim().slice(0, 80) : null;
+  const rawRpm = config["accountRpmLimit"];
+  const rpmLimit =
+    typeof rawRpm === "number" && Number.isFinite(rawRpm) ? Math.max(0, Math.trunc(rawRpm)) : 0;
+  const rawQuota = config["accountDailyQuota"];
+  const dailyQuota =
+    typeof rawQuota === "number" && Number.isFinite(rawQuota) && rawQuota > 0 ? Math.trunc(rawQuota) : null;
+  if (!group) return { group: null, limits: null };
+  if (rpmLimit === 0 && dailyQuota === null) return { group, limits: null };
+  return { group, limits: { rpmLimit, dailyQuota } };
 }

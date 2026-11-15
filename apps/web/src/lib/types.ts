@@ -319,12 +319,45 @@ export interface UpstreamAttribution {
   sources?: string[];
 }
 
+export type GroundedSignal = boolean | "unknown";
+
+export interface GroundedStatus {
+  toolProvided: boolean;
+  toolInvoked: GroundedSignal;
+  retrievalSucceeded: GroundedSignal;
+  hasVerifiableSources: GroundedSignal;
+  answerSupported: GroundedSignal;
+}
+
+export interface GroundedDisplay {
+  suggestions: Array<{ label: string; url: string }>;
+  textFallback?: string;
+  vendorHtmlWithheld?: boolean;
+}
+
+export interface GroundedSupport {
+  startIndex: number;
+  endIndex: number;
+  chunkIndices: number[];
+}
+
 export interface GroundedAnswer {
   text: string;
-  citations: Array<{ title: string; url: string; snippet?: string; publishedAt?: string }>;
-  toolInvoked: boolean;
+  citations: Array<{
+    title: string;
+    url: string;
+    snippet?: string;
+    publishedAt?: string;
+    providerIndex?: number;
+  }>;
+  status: GroundedStatus;
   model?: string;
   provider: string;
+  searchQueries?: string[];
+  supports?: GroundedSupport[];
+  display?: GroundedDisplay;
+  latencyMs?: number;
+  degraded?: boolean;
 }
 
 export interface SearchResult {
@@ -343,6 +376,7 @@ export interface SearchResult {
   rerankScore?: number;
   language?: string;
   upstream?: UpstreamAttribution;
+  upstreamRank?: number;
   sources: Array<{
     providerId: string;
     providerName: string;

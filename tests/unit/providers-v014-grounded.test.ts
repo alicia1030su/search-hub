@@ -107,20 +107,22 @@ describe("gemini adapter", () => {
     expect(requests[0]!.headers["x-goog-api-key"]).toBe("key");
     expect(JSON.parse(requests[0]!.body)).toMatchObject({ tools: [{ google_search: {} }] });
     expect(output.results).toEqual([]);
-    expect(output.answer).toMatchObject({ provider: "gemini", toolInvoked: true });
+    expect(output.answer).toMatchObject({ provider: "gemini" });
+    expect(output.answer!.status.toolInvoked).toBe(true);
     expect(output.answer!.citations).toHaveLength(2);
     expect(output.answer!.citations[0]!.url).toContain("vertexaisearch");
   });
 
-  it("marks toolInvoked=false when groundingMetadata is absent", async () => {
+  it("reports unknown (not false) when groundingMetadata is absent", async () => {
     const { baseUrl } = await startServer(() => ({
       body: JSON.stringify({ candidates: [{ content: { parts: [{ text: "Paris." }] } }] }),
     }));
     const ctx = makeCtx("gemini", baseUrl);
     const output = await geminiAdapter.search({ query: "capital of France", limit: 5, signal: ctx.signal }, ctx);
-    expect(output.answer!.toolInvoked).toBe(false);
+    // Without metadata the API does not say whether a search ran.
+    expect(output.answer!.status.toolInvoked).toBe("unknown");
     expect(output.answer!.citations).toEqual([]);
-    expect(output.warnings?.[0]).toContain("without calling Google Search");
+    expect(output.warnings?.[0]).toContain("no groundingMetadata");
   });
 
   it("fails on a blocked prompt instead of returning an empty answer", async () => {
@@ -165,13 +167,13 @@ describe("grok adapter", () => {
     const body = JSON.parse(requests[0]!.body) as Record<string, unknown>;
     expect(body["tools"]).toEqual([{ type: "web_search" }]);
     expect(body["include"]).toEqual(["web_search_call.action.sources"]);
-    expect(output.answer!.toolInvoked).toBe(true);
+    expect(output.answer!.status.toolInvoked).toBe(true);
     // Both annotation and action.sources point at the same URL → deduped to one.
     expect(output.answer!.citations).toHaveLength(1);
     expect(output.answer!.text).toContain("shipped");
   });
 
-  it("marks toolInvoked=false when there is no web_search_call", async () => {
+  it("reports toolInvoked=false when a message exists without web_search_call", async () => {
     const { baseUrl } = await startServer(() => ({
       body: JSON.stringify({
         output: [{ type: "message", content: [{ type: "output_text", text: "I know this." }] }],
@@ -179,7 +181,7 @@ describe("grok adapter", () => {
     }));
     const ctx = makeCtx("grok", baseUrl);
     const output = await grokAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx);
-    expect(output.answer!.toolInvoked).toBe(false);
+    expect(output.answer!.status.toolInvoked).toBe(false);
     expect(output.warnings?.[0]).toContain("web_search_call");
   });
 
@@ -233,17 +235,17 @@ describe("mimo adapter", () => {
 
     const body = JSON.parse(requests[0]!.body) as { tools: Array<Record<string, unknown>> };
     expect(body.tools[0]).toMatchObject({ type: "web_search", force_search: true, max_keyword: 5, limit: 5 });
-    expect(output.answer!.toolInvoked).toBe(true);
+    expect(output.answer!.status.toolInvoked).toBe(true);
     expect(output.answer!.citations[0]).toMatchObject({ title: "结果标题", url: "https://example.cn/a" });
   });
 
-  it("marks toolInvoked=false when annotations are missing", async () => {
+  it("reports toolInvoked=false when annotations are absent", async () => {
     const { baseUrl } = await startServer(() => ({
       body: JSON.stringify({ choices: [{ message: { content: "no search" } }] }),
     }));
     const ctx = makeCtx("mimo", baseUrl);
     const output = await mimoAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx);
-    expect(output.answer!.toolInvoked).toBe(false);
+    expect(output.answer!.status.toolInvoked).toBe(false);
   });
 
   it("clamps max_keyword and limit to 1..50", async () => {
@@ -280,7 +282,7 @@ describe("bailian adapter", () => {
     expect(body.parameters["result_format"]).toBe("message");
     expect(body.parameters["enable_search"]).toBe(true);
     expect(body.parameters["search_options"]).toMatchObject({ enable_source: true, enable_citation: true });
-    expect(output.answer!.toolInvoked).toBe(true);
+    expect(output.answer!.status.toolInvoked).toBe(true);
     expect(output.answer!.citations[0]!.url).toBe("https://hznews.example/a");
   });
 
@@ -293,13 +295,24 @@ describe("bailian adapter", () => {
     expect((error as Error).message).toContain("workspace endpoint");
   });
 
-  it("marks toolInvoked=false when search_results is empty", async () => {
+  it("uses usage.plugins to decide invocation, not result count", async () => {
     const { baseUrl } = await startServer(() => ({
       body: JSON.stringify({ output: { choices: [{ message: { content: "answer" } }], search_info: { search_results: [] } } }),
     }));
     const ctx = makeCtx("bailian", baseUrl, "key");
     const output = await bailianAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx);
-    expect(output.answer!.toolInvoked).toBe(false);
+    // search_info present with zero results: the tool ran, retrieval came back empty.
+    expect(output.answer!.status.toolInvoked).toBe(true);
+    expect(output.answer!.status.retrievalSucceeded).toBe(false);
+  });
+
+  it("reports unknown when neither usage.plugins nor search_info is present", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: JSON.stringify({ output: { choices: [{ message: { content: "answer" } }] } }),
+    }));
+    const ctx = makeCtx("bailian", baseUrl, "key");
+    const output = await bailianAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx);
+    expect(output.answer!.status.toolInvoked).toBe("unknown");
   });
 
   it("falls back to turbo for an unknown strategy", async () => {

@@ -108,6 +108,8 @@ export interface SearchResult {
   sources: ResultSource[];
   /** Upstream attribution when this row arrived through a gateway adapter. */
   upstream?: UpstreamAttribution;
+  /** Vendor-assigned position, distinct from our own `score` and source rank. */
+  upstreamRank?: number;
   raw?: unknown;
 }
 
@@ -244,6 +246,52 @@ export interface GroundedCitation {
   url: string;
   snippet?: string;
   publishedAt?: string;
+  /** 1-based index the vendor uses in its own answer text, when it reports one. */
+  providerIndex?: number;
+}
+
+/**
+ * Five separate facts about one grounded answer. They are deliberately not
+ * collapsed into a single `toolInvoked` boolean: "the tool was offered", "the
+ * model called it", "the call returned content", "the sources are verifiable"
+ * and "the answer is actually supported by those sources" are different claims,
+ * and each can be legitimately unknown.
+ *
+ * `unknown` must be used when the vendor response does not carry enough
+ * evidence. Guessing true/false would fabricate a verification state.
+ */
+export interface GroundedStatus {
+  /** The request included a search tool. For these adapters this is always true. */
+  toolProvided: boolean;
+  /** The model actually emitted a search tool call. */
+  toolInvoked: boolean | "unknown";
+  /** The tool call returned usable content (chunks / results / sources). */
+  retrievalSucceeded: boolean | "unknown";
+  /** At least one citation with a real http(s) URL exists. */
+  hasVerifiableSources: boolean | "unknown";
+  /** The answer text is linked to those sources by the vendor's own mapping. */
+  answerSupported: boolean | "unknown";
+}
+
+/**
+ * Display metadata a vendor requires us to render (Google Search Suggestions).
+ * We never forward vendor HTML: `suggestions` is parsed into plain data and the
+ * UI renders its own elements, so no foreign markup can reach the admin page.
+ */
+export interface GroundedDisplay {
+  /** Human-readable suggestion chips extracted from searchEntryPoint. */
+  suggestions: Array<{ label: string; url: string }>;
+  /** Plain text of the vendor's rendered widget, for operators comparing with docs. */
+  textFallback?: string;
+  /** True when the vendor sent HTML that we deliberately did not forward. */
+  vendorHtmlWithheld?: boolean;
+}
+
+/** A supported text segment: which characters of the answer cite which chunk. */
+export interface GroundedSupport {
+  startIndex: number;
+  endIndex: number;
+  chunkIndices: number[];
 }
 
 /**
@@ -254,9 +302,19 @@ export interface GroundedCitation {
 export interface GroundedAnswer {
   text: string;
   citations: GroundedCitation[];
-  toolInvoked: boolean;
+  status: GroundedStatus;
   model?: string;
   provider: string;
+  /** Queries the model actually ran, when the vendor reports them. */
+  searchQueries?: string[];
+  /** Character-to-chunk mapping, when the vendor reports it. */
+  supports?: GroundedSupport[];
+  /** Vendor-mandated display data (plain data only, never HTML). */
+  display?: GroundedDisplay;
+  /** Latency of the single vendor call, milliseconds. */
+  latencyMs?: number;
+  /** True when the provider answered without any search call. */
+  degraded?: boolean;
 }
 
 export interface RawSearchResult {
@@ -268,6 +326,11 @@ export interface RawSearchResult {
   language?: string;
   /** Set only by gateway adapters that can see upstream attribution. */
   upstream?: UpstreamAttribution;
+  /**
+   * Position the vendor assigned to this row. Kept separate from `upstream`
+   * because a rank is not a source; it must never be shown as a provider name.
+   */
+  upstreamRank?: number;
   raw?: unknown;
 }
 
@@ -383,6 +446,16 @@ export interface ProviderInstance {
   breakerThreshold: number;
   breakerCooldownMs: number;
   config: Record<string, unknown>;
+  /**
+   * Shared vendor account this provider draws its quota from. Multiple keys of
+   * the same account must use the same group, otherwise N keys look like N
+   * accounts and the vendor's account-level limit is exceeded.
+   */
+  accountGroup: string | null;
+  /** Requests/minute for the whole account group. 0 disables the group limit. */
+  accountRpmLimit: number;
+  /** Requests/day for the whole account group. null disables it. */
+  accountDailyQuota: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -425,6 +498,15 @@ export interface ProviderRuntimeSnapshot {
   healthy: boolean;
   circuitOpen: boolean;
   circuitOpenUntil: string | null;
+  /** Account-group budget usage, when this provider belongs to a group. */
+  account?: {
+    group: string;
+    rpmUsed: number;
+    rpmLimit: number;
+    quotaUsedToday: number;
+    dailyQuota: number | null;
+    lastDeniedAt: string | null;
+  } | null;
   keys: Array<{
     id: string;
     label: string;

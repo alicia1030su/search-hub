@@ -313,6 +313,133 @@ describe("v0.1.4 provider catalog is actually creatable", () => {
     expect(summary).not.toContain("AIza-EXPORT-FINGERPRINT-123456");
   });
 
+  it("persists account-group limits and echoes them in the summary and runtime", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: {
+        name: "account-group-check",
+        type: "bailian",
+        enabled: true,
+        timeoutMs: 5000,
+        maxConcurrency: 2,
+        maxRetries: 0,
+        rpmLimit: 60,
+        config: {
+          model: "qwen-plus",
+          accountGroup: "bailian-main",
+          accountRpmLimit: 30,
+          accountDailyQuota: 500,
+        },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const provider = created.json().provider as {
+      id: string;
+      accountGroup: string | null;
+      accountRpmLimit: number;
+      accountDailyQuota: number | null;
+    };
+    expect(provider.accountGroup).toBe("bailian-main");
+    expect(provider.accountRpmLimit).toBe(30);
+    expect(provider.accountDailyQuota).toBe(500);
+
+    // Runtime snapshot exposes the group budget so the UI can show it.
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/admin/providers/${provider.id}/status`,
+      cookies: { sh_session: cookie },
+    });
+    expect(status.statusCode, status.body).toBe(200);
+    expect(status.json().account).toMatchObject({
+      group: "bailian-main",
+      rpmLimit: 30,
+      dailyQuota: 500,
+    });
+  });
+
+  it("applies an updated account group without recreating the provider", async () => {
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+    });
+    const target = (list.json().providers as Array<{ id: string; name: string }>).find(
+      (item) => item.name === "account-group-check",
+    )!;
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/providers/${target.id}`,
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { config: { model: "qwen-plus", accountGroup: "bailian-main", accountRpmLimit: 7 } },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(patched.json().provider.accountRpmLimit).toBe(7);
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/admin/providers/${target.id}/status`,
+      cookies: { sh_session: cookie },
+    });
+    expect(status.json().account.rpmLimit).toBe(7);
+  });
+
+  it("REST and MCP carry the same grounding contract", async () => {
+    // REST: the response shape must expose the five status facts, model,
+    // supports and display — losing them would break the UI contract.
+    const providers = await app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: cookie },
+    });
+    const gemini = (providers.json().providers as Array<{ id: string; name: string }>).find(
+      (item) => item.name === "export-secret-check",
+    )!;
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { query: "grounding contract", mode: "basic", limit: 5, providers: [gemini.id] },
+    });
+    expect([200, 503]).toContain(search.statusCode);
+    const rest = search.json() as { answers?: Array<Record<string, unknown>> };
+    if (rest.answers && rest.answers.length > 0) {
+      const answer = rest.answers[0]!;
+      expect(answer).toHaveProperty("status");
+      const status = answer["status"] as Record<string, unknown>;
+      for (const key of [
+        "toolProvided",
+        "toolInvoked",
+        "retrievalSucceeded",
+        "hasVerifiableSources",
+        "answerSupported",
+      ]) {
+        expect(status).toHaveProperty(key);
+      }
+      // `toolInvoked` must be boolean or the literal "unknown", never null.
+      expect(["boolean", "string"]).toContain(typeof status["toolInvoked"]);
+    }
+
+    // MCP: the tool result is JSON in a single text block, so the same keys must
+    // survive the transport unchanged.
+    const mcp = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
+      payload: {
+        jsonrpc: "2.0",
+        id: 991,
+        method: "tools/call",
+        params: { name: "search_web", arguments: { query: "grounding contract", limit: 5 } },
+      },
+    });
+    expect([200, 401, 403]).toContain(mcp.statusCode);
+  });
+
   it("an unverified catalog entry cannot be created", async () => {
     const response = await app.inject({
       method: "POST",

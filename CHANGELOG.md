@@ -239,6 +239,45 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### Grounding review round (2026-11-15, same PR)
+
+**状态契约.** `GroundedAnswer.status` 现在是五个独立事实，而不是一个布尔：
+`toolProvided` / `toolInvoked` / `retrievalSucceeded` / `hasVerifiableSources` /
+`answerSupported`。除 `toolProvided` 外都允许 `"unknown"`；证据不足时返回 unknown，
+不猜 true/false。
+
+- **Gemini**: 保留 `webSearchQueries`、`searchEntryPoint`、`groundingChunks`
+  与 `groundingSupports`。`groundingSupports[].groundingChunkIndices` 指向 chunk
+  下标，因此引用**按厂商顺序保留、不去重**——去重会让下标整体错位并高亮错句子。
+  缺 `groundingMetadata` 时是 `unknown`，不是 false。
+- **Google Search Suggestions**: 厂商 HTML **不进入** API 响应或管理后台。解析成
+  `{label, url}` 纯数据后由前端渲染自有元素，`vendorHtmlWithheld=true` 明示。
+- **Grok**: 同时采集 `url_citation` 注解、`web_search_call.action.sources` 和响应级
+  `citations[]`；只有文本锚定的注解才算 `answerSupported=true`（xAI 明确说明
+  all-citations 是审计轨迹，不证明支撑）。
+- **MiMo**: annotations 存在即视为调用了工具（即使没有 URL），未提供时如实标 false；
+  非流式与流式的差异写进适配器注释，本适配器只发非流式请求。
+- **百炼**: 用 `usage.plugins.search.count` 判断是否联网，用
+  `search_info.search_results` 判断是否取到来源，二者都不存在时是 unknown。
+  兼容通道拿不到来源这一事实仍在文档与目录说明里。
+- **StepFun**: `position` 改为 `upstreamRank`，不再冒充
+  `upstream.providerName`（此前 UI 会显示“来源：rank 1”）。该字段贯穿
+  去重、RRF、REST 与 MCP，`source` 始终是真实的 provider 名。
+
+**账户级额度.** 新增 `AccountQuotaRegistry`：显式配置 `accountGroup` +
+`accountRpmLimit` / `accountDailyQuota` 后，同组的多把 Key 共用一份预算，N 把 Key
+不再等于 N 个账户。预算在取 Key 槽位之前扣减，取不到 Key 时退回；耗尽时返回
+`quota_exceeded` 而不是 `no_available_key`。**明确限定为单进程**：多副本各自计数，
+不是分布式协调，UI 文案与文档都这样写。
+
+**Web 实验台.** 分别展示原始结果、AI 回答、五项联网状态、实际引用、无来源/
+未联网/状态未知三种警告、模型名、单次耗时与脱敏错误；Sources 区块标出每条引用
+支撑了哪几段文本（来自 `groundingSupports`）。
+
+**测试.** 新增 12 项：grounding 映射、support 越界丢弃、XSS 净化（script/onclick/
+javascript: 全部拒绝）、StepFun 排名、账户组共享预算/隔离/退款、REST 状态字段、
+MCP `upstreamRank` 透传。Playwright 新增 2 项：账户额度保存回显、实验台初始状态。
+
 ### Second batch — AI grounded search (2026-11-15)
 
 Added five providers after re-checking each vendor's current official docs:

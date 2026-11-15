@@ -69,3 +69,40 @@
 - 所有凭证经现有 Key Scheduler 加密存储，界面只显示首 4 + 末 4。
 - 腾讯凭证对以一个 JSON 字符串存储，轮换原子化，禁止两个字段独立组合。
 - 测试失败信息经过 `redactSecrets`，不包含明文。
+
+## 联网状态与来源（本轮修正）
+
+`GroundedAnswer.status` 把「联网」拆成五个独立事实，任何一个都可能是 `unknown`：
+
+| 字段 | 含义 | 证据来源 |
+|---|---|---|
+| `toolProvided` | 请求里带了联网工具 | 请求体（恒为 true） |
+| `toolInvoked` | 模型真的调用了工具 | Gemini `groundingMetadata`；Grok `web_search_call`；MiMo `annotations`；百炼 `usage.plugins.search.count` |
+| `retrievalSucceeded` | 调用返回了可用内容 | chunk / result / source 数量 |
+| `hasVerifiableSources` | 至少一条 http(s) 引用 | 引用 URL 校验 |
+| `answerSupported` | 回答与来源有厂商级绑定 | Gemini `groundingSupports`；Grok `url_citation`；百炼 `[ref_N]` 标记 |
+
+**为什么 `unknown` 很重要**：Gemini 在没有 `groundingMetadata` 时不说明「没搜」还是「搜了但没元数据」；
+百炼在既无 `usage.plugins` 也无 `search_info` 时不说明是否联网。这些情况返回 `unknown`，
+UI 显示为未验证，**不会**被当作搜索成功。
+
+**排名不是来源**：StepFun 的 `position` 现在写入 `upstreamRank`。此前它被写进
+`upstream.providerName`，界面因此显示「来源：rank 1」——这是伪造来源。
+
+**Google Search Suggestions**：官方要求展示，但我们只取 `{label, url}` 纯数据，
+厂商 HTML 一律丢弃（`vendorHtmlWithheld=true`），前端用自己的元素渲染。
+`groundingSupports` 的下标与 `groundingChunks` 一一对应，因此引用按厂商顺序保留、
+不去重；去重会让所有下标错位。
+
+## 账户级额度（多 Key 不等于多账户）
+
+| 配置项 | 位置 | 说明 |
+|---|---|---|
+| `accountGroup` | Provider 配置 | 同一厂商账户共用此名字 |
+| `accountRpmLimit` | Provider 配置 | 整个账户组每分钟请求数，0 = 不限制 |
+| `accountDailyQuota` | Provider 配置 | 整个账户组每日请求数，留空 = 不限制 |
+
+- 预算在**取 Key 槽位之前**扣减；取不到 Key 时会退回。
+- 账户预算耗尽返回 `quota_exceeded`（而不是 `no_available_key`），因为换一把同账户的 Key 也无济于事。
+- **仅限单进程**：多副本各自计数。这不是分布式协调，文档与 UI 都明确说明。
+- 界面位置：Provider 表单「账户级额度（多 Key 共用）」。

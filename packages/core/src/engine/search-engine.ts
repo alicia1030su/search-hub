@@ -262,7 +262,7 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
 }
 
 function normalizeRawResult(
-  raw: Pick<RawSearchResult, "title" | "url" | "snippet" | "publishedAt" | "score" | "language" | "raw" | "upstream">,
+  raw: Pick<RawSearchResult, "title" | "url" | "snippet" | "publishedAt" | "score" | "language" | "raw" | "upstream" | "upstreamRank">,
   outcome: FanoutResult,
   rank: number,
   retrievedAt: string,
@@ -302,6 +302,7 @@ function normalizeRawResult(
     // Gateway adapters report which upstream provider actually produced this
     // row. It is copied as-is and never inferred from the URL or domain.
     ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
+    ...(raw.upstreamRank === undefined ? {} : { upstreamRank: raw.upstreamRank }),
   };
 
   return {
@@ -314,6 +315,7 @@ function normalizeRawResult(
       ...(raw.language ? { language: raw.language } : {}),
       ...(raw.score === undefined ? {} : { score: raw.score }),
       ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
+      ...(raw.upstreamRank === undefined ? {} : { upstreamRank: raw.upstreamRank }),
       ...(raw.raw === undefined ? {} : { raw: raw.raw }),
     },
   };

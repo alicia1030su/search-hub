@@ -364,7 +364,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
   );
 }
 
-function toToolResult(result: SearchResponse["results"][number]) {
+export function toToolResult(result: SearchResponse["results"][number]) {
   return {
     title: result.title,
     url: result.url,
@@ -382,5 +382,8 @@ function toToolResult(result: SearchResponse["results"][number]) {
     retrievedAt: result.retrievedAt,
     score: result.score,
     language: result.language,
+    // Attribution and vendor rank are distinct; neither replaces `source`.
+    ...(result.upstream === undefined ? {} : { upstream: result.upstream }),
+    ...(result.upstreamRank === undefined ? {} : { upstreamRank: result.upstreamRank }),
   };
 }

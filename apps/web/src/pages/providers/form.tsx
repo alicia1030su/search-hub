@@ -971,6 +971,58 @@ export function ProviderForm({
         </section>
 
         <section className="space-y-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("providers.form.accountSection")}
+          </h3>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {t("providers.form.accountHint")}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label={t("providers.form.accountGroup")} htmlFor="provider-account-group" hint={t("providers.form.accountGroupHint")}>
+              <Input
+                id="provider-account-group"
+                value={String(readConfigValue(state.config, "accountGroup") ?? "")}
+                onChange={(event) => setConfigField("accountGroup", event.target.value)}
+                placeholder="bailian-main"
+                spellCheck={false}
+              />
+            </Field>
+            <Field label={t("providers.form.accountRpmLimit")} htmlFor="provider-account-rpm" hint={t("providers.form.accountRpmHint")}>
+              <Input
+                id="provider-account-rpm"
+                type="number"
+                min={0}
+                max={100000}
+                value={String(readConfigValue(state.config, "accountRpmLimit") ?? "")}
+                onChange={(event) =>
+                  setConfigField(
+                    "accountRpmLimit",
+                    event.target.value === "" ? "" : Number(event.target.value),
+                  )
+                }
+                placeholder="0"
+              />
+            </Field>
+            <Field label={t("providers.form.accountDailyQuota")} htmlFor="provider-account-daily" hint={t("providers.form.accountDailyHint")}>
+              <Input
+                id="provider-account-daily"
+                type="number"
+                min={1}
+                max={10000000}
+                value={String(readConfigValue(state.config, "accountDailyQuota") ?? "")}
+                onChange={(event) =>
+                  setConfigField(
+                    "accountDailyQuota",
+                    event.target.value === "" ? "" : Number(event.target.value),
+                  )
+                }
+                placeholder={t("providers.form.accountUnlimited")}
+              />
+            </Field>
+          </div>
+        </section>
+
+        <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <FileJson className="size-3.5" aria-hidden />

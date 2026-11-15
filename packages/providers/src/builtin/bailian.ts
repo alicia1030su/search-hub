@@ -53,6 +53,7 @@ export const bailianAdapter: SearchProviderAdapter = {
     if (!ctx.apiKey) {
       throw new ProviderError(ctx.config.id, "bailian", "auth_invalid", "Bailian requires a DashScope API key.");
     }
+    const started = Date.now();
     const baseUrl = (ctx.config.baseUrl ?? "").trim().replace(/\/+$/, "");
     if (!baseUrl) {
       throw new ProviderError(
@@ -126,16 +127,57 @@ export const bailianAdapter: SearchProviderAdapter = {
         title: textOf(item.title) ?? "",
         url: textOf(item.url) ?? "",
         ...(textOf(item.site_name) ? { snippet: textOf(item.site_name)! } : {}),
+        ...(typeof item.index === "number" ? { providerIndex: item.index } : {}),
       }))
-      .filter((item) => item.url.length > 0);
+      .filter((item) => /^https?:\/\//i.test(item.url));
 
-    const toolInvoked = citations.length > 0;
-    const answer = buildAnswer("bailian", text, citations, toolInvoked, model);
+    // Bailian reports the tool usage explicitly in `usage.plugins.search.count`,
+    // and whether sources came back in `search_info.search_results`. Neither
+    // alone is enough: a model can search and still return zero sources, and a
+    // missing search_info does not mean the search did not happen.
+    const usage = (payload["usage"] ?? {}) as Record<string, unknown>;
+    const plugins = (usage["plugins"] ?? {}) as Record<string, unknown>;
+    const searchPlugin = (plugins["search"] ?? {}) as Record<string, unknown>;
+    const searchCount =
+      typeof searchPlugin["count"] === "number" ? (searchPlugin["count"] as number) : undefined;
+    const searchInfoPresent = output["search_info"] !== undefined && output["search_info"] !== null;
+
+    const toolInvoked: boolean | "unknown" =
+      searchCount !== undefined ? searchCount > 0 : searchInfoPresent ? true : "unknown";
+    const retrievalSucceeded: boolean | "unknown" =
+      toolInvoked === true ? citations.length > 0 : toolInvoked === false ? false : "unknown";
+    const hasVerifiableSources: boolean | "unknown" =
+      toolInvoked === "unknown" ? "unknown" : citations.length > 0;
+    // With enable_citation the answer carries [ref_N] / [N] markers. If sources
+    // exist and markers exist, the answer is bound to them; otherwise unknown.
+    const markerPattern = /\[(?:ref_)?\d{1,3}\]/;
+    const answerSupported: boolean | "unknown" =
+      citations.length > 0 && markerPattern.test(text) ? true : citations.length > 0 ? "unknown" : false;
+
+    const answer = buildAnswer({
+      provider: "bailian",
+      text,
+      citations,
+      status: {
+        toolProvided: true,
+        toolInvoked,
+        retrievalSucceeded,
+        hasVerifiableSources,
+        answerSupported,
+      },
+      model,
+      latencyMs: Date.now() - started,
+    });
 
     return {
       results: [],
       requestUrl: `${baseUrl}/api/v1/services/aigc/text-generation/generation`,
-      ...(toolInvoked ? {} : { warnings: ["Bailian answered without search_results; this is not a search result."] }),
+      ...(toolInvoked === false
+        ? { warnings: ["Bailian answered without invoking web search; this is not a search result."] }
+        : {}),
+      ...(toolInvoked === true && citations.length === 0
+        ? { warnings: ["Bailian invoked web search but returned no source URL."] }
+        : {}),
       answer,
     };
   },
@@ -148,13 +190,19 @@ export const bailianAdapter: SearchProviderAdapter = {
         ctx,
       );
       const answer = output.answer;
+      const citations = answer?.citations ?? [];
       return {
-        ok: Boolean(answer?.toolInvoked && answer.citations.length > 0),
+        ok: Boolean(answer?.status.toolInvoked === true && citations.length > 0),
         latencyMs: Date.now() - started,
-        resultCount: answer?.citations.length ?? 0,
-        message: !answer?.toolInvoked
-          ? "Bailian responded without search_results (enable_source may be ignored by this model)."
-          : `Bailian grounded answer with ${answer.citations.length} source(s).`,
+        resultCount: citations.length,
+        message:
+          answer?.status.toolInvoked === "unknown"
+            ? "Bailian response did not report search usage; state unknown."
+            : answer?.status.toolInvoked === false
+              ? "Bailian answered without invoking web search."
+              : citations.length === 0
+                ? "Bailian invoked web search but returned no source."
+                : `Bailian grounded answer with ${citations.length} source(s).`,
         sample: (answer?.citations ?? []).slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
       };
     } catch (error) {
