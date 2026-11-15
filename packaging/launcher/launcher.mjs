@@ -247,6 +247,20 @@ async function start() {
     }
   };
   process.on("exit", cleanup);
+
+  // Forward termination to the server.
+  //
+  // systemd sends SIGTERM to this process, and a user pressing Ctrl+C does the
+  // same. Without forwarding, the launcher would exit and leave the server
+  // holding the port and the SQLite file — `--stop` would then report success
+  // while the instance is still running.
+  const forward = (signal) => {
+    if (child.exitCode === null) child.kill(signal);
+  };
+  process.on("SIGTERM", () => forward("SIGTERM"));
+  process.on("SIGINT", () => forward("SIGINT"));
+  process.on("SIGHUP", () => forward("SIGTERM"));
+
   child.on("exit", (code) => {
     cleanup();
     if (code !== 0) console.error(`服务已退出，退出码 ${code}。详见 ${logPath}`);
