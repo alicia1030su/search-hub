@@ -10,7 +10,7 @@
 | 最新 main HEAD | ✅ `1456b44` | `gh api .../branches/main` |
 | `v0.1.5-beta.1` tag 的 SHA | ✅ `c5f7a8c` | 早于 catalog 修复 |
 | beta.1 是否含 MiniMax/Metaso 条目 | ❌ **不含** | `git show c5f7a8c:.../catalog.ts \| grep -c` = 0；main = 2 |
-| 结论 | 需发布 `v0.1.5-beta.2` | tag 不含修复提交 |
+| 结论 | 已发布 `v0.1.6-beta.1`（非 beta.2：属功能缺失而非纯文档问题） | tag `31fa81d` 含修复 |
 
 ## 阶段二：健康监控
 
@@ -52,9 +52,8 @@
 
 | 项 | 状态 |
 |---|---|
-| CI / Docker / 安全扫描 | 待做 |
-| 三平台安装包 | 待做 |
-| Release 资产复测 | 待做 |
-| 市场可见性实测 | 待做 |
-| 升级不丢数据 | 待做 |
-| Prerelease + GHCR | 待做 |
+| CI / Docker / 安全扫描 | ✅ 均 success（`31fa81d`） |
+| 三平台安装包 | ✅ 上传后 `verified 4 files including SHA256SUMS` |
+| 市场可见性实测 | ✅ 打包产物实测：58 条 / 50 builtin，三个源均可见且创建返回 200 |
+| 升级不丢数据 | ⚠️ 仅验证同版本重启（provider/admin/session 全保留）；**跨版本未测**（本机无旧包） |
+| Prerelease + GHCR | ✅ `v0.1.6-beta.1` + `ghcr.io/...:0.1.6-beta.1` |
