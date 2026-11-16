@@ -276,10 +276,14 @@ jobs:
           version=$(node -p "require('./package.json').version")
           tag=$(echo "${RELEASE_TAG}" | sed 's/^v//')
           owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          # A prerelease must never be tagged `latest`: that tag implies the
-          # stable channel and would push beta users onto an untested build.
+          # A prerelease must never be tagged `latest`, and must not claim the
+          # plain version tag either: `v0.1.4` would read as a stable 0.1.4 and
+          # silently move anyone who pinned that tag onto a beta build.
           echo "ref=${REGISTRY}/${owner}/search-hub:${tag}" >> "$GITHUB_OUTPUT"
-          echo "version_ref=${REGISTRY}/${owner}/search-hub:v${version}" >> "$GITHUB_OUTPUT"
+          case "$tag" in
+            *-beta.*|*-alpha.*|*-rc.*) echo "version_ref=" >> "$GITHUB_OUTPUT" ;;
+            *) echo "version_ref=${REGISTRY}/${owner}/search-hub:v${version}" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - uses: docker/setup-buildx-action@v4.4.1
 
@@ -319,7 +323,12 @@ jobs:
         run: |
           set -euo pipefail
           docker tag search-hub:release-check "${{ steps.image.outputs.ref }}"
-          docker tag search-hub:release-check "${{ steps.image.outputs.version_ref }}"
           docker push "${{ steps.image.outputs.ref }}"
-          docker push "${{ steps.image.outputs.version_ref }}"
+          if [ -n "${{ steps.image.outputs.version_ref }}" ]; then
+            docker tag search-hub:release-check "${{ steps.image.outputs.version_ref }}"
+            docker push "${{ steps.image.outputs.version_ref }}"
+            echo "pushed ${{ steps.image.outputs.version_ref }}"
+          else
+            echo "prerelease: only ${{ steps.image.outputs.ref }} is published"
+          fi
           echo "pushed ${{ steps.image.outputs.ref }}"
