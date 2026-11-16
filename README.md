@@ -77,18 +77,23 @@ Search Hub 把这些做成一个可部署的服务：
 
 > 目录共 59 条：49 个可用适配器、1 个无官方接口、7 个 generic 兼容入口。全新安装不含任何搜索源，需从市场添加。项目**不声称支持 59 个搜索源**。逐源的联调缺口见 [docs/provider-matrix.md](./docs/provider-matrix.md)。
 
-## 下载安装（v0.1.4-beta.6）
+## 下载安装（v0.1.5-beta.1）
 
 三种形态，同一套搜索核心、数据库模型与管理后台。
 
 | 平台 | 下载 | 需要什么 |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.4-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.6/search-hub-v0.1.4-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | [`search-hub-v0.1.4-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.6/search-hub-v0.1.4-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
-| Linux arm64 | [`search-hub-v0.1.4-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.6/search-hub-v0.1.4-linux-arm64.tar.gz) | **无** |
+| Windows x64 | [`search-hub-v0.1.5-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.5-beta.1/search-hub-v0.1.5-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | [`search-hub-v0.1.5-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.5-beta.1/search-hub-v0.1.5-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
+| Linux arm64 | [`search-hub-v0.1.5-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.5-beta.1/search-hub-v0.1.5-linux-arm64.tar.gz) | **无** |
 
-校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.4-beta.6/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.5-beta.1/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
 
+> **v0.1.5-beta.1 新增搜索源健康监控。** 搜索源不再只靠"配置了就算能用"：
+> 连接探测（免费）与真实搜索探测（付费，默认关闭）分开，401/403/429/余额不足分类处理，
+> 无凭证的源显示 `unverified` 而不是健康。MCP 协议版本按**实测**报告——当前 SDK 不支持
+> `2026-07-28`，界面会如实显示为不支持。详见 [MCP 协议实测](./docs/mcp-protocol.md)。
+>
 > **v0.1.4-beta.5 及更早的 Beta 已被安全更新取代，请升级。**
 > beta.5 存在一个已证实的访问控制缺陷：任何 API Token 都能读取并取消其他 Token 的搜索任务
 > （详见 [beta.6 审计报告](./docs/beta6-audit.md)）。beta.6 修复了该缺陷，
@@ -101,7 +106,7 @@ Search Hub 把这些做成一个可部署的服务：
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.4-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.5-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -110,7 +115,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.4-beta.6    # 预发布镜像，不带 v 前缀
+docker pull ghcr.io/alicia1030su/search-hub:0.1.5-beta.1    # 预发布镜像，不带 v 前缀
 docker compose up -d                                        # 或从源码构建
 ```
 
