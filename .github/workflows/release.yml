@@ -23,18 +23,75 @@ env:
   NODE_VERSION: "22.22.2"
   PNPM_VERSION: "12.18.0"
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  REGISTRY: ghcr.io
 
 permissions:
   contents: write
+  # Only what GHCR needs; no other secrets are exposed.
+  packages: write
 
 jobs:
+  gate:
+    name: Gate - tag commit on main with green CI and Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve the tag commit and require it to be on main
+        id: resolve
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse "${TAG}^{commit}")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag ${TAG} -> ${sha}"
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::Tag ${TAG} points at ${sha}, which is not on main."
+            exit 1
+          fi
+
+      - name: Require green CI and Docker runs for this exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 20); do
+            failed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.name=="CI" or .name=="Docker") | select(.conclusion != null and .conclusion != "success")] | length')
+            if [ "$failed" != "0" ]; then
+              echo "::error::A CI/Docker run for ${SHA} did not succeed"
+              exit 1
+            fi
+            ci=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.name=="CI") | select(.conclusion=="success")] | length')
+            docker=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.name=="Docker") | select(.conclusion=="success")] | length')
+            if [ "$ci" -ge 1 ] && [ "$docker" -ge 1 ]; then
+              echo "CI and Docker are green for ${SHA}"
+              exit 0
+            fi
+            echo "waiting for CI/Docker on ${SHA} (attempt ${attempt}, ci=${ci} docker=${docker})"
+            sleep 30
+          done
+          echo "::error::No successful CI and Docker run for ${SHA} after 10 minutes"
+          exit 1
+
   windows:
     name: Windows x64 package
+    needs: gate
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          # Build from the gate's SHA, never from a moving ref.
+          ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
 
       - uses: pnpm/action-setup@v6.1.1
@@ -71,6 +128,7 @@ jobs:
     name: Linux ${{ matrix.arch }} package
     # arm64 packages must be verified on arm64 hardware: a binary that only
     # builds is not evidence that it starts.
+    needs: gate
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 40
     strategy:
@@ -84,6 +142,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
 
       - uses: pnpm/action-setup@v6.1.1
@@ -126,11 +185,12 @@ jobs:
   publish:
     name: Publish prerelease
     runs-on: ubuntu-latest
-    needs: [windows, linux]
+    needs: [gate, windows, linux]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
 
       - uses: actions/download-artifact@v8.0.2
@@ -145,14 +205,121 @@ jobs:
             | sed 's#  \./[^/]*/#  #' | sort -k2 > ../SHA256SUMS
           cat ../SHA256SUMS
 
+      # Re-running a release must not silently mix two builds of the same
+      # version. If a Release already exists with assets, fail loudly instead.
+      - name: Refuse to overwrite an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            existing=$(gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets | length')
+            if [ "$existing" != "0" ]; then
+              echo "::error::Release $TAG already has $existing asset(s); refusing to overwrite published artifacts."
+              exit 1
+            fi
+            echo "release $TAG exists without assets; continuing"
+          fi
+
       - name: Create the prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           prerelease: true
           generate_release_notes: true
+          body: |
+            Beta prerelease. See the per-platform acceptance result in this
+            workflow run before treating any platform as verified.
+
+            Verify the downloads with `sha256sum -c SHA256SUMS`.
           files: |
             artifacts/*/*.zip
             artifacts/*/*.tar.gz
             SHA256SUMS
           fail_on_unmatched_files: true
+
+      # Uploading is not proof that the asset is downloadable and intact.
+      - name: Verify the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "--- published assets ---"
+          gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json assets \
+            --jq '.assets[] | "\(.name) \(.size) \(.state)"'
+          work=$(mktemp -d)
+          gh release download "$TAG" --repo "${GITHUB_REPOSITORY}" --dir "$work"
+          cd "$work"
+          sha256sum -c SHA256SUMS
+          count=$(ls -1 | wc -l)
+          echo "verified $count files including SHA256SUMS"
+
+  container:
+    name: Publish GHCR image for the released version
+    runs-on: ubuntu-latest
+    needs: [gate, windows, linux, publish]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: Compute the image reference
+        id: image
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          tag=$(echo "${RELEASE_TAG}" | sed 's/^v//')
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          # A prerelease must never be tagged `latest`: that tag implies the
+          # stable channel and would push beta users onto an untested build.
+          echo "ref=${REGISTRY}/${owner}/search-hub:${tag}" >> "$GITHUB_OUTPUT"
+          echo "version_ref=${REGISTRY}/${owner}/search-hub:v${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The image is built from the same SHA the packages came from, then
+      # started and health-checked before it is pushed.
+      - name: Build the image locally first
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          load: true
+          tags: search-hub:release-check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the image and verify REST + MCP before pushing
+        run: |
+          set -euo pipefail
+          docker run -d --name sh-release -p 8799:8787 \
+            -e SEARCH_HUB_SETUP_TOKEN=release-check-token \
+            -e SEARCH_HUB_COOKIE_SECURE=false \
+            search-hub:release-check
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8799/api/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8799/api/health >/dev/null
+          docker logs sh-release | tail -20
+          docker rm -f sh-release
+
+      - name: Push the verified image
+        run: |
+          set -euo pipefail
+          docker tag search-hub:release-check "${{ steps.image.outputs.ref }}"
+          docker tag search-hub:release-check "${{ steps.image.outputs.version_ref }}"
+          docker push "${{ steps.image.outputs.ref }}"
+          docker push "${{ steps.image.outputs.version_ref }}"
+          echo "pushed ${{ steps.image.outputs.ref }}"

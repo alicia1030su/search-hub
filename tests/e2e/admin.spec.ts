@@ -377,13 +377,22 @@ test.describe("Search Hub 管理后台端到端", () => {
     const providerRows = page.locator("tbody tr");
     const arxivRows = providerRows.filter({ hasText: "arXiv" });
 
+    // Baseline must be read *after* the list has loaded: sampling it straight
+    // after goto raced the fetch and produced a wrong baseline (the source of the
+    // CI flake). Wait for either rows or the empty state, then count.
+    await expect
+      .poll(async () => (await arxivRows.count()) + (await page.getByText("还没有配置搜索源").count()), {
+        timeout: 20_000,
+      })
+      .toBeGreaterThan(0);
+    const before = await arxivRows.count();
+
     await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
     await page.getByLabel("arXiv 选择").check();
     await page.getByRole("button", { name: "添加所选" }).click();
     await expect(page.getByText("已添加 1 个搜索源", { exact: false }).first()).toBeVisible({ timeout: 20_000 });
 
-    const afterInstall = await arxivRows.count();
-    expect(afterInstall).toBeGreaterThan(0);
+    await expect(arxivRows).toHaveCount(before + 1, { timeout: 20_000 });
 
     // Delete exactly the instance just added: the newest one sits last.
     await arxivRows.last().getByRole("button", { name: /删除/ }).click();
@@ -392,9 +401,10 @@ test.describe("Search Hub 管理后台端到端", () => {
     const dialog = page.getByRole("dialog").filter({ hasText: "删除" }).last();
     await dialog.getByRole("button", { name: "删除", exact: true }).click();
 
-    await expect(arxivRows).toHaveCount(afterInstall - 1, { timeout: 20_000 });
-    // Another instance still exists, so the delete was scoped to one row.
-    if (afterInstall - 1 > 0) {
+    await expect(arxivRows).toHaveCount(before, { timeout: 20_000 });
+    // Any instance that existed before the add must still be there: the delete
+    // was scoped to the one row, not to the provider type.
+    if (before > 0) {
       await expect(arxivRows.first()).toBeVisible();
     }
   });
