@@ -132,6 +132,9 @@ describe("MCP Streamable HTTP", () => {
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual(
       [
+        // Read-only provider health (added in v0.1.5-beta.2). It must never be
+        // able to trigger a paid probe, so it is part of the advertised list.
+        "get_provider_health",
         "get_search_sources",
         "get_search_status",
         "search_and_rerank",

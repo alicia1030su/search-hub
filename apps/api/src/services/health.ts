@@ -128,6 +128,7 @@ export interface HealthSettings {
   maxRequestsPerDay: number;
   paidProbesEnabled: boolean;
   includeUnverified: boolean;
+  concurrency: number;
 }
 
 const TREND_BUCKETS = 24;
@@ -351,24 +352,33 @@ export class HealthService {
     const results: HealthCheckResult[] = [];
     const skipped: Array<{ providerId: string; reason: string }> = [];
     const gap = options.gapMs ?? 400;
+    // Concurrency is capped at 4 by the settings schema; a serial default keeps
+    // a scheduled pass from looking like a burst to every vendor at once.
+    const workers = Math.max(1, Math.min(this.ctx.settings.get().health.concurrency ?? 1, 4));
 
     // The per-run cap applies to this loop, not to the daily counter: otherwise
     // a single "check all" would ignore maxRequestsPerRun entirely.
     let spentThisRun = 0;
-    for (const id of ids) {
+    const queue = [...ids];
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const id = queue.shift();
+        if (id === undefined) return;
+        await probe(id);
+        if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
+      }
+    };
+    const probe = async (id: string): Promise<void> => {
       if (kind === "search") {
         const remainingRun = this.budget().maxPerRun - spentThisRun;
         if (remainingRun <= 0) {
           skipped.push({ providerId: id, reason: "budget_exhausted:run_limit" });
-          continue;
+          return;
         }
-        const decision = decideBudget(
-          { ...this.budget(), maxPerRun: remainingRun },
-          1,
-        );
+        const decision = decideBudget({ ...this.budget(), maxPerRun: remainingRun }, 1);
         if (!decision.allowed) {
           skipped.push({ providerId: id, reason: `budget_exhausted:${decision.reason}` });
-          continue;
+          return;
         }
         spentThisRun += 1;
       }
@@ -380,9 +390,9 @@ export class HealthService {
           reason: error instanceof Error ? error.message : String(error),
         });
       }
-      if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
-    }
+    };
 
+    await Promise.all(Array.from({ length: Math.min(workers, ids.length || 1) }, () => worker()));
     return { results, skipped, budget: this.budget() };
   }
 
@@ -402,6 +412,63 @@ export class HealthService {
     const kind: HealthProbeKind = policy.paidProbesEnabled ? "search" : "connect";
     const run = await this.checkMany(null, { kind, trigger: "schedule" });
     return { results: run.results, skipped: run.skipped };
+  }
+
+  /**
+   * Providers that should be skipped on this search, with the reason.
+   *
+   * Only *terminal* health states gate a search: a provider whose last probe
+   * failed with an account-wide cause (quota, invalid credential) is skipped until
+   * its recorded cooldown expires. A transient timeout or a single 5xx does NOT
+   * gate — the scheduler's own circuit breaker handles repeated failures, and
+   * permanently removing a provider because one probe timed out is exactly the
+   * "one timeout kills a key" bug the brief warns about.
+   */
+  blockedProviders(now = Date.now()): Map<string, { code: string; message: string; until: string }> {
+    const blocked = new Map<string, { code: string; message: string; until: string }>();
+    const since = new Date(now - 3_600_000).toISOString();
+    const rows = this.db
+      .select()
+      .from(providerHealthChecks)
+      .where(gte(providerHealthChecks.checkedAt, since))
+      .orderBy(desc(providerHealthChecks.checkedAt))
+      .all();
+
+    const latest = new Map<string, typeof providerHealthChecks.$inferSelect>();
+    for (const row of rows) if (!latest.has(row.providerId)) latest.set(row.providerId, row);
+
+    for (const [providerId, row] of latest) {
+      if (row.status !== "unhealthy" && row.status !== "degraded") continue;
+      const detail = safeJson(row.detailJson) as { cause?: string; cooldownUntil?: string };
+      const cause = detail.cause ?? "";
+      // Only account-wide / credential causes are terminal.
+      if (cause !== "quota_exceeded" && cause !== "auth_invalid") continue;
+      const until = detail.cooldownUntil ?? null;
+      if (!until || Date.parse(until) <= now) continue;
+      blocked.set(providerId, {
+        code: row.errorCode ?? "no_available_key",
+        message: detail.cause === "quota_exceeded"
+          ? "Source parked: account quota exhausted"
+          : "Source parked: credential rejected",
+        until,
+      });
+    }
+    return blocked;
+  }
+
+  /**
+   * Runs probes on a timer.
+   *
+   * The interval, the enable switch and the per-run cap all come from settings;
+   * nothing here decides to spend money on its own. Returns a stop function.
+   */
+  startScheduler(intervalMs = 60_000): () => void {
+    const timer = setInterval(() => {
+      void this.runScheduled().catch(() => undefined);
+    }, intervalMs);
+    // Do not hold the process open just for health probing.
+    timer.unref?.();
+    return () => clearInterval(timer);
   }
 
   /** Aggregated view for the dashboard, REST and MCP. */

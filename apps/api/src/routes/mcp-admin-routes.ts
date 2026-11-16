@@ -157,6 +157,65 @@ export function registerMcpAdminRoutes(
       return staged;
     }),
   );
+
+  /**
+   * What the operator should do next.
+   *
+   * The server cannot replace its own files, so it returns the exact command the
+   * launcher-side updater needs. Nothing here executes anything: the CLI is
+   * invoked by a human (or by the launcher), which keeps "the API can never
+   * overwrite a running executable" true by construction.
+   */
+  app.post(
+    "/api/admin/update/apply-plan",
+    jsonFor(app, async (request) => {
+      adminOf(ctx, request, true);
+      const pending = updater.pending();
+      if (!pending) {
+        throw new SearchHubError(
+          "not_found",
+          "No staged update. Call POST /api/admin/update/stage first.",
+        );
+      }
+      const deployment = existsSync("/.dockerenv") ? "docker" : "standalone";
+      if (deployment === "docker") {
+        return {
+          deployment,
+          executable: false,
+          reason: "Docker deployments update by pulling a new image tag; the container never replaces itself.",
+          steps: [
+            "docker pull ghcr.io/alicia1030su/search-hub:<new-tag>",
+            "docker compose up -d",
+            "docker inspect --format='{{.State.Health.Status}}' <container>",
+          ],
+          rollback: [
+            "Set the previous image tag in compose.yaml, then docker compose up -d",
+            "The database lives in the named volume; a downgrade of the image does NOT rewind migrations.",
+          ],
+        };
+      }
+      const launcherDir = join(ctx.config.dataDir, "..", "launcher");
+      return {
+        deployment,
+        executable: true,
+        command: [
+          "node",
+          join(launcherDir, "updater.mjs"),
+          "--package",
+          pending.path,
+          "--version",
+          pending.version,
+          "--sha256",
+          pending.expectedSha256 ?? "",
+        ].join(" "),
+        notes: [
+          "The updater stops the service, backs up the database and master.key, installs the staged program and health-checks the new version.",
+          "If the health check fails it restores the previous program; when the schema moved forward it also restores the pre-update database, because a program rollback alone would leave an incompatible file.",
+          "Exit 3 means rolled back and healthy; exit 4 means manual attention is required.",
+        ],
+      };
+    }),
+  );
 }
 
 function safeSkillDir(name: string): string {

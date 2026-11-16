@@ -13,9 +13,10 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { formatMs, formatNumber, formatPercent, formatRange } from "../lib/format";
+import { formatDateTime, formatMs, formatNumber, formatPercent, formatRange } from "../lib/format";
 import { useAsyncData, useDocumentTitle } from "../lib/hooks";
 import { keyStatusLabels, t } from "../lib/i18n";
+import type { HealthOverview } from "../lib/types";
 import { StackedBar, TimelineChart } from "../components/charts";
 import { Table, TBody, TD, TH, THead, TR } from "../components/table";
 import { Segmented } from "../components/tabs";
@@ -80,6 +81,9 @@ export function DashboardPage() {
   // The dashboard is where a fresh install lands, so it must say "you have no
   // search source yet" instead of showing empty charts with no next step.
   const providers = useAsyncData((signal) => api.providers(signal), []);
+  // Source health is its own resource: it changes on the probe schedule, not on
+  // the dashboard range, so reloading the range must not refetch it.
+  const health = useAsyncData((signal) => api.healthOverview(signal), []);
 
   const hasSearches = (data?.totals.searches ?? 0) > 0;
   const keySegments = data
@@ -215,6 +219,8 @@ export function DashboardPage() {
               icon={Activity}
             />
           </div>
+
+          <HealthSummary data={health.data} loading={health.loading} />
 
           <Card>
             <CardHeader>
@@ -405,5 +411,81 @@ export function DashboardPage() {
         </>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Live source health, on the dashboard.
+ *
+ * Shows the aggregate counts plus one row per source with the last check time,
+ * P50 latency, success rate and error code — the same data the 健康监控 tab and
+ * the MCP tool expose, so an operator never sees two different answers.
+ */
+function HealthSummary({
+  data,
+  loading,
+}: {
+  data: HealthOverview | null;
+  loading: boolean;
+}) {
+  if (loading && !data) return <Skeleton className="h-40" />;
+  if (!data) return null;
+  const totals = data.totals;
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>{t("dashboard.health.title")}</CardTitle>
+          <CardDescription>{t("dashboard.health.desc")}</CardDescription>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <Badge tone="success">{t("providers.health.status.healthy")} {totals.healthy}</Badge>
+          <Badge tone="warning">{t("providers.health.status.degraded")} {totals.degraded}</Badge>
+          <Badge tone="destructive">{t("providers.health.status.unhealthy")} {totals.unhealthy}</Badge>
+          <Badge tone="muted">{t("providers.health.status.unverified")} {totals.unverified}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {data.providers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("dashboard.health.empty")}</p>
+        ) : (
+          <div className="space-y-1.5">
+            {data.providers.slice(0, 8).map((provider) => (
+              <div
+                key={provider.providerId}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-2.5 py-1.5 text-xs"
+              >
+                <span className="min-w-0 flex-1 truncate font-medium">{provider.providerName}</span>
+                <Badge
+                  tone={
+                    provider.status === "healthy"
+                      ? "success"
+                      : provider.status === "degraded"
+                        ? "warning"
+                        : provider.status === "unhealthy"
+                          ? "destructive"
+                          : "muted"
+                  }
+                >
+                  {provider.status}
+                </Badge>
+                <span className="text-muted-foreground">
+                  {provider.lastCheckedAt ? formatDateTime(provider.lastCheckedAt) : t("dashboard.health.never")}
+                </span>
+                <span className="font-mono text-muted-foreground">
+                  {provider.p50LatencyMs === null ? "—" : `${Math.round(provider.p50LatencyMs)}ms`}
+                </span>
+                <span className="font-mono text-muted-foreground">
+                  {provider.successRate === null ? "—" : `${Math.round(provider.successRate * 100)}%`}
+                </span>
+                {provider.lastErrorCode ? (
+                  <span className="font-mono text-destructive">{provider.lastErrorCode}</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
