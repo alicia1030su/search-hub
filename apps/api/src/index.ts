@@ -45,6 +45,12 @@ async function main(): Promise<void> {
       },
       "Search Hub listening",
     );
+    // Background probes. The timer only *ticks*; whether anything is probed is
+    // decided by settings (scheduledEnabled / intervalMinutes / budgets), so this
+    // never starts spending on its own.
+    const stopHealth = ctx.health.startScheduler();
+    process.on("exit", () => stopHealth());
+
     if (ctx.secrets.source === "file") {
       ctx.logger.warn(
         "Encryption key loaded from data/master.key. Back it up together with the database, " +

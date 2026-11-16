@@ -213,3 +213,8 @@ jobs:
         # The launcher shells out to node directly; the lifecycle test sets its
         # own DATA_DIR per case and never touches a real instance.
         run: node packaging/launcher/lifecycle-test.mjs
+
+      # Real files, real archive, real HTTP health probe: install, rollback,
+      # checksum refusal, downgrade refusal and architecture refusal.
+      - name: Run updater install / rollback tests
+        run: node packaging/launcher/updater-test.mjs

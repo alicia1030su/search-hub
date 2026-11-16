@@ -168,6 +168,18 @@ export function createContext(config: AppConfig): AppContext {
     logger.info({ outbound: { mode: "direct" } }, "Outbound traffic uses direct connections.");
   }
 
+  const appLogger = logger as unknown as Logger;
+
+  // Built before SearchService because the search path consults the health gate
+  // to skip sources parked for an account-wide failure.
+  const health = new HealthService({
+    db: handle.db,
+    settings,
+    providers,
+    fetch: fetchProxy,
+    appLogger,
+  });
+
   const search = new SearchService({
     db: handle.db,
     providers,
@@ -175,9 +187,9 @@ export function createContext(config: AppConfig): AppContext {
     settings,
     fetch: fetchProxy,
     logger,
+    health,
   });
 
-  const appLogger = logger as unknown as Logger;
 
   return {
     config,
@@ -191,13 +203,7 @@ export function createContext(config: AppConfig): AppContext {
     providers,
     models,
     search,
-    health: new HealthService({
-      db: handle.db,
-      settings,
-      providers,
-      fetch: fetchProxy,
-      appLogger,
-    }),
+    health,
     logger,
     appLogger,
     fetch: fetchProxy,

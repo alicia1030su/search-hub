@@ -46,6 +46,13 @@ export interface AppSettings {
     paidProbesEnabled: boolean;
     /** Also probe providers that have no enabled key (will report unverified). */
     includeUnverified: boolean;
+    /**
+     * How many probes may run at once.
+     *
+     * Hard-capped at 4: firing probes at every vendor simultaneously is the
+     * fastest way to trip all their rate limits and learn nothing.
+     */
+    concurrency: number;
   };
   logging: {
     level: string;
@@ -71,6 +78,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     maxRequestsPerDay: 20,
     paidProbesEnabled: false,
     includeUnverified: true,
+    concurrency: 1,
   },
   logging: { level: "info" },
   initializedAt: null,

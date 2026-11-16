@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { SearchHubError } from "@search-hub/shared";
-import { HttpProviderService, HttpSearchService } from "./http-client.js";
+import { HttpHealthService, HttpProviderService, HttpSearchService } from "./http-client.js";
 import { createServerFactory } from "./server.js";
 
 /**
@@ -25,6 +25,7 @@ export function main(): void {
   const deps = {
     search: new HttpSearchService(baseUrl, token),
     providers: new HttpProviderService(baseUrl, token),
+    health: () => new HttpHealthService(baseUrl, token).snapshot(),
     version: "0.1.0",
   };
 

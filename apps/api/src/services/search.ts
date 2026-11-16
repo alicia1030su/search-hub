@@ -25,6 +25,12 @@ export interface SearchServiceDeps {
   settings: SettingsService;
   fetch: SafeFetch;
   logger: Logger;
+  /**
+   * Health gate: providers parked for an account-wide failure are skipped.
+   * Only `blockedProviders` is used, so the search path has no way to trigger a
+   * probe and therefore cannot spend money.
+   */
+  health: { blockedProviders(now?: number): Map<string, { code: string; message: string; until: string }> };
 }
 
 const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
@@ -79,6 +85,8 @@ function providerFingerprint(runtime: ProviderRuntime): string {
 
 export class SearchService {
   private readonly controllers = new Map<string, AbortController>();
+  /** Providers the health gate skipped on the current request. */
+  private skippedByHealth: SearchErrorSummary[] = [];
   private readonly cache = new Map<string, { expiresAt: number; response: SearchResponse }>();
 
   constructor(private readonly deps: SearchServiceDeps) {}
@@ -95,6 +103,8 @@ export class SearchService {
       if (options.signal.aborted) controller.abort(options.signal.reason);
       else options.signal.addEventListener("abort", onExternalAbort, { once: true });
     }
+
+
 
     const providerIds = this.resolveProviderIds(request);
     let runtimes = this.deps.providers.runtimesFor(providerIds);
@@ -116,6 +126,36 @@ export class SearchService {
     }
 
     const mode = request.mode ?? settings.defaults.mode;
+
+    // Health-based isolation: a source parked for an account-wide failure (quota
+    // exhausted, credential rejected) is skipped until its cooldown expires.
+    // Transient failures are NOT considered here — the scheduler's circuit
+    // breaker already handles those, and one timeout must never remove a source.
+    const blocked = this.deps.health.blockedProviders();
+    if (blocked.size > 0) {
+      const skipped: SearchErrorSummary[] = [];
+      runtimes = runtimes.filter((runtime) => {
+        const reason = blocked.get(runtime.config.id);
+        if (!reason) return true;
+        skipped.push({
+          providerId: runtime.config.id,
+          providerName: runtime.config.name,
+          code: reason.code as SearchErrorSummary["code"],
+          message: `${reason.message} until ${reason.until}`,
+        });
+        return false;
+      });
+      if (runtimes.length === 0) {
+        // Structured failure, never an empty "success".
+        return this.failedResponse(request, mode, taskId, skipped, "Every selected source is parked by the health gate");
+      }
+      // Remember the skipped ones so the response explains the smaller fan-out.
+      this.skippedByHealth = skipped;
+    } else {
+      this.skippedByHealth = [];
+    }
+
+
     const wantsRerank = request.rerank ?? modeIncludesRerank(mode);
     const wantsEmbedding = request.embedding ?? modeIncludesEmbedding(mode);
     const wantsSummary = request.summarize ?? modeIncludesSummary(mode);
@@ -353,6 +393,37 @@ export class SearchService {
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
     this.deps.db.delete(searchTasks).where(lt(searchTasks.createdAt, cutoff)).run();
     this.deps.db.delete(searchEvents).where(lt(searchEvents.createdAt, cutoff)).run();
+  }
+
+  /** Structured failure with an explicit reason list; results stay empty. */
+  private failedResponse(
+    request: SearchRequest,
+    mode: SearchRequest["mode"] & string,
+    taskId: string,
+    errors: SearchErrorSummary[],
+    reason: string,
+  ): SearchResponse {
+    return {
+      taskId,
+      query: request.query,
+      mode,
+      status: "failed",
+      results: [],
+      stats: {
+        rawCount: 0,
+        dedupedCount: 0,
+        fusedCount: 0,
+        providers: [],
+        rerankApplied: false,
+        embeddingApplied: false,
+        summaryApplied: false,
+        partial: true,
+        timing: { totalMs: 0, fanoutMs: 0, fusionMs: 0 },
+      },
+      errors: [...errors, { providerId: "engine", providerName: "Search Hub", code: "no_available_key", message: reason }],
+      failedSources: errors.map((item) => ({ id: item.providerId, code: item.code })),
+      debug: { rewrittenQueries: [] },
+    };
   }
 
   private resolveProviderIds(request: SearchRequest): string[] {

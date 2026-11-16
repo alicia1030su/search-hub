@@ -3,7 +3,7 @@ import { createMcpHttpHandler } from "@search-hub/mcp";
 import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
 import { authenticate } from "../auth.js";
-import { sendError } from "../http.js";
+import { jsonFor, sendError } from "../http.js";
 import { isAllowedHost, isAllowedOrigin } from "../security/host.js";
 
 export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
@@ -21,6 +21,38 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
         })),
       status: async () => ctx.providers.runtimeSnapshots(),
     },
+    // Read-only projection: the MCP tool must not be able to spend quota, so it
+    // gets a getter that only reads the last recorded probes.
+    health: async () => {
+      const overview = ctx.health.overview();
+      return {
+        generatedAt: overview.generatedAt,
+        totals: overview.totals,
+        budget: {
+          maxPerRun: overview.budget.maxPerRun,
+          maxPerDay: overview.budget.maxPerDay,
+          usedToday: overview.budget.usedToday,
+          paidProbesEnabled: overview.budget.paidProbesEnabled,
+        },
+        providers: overview.providers.map((provider) => ({
+          providerId: provider.providerId,
+          providerName: provider.providerName,
+          providerType: provider.providerType,
+          enabled: provider.enabled,
+          status: provider.status,
+          healthScore: provider.healthScore,
+          lastCheckedAt: provider.lastCheckedAt,
+          lastSuccessAt: provider.lastSuccessAt,
+          lastErrorCode: provider.lastErrorCode,
+          consecutiveFailures: provider.consecutiveFailures,
+          successRate: provider.successRate,
+          p50LatencyMs: provider.p50LatencyMs,
+          p95LatencyMs: provider.p95LatencyMs,
+          keyAvailable: provider.keyAvailable,
+          keyTotal: provider.keyTotal,
+        })),
+      };
+    },
     version: ctx.config.version,
   });
 
@@ -30,6 +62,56 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
    * valid. `publicBaseUrl` is only used for documentation, not for validation,
    * because the instance may legitimately be reached by several names.
    */
+  /**
+   * Health projection for the stdio MCP bridge.
+   *
+   * `/api/admin/health` requires the `admin` scope, which a search token must
+   * never have. This endpoint exposes the same derived data (status, latency,
+   * error code, key counts) minus everything sensitive — no base URLs, no key
+   * material, no history — so the stdio server can answer `get_provider_health`
+   * without an admin credential.
+   */
+  app.get("/api/mcp/health", jsonFor(app, async (request) => {
+    const actor = authenticate(
+      {
+        headers: request.headers as Record<string, string | string[] | undefined>,
+        cookies: request.cookies as Record<string, string | undefined>,
+        ip: request.ip,
+      },
+      ctx.authDeps,
+      { scope: "mcp:use", requireToken: true },
+    );
+    void actor;
+    const overview = ctx.health.overview();
+    return {
+      generatedAt: overview.generatedAt,
+      totals: overview.totals,
+      budget: {
+        maxPerRun: overview.budget.maxPerRun,
+        maxPerDay: overview.budget.maxPerDay,
+        usedToday: overview.budget.usedToday,
+        paidProbesEnabled: overview.budget.paidProbesEnabled,
+      },
+      providers: overview.providers.map((provider) => ({
+        providerId: provider.providerId,
+        providerName: provider.providerName,
+        providerType: provider.providerType,
+        enabled: provider.enabled,
+        status: provider.status,
+        healthScore: provider.healthScore,
+        lastCheckedAt: provider.lastCheckedAt,
+        lastSuccessAt: provider.lastSuccessAt,
+        lastErrorCode: provider.lastErrorCode,
+        consecutiveFailures: provider.consecutiveFailures,
+        successRate: provider.successRate,
+        p50LatencyMs: provider.p50LatencyMs,
+        p95LatencyMs: provider.p95LatencyMs,
+        keyAvailable: provider.keyAvailable,
+        keyTotal: provider.keyTotal,
+      })),
+    };
+  }));
+
   app.all("/mcp", async (request, reply) => {
     try {
       const hostHeader = request.headers.host;

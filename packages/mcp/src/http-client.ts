@@ -1,6 +1,6 @@
 import type { ProviderInstance, ProviderRuntimeSnapshot, SearchRequest, SearchResponse } from "@search-hub/shared";
 import { SearchHubError } from "@search-hub/shared";
-import type { McpProviderService, McpSearchService } from "./tools.js";
+import type { McpHealthSnapshot, McpProviderService, McpSearchService } from "./tools.js";
 
 /**
  * stdio mode is a thin proxy over the REST API.
@@ -62,5 +62,32 @@ export class HttpProviderService implements McpProviderService {
 
   async status(): Promise<ProviderRuntimeSnapshot[]> {
     return (await this.load()).status;
+  }
+}
+
+/**
+ * Health reader for the stdio bridge.
+ *
+ * Calls the purpose-built `/api/mcp/health` projection, not `/api/admin/health`:
+ * a stdio server is typically given a search-scope token, and a search token
+ * must not be able to read the admin surface.
+ */
+export class HttpHealthService {
+  constructor(
+    private readonly baseUrl: string,
+    private readonly token: string,
+  ) {}
+
+  async snapshot(): Promise<McpHealthSnapshot | null> {
+    try {
+      const response = await fetch(`${this.baseUrl.replace(/\/+$/, "")}/api/mcp/health`, {
+        headers: { authorization: `Bearer ${this.token}` },
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as McpHealthSnapshot;
+    } catch {
+      // A missing health endpoint must degrade the tool, not crash the server.
+      return null;
+    }
   }
 }

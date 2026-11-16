@@ -291,6 +291,7 @@ export const settingsUpdateSchema = z.object({
       maxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
       paidProbesEnabled: z.boolean().optional(),
       includeUnverified: z.boolean().optional(),
+      concurrency: z.number().int().min(1).max(4).optional(),
     })
     .optional(),
   logging: z

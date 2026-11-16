@@ -19,7 +19,39 @@ export interface McpProviderService {
 export interface McpDeps {
   search: McpSearchService;
   providers: McpProviderService;
+  /**
+   * Read-only health snapshot, supplied by the API.
+   *
+   * Optional so the stdio entry keeps working against an older REST server that
+   * has no `/api/admin/health`; the tool then reports "health unavailable"
+   * instead of failing the whole server.
+   */
+  health?: () => Promise<McpHealthSnapshot | null>;
   version: string;
+}
+
+/** The subset of the admin health overview that is safe to expose to a token. */
+export interface McpHealthSnapshot {
+  generatedAt: string;
+  totals: { healthy: number; degraded: number; unhealthy: number; unverified: number };
+  providers: Array<{
+    providerId: string;
+    providerName: string;
+    providerType: string;
+    enabled: boolean;
+    status: string;
+    healthScore: number;
+    lastCheckedAt: string | null;
+    lastSuccessAt: string | null;
+    lastErrorCode: string | null;
+    consecutiveFailures: number;
+    successRate: number | null;
+    p50LatencyMs: number | null;
+    p95LatencyMs: number | null;
+    keyAvailable: number;
+    keyTotal: number;
+  }>;
+  budget: { maxPerRun: number; maxPerDay: number; usedToday: number; paidProbesEnabled: boolean };
 }
 
 const freshness = z.enum(["day", "week", "month", "year", "all"]).optional();
@@ -328,6 +360,67 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
     },
   );
 
+  /**
+   * Read-only provider health.
+   *
+   * Deliberately read-only: a search-scope token must not be able to spend vendor
+   * quota by triggering a paid probe. Health data here is derived (status,
+   * latency, error code) and contains no API keys, no base URLs and no internal
+   * hostnames — the same rule the admin API follows.
+   */
+  server.registerTool(
+    "get_provider_health",
+    {
+      title: "Provider health",
+      description:
+        "Read the health of each configured search source: status, last check, P50/P95 latency, success rate, error code and remaining key pool. Read-only; never triggers a paid probe and never returns credentials or endpoint addresses.",
+      inputSchema: z.object({
+        providerType: z
+          .string()
+          .min(1)
+          .max(64)
+          .optional()
+          .describe("Only return sources of this catalog type (e.g. tavily). Omit for all."),
+        status: z
+          .enum(["healthy", "degraded", "unhealthy", "unverified"])
+          .optional()
+          .describe("Only return sources currently in this state."),
+        limit: z.number().int().min(1).max(100).default(50),
+      }),
+    },
+    async (args) => {
+      try {
+        if (!deps.health) {
+          return jsonResult({
+            available: false,
+            reason: "This server build does not expose provider health over MCP.",
+          });
+        }
+        const snapshot = await deps.health();
+        if (!snapshot) {
+          return jsonResult({
+            available: false,
+            reason: "The API did not return a health snapshot (older build or health disabled).",
+          });
+        }
+        const filtered = snapshot.providers
+          .filter((item) => (args.providerType ? item.providerType === args.providerType : true))
+          .filter((item) => (args.status ? item.status === args.status : true))
+          .slice(0, args.limit);
+        return jsonResult({
+          available: true,
+          generatedAt: snapshot.generatedAt,
+          totals: snapshot.totals,
+          budget: snapshot.budget,
+          providers: filtered,
+          matchCount: filtered.length,
+        });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
   server.registerTool(
     "get_search_status",
     {
@@ -389,4 +482,4 @@ export function toToolResult(result: SearchResponse["results"][number]) {
 }
 
 /** Number of tools registered by `registerTools`; read by the admin status page. */
-export const MCP_TOOL_COUNT = 10;
+export const MCP_TOOL_COUNT = 11;
