@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -34,6 +34,7 @@ import type {
 import { ConfirmDialog, Dialog, Sheet } from "../../components/overlay";
 import { Table, TBody, TD, TH, THead, TR } from "../../components/table";
 import { useToast } from "../../components/toast";
+import { ProviderHealthPanel } from "../../components/provider-health-panel";
 import {
   Alert,
   Badge,
@@ -87,11 +88,57 @@ export function ProvidersPage() {
   const [deletePending, setDeletePending] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [groupForm, setGroupForm] = useState<SearchGroup | "new" | null>(null);
+  // Health is a separate resource: it changes on its own schedule and must not
+  // force a provider-list refetch every time it reloads.
+  const health = useAsyncData((signal) => api.healthOverview(signal), []);
+
+  const runHealthCheck = useCallback(
+    async (kind: "connect" | "search") => {
+      setBusy(true);
+      try {
+        const run = await api.healthCheck({ kind });
+        const failed = run.results.filter((item) => item.status === "unhealthy").length;
+        toast.success({
+          title: t("providers.health.checked", {
+            count: run.results.length,
+            failed,
+          }),
+          description:
+            run.skipped.length > 0
+              ? t("providers.health.skipped", { count: run.skipped.length })
+              : undefined,
+        });
+        health.reload();
+      } catch (error) {
+        toast.error({ title: toApiError(error).message });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [health, t, toast],
+  );
+
+  const runHealthCheckOne = useCallback(
+    async (providerId: string, kind: "connect" | "search") => {
+      setBusy(true);
+      try {
+        await api.healthCheck({ providerId, kind });
+        health.reload();
+      } catch (error) {
+        toast.error({ title: toApiError(error).message });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [health, toast],
+  );
+
   const [deletingGroup, setDeletingGroup] = useState<SearchGroup | null>(null);
   const [groupDeletePending, setGroupDeletePending] = useState(false);
   // Marketplace vs. installed sources: two different questions ("what can I add"
   // vs "what do I run"), so they get two views instead of one long page.
-  const [tab, setTab] = useState<"installed" | "market">("installed");
+  const [tab, setTab] = useState<"installed" | "health" | "market">("installed");
+
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -326,7 +373,7 @@ export function ProvidersPage() {
       />
 
       <div className="flex flex-wrap items-center gap-1.5 border-b pb-2">
-        {(["installed", "market"] as const).map((key) => (
+        {(["installed", "health", "market"] as const).map((key) => (
           <button
             key={key}
             type="button"
@@ -339,9 +386,18 @@ export function ProvidersPage() {
             }
             aria-current={tab === key ? "page" : undefined}
           >
-            {key === "installed" ? t("providers.tab.installed") : t("providers.tab.market")}
+            {key === "installed"
+              ? t("providers.tab.installed")
+              : key === "health"
+                ? t("providers.tab.health")
+                : t("providers.tab.market")}
             {key === "installed" ? (
               <span className="ml-1.5 text-[11px] opacity-70">{providers.data?.providers.length ?? 0}</span>
+            ) : null}
+            {key === "health" && health.data ? (
+              <span className="ml-1.5 text-[11px] opacity-70">
+                {health.data.totals.healthy}/{health.data.providers.length}
+              </span>
             ) : null}
           </button>
         ))}
@@ -375,7 +431,16 @@ export function ProvidersPage() {
 
       {providers.data ? (
         <>
-          {tab === "market" ? (
+          {tab === "health" ? (
+            <ProviderHealthPanel
+              overview={health.data}
+              loading={health.loading}
+              error={health.error?.message ?? null}
+              onCheckAll={runHealthCheck}
+              onCheckOne={runHealthCheckOne}
+              busy={busy}
+            />
+          ) : tab === "market" ? (
           <section className="space-y-3">
             <SectionHeader
               title={t("providers.market.title")}

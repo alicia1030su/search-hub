@@ -23,7 +23,14 @@ export type KeyStatus =
   | "cooldown"
   | "invalid"
   | "disabled"
-  | "unknown";
+  | "unknown"
+  /**
+   * The account behind this key ran out of credits / quota.
+   *
+   * Distinct from `rate_limited` because waiting does not help and rotating to
+   * another key of the same account just repeats the failure.
+   */
+  | "quota_exhausted";
 
 export type Freshness = "day" | "week" | "month" | "year" | "all";
 

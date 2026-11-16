@@ -30,6 +30,23 @@ export interface AppSettings {
     enabled: boolean;
     ttlSeconds: number;
   };
+  /**
+   * Provider health policy.
+   *
+   * Scheduled probes are **off by default**: a background job that hits paid
+   * search endpoints without an explicit decision is how an operator wakes up to
+   * a bill. Connectivity probes are free and may be enabled separately.
+   */
+  health: {
+    scheduledEnabled: boolean;
+    intervalMinutes: number;
+    maxRequestsPerRun: number;
+    maxRequestsPerDay: number;
+    /** Paid search probes; without this, only free connectivity probes run. */
+    paidProbesEnabled: boolean;
+    /** Also probe providers that have no enabled key (will report unverified). */
+    includeUnverified: boolean;
+  };
   logging: {
     level: string;
   };
@@ -47,6 +64,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   retention: { taskRetentionDays: 30, logRetentionDays: 14 },
   cache: { enabled: false, ttlSeconds: 0 },
+  health: {
+    scheduledEnabled: false,
+    intervalMinutes: 360,
+    maxRequestsPerRun: 3,
+    maxRequestsPerDay: 20,
+    paidProbesEnabled: false,
+    includeUnverified: true,
+  },
   logging: { level: "info" },
   initializedAt: null,
 };

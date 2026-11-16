@@ -387,3 +387,6 @@ export function toToolResult(result: SearchResponse["results"][number]) {
     ...(result.upstreamRank === undefined ? {} : { upstreamRank: result.upstreamRank }),
   };
 }
+
+/** Number of tools registered by `registerTools`; read by the admin status page. */
+export const MCP_TOOL_COUNT = 10;
