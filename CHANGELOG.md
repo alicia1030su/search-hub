@@ -4,6 +4,53 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.4-beta.6 (2026-11-16)
+
+Security release. Supersedes beta.5.
+
+**Security: cross-token task access (severe).** `GET /api/search/tasks/:id`
+authenticated the caller but discarded the actor, and `POST .../cancel` had no
+ownership check, so any API token could read another caller's query and results
+and cancel their in-flight search. Verified against the published beta.5
+package: `bob reads alice's task: HTTP 200 leaked=YES`. beta.6 enforces ownership
+and answers 404 (not 403) so task existence does not leak either.
+
+Also fixed in this release:
+
+- **Deep search lied about success.** All providers failing produced
+  `200 / completed / 0 results` and a `completed` task row. It now returns
+  `failed` with per-query errors when nothing succeeded and `partial` when some
+  did; a failed response no longer triggers the summary model.
+- **Cache key was incomplete**: `includeRaw`, `perProviderLimit`, `timeoutMs`,
+  `capability` and the provider configuration were missing, so a narrower request
+  could read a richer cached entry and a reconfigured provider could replay stale
+  results. Added a per-provider configuration fingerprint.
+- **Cache hits recorded `completed` unconditionally**, inflating the dashboard
+  when the cached response was `partial`. The cached status is preserved and
+  cancelled runs are not cached.
+- **Explicit model ids bypassed `enabled`** — a disabled (or wrong-kind) model
+  could still be invoked and billed by a normal search request. Added
+  `getEnabled()`; the admin test endpoint keeps `get()` for pre-enable probing.
+- **Launcher lifecycle**: non-atomic lock, PID-only identity (PID reuse could
+  signal an unrelated process), stale locks blocking startup, `--stop` reporting
+  success while the server survived, an orphaned child after a health timeout,
+  and config written before the port check. Now O_EXCL locking, `/proc` start-time
+  identity, atomic reclaim, verified stop (exit 8, lock kept), and a killed child
+  on health timeout.
+- **Dashboard success rate** counted user cancels as failures and partials as
+  successes. It now covers finished non-cancelled runs only, with
+  partial/failed/cancelled exposed separately.
+
+Release automation: the release workflow now has a gate job that refuses to build
+unless the Tag's commit is on `main` and both the CI and Docker runs for that
+exact SHA are green; every build job checks out the gated SHA; a pre-existing
+Release with assets aborts the run; published assets are downloaded again and
+verified against `SHA256SUMS`; and a GHCR image is built, started, health-checked
+and only then pushed — never tagged `latest` for a prerelease.
+
+Tests: 572 Vitest, 17 Playwright, 12 launcher-lifecycle assertions (new Windows
+CI job).
+
 ## [0.1.4] - 2026-11-15
 
 Provider expansion round. Every entry below is either implemented and covered
