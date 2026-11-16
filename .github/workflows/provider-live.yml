@@ -20,6 +20,17 @@ concurrency:
   group: provider-live-${{ github.ref }}
   cancel-in-progress: false
 
+# Two failure modes look alike in the Deployments list but mean different things:
+#
+# 1. "Branch ... is not allowed to deploy to provider-live due to environment
+#    protection rules" — the run never started. The environment only allows
+#    `main`; dispatching from a feature branch is the cause, not a missing key.
+# 2. "No provider secret is configured for this run" — the run started, found no
+#    credential, and made no vendor call. That is an unverified state, not a
+#    product defect.
+#
+# Neither is a production deployment failure: this workflow never deploys
+# anything. It only calls vendor APIs.
 jobs:
   live:
     name: Real provider call (${{ inputs.provider }})
@@ -95,7 +106,33 @@ jobs:
           run_provider brave "${BRAVE_API_KEY:-}"
           echo "providers called: $ran, failures: $failures"
           if [ "$ran" -eq 0 ]; then
-            echo "::error::No provider secret is configured for this run"
+            # This is NOT a deployment failure and NOT a product defect: no
+            # credential exists in the provider-live environment. The run must
+            # still be non-green, because "we could not verify anything" is not
+            # evidence that the adapters work. The message is what makes the red
+            # X readable instead of looking like a broken release.
+            {
+              echo "## Provider live verification: BLOCKED (no credential)"
+              echo ""
+              echo 'No secret was available in the `provider-live` environment, so **no real vendor call was made**.'
+              echo ""
+              echo "| Provider | Secret | State |"
+              echo "|---|---|---|"
+              echo "| tavily | `TAVILY_API_KEY` | $([ -n "${TAVILY_API_KEY:-}" ] && echo present || echo missing) |"
+              echo "| bocha | `BOCHA_API_KEY` | $([ -n "${BOCHA_API_KEY:-}" ] && echo present || echo missing) |"
+              echo "| brave | `BRAVE_API_KEY` | $([ -n "${BRAVE_API_KEY:-}" ] && echo present || echo missing) |"
+              echo ""
+              echo "What this run proves: **nothing about provider compatibility**."
+              echo "What it does not mean: the application, the image, or the release is broken."
+              echo ""
+              echo "To make this run meaningful, add a real key as an environment secret, then re-run:"
+              echo '```'
+              echo 'gh secret set TAVILY_API_KEY --env provider-live   # or BOCHA_API_KEY / BRAVE_API_KEY'
+              echo '```'
+              echo 'Providers without a key stay `documented` (implemented, never called the vendor).'
+              echo 'They are not silently promoted to `live_tested`.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=BLOCKED: no provider credential::No TAVILY/BOCHA/BRAVE key exists in the provider-live environment, so no real vendor call was made. This is an unverified state, not a product failure. See the job summary for how to supply a key."
             exit 1
           fi
           exit $((failures > 0 ? 1 : 0))

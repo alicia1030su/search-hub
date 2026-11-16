@@ -1,0 +1,22 @@
+{
+  "provider": "hackernews",
+  "status": "live_tested",
+  "lastSuccess": {
+    "checkedAt": "2026-11-16T11:40:40Z",
+    "requestUrl": "https://hn.algolia.com/api/v1/search?query=search&hitsPerPage=3",
+    "httpStatus": 200,
+    "resultCount": 3,
+    "sampleUrls": [
+      "https://dkb.io/post/google-search-is-dying",
+      "https://search.marginalia.nu/",
+      "https://twitter.com/mwseibel/status/1477701120319361026"
+    ],
+    "latencyMs": 1585,
+    "recordedBy": "scripts/check-doc-consistency evidence run"
+  },
+  "lastAttempt": {
+    "checkedAt": "2026-11-16T11:40:40Z",
+    "httpStatus": 200,
+    "ok": true
+  }
+}

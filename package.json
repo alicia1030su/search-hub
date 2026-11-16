@@ -27,7 +27,10 @@
     "start:dev": "pnpm --filter @search-hub/api dev",
     "mcp:stdio": "node packages/mcp/dist/stdio.mjs",
     "test:launcher": "node packaging/launcher/lifecycle-test.mjs",
-    "verify:package": "node packaging/verify-package.mjs"
+    "verify:package": "node packaging/verify-package.mjs",
+    "check:docs": "node --import tsx scripts/check-doc-consistency.mjs",
+    "check:matrix": "node --import tsx scripts/generate-provider-matrix.mjs --check",
+    "generate:matrix": "node --import tsx scripts/generate-provider-matrix.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",

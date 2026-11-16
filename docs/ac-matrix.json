@@ -322,23 +322,19 @@
     "id": "AC-14",
     "title": "未实现能力不可被当成可用",
     "status": "PASS",
-    "summary": "UI 标注「仅目录 · 未实现」且创建按钮不可用；直接调创建 API 返回 400 + code=not_implemented（不是 5xx），不静默成功。",
+    "summary": "无适配器的条目（当前只有 `baidu`）创建按钮不可用；直接调创建 API 返回 400 + code=not_implemented（不是 5xx），不静默成功。",
     "evidence": [
       {
-        "command": "POST /api/admin/providers {\"type\":\"metaso\"}",
-        "result": "HTTP 400，error.code=not_implemented，details.implementation=planned（v0.1.2 实例实测；v0.1.1 曾返回 501，已修）"
+        "command": "POST /api/admin/providers {\"type\":\"baidu\"}",
+        "result": "HTTP 400 + code=not_implemented（catalog `no_official_api`，v0.1.5 实测）。注：v0.1.2 时同类证据用的是 metaso；其后 metaso 已实现原生适配器并可从市场创建，故改用唯一仍不可创建的条目。"
       },
       {
         "command": "tests/integration/api.test.ts + search-errors.test.ts",
-        "result": "planned/未知类型 → 400 + not_implemented（原 501 已修）"
+        "result": "无适配器的类型与未知类型均 → 400 + not_implemented（原 501 已修）"
       },
       {
         "command": "corepack pnpm test:e2e",
-        "result": "页面可见「仅目录 · 未实现」，无「支持 30 源」文案"
-      },
-      {
-        "command": "apps/web/src/pages/providers/index.tsx canAdd()",
-        "result": "planned/unavailable → false"
+        "result": "MUST:/u0020页面不出现「支持 N 源」这类暗示性文案"
       }
     ],
     "gaps": []
@@ -347,19 +343,19 @@
     "id": "AC-15",
     "title": "能力目录与可用源不混淆",
     "status": "PASS",
-    "summary": "本轮新增 Tavily/Bocha 适配器后，catalog 的 builtin 变为 7 个，与 README/docs 的『已实现适配器（7 类）』『目录共 28 条：7 builtin / 12 planned / 2 unavailable / 7 generic』一致；页面仍标注未实现项且无暗示性文案。",
+    "summary": "目录与实现数的口径过去靠手写维护，多次漂移（曾写 7 类 / 28 条，实际已到 50 类 / 58 条）。现在 docs/provider-matrix.md 由 catalog 生成，scripts/check-doc-consistency.mjs 在 CI 中比对 README 数字与 catalog，不一致即失败。",
     "evidence": [
       {
-        "command": "grep -c 'implementation: \"builtin\"' packages/providers/src/catalog.ts（及 planned/unavailable/generic）",
-        "result": "builtin=7, planned=12, unavailable=2, generic=7, 合计 28 条；listAdapters() 同为 7（brave/searxng/hackernews/generic-http/mock/tavily/bocha），与 README「已实现适配器（7 类）」「目录共 28 条」一致"
+        "command": "node --import tsx scripts/check-doc-consistency.mjs",
+        "result": "PASS：catalog 58 条 / 50 builtin / 4 live_tested / 1 no_official_api / 7 generic；README 数字与 catalog 一致才通过"
       },
       {
-        "command": "corepack pnpm test:e2e（AC-15 用例）",
-        "result": "PASS：`仅目录 · 未实现` 可见；『支持 30 源』文案计数为 0"
+        "command": "node --import tsx scripts/generate-provider-matrix.mjs --check",
+        "result": "PASS：docs/provider-matrix.md 与 catalog 无漂移（该文件已改为生成，不再手写）"
       },
       {
-        "command": "grep '27 条|5 类|支持 30 源' README.md README_EN.md docs/ apps/web/src",
-        "result": "无遗留旧数字；README 已写『已实现适配器（7 类）』与 28 条目录明细"
+        "command": "corepack pnpm test:e2e",
+        "result": "PASS：目录中未实现标注可见；暗示性「支持 N 源」文案计数为 0"
       }
     ],
     "gaps": []

@@ -42,19 +42,29 @@ Search Hub packages that as a deployable service:
 
 ## Supported providers
 
-**Implemented adapters (7 kinds)**
+**Implemented adapters (50 kinds)**
+
+The table below lists the representative ones; the full, generated list is [`docs/provider-matrix.md`](./provider-matrix.md), which CI keeps in sync with `packages/providers/src/catalog.ts`.
 
 | Type | Auth | Notes | Verification |
 |---|---|---|---|
-| `tavily` | API key | Tavily Search API, `POST /search` + `Authorization: Bearer` | Implemented from official docs; **no live key, not integration-tested** |
-| `bocha` | API key | Bocha Web Search API, `POST /v1/web-search`, strong Chinese web coverage | Implemented from official docs; **no live key, not integration-tested** |
-| `brave` | API key | Brave Web Search API, `X-Subscription-Token` | Implemented from official docs; **no live key and the host is unreachable from this network** |
-| `hackernews` | None | HN Search official hosted API (Algolia); real technical-community results | **Live-tested** (real URLs and timestamps) |
-| `searxng` | Optional | Self-hosted `/search?format=json`; JSON output must be enabled | Implemented from official docs; **no live instance test** |
-| `generic-http` | Configurable | Declarative request + response mapping, covers long-tail APIs | Tested against a local mock server |
-| `mock` | None | Deterministic test source with latency/failure injection | Used by the automated suite |
+| `hackernews` | None | HN Search official hosted API (Algolia) | **live_tested** — evidence in `docs/live-evidence/hackernews.json` |
+| `crossref` / `openalex` / `pubmed` | None | Public scholarly APIs | **live_tested** — recorded calls in `docs/live-evidence/` |
+| `tavily` / `bocha` / `brave` / `searxng` | API key / optional | Written from official docs, covered by local contract tests | `documented` — **never called with a real key** |
+| `minimax` | Bearer | Coding Plan `web_search`, protocol taken from the official MCP source | `documented` — no Coding Plan credential here |
+| `metaso` / `metaso-mcp` | Bearer / none | Metaso `/api/v1/search`; plus an MCP compatibility entry | `documented` — endpoint and error envelope confirmed by a real unauthenticated probe |
+| `duckduckgo` | None | Instant Answer API only — it is not a general web search, and the adapter says so in `warnings` | `documented` — the adapter states this in `warnings` |
+| `gemini` / `grok` / `mimo` / `bailian` | API key | Grounded-answer adapters (`capability: grounded_answer`) | `documented` |
+| `doubao` / `deepseek-search` / `qianfan-search` / `tencent-yuanbao` / `stepfun` | API key / key pair | Native search adapters | `documented` |
+| `generic-http` | Configurable | Declarative request + response mapping | Tested against a local mock server |
+| `search-hub-legacy` | Optional | Calls an existing Search Hub REST `/api/search`; read-only, reversible | Contract-tested against a local fake |
+| `mock` | None | Deterministic test source | `mock_verified` — never counted as vendor coverage |
 
-**Catalogued but not implemented**: DuckDuckGo, Baidu, Metaso, AnySearch, Gemini, Grok, MiniMax, MiMo, DeepSeek, Doubao, Tencent Yuanbao, Alibaba Bailian, Baidu Qianfan, StepFun, plus seven private gateway presets. They either have no publicly verifiable official API or need a separate AI-search adapter. The UI labels them “catalog only · not implemented” and **refuses to create them**. Private gateways can be wired through `generic-http`.
+**Catalogue entries that cannot be created**: only `baidu`. It has no publicly available general web-search API, and scraping its HTML violates its terms, so the entry is kept as documentation. The seven `generic` presets (Search Gateway, Premium, ORZ Fetch and friends) **are** creatable — they need you to supply the endpoint and result paths.
+
+> 58 catalogue entries: 50 native adapters, 1 with no official API, 7 generic presets. A fresh install contains no sources; add them from the marketplace. The project **does not claim support for 58 search engines** — "in the catalogue" is not "verified working". See [docs/provider-matrix.md](./docs/provider-matrix.md) per provider.
+
+Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
 > The catalog has 29 entries: 8 usable adapters, 12 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 29 providers. Per-provider live-test gaps: [docs/provider-matrix.md](./docs/provider-matrix.md).
 
