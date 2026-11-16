@@ -52,18 +52,24 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
         ctx.authDeps,
         { scope: "search" },
       );
-      void actor;
       const { id } = request.params as { id: string };
       const task = ctx.search.getTask(id);
       if (!task) throw new SearchHubError("not_found", `Search task ${id} not found`);
-      return task;
+      // Task contents are per-caller data: a token must not read another
+      // caller's query or results just because it guessed the id.
+      const owner = actorLabel(actor);
+      if (task.actor !== null && task.actor !== owner) {
+        throw new SearchHubError("not_found", `Search task ${id} not found`);
+      }
+      const { actor: _owner, ...visible } = task;
+      return visible;
     }),
   );
 
   app.post(
     "/api/search/tasks/:id/cancel",
     jsonFor(app, async (request) => {
-      authenticate(
+      const actor = authenticate(
         {
           headers: request.headers as Record<string, string | string[] | undefined>,
           cookies: request.cookies as Record<string, string | undefined>,
@@ -73,7 +79,7 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
         { scope: "search", mutation: true },
       );
       const { id } = request.params as { id: string };
-      const cancelled = ctx.search.cancel(id);
+      const cancelled = ctx.search.cancel(id, actorLabel(actor));
       return { ok: cancelled, taskId: id };
     }),
   );

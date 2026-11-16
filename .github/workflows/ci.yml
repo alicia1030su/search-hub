@@ -179,3 +179,31 @@ jobs:
 
       - name: Secret scan (working tree and every git ref)
         run: node scripts/secret-scan.mjs
+
+  launcher:
+    name: Launcher lifecycle (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Drives the real launcher against throwaway stub servers: start, second
+      # instance, stale lock, foreign pid, health timeout, stop.
+      - name: Run launcher lifecycle tests
+        # The launcher shells out to node directly; the lifecycle test sets its
+        # own DATA_DIR per case and never touches a real instance.
+        run: node packaging/launcher/lifecycle-test.mjs

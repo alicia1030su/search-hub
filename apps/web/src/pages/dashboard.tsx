@@ -196,7 +196,11 @@ export function DashboardPage() {
             <MetricCard
               label={t("dashboard.metric.successRate")}
               value={formatPercent(data.totals.successRate)}
-              hint={formatNumber(data.totals.searches) + " " + t("common.requests")}
+              hint={t("dashboard.metric.successHint", {
+                partial: formatNumber(data.totals.partial ?? 0),
+                failed: formatNumber(data.totals.failed ?? 0),
+                cancelled: formatNumber(data.totals.cancelled ?? 0),
+              })}
               icon={TrendingUp}
             />
             <MetricCard

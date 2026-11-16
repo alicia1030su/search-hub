@@ -186,6 +186,7 @@ const zh = {
   "dashboard.title": "仪表盘",
   "dashboard.subtitle": "搜索调用、搜索源健康度与 Key 池的实时概览。",
   "dashboard.metric.searches": "搜索总数",
+  "dashboard.metric.successHint": "部分成功 {{partial}} · 失败 {{failed}} · 已取消 {{cancelled}}（取消不计入成功率）",
   "dashboard.metric.successRate": "成功率",
   "dashboard.metric.avgLatency": "平均耗时",
   "dashboard.metric.concurrency": "当前并发",

@@ -517,6 +517,9 @@ export interface DashboardStats {
   totals: {
     searches: number;
     successRate: number;
+    partial?: number;
+    failed?: number;
+    cancelled?: number;
     avgLatencyMs: number;
     resultCount: number;
   };

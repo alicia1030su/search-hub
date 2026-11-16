@@ -144,6 +144,34 @@ export class ModelService {
     return row ? this.toModel(row) : null;
   }
 
+  /**
+   * Resolves an explicitly requested model **only if it is enabled**.
+   *
+   * `get()` returns a disabled row as-is, so `?chatModelId=<disabled>` used to
+   * bypass the enable switch entirely and spend money on a model an operator had
+   * turned off. The admin-only test endpoint still uses `get()` on purpose: an
+   * administrator must be able to probe a disabled model before enabling it.
+   */
+  getEnabled(id: string, kind: ModelKind): ModelConfig {
+    const config = this.get(id);
+    if (!config) {
+      throw new SearchHubError("not_found", `Model ${id} not found`);
+    }
+    if (config.kind !== kind) {
+      throw new SearchHubError(
+        "validation_error",
+        `Model ${id} is a ${config.kind} model, not ${kind}.`,
+      );
+    }
+    if (!config.enabled) {
+      throw new SearchHubError(
+        "validation_error",
+        `Model "${config.name}" is disabled. Enable it in AI Models before using it in a request.`,
+      );
+    }
+    return config;
+  }
+
   getRow(id: string): typeof modelConfigs.$inferSelect | null {
     return this.db.select().from(modelConfigs).where(eq(modelConfigs.id, id)).get() ?? null;
   }
@@ -165,7 +193,7 @@ export class ModelService {
   }
 
   chatModel(id?: string): ChatModelImpl {
-    const config = id ? this.get(id) : this.findDefault("chat");
+    const config = id ? this.getEnabled(id, "chat") : this.findDefault("chat");
     if (!config || config.kind !== "chat") {
       throw new SearchHubError("validation_error", "No chat model is configured. Add one in AI Models.");
     }
@@ -173,7 +201,7 @@ export class ModelService {
   }
 
   embeddingModel(id?: string) {
-    const config = id ? this.get(id) : this.findDefault("embedding");
+    const config = id ? this.getEnabled(id, "embedding") : this.findDefault("embedding");
     if (!config || config.kind !== "embedding") {
       throw new SearchHubError(
         "validation_error",
@@ -187,7 +215,7 @@ export class ModelService {
   }
 
   rerankModel(id?: string) {
-    const config = id ? this.get(id) : this.findDefault("rerank");
+    const config = id ? this.getEnabled(id, "rerank") : this.findDefault("rerank");
     if (!config || config.kind !== "rerank") {
       throw new SearchHubError("validation_error", "No rerank model is configured. Add one in AI Models.");
     }

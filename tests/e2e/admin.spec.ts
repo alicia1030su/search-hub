@@ -93,7 +93,7 @@ test.describe("Search Hub 管理后台端到端", () => {
 
     // 1. Dashboard shows real metrics (zero state, not fake numbers).
     await expect(page.getByText("搜索总数")).toBeVisible();
-    await expect(page.getByText("成功率")).toBeVisible();
+    await expect(page.getByText("成功率", { exact: true })).toBeVisible();
     await expect(page.getByText("当前时间范围内没有搜索记录。")).toBeVisible();
 
     // 2. Providers: add two real mock providers through the UI.
@@ -170,7 +170,7 @@ test.describe("Search Hub 管理后台端到端", () => {
     await login(page);
     await page.goto("/providers");
     // The catalog now lives behind the marketplace tab.
-    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
     // Every provider that ships an adapter has one; the entries that do not are
     // labelled instead of pretending to be usable. After MiniMax and 秘塔 gained
     // adapters, `baidu` is the remaining "no official API" entry.
@@ -291,7 +291,7 @@ test.describe("Search Hub 管理后台端到端", () => {
   test("v0.1.4 市场批量添加多个源", async ({ page }) => {
     await login(page);
     await page.goto("/providers");
-    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
 
     await page.getByLabel("arXiv 选择").check();
     await page.getByLabel("GitHub 搜索 选择").check();
@@ -307,7 +307,7 @@ test.describe("Search Hub 管理后台端到端", () => {
   test("v0.1.4 批量启用跳过未配置凭证的源并说明原因", async ({ page }) => {
     await login(page);
     await page.goto("/providers");
-    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
     await page.getByLabel("Exa 选择").check();
     await page.getByRole("button", { name: "添加所选" }).click();
     await expect(page.getByText("exa", { exact: false }).filter({ visible: true }).first()).toBeVisible({
@@ -325,7 +325,7 @@ test.describe("Search Hub 管理后台端到端", () => {
   test("v0.1.4 搜索参数由 Manifest 驱动", async ({ page }) => {
     await login(page);
     await page.goto("/providers");
-    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
     await page.getByRole("button", { name: "添加此搜索源" }).first().click();
 
     await page.locator("#provider-type").selectOption("brave");
@@ -353,7 +353,7 @@ test.describe("Search Hub 管理后台端到端", () => {
     const enabledSwitches = page.locator('tr [role="switch"][aria-checked="true"]');
     const enabledBefore = await enabledSwitches.count();
 
-    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
     await page.getByRole("button", { name: "一键添加全部已实现" }).click();
     await expect(page.getByText("已添加", { exact: false }).first()).toBeVisible({ timeout: 25_000 });
 
@@ -363,7 +363,7 @@ test.describe("Search Hub 管理后台端到端", () => {
   test("v0.1.4 一键禁用全部搜索源", async ({ page }) => {
     await login(page);
     await page.goto("/providers");
-    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
     await page.getByRole("button", { name: "全部禁用" }).click();
     await expect(page.getByText("已禁用", { exact: false }).first()).toBeVisible({ timeout: 20_000 });
   });
@@ -377,7 +377,7 @@ test.describe("Search Hub 管理后台端到端", () => {
     const providerRows = page.locator("tbody tr");
     const arxivRows = providerRows.filter({ hasText: "arXiv" });
 
-    await page.getByRole("button", { name: /搜索源市场/ }).click();
+    await page.getByRole("button", { name: "搜索源市场", exact: true }).click();
     await page.getByLabel("arXiv 选择").check();
     await page.getByRole("button", { name: "添加所选" }).click();
     await expect(page.getByText("已添加 1 个搜索源", { exact: false }).first()).toBeVisible({ timeout: 20_000 });

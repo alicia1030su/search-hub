@@ -57,6 +57,10 @@ export function dashboardStats(
   const total = tasks.length;
   const completed = tasks.filter((task) => task.status === "completed").length;
   const partial = tasks.filter((task) => task.status === "partial").length;
+  const failed = tasks.filter((task) => task.status === "failed").length;
+  const cancelled = tasks.filter((task) => task.status === "cancelled").length;
+  // Cancelled runs are excluded: the user stopped them, the service did not fail.
+  const finished = completed + partial + failed;
   const durations = tasks
     .map((task) => task.durationMs ?? 0)
     .filter((value) => value > 0);
@@ -175,7 +179,10 @@ export function dashboardStats(
     range: { from: fromIso, to: toIso },
     totals: {
       searches: total,
-      successRate: total === 0 ? 0 : Number(((completed + partial) / total).toFixed(4)),
+      successRate: finished === 0 ? 0 : Number((completed / finished).toFixed(4)),
+      partial,
+      failed,
+      cancelled,
       avgLatencyMs: avgLatency,
       resultCount: tasks.reduce((sum, task) => sum + task.resultCount, 0),
     },
