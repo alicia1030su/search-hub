@@ -110,7 +110,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:v0.1.4-beta.6   # 仅在镜像验收通过后才存在
+docker pull ghcr.io/alicia1030su/search-hub:0.1.4-beta.6    # 预发布镜像，不带 v 前缀
 docker compose up -d                                        # 或从源码构建
 ```
 
