@@ -145,6 +145,11 @@ export interface SearchErrorSummary {
   providerName: string;
   code: ProviderErrorCode;
   message: string;
+  /**
+   * Set by deep search: the rewritten query this failure belongs to. Without it
+   * a caller cannot tell which sub-query produced the error.
+   */
+  query?: string;
 }
 
 /** Reason a provider could not be used, surfaced alongside partial results. */
@@ -765,7 +770,16 @@ export interface DashboardStats {
   range: DashboardRange;
   totals: {
     searches: number;
+    /**
+     * Share of *finished, non-cancelled* searches that completed. A user cancel
+     * is not a failure, so it is excluded from the denominator instead of
+     * dragging the rate down.
+     */
     successRate: number;
+    /** Finished searches that returned results with some upstream failure. */
+    partial: number;
+    failed: number;
+    cancelled: number;
     avgLatencyMs: number;
     resultCount: number;
   };

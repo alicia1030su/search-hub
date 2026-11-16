@@ -25,7 +25,9 @@
     "lint:fix": "oxlint --fix packages apps tests",
     "build:server": "node scripts/build-server.mjs",
     "start:dev": "pnpm --filter @search-hub/api dev",
-    "mcp:stdio": "node packages/mcp/dist/stdio.mjs"
+    "mcp:stdio": "node packages/mcp/dist/stdio.mjs",
+    "test:launcher": "node packaging/launcher/lifecycle-test.mjs",
+    "verify:package": "node packaging/verify-package.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",

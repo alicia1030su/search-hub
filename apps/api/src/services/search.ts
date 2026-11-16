@@ -54,6 +54,29 @@ function modeIncludesSummary(mode: SearchRequest["mode"]): boolean {
   return mode === "rerank_summary";
 }
 
+/**
+ * Stable identity of one provider *as configured right now*.
+ *
+ * The cache key must change when the endpoint, the vendor options or the
+ * platform search parameters change: reusing a cached response from an old
+ * configuration is indistinguishable from a stale result for the user. The
+ * fingerprint is deliberately short and versioned so the key stays readable
+ * when debugging a cache hit.
+ */
+function providerFingerprint(runtime: ProviderRuntime): string {
+  const config = runtime.config;
+  return [
+    config.id,
+    config.type,
+    config.baseUrl ?? "",
+    config.maxResults ?? "",
+    config.language ?? "",
+    config.freshness ?? "",
+    JSON.stringify(config.config ?? {}),
+    JSON.stringify(config.search ?? {}),
+  ].join("|");
+}
+
 export class SearchService {
   private readonly controllers = new Map<string, AbortController>();
   private readonly cache = new Map<string, { expiresAt: number; response: SearchResponse }>();
@@ -97,6 +120,13 @@ export class SearchService {
     const wantsEmbedding = request.embedding ?? modeIncludesEmbedding(mode);
     const wantsSummary = request.summarize ?? modeIncludesSummary(mode);
 
+    // An explicit model id must be validated up front: otherwise a disabled or
+    // mismatched id would only surface mid-search as a degraded response, and
+    // the caller would pay for provider calls that cannot use it.
+    if (request.rerankModelId) this.deps.models.getEnabled(request.rerankModelId, "rerank");
+    if (request.embeddingModelId) this.deps.models.getEnabled(request.embeddingModelId, "embedding");
+    if (request.chatModelId) this.deps.models.getEnabled(request.chatModelId, "chat");
+
     // Fail fast before spending provider quota when an optional model is missing.
     if (wantsRerank && !this.deps.models.findDefault("rerank")) {
       throw new SearchHubError("validation_error", "Rerank was requested but no rerank model is configured.");
@@ -116,13 +146,22 @@ export class SearchService {
 
     const startedAt = Date.now();
     const cacheConfig = settings.cache;
+    // Every input that can change the *content* of the response belongs in the
+    // key. The previous key omitted includeRaw, perProviderLimit, timeoutMs, the
+    // capability filter and the provider configuration itself, so a request that
+    // asked for less could be served a richer cached response (leaking the raw
+    // payload) or reuse results from a provider whose endpoint had since changed.
     const cacheKey = JSON.stringify({
       query: request.query,
       mode,
-      providers: runtimes.map((runtime) => runtime.config.id).sort(),
+      capability: capability ?? null,
+      providers: runtimes.map(providerFingerprint).sort(),
       limit: request.limit ?? settings.defaults.limit,
+      perProviderLimit: request.perProviderLimit ?? null,
+      timeoutMs: request.timeoutMs ?? null,
       language: request.language ?? null,
       freshness: request.freshness ?? null,
+      includeRaw: request.includeRaw === true,
       rerank: wantsRerank,
       embedding: wantsEmbedding,
       summarize: wantsSummary,
@@ -150,7 +189,9 @@ export class SearchService {
             id: taskId,
             query: request.query,
             mode,
-            status: "completed",
+            // A cached partial must stay partial: recording it as completed would
+            // inflate the dashboard success rate.
+            status: cached.status,
             providersJson: JSON.stringify(runtimes.map((runtime) => runtime.config.id)),
             resultCount: cached.results.length,
             rawCount: cached.stats.rawCount,
@@ -199,7 +240,9 @@ export class SearchService {
       if (wantsRerank && mode !== "deep") {
         response = await this.applyRerank(response, request, controller.signal);
       }
-      if (wantsSummary || mode === "deep") {
+      // A failed response has no results to summarize; calling the model would
+      // add a second, misleading error on top of the real provider failure.
+      if ((wantsSummary || mode === "deep") && response.status !== "failed") {
         response = await this.applySummary(response, request, controller.signal);
       }
 
@@ -210,7 +253,7 @@ export class SearchService {
       this.persistTask(taskId, response, cancelled ? "cancelled" : null);
       dbWriteMs += performance.now() - persistStarted;
       response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
-      if (cacheUsable && response.status !== "failed") {
+      if (cacheUsable && response.status !== "failed" && !cancelled) {
         this.cache.set(cacheKey, {
           expiresAt: Date.now() + cacheConfig.ttlSeconds * 1000,
           response: structuredClone(response),
@@ -241,7 +284,15 @@ export class SearchService {
     }
   }
 
-  cancel(taskId: string): boolean {
+  /**
+   * Cancels a running task. `actor` is optional only for internal callers; the
+   * HTTP route always passes it so one token cannot abort another's search.
+   */
+  cancel(taskId: string, actor?: string): boolean {
+    if (actor !== undefined) {
+      const task = this.getTask(taskId);
+      if (task && task.actor !== null && task.actor !== actor) return false;
+    }
     const controller = this.controllers.get(taskId);
     if (!controller) return false;
     controller.abort(new Error("cancelled by user"));
@@ -257,6 +308,8 @@ export class SearchService {
     finishedAt: string | null;
     durationMs: number | null;
     response: SearchResponse | null;
+    /** Who ran it. Routes compare this with the caller before returning data. */
+    actor: string | null;
   } | null {
     const row = this.deps.db.select().from(searchTasks).where(eq(searchTasks.id, taskId)).get();
     if (!row) return null;
@@ -277,6 +330,7 @@ export class SearchService {
       finishedAt: row.finishedAt,
       durationMs: row.durationMs,
       response,
+      actor: row.actor,
     };
   }
 
@@ -368,24 +422,83 @@ export class SearchService {
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
 
+    // Each rewrite is its own search. A sub-search that comes back with
+    // `status: "failed"` is NOT a usable result: it means every provider for
+    // that query failed. Treating it as valid is how a deep search used to
+    // report `completed` with zero results.
     const outcomes = await Promise.all(
       queries.map(async (query) => {
         try {
-          return await executeSearch(
+          const response = await executeSearch(
             deps,
             { ...request, query, mode: "rrf", summarize: false, timeoutMs: request.timeoutMs },
             { signal, taskId },
           );
-        } catch {
-          return null;
+          return { query, index: queries.indexOf(query), response };
+        } catch (error) {
+          return { query, index: queries.indexOf(query), response: null, error };
         }
       }),
     );
 
-    const valid = outcomes.filter((item): item is SearchResponse => item !== null);
-    if (valid.length === 0) {
-      throw new SearchHubError("server_error", "Deep search failed for every rewritten query");
+    // Indexed rather than matched by query text: two rewrites can be identical,
+    // and matching by string would then mark both as succeeded together.
+    const succeeded = outcomes.filter(
+      (outcome): outcome is { query: string; index: number; response: SearchResponse } =>
+        outcome.response !== null && outcome.response.status !== "failed",
+    );
+    const succeededIndexes = new Set(succeeded.map((outcome) => outcome.index));
+    const failed = outcomes.filter((outcome) => !succeededIndexes.has(outcome.index));
+
+    /** Failure entries for rewrites that produced no usable response. */
+    const queryFailures = (): SearchErrorSummary[] =>
+      failed.map((outcome) => {
+        const detail = outcome.response
+          ? outcome.response.errors.map((item) => item.message).join("; ") || "all providers failed"
+          : outcome.error instanceof Error
+            ? outcome.error.message
+            : String(outcome.error);
+        const code = outcome.response?.errors[0]?.code ?? "unknown";
+        return {
+          providerId: outcome.response?.errors[0]?.providerId ?? "deep-query",
+          providerName: "Deep search",
+          code,
+          message: `Query "${outcome.query}" failed: ${detail}`,
+          query: outcome.query,
+        };
+      });
+
+    if (succeeded.length === 0) {
+      // Return a *failed* response instead of throwing: the caller then gets the
+      // per-query failure list, REST answers 503, and the task row records
+      // `failed` with the same errors. Throwing would lose that structure.
+      const failures = queryFailures();
+      return {
+        taskId,
+        query: request.query,
+        mode: "deep",
+        status: "failed",
+        results: [],
+        stats: {
+          rawCount: 0,
+          dedupedCount: 0,
+          fusedCount: 0,
+          providers: [],
+          rerankApplied: false,
+          embeddingApplied: false,
+          summaryApplied: false,
+          partial: true,
+          degraded: false,
+          timing: { totalMs: 0, fanoutMs: 0, fusionMs: 0 },
+          
+        },
+        errors: failures,
+        failedSources: failures.map((item) => ({ id: item.providerId, code: item.code })),
+        debug: { rewrittenQueries: queries },
+      };
     }
+
+    const valid = succeeded.map((outcome) => outcome.response);
 
     const merged = new Map<string, SearchResult>();
     for (const response of valid) {
@@ -429,12 +542,16 @@ export class SearchService {
       }
     }
 
-    const errors = valid.flatMap((response) => response.errors);
+    // Errors from every rewrite, plus one entry per rewrite that failed
+    // outright. Without the second group a deep search over 3 queries where 1
+    // failed would look like a clean `completed`.
+    const errors: SearchErrorSummary[] = [...valid.flatMap((response) => response.errors), ...queryFailures()];
+    const anyFailure = failed.length > 0 || valid.some((response) => response.status === "partial");
     return {
       ...base,
       query: request.query,
       mode: "deep",
-      status: valid.some((response) => response.status === "partial") ? "partial" : "completed",
+      status: anyFailure ? "partial" : "completed",
       results,
       stats: {
         ...base.stats,
@@ -442,8 +559,10 @@ export class SearchService {
         dedupedCount: results.length,
         fusedCount: results.length,
         providers: [...providerStats.values()],
+        partial: errors.length > 0,
         timing: { ...base.stats.timing, totalMs: 0 },
       },
+      failedSources: errors.map((item) => ({ id: item.providerId, code: item.code })),
       errors,
       debug: {
         ...base.debug,

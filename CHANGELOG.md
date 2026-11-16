@@ -239,6 +239,46 @@ of being counted by hand.
 - **AC-14 rejected-types path is fixed, but the source of the 501 was shared**
   with `unsupported` (still 501 for genuinely unsupported protocol requests).
 
+### beta.6 stability audit (2026-11-16)
+
+Seven defects found by reproducing behaviour on a running instance, not by
+reading code alone. Full evidence in `docs/beta6-audit.md`.
+
+- **Deep search lied about success.** `runDeep` treated a `status:"failed"`
+  sub-response as usable, so every-provider-down returned `200 / completed / 0
+  results`, and the task row said `completed`. It now keys on the sub-query
+  index, returns `failed` with per-query errors when nothing succeeded, and
+  `partial` when some did. A failed response no longer calls the summary model.
+- **Cache key was incomplete** (missing includeRaw, perProviderLimit, timeoutMs,
+  capability, and the provider configuration itself). A `includeRaw:false`
+  request could hit an entry written by `includeRaw:true`; changing a provider's
+  endpoint or search parameters reused stale results. The key now includes those
+  fields plus a per-provider configuration fingerprint.
+- **Cache hits recorded `completed` unconditionally**, inflating the dashboard
+  even when the cached response was `partial`. The cached status is preserved and
+  cancelled runs are no longer cached.
+- **Explicit model ids bypassed `enabled`.** `chatModel(id)` used `get()`, so a
+  disabled model could still be invoked (and billed) by a normal search request.
+  Added `getEnabled()`; the admin test endpoint keeps `get()` so an operator can
+  probe before enabling.
+- **Cross-token task access (severe).** `GET /api/search/tasks/:id` authenticated
+  but ignored the actor (`void actor;`), and `cancel()` had no ownership check:
+  any token could read another caller's query and cancel their search. Both now
+  enforce ownership and answer 404 rather than leaking existence.
+- **Launcher lock/stop were unsafe.** Non-atomic lock (two double-clicks both
+  proceeded), PID-only identity (PID reuse could signal an unrelated process),
+  stale locks that blocked startup forever, and `--stop` printing success then
+  deleting the lock even when the process survived. Now: O_EXCL lock, start-time
+  identity check, atomic reclaim, verified stop (exit 8 + keep the lock on
+  timeout), signal forwarding, and a killed child on health timeout.
+- **Dashboard success rate counted user cancels as failures** and partials as
+  successes. The rate now covers finished non-cancelled runs only, with partial /
+  failed / cancelled exposed separately.
+
+Tests: 572 Vitest (14 new in `tests/integration/beta6-stability.test.ts`),
+17 Playwright, plus `packaging/launcher/lifecycle-test.mjs` (12 assertions) wired
+into a new Windows CI job.
+
 ### MiniMax, Metaso and standalone packages (2026-11-15)
 
 **MiniMax Coding Plan** — protocol taken from the official MCP source rather than
