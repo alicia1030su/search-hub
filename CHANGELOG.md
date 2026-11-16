@@ -4,6 +4,84 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.5-beta.1 (2026-11-16)
+
+Provider health management, measured MCP protocol reporting, Agent Skills
+validation and update staging.
+
+### Provider health
+
+- Two probe kinds, kept separate: `connect` (free) and `search` (paid). Paid
+  probes are **refused with 400** when disabled or when the budget is exhausted —
+  never silently downgraded, because a downgrade reads as success.
+- Causes are classified by what they mean operationally: `auth_invalid`,
+  `forbidden`, `rate_limited`, `quota_exceeded`, `network`, `dns`, `tls`,
+  `timeout`, `empty_results`. A quota problem is parked until the next UTC
+  midnight; a rate limit waits for `Retry-After`. Retrying a quota-exhausted key
+  in a minute only fails again and costs another request.
+- A source with no credential is `unverified`, never `healthy`. A source that
+  answers HTTP 200 with zero results is `degraded`, never `healthy`.
+- Per-run and per-day budgets are checked *before* each request. The first
+  implementation only checked the daily counter, so "check all" ignored
+  `maxRequestsPerRun` entirely; that is fixed and covered by a test.
+- Health is stored in its own table (`provider_health_checks`, migration 0003) so
+  a failing probe can never be mistaken for "disabled by the administrator".
+- P50/P95 come from live search traffic only; probes cannot inflate them.
+
+### Health-aware failover
+
+- `quota_exhausted` is terminal for the day: the key scheduler skips it instead of
+  rotating to another key of the same exhausted account.
+- Verified: one healthy + one failing source → `partial` with `failedSources`;
+  all failing → `failed` with zero results.
+
+### MCP protocol status (measured, not assumed)
+
+- The installed SDK is `@modelcontextprotocol/server@2.4.0`; its
+  `LATEST_PROTOCOL_VERSION` is `2025-11-25`. A real `initialize` with
+  `2026-07-28` is **downgraded to 2025-11-25**. v0.1.5 therefore reports
+  `revision2026Supported: false` and says why, instead of claiming compatibility
+  by changing a version string. Evidence: `docs/mcp-protocol.md`.
+- Update checking consults only the npm registry and the GitHub releases API,
+  caches for 30 minutes, and reports `unknown` rather than "up to date" on
+  failure. Protocol, SDK and application updates are three separate kinds.
+- `tools/list_changed` is deliberately not sent: the tool catalogue is static, so
+  the notification would ask clients to refetch a list that cannot have changed.
+
+### Agent Skills
+
+- Local validator for the Agent Skills specification: name pattern, length and
+  directory match; description and compatibility bounds; reference containment;
+  symlink escape; SKILL.md size. All three bundled skills validate clean.
+- `GET /api/admin/skills` returns validation, `/:name` returns content,
+  `/:name/export` streams a ZIP built in-process. Path traversal is refused
+  (400) before any path is built.
+
+### Updates
+
+- Checksums come from the **release metadata** (GitHub's server-side `sha256:`
+  digest), not from a `SHA256SUMS` file shipped next to the download: a tampered
+  release would carry a matching tampered sums file.
+- Size mismatch, missing digest and hash mismatch all refuse the package and
+  delete the staged file. Docker is refused outright.
+- Installing is intentionally not implemented in the server process: replacing a
+  running executable is the launcher's job.
+
+### Web
+
+- New 健康监控 tab: status badges, P50/P95, success rate, key availability, the
+  probe budget, and a per-source probe button. `unverified` is a first-class
+  state, never rendered as healthy.
+
+### Known gaps in this beta
+
+- Skills over MCP (`skills/list`, `skills.attach()`) is not implemented: the SDK
+  ships no runtime export for that extension and it is experimental.
+- The launcher-side installer (replace + rollback) is not implemented yet; only
+  check, download, verify and stage exist.
+- No vendor credentials exist in this environment, so `documented` sources remain
+  `unverified` rather than healthy.
+
 ## v0.1.4-beta.6 (2026-11-16)
 
 Security release. Supersedes beta.5.
