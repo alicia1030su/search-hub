@@ -27,6 +27,12 @@ import type {
   SetupStatus,
   SkillEntry,
   TokenCreateResult,
+  HealthOverview,
+  HealthCheckResult,
+  McpStatus,
+  McpUpdateCheck,
+  SkillSummary,
+  UpdateStatusResponse,
 } from "./types";
 
 const API_PREFIX = "/api";
@@ -286,6 +292,26 @@ export const api = {
       body: { config },
     }),
 
+  // ---- provider health ----
+  healthOverview: (signal?: AbortSignal) =>
+    request<HealthOverview>("/admin/health", { signal }),
+  healthCheck: (input: { providerId?: string; providerIds?: string[]; kind?: "connect" | "search" }) =>
+    request<{ results: HealthCheckResult[]; skipped: Array<{ providerId: string; reason: string }> }>(
+      "/admin/health/check",
+      { method: "POST", body: { kind: "connect", ...input } },
+    ),
+  healthHistory: (providerId: string, signal?: AbortSignal) =>
+    request<{ checks: HealthCheckResult[] }>(`/admin/health/history?providerId=${seg(providerId)}`, {
+      signal,
+    }),
+
+  // ---- MCP / skills / updates ----
+  mcpStatus: (signal?: AbortSignal) => request<McpStatus>("/admin/mcp", { signal }),
+  mcpUpdateCheck: () =>
+    request<McpUpdateCheck>("/admin/mcp/update-check", { method: "POST", body: { force: true } }),
+  updateStatus: (signal?: AbortSignal) =>
+    request<UpdateStatusResponse>("/admin/update", { signal }),
+
   // ---- keys ----
   providerKeys: (providerId: string, signal?: AbortSignal) =>
     request<ApiKeySummary[]>(`/admin/providers/${seg(providerId)}/keys`, { signal }),
@@ -349,9 +375,17 @@ export const api = {
     request<{ logs: AuditLog[] }>("/admin/audit", { query: params, signal }),
 
   // ---- integrations ----
+  mcpInfo: (signal?: AbortSignal) => request<McpInfo>("/mcp/info", { signal }),
+  skillsValidated: (signal?: AbortSignal) =>
+    request<{ skills: SkillSummary[]; summary: { total: number; valid: number; invalid: number } }>(
+      "/admin/skills",
+      { signal },
+    ),
+  skillDetail: (name: string, signal?: AbortSignal) =>
+    request<SkillSummary & { content: string | null }>(`/admin/skills/${seg(name)}`, { signal }),
+  /** Legacy shape used by the integrations page: name + description + content. */
   skills: (signal?: AbortSignal) =>
     request<{ skills: SkillEntry[] }>("/admin/skills", { signal }),
-  mcpInfo: (signal?: AbortSignal) => request<McpInfo>("/mcp/info", { signal }),
   exportConfig: () => request<Record<string, unknown>>("/admin/config/export"),
   /** The API wraps imports as { config } (see admin-routes importHandler). */
   importConfig: (config: Record<string, unknown>) =>

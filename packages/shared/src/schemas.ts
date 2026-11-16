@@ -279,6 +279,20 @@ export const settingsUpdateSchema = z.object({
       ttlSeconds: z.number().int().min(0).max(86_400).optional(),
     })
     .optional(),
+  /**
+   * Provider health policy. Defaults keep scheduled probing off and cap paid
+   * probes, so enabling this page can never start spending on its own.
+   */
+  health: z
+    .object({
+      scheduledEnabled: z.boolean().optional(),
+      intervalMinutes: z.number().int().min(5).max(10_080).optional(),
+      maxRequestsPerRun: z.number().int().min(1).max(200).optional(),
+      maxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
+      paidProbesEnabled: z.boolean().optional(),
+      includeUnverified: z.boolean().optional(),
+    })
+    .optional(),
   logging: z
     .object({
       level: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).optional(),

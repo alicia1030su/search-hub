@@ -24,6 +24,8 @@ import {
   type UploadedSnapshot,
 } from "../services/backup.js";
 import { newId } from "../security/crypto.js";
+import { validateAllSkills } from "../services/skills.js";
+import { existsSync as fileExists, readFileSync as readFile } from "node:fs";
 import { REPO_ROOT } from "../config.js";
 
 function actorOf(request: FastifyRequest, ctx: AppContext, mutation = false): Actor {
@@ -196,30 +198,36 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
     }),
   );
 
+  /**
+   * Skills listing, validated against the Agent Skills specification.
+   *
+   * Validation is not a separate button: a skill that does not meet the spec must
+   * show up as invalid here, otherwise the UI would present a broken skill as
+   * installable.
+   */
   app.get(
     "/api/admin/skills",
     jsonFor(app, async (request) => {
       requireAdmin(actorOf(request, ctx));
-      const fs = await import("node:fs/promises");
-      const path = await import("node:path");
-      // Path is derived from the install root, not from this module's location,
-      // so the bundled server (apps/api/dist) resolves it the same way.
-      const root = path.join(REPO_ROOT, "packages", "skills");
-      const skills = await Promise.all(
-        SKILL_DEFINITIONS.map(async (definition) => {
-          try {
-            const content = await fs.readFile(path.join(root, definition.name, "SKILL.md"), "utf8");
-            return { ...definition, content, installPath: `packages/skills/${definition.name}/SKILL.md` };
-          } catch {
-            return {
-              ...definition,
-              content: null,
-              installPath: `packages/skills/${definition.name}/SKILL.md`,
-            };
-          }
-        }),
-      );
-      return { skills };
+      const root = join(REPO_ROOT, "packages", "skills");
+      const skills = validateAllSkills(root);
+      return {
+        skills: skills.map((item) => ({
+          ...item,
+          // Legacy fields kept for the integrations page: a client that only
+          // wants to show name/description should not have to read the
+          // validation report.
+          description: item.metadata.description ?? "",
+          content: readSkillContent(item.directory),
+          installPath: `packages/skills/${item.directory}/SKILL.md`,
+          builtin: true,
+        })),
+        summary: {
+          total: skills.length,
+          valid: skills.filter((item) => item.valid).length,
+          invalid: skills.filter((item) => !item.valid).length,
+        },
+      };
     }),
   );
 
@@ -679,3 +687,14 @@ function importConfig(
 }
 
 export { MCP_TOOLS, SKILL_DEFINITIONS };
+
+/** SKILL.md contents, or null when the skill is missing the file. */
+function readSkillContent(directory: string): string | null {
+  const path = join(REPO_ROOT, "packages", "skills", directory, "SKILL.md");
+  if (!fileExists(path)) return null;
+  try {
+    return readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+}

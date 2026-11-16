@@ -350,7 +350,11 @@ export class KeyScheduler {
   private hasPotentiallyUsableKey(now: number): boolean {
     for (const key of this.keys) {
       if (!key.enabled) continue;
-      if (key.status === "invalid" || key.status === "disabled") continue;
+      // `quota_exhausted` is terminal for the day: retrying it costs a request
+      // and always fails, so it must not be offered as a usable key.
+      if (key.status === "invalid" || key.status === "disabled" || key.status === "quota_exhausted") {
+        continue;
+      }
       this.refreshKey(key, now);
       if (key.cooldownUntilMs !== null && key.cooldownUntilMs - now > 60_000) continue;
       if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) continue;
@@ -577,7 +581,11 @@ export class KeyScheduler {
       this.refreshKey(key, now);
 
       if (!key.enabled) continue;
-      if (key.status === "invalid" || key.status === "disabled") continue;
+      // `quota_exhausted` is terminal for the day: retrying it costs a request
+      // and always fails, so it must not be offered as a usable key.
+      if (key.status === "invalid" || key.status === "disabled" || key.status === "quota_exhausted") {
+        continue;
+      }
       if (key.cooldownUntilMs !== null) continue;
       if (key.inFlight >= this.perKeyConcurrency) continue;
       if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) continue;

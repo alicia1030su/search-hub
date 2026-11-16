@@ -4,11 +4,14 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "./context.js";
 import { registerAuthRoutes } from "./routes/auth-routes.js";
 import { registerSearchRoutes } from "./routes/search-routes.js";
+import { registerHealthRoutes } from "./routes/health-routes.js";
+import { registerMcpAdminRoutes } from "./routes/mcp-admin-routes.js";
 import { registerProviderRoutes } from "./routes/provider-routes.js";
 import { registerModelRoutes } from "./routes/model-routes.js";
 import { registerAdminRoutes } from "./routes/admin-routes.js";
@@ -16,6 +19,58 @@ import { registerMcpRoutes } from "./routes/mcp-routes.js";
 import { registerOpenApiRoutes } from "./routes/openapi-routes.js";
 import { sendError } from "./http.js";
 import { isAllowedHost } from "./security/host.js";
+import { REPO_ROOT } from "./config.js";
+import { MCP_TOOL_COUNT } from "@search-hub/mcp";
+
+/**
+ * Protocol constants of the installed MCP SDK, read from its own shipped files.
+ *
+ * The deep import path is not a public entry point, so a version bump could
+ * break an `import`. Reading the dist files keeps the admin page working across
+ * SDK releases and degrades to "unknown" instead of crashing.
+ */
+function resolveSdkProtocolFiles(): string[] {
+  try {
+    const require = createRequire(import.meta.url);
+    // Resolve the server entry, then walk to its own dependency directory: the
+    // core package's `./package.json` subpath is not exported, so it cannot be
+    // used directly.
+    const serverEntry = require.resolve("@modelcontextprotocol/server");
+    const serverDir = dirname(serverEntry);
+    const coreDir = join(dirname(dirname(serverDir)), "core", "dist");
+    return [join(coreDir, "internal.cjs"), ...readDistFiles(coreDir)];
+  } catch {
+    return [];
+  }
+}
+
+function readDistFiles(dir: string): string[] {
+  try {
+    const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith(".cjs"))
+      .map((name) => join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
+function readSdkVersion(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("@modelcontextprotocol/server");
+    // The package's `exports` map hides `./package.json`, so read it from the
+    // resolved location instead of importing it.
+    const raw = require("node:fs").readFileSync(join(dirname(entry), "..", "package.json"), "utf8");
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+const MCP_SDK_VERSION = readSdkVersion();
 import { registerBackupUploadParser } from "./services/backup.js";
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
@@ -101,6 +156,13 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
 
   registerAuthRoutes(app, ctx);
   registerSearchRoutes(app, ctx);
+  registerHealthRoutes(app, ctx);
+  registerMcpAdminRoutes(app, ctx, {
+    repoRoot: REPO_ROOT,
+    sdkFiles: () => resolveSdkProtocolFiles(),
+    sdkVersion: MCP_SDK_VERSION,
+    toolCount: () => MCP_TOOL_COUNT,
+  });
   registerProviderRoutes(app, ctx);
   registerModelRoutes(app, ctx);
   registerAdminRoutes(app, ctx);

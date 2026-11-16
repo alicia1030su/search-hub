@@ -634,3 +634,112 @@ export interface GroupInput {
   description?: string;
   providerIds: string[];
 }
+
+// ---- v0.1.5: provider health ----
+
+export type HealthStatusValue = "healthy" | "degraded" | "unhealthy" | "unverified";
+export type HealthProbeKindValue = "connect" | "search";
+
+export interface HealthCheckResult {
+  id: string;
+  providerId: string;
+  providerName: string;
+  providerType: string;
+  keyId: string | null;
+  kind: HealthProbeKindValue;
+  status: HealthStatusValue;
+  cause: string;
+  errorCode: string | null;
+  latencyMs: number | null;
+  resultCount: number | null;
+  healthScore: number;
+  message: string;
+  checkedAt: string;
+  trigger: string;
+  cooldownUntil: string | null;
+}
+
+export interface ProviderHealthRow {
+  providerId: string;
+  providerName: string;
+  providerType: string;
+  enabled: boolean;
+  status: HealthStatusValue;
+  healthScore: number;
+  lastCheckedAt: string | null;
+  lastSuccessAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  consecutiveFailures: number;
+  successRate: number | null;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  searchCalls: number;
+  keyAvailable: number;
+  keyTotal: number;
+  lastProbe: {
+    kind: HealthProbeKindValue;
+    status: HealthStatusValue;
+    checkedAt: string;
+    errorCode: string | null;
+    resultCount: number | null;
+  } | null;
+  trend: Array<{ bucket: string; healthy: number; degraded: number; unhealthy: number }>;
+}
+
+export interface HealthOverview {
+  generatedAt: string;
+  providers: ProviderHealthRow[];
+  totals: Record<HealthStatusValue, number>;
+  budget: {
+    maxPerRun: number;
+    maxPerDay: number;
+    usedToday: number;
+    remainingToday: number;
+    paidProbesEnabled: boolean;
+    scheduledEnabled: boolean;
+  };
+}
+
+export interface McpStatus {
+  sdkLatest: string;
+  sdkSupported: string[];
+  serverVersion: string;
+  sdkVersion: string;
+  transports: { http: string; stdio: string };
+  toolCount: number;
+  revision2026Supported: boolean;
+  notes: string[];
+}
+
+export interface McpUpdateCheck {
+  checkedAt: string;
+  source: string;
+  sdk: { installed: string; latest: string | null; updateAvailable: boolean | null; error: string | null; releaseNotesUrl: string };
+  protocol: { current: string; latestDeclared: string | null; revision2026Supported: boolean };
+  application: { currentVersion: string; latestTag: string | null; updateAvailable: boolean | null; error: string | null; releaseUrl: string };
+  kinds: Array<{ kind: "protocol" | "sdk" | "application"; action: string; requiresRestart: boolean }>;
+}
+
+export interface SkillSummary {
+  name: string;
+  directory: string;
+  valid: boolean;
+  issues: Array<{ level: "error" | "warning"; field: string; message: string }>;
+  metadata: { name: string | null; description: string | null; license: string | null; version: string | null };
+  files: Array<{ path: string; bytes: number }>;
+  references: string[];
+  installPath?: string;
+  builtin?: boolean;
+}
+
+export interface UpdateStatusResponse {
+  currentVersion: string;
+  deployment: "standalone" | "docker";
+  latest: { tag: string; version: string; publishedAt: string; notesUrl: string; prerelease: boolean } | null;
+  updateAvailable: boolean | null;
+  matchingAsset: string | null;
+  error: string | null;
+  checkedAt: string;
+  pending: { version: string; assetName: string; stagedAt: string } | null;
+}

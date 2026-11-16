@@ -17,6 +17,7 @@ import { clearGeneratedSetupToken, ensureSetupToken, type SetupTokenState } from
 import { SettingsService } from "./services/settings.js";
 import { ProviderService } from "./services/providers.js";
 import { ModelService } from "./services/models.js";
+import { HealthService } from "./services/health.js";
 import { SearchService } from "./services/search.js";
 import { SessionService, TokenService, type AuthDependencies } from "./auth.js";
 
@@ -59,6 +60,8 @@ export interface AppContext {
   providers: ProviderService;
   models: ModelService;
   search: SearchService;
+  /** Provider health probes and the aggregated dashboard view. */
+  health: HealthService;
   logger: PinoLogger;
   appLogger: Logger;
   fetch: SafeFetch;
@@ -188,6 +191,13 @@ export function createContext(config: AppConfig): AppContext {
     providers,
     models,
     search,
+    health: new HealthService({
+      db: handle.db,
+      settings,
+      providers,
+      fetch: fetchProxy,
+      appLogger,
+    }),
     logger,
     appLogger,
     fetch: fetchProxy,

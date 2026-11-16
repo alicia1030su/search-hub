@@ -240,3 +240,36 @@ export type SearchEventRow = typeof searchEvents.$inferSelect;
 export type AccessTokenRow = typeof accessTokens.$inferSelect;
 export type SettingRow = typeof settings.$inferSelect;
 export type AuditLogRow = typeof auditLogs.$inferSelect;
+
+/**
+ * One row per completed health probe.
+ *
+ * `kind` separates a free connectivity probe from a paid search probe; the
+ * dashboard must never blend them into a single "healthy" number.
+ */
+export const providerHealthChecks = sqliteTable(
+  "provider_health_checks",
+  {
+    id: text("id").primaryKey(),
+    providerId: text("provider_id").notNull(),
+    keyId: text("key_id"),
+    /** "connect" (free: DNS/TLS/auth) or "search" (may cost money). */
+    kind: text("kind").notNull(),
+    /** "healthy" | "degraded" | "unhealthy" | "unverified". */
+    status: text("status").notNull(),
+    errorCode: text("error_code"),
+    latencyMs: integer("latency_ms"),
+    resultCount: integer("result_count"),
+    healthScore: integer("health_score").notNull().default(0),
+    detailJson: text("detail_json").notNull().default("{}"),
+    /** "manual" | "schedule" | "recovery" | "search". */
+    trigger: text("trigger").notNull(),
+    checkedAt: text("checked_at").notNull(),
+  },
+  (table) => [
+    index("idx_health_provider_time").on(table.providerId, table.checkedAt),
+    index("idx_health_checked_at").on(table.checkedAt),
+  ],
+);
+
+export type ProviderHealthCheckRow = typeof providerHealthChecks.$inferSelect;
