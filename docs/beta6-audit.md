@@ -138,3 +138,29 @@ B cancels A's task: 200 {"ok":false}
 - **API**：`SearchErrorSummary` 只新增可选 `query`；`DashboardStats.totals` 只新增可选计数。
   响应形状向后兼容。
 - **已发布用户数据**：不需要迁移；唯一“历史不准确”的是旧 deep 记录的 status，已在报告中标注。
+
+## 黑盒验证：用已发布的 beta.5 安装包复现，再用修复后的包验证
+
+不是只在源码运行环境里测：把 Release 里的 `windows-x64.zip` 解压、用 `SearchHub.exe` 起服务，
+通过 REST 复现两条最严重的缺陷。
+
+**beta.5（已发布产物）**
+```
+beta.5 package → HTTP 200 status=completed results=0
+beta.5 package → bob reads alice's task: HTTP 200 leaked=YES
+```
+**修复后的包（同一条脚本、同一个 SQLite/launcher 布局）**
+```
+fixed package → HTTP 503 status=failed results=0
+fixed package → bob reads alice's task: HTTP 404 leaked=no
+```
+脚本：`.data/audit/blackbox.mjs`（对照 `packaging/verify-package.mjs` 的完整生命周期验收）。
+
+## Windows / Linux / Docker 验证
+
+| 平台 | 方式 | 结果 |
+|---|---|---|
+| Windows x64 | 打包 → `verify-package.mjs` 全项通过；黑盒复测缺陷已消失 | 通过 |
+| Windows 启动器 | `lifecycle-test.mjs` 12 项（含第二次双击、陈旧锁、无关 PID、健康超时、停止确认） | 通过，已接入 CI |
+| Linux x64 / arm64 | CI `Release packages` 工作流在对应架构 runner 上跑同一套启动验收 | 由 CI 覆盖 |
+| Docker | `Image, compose stack, MCP and 11-item acceptance`（24/24、Trivy 0/0） | 通过 |
