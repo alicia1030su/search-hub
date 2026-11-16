@@ -4,6 +4,60 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.6-beta.1 (2026-11-16)
+
+Health monitoring exposed over every surface, health-gated search, and a safe
+program updater. Supersedes `v0.1.5-beta.1`, which shipped without the MiniMax /
+Metaso / Metaso-MCP catalogue entries.
+
+### Provider health
+
+- **MCP**: `get_provider_health` (tool count 10 → 11). Read-only by construction —
+  it reads the last recorded probes and has no path to `checkOne`, so a
+  search-scope token cannot spend vendor quota through it.
+- **`/api/mcp/health`**: a projection for the stdio bridge with the same derived
+  fields and none of the sensitive ones (no base URL, no history, no key
+  material). `/api/admin/health` still requires the admin scope; a search token
+  gets 403, covered by a test.
+- **Dashboard**: live per-source status, last check, P50, success rate and error
+  code — the same `HealthOverview` the 健康监控 tab and the MCP tool read.
+- **Health-gated search**: only `quota_exceeded` and `auth_invalid` park a source.
+  A timeout merely cools down — one bad probe never permanently disables a source.
+  When every source is parked the request returns a structured `failed`, not an
+  empty success.
+- **Scheduled probing** honours `scheduledEnabled`, `intervalMinutes`, the run and
+  day budgets, and `concurrency` (capped at 4). The timer only ticks; settings
+  decide whether anything is probed, and paid probes stay off by default.
+
+### Update and rollback
+
+- `packaging/launcher/updater.mjs` runs outside the server process (Windows locks
+  the running executable, systemd owns the Linux service): verify → back up →
+  stop → swap → start → health check → rollback.
+- Checksums come from the release metadata digest rather than a co-downloaded
+  `SHA256SUMS`: a tampered release can carry a matching fake sums file.
+- Refuses downgrades, foreign architectures, path traversal and any archive entry
+  that escapes the install root — all before a single file is touched.
+- The backup always includes `master.key`; a database backup without it cannot
+  decrypt stored provider credentials.
+- `planRollback()` distinguishes "program only" from "restore the pre-update
+  database", and refuses the unsafe case rather than pretending a program swap
+  rewinds a migration.
+- Docker never replaces its own image: `/api/admin/update/apply-plan` returns the
+  pull/compose steps plus the warning that rolling back an image does not roll
+  back migrations.
+
+### Fixes carried from the catalogue audit
+
+`minimax`, `metaso` and `metaso-mcp` are now in the catalogue (50 builtin adapters,
+58 entries). `v0.1.5-beta.1` did not contain them, so its marketplace could not
+create those three sources.
+
+### Verification
+
+663 Vitest (25 new), 6 health end-to-end cases (REST ↔ MCP ↔ scheduler), 16 updater
+assertions against real archives and a real HTTP health probe.
+
 ## v0.1.5-beta.1 (2026-11-16)
 
 Provider health management, measured MCP protocol reporting, Agent Skills
