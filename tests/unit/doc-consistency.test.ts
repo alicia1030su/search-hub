@@ -1,4 +1,15 @@
 import { execFileSync } from "node:child_process";
+// The script is plain ESM without types; declare the one helper the test uses.
+// @ts-expect-error -- untyped .mjs script, signature declared below
+import { checkCountValue as rawCheckCountValue } from "../../scripts/check-doc-consistency.mjs";
+
+const checkCountValue = rawCheckCountValue as (
+  text: string,
+  label: string,
+  pattern: RegExp,
+  expected: number,
+  what: string,
+) => string | null;
 import { describe, expect, it } from "vitest";
 import { PROVIDER_CATALOG, listAdapters, getAdapter } from "@search-hub/providers";
 
@@ -44,6 +55,19 @@ describe("catalog ↔ docs consistency", () => {
       });
     expect(run).not.toThrow();
   }, 30_000);
+
+  it("rejects a README count that disagrees with the catalog", () => {
+    // Proves the gate is not a rubber stamp: the same comparison the script runs
+    // is applied to a mutated string, so no repository file is touched.
+    const builtinCount = PROVIDER_CATALOG.filter((entry) => entry.implementation === "builtin").length;
+    const pattern = /已实现适配器（(\d+)\s*类）/;
+    expect(checkCountValue(`**已实现适配器（${builtinCount} 类）**`, "README.md", pattern, builtinCount, "providers")).toBeNull();
+    expect(checkCountValue("**已实现适配器（7 类）**", "README.md", pattern, builtinCount, "providers")).toContain(
+      `the catalog has ${builtinCount}`,
+    );
+    // A missing phrase is not a contradiction, so it must not fail either.
+    expect(checkCountValue("no counts here", "README.md", pattern, builtinCount, "providers")).toBeNull();
+  });
 
   it("passes the README consistency check", () => {
     const run = () =>
