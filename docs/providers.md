@@ -4,20 +4,25 @@ A provider is a plugin that turns the Search Hub query into a vendor request and
 
 ## Current coverage
 
+The authoritative count is generated — see [`docs/provider-matrix.md`](./provider-matrix.md), which CI keeps in sync with `packages/providers/src/catalog.ts`. This table shows the representative types; the matrix lists all of them.
+
 | Type | Implementation | Requires key | Verification |
 |---|---|---|---|
-| `tavily` | Built-in | Yes | Documented; **not live-tested** (no API key) |
-| `bocha` | Built-in | Yes | Documented; **not live-tested** (no API key) |
-| `brave` | Built-in | Yes | Documented; **not live-tested** (no subscription key, and `api.search.brave.com` is unreachable from the dev network) |
-| `searxng` | Built-in | Optional | Documented; **not live-tested** (no instance) |
-| `hackernews` | Built-in | No | `live_tested` (v0.1.1), technical-community search only |
+| `hackernews` | Built-in | No | `live_tested` — real recorded call, see `docs/live-evidence/hackernews.json`. Technical-community search only, not a general web index |
+| `crossref` / `openalex` / `pubmed` | Built-in | No | `live_tested` — recorded calls in `docs/live-evidence/` |
+| `tavily` / `bocha` / `brave` / `searxng` | Built-in | Yes / Optional | `documented` — written from the vendor docs, covered by local contract tests, **never called with a real key** |
+| `minimax` | Built-in | Yes | `documented` — protocol taken from the official MCP source; no Coding Plan credential exists here |
+| `metaso` / `metaso-mcp` | Built-in | Yes / No | `documented` — endpoint and error envelope confirmed by a real unauthenticated probe; success body unverified |
+| `duckduckgo` | Built-in | No | `documented` — Instant Answer API only; it is not a general web search and the adapter says so in `warnings` |
+| `gemini` / `grok` / `mimo` / `bailian` | Built-in | Yes | `documented` — grounded-answer adapters (`capability: grounded_answer`) |
+| `doubao` / `deepseek-search` / `qianfan-search` / `tencent-yuanbao` / `stepfun` | Built-in | Yes | `documented` — native search adapters |
+| `generic-http` | Built-in, declarative | Optional | Tested against local mock servers; correctness is the operator's mapping |
 | `search-hub-legacy` | Built-in compat | Optional | Calls an existing Search Hub REST `/api/search`; path/mode configurable; read-only, reversible. See [legacy integration](./legacy-44475-integration.md) |
-| `generic-http` | Built-in, declarative | Optional | Tested against local mock servers |
-| `mock` | Built-in, deterministic | No | Used by the test suite |
+| `mock` | Built-in deterministic | No | `mock_verified` — a test double. Never counted as vendor coverage |
 
-Contract tests for `tavily`, `bocha`, `brave` and `searxng` live in `tests/unit/providers-web-search.test.ts`; they mock the vendor wire format locally and therefore prove protocol correctness, **not** account validity. Only `tests/scripts/provider-live.mjs` can produce live evidence. See `docs/provider-matrix.md` for the full matrix and what each provider still needs.
+Contract tests mock the vendor wire format locally: they prove protocol correctness, **not** account validity. Only `tests/scripts/provider-live.mjs` can produce live evidence, and it needs a real key.
 
-Catalog-only entries (12 planned, 2 without an official API, 7 generic gateway presets) cannot be created. See `packages/providers/src/catalog.ts` for the exact reason on each.
+`generic` presets (7) **can** be created — they need your endpoint and field mapping. Only `baidu` is `unavailable`: it has no public general web-search API. Nothing in the catalog is both unimplemented and uncreatable other than that single entry.
 
 ## Contract
 

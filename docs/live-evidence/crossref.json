@@ -1,0 +1,22 @@
+{
+  "provider": "crossref",
+  "status": "live_tested",
+  "lastSuccess": {
+    "checkedAt": "2026-11-16T11:40:41Z",
+    "requestUrl": "https://api.crossref.org/works?query=information+retrieval&rows=3",
+    "httpStatus": 200,
+    "resultCount": 3,
+    "sampleUrls": [
+      "https://doi.org/10.7717/peerj-cs.3254/fig-10",
+      "https://doi.org/10.1109/tvcg.2023.3327163",
+      "https://doi.org/10.1038/s41586-021-03819-2"
+    ],
+    "latencyMs": 2545,
+    "recordedBy": "docs/v014-delivery-report.md + re-check"
+  },
+  "lastAttempt": {
+    "checkedAt": "2026-11-16T11:40:41Z",
+    "httpStatus": 200,
+    "ok": true
+  }
+}

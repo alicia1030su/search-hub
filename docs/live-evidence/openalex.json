@@ -1,0 +1,24 @@
+{
+  "provider": "openalex",
+  "status": "live_tested",
+  "lastSuccess": {
+    "checkedAt": "2026-11-15T00:00:00Z",
+    "requestUrl": "https://api.openalex.org/works?search=information+retrieval&per-page=3",
+    "httpStatus": 200,
+    "resultCount": 3,
+    "sampleUrls": [
+      "https://doi.org/10.1109/tvcg.2023.3327163"
+    ],
+    "latencyMs": 1391,
+    "recordedBy": "docs/v014-delivery-report.md (PASS openalex rows=3)"
+  },
+  "lastAttempt": {
+    "checkedAt": "2026-11-16T11:41:30Z",
+    "httpStatus": 429,
+    "ok": false,
+    "error": "Rate limit exceeded",
+    "vendorMessage": "Anonymous search is temporarily rate-limited while the search cluster is under elevated load.",
+    "retryAfterSeconds": 34,
+    "note": "Vendor-side anonymous rate limit, not an adapter defect. Recorded as-is; the adapter was not changed."
+  }
+}
