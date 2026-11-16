@@ -30,7 +30,7 @@ function makeService(options: {
   const bytes = options.assetBytes ?? Buffer.from("fake-package-bytes");
   const sha = createHash("sha256").update(bytes).digest("hex");
   const asset = {
-    name: "search-hub-v0.2.0-windows-x64.zip",
+    name: assetNameFor("0.2.0"),
     size: options.sizeOverride ?? bytes.byteLength,
     browser_download_url: "https://example.invalid/pkg.zip",
     digest: options.digestOverride === null ? null : (options.digestOverride ?? `sha256:${sha}`),
@@ -95,7 +95,7 @@ describe("update check", () => {
     const status = await service.check({ force: true });
     expect(status.latest?.version).toBe("0.2.0");
     expect(status.updateAvailable).toBe(true);
-    expect(status.matchingAsset).toContain("windows");
+    expect(status.matchingAsset).toBe(assetNameFor("0.2.0"));
   });
 
   it("reports no update when the current version is ahead", async () => {
