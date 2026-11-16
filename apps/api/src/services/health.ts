@@ -387,8 +387,8 @@ export class HealthService {
   }
 
   /**
-   * One scheduled pass. Returns `null` when scheduling is off, so a caller can
-   * distinguish "nothing to do" from "did nothing".
+   * One scheduled pass. Returns null when scheduling is off, so a caller can
+   * tell scheduling-disabled apart from ran-but-empty.
    */
   async runScheduled(): Promise<{ results: HealthCheckResult[]; skipped: unknown[] } | null> {
     const policy = this.ctx.settings.get().health;
