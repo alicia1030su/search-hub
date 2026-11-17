@@ -74,7 +74,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TARGET=$(ls dist/package/*.zip dist/package/*.tar.gz 2>/dev/null | head -1)
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.4-beta.6 --to "$TARGET" --port 8910
 
@@ -83,7 +84,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TARGET=$(ls dist/package/*.zip dist/package/*.tar.gz 2>/dev/null | head -1)
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.5-beta.1 --to "$TARGET" --port 8920
 

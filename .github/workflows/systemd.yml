@@ -56,13 +56,14 @@ jobs:
       - name: Build the Linux package
         env:
           PACKAGE_TARGET: linux-x64
+          SEARCH_HUB_VERSION: 0.9.0-ci
         run: node packaging/build-package.mjs
 
       - name: Prepare the package for the container
         run: |
           set -euo pipefail
           mkdir -p .data/systemd
-          cp dist/package/*linux-x64.tar.gz .data/systemd/pkg.tar.gz
+          cp dist/package/*linux-x64.tar.gz .data/systemd/search-hub-v0.9.0-ci-linux-x64.tar.gz
           # A deliberately broken package: it installs, then never becomes healthy.
           # The updater must roll back and leave a running service.
           rm -rf .data/systemd/broken
@@ -70,7 +71,7 @@ jobs:
           printf 'import { createServer } from "node:http";\nsetTimeout(() => {}, 600000);\n' \
             > .data/systemd/broken/app/apps/api/dist/server.mjs
           printf '0.9.9\n' > .data/systemd/broken/app/apps/api/dist/version.txt
-          tar -czf .data/systemd/broken.tar.gz -C .data/systemd/broken app
+          tar -czf .data/systemd/search-hub-v0.9.9-linux-x64.tar.gz -C .data/systemd/broken app
           ls -la .data/systemd
 
       # PID 1 must be systemd, otherwise systemctl cannot operate at all.
@@ -97,7 +98,7 @@ jobs:
             apt-get install -y -qq curl tar >/dev/null
 
             mkdir -p /opt/search-hub
-            tar -xzf /pkgs/pkg.tar.gz -C /opt/search-hub
+            tar -xzf /pkgs/search-hub-v0.9.0-ci-linux-x64.tar.gz -C /opt/search-hub
             test -f /opt/search-hub/search-hub.service || { echo "FAIL: unit file missing"; exit 1; }
 
             id search-hub >/dev/null 2>&1 || useradd --system --home /var/lib/search-hub --shell /usr/sbin/nologin search-hub
@@ -134,10 +135,11 @@ jobs:
             echo "--- upgrade with a package that cannot become healthy ---"
             systemctl start search-hub
             sleep 6
-            SHA=$(sha256sum /pkgs/broken.tar.gz | awk "{print \$1}")
-            SIZE=$(stat -c%s /pkgs/broken.tar.gz)
+            PKG=/pkgs/search-hub-v0.9.9-linux-x64.tar.gz
+            SHA=$(sha256sum "$PKG" | awk "{print \$1}")
+            SIZE=$(stat -c%s "$PKG")
             set +e
-            /opt/search-hub/bin/update --package /pkgs/broken.tar.gz --version 0.9.9 \
+            /opt/search-hub/bin/update --package "$PKG" --version 0.9.9 \
               --sha256 "$SHA" --size "$SIZE" --root /opt/search-hub --data /var/lib/search-hub --port 8787
             CODE=$?
             set -e
