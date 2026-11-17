@@ -192,6 +192,7 @@ async function overview(harness: Harness) {
     budget: {
       day: string;
       usedToday: number;
+      anonymousSearchUsedToday: number;
       connectUsedToday: number;
       remainingToday: number;
       maxPerRun: number;
@@ -453,21 +454,23 @@ describe("provider health centre", () => {
     }
   });
 
-  it("T15 a cancelled probe records nothing and refunds its budget", async () => {
+  it("T15 a cancelled probe records nothing and does not refund its slot", async () => {
     const harness = await createHarness();
     const providerId = await addMock(harness, "cancel-probe", { resultCount: 0, failMode: "cancelled" });
-    await setHealthPolicy(harness, { paidProbesEnabled: true, maxRequestsPerDay: 20 });
 
     const response = await probeOne(harness, providerId, "search");
-    // The service refuses to record it and says why.
+    // No verdict is published about the source, and the caller is told why.
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
     expect(response.body).toContain("cancelled");
-
-    // No evidence was written, so the source keeps its previous state …
     expect(probeRows(harness).filter((row) => row.kind === "search")).toHaveLength(0);
+
     const view = await overview(harness);
     expect(view.providers[0]!.runtime).toBe("unknown");
-    // … and the paid slot was given back rather than silently burned.
+    // The reservation is *kept*: a cancel can arrive after the request left the
+    // machine, so refunding it would let an abort loop spend unbounded requests
+    // while the ledger reports zero. A keyless source counts in the anonymous
+    // bucket; the paid bucket stays untouched because no credential was spent.
+    expect(view.budget.anonymousSearchUsedToday).toBe(1);
     expect(view.budget.usedToday).toBe(0);
   });
 
@@ -994,6 +997,83 @@ describe("provider health centre", () => {
 
     const view = await overview(harness);
     expect(view.providers.find((item) => item.providerId === b)!.autoProbeEnabled).toBe(false);
+  });
+
+  it("B1 a connectivity probe is counted, and cannot be fired unbounded by one request", async () => {
+    const harness = await createHarness();
+    for (let index = 0; index < 6; index += 1) {
+      await addMock(harness, `connect-${index}`, { resultCount: 1 });
+    }
+    await setHealthPolicy(harness, { concurrency: 2 });
+
+    const run = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/health/check",
+      ...adminHeaders(harness),
+      payload: { kind: "connect" },
+    });
+    expect(run.statusCode, run.body).toBe(200);
+    // Every provider was probed, and each probe is on the ledger: connectivity
+    // is not capped (capping it would make the page unexplainable), but the
+    // count is real so an operator can see how often a timer runs.
+    expect(run.json().results).toHaveLength(6);
+    const view = await overview(harness);
+    expect(view.budget.connectUsedToday).toBe(6);
+    expect(view.budget.usedToday).toBe(0);
+    // Concurrency is capped by policy, not by the caller: the run finished with
+    // at most 2 probes in flight, which is what keeps a large estate from
+    // firing hundreds of sockets at once.
+    expect(harness.ctx.settings.get().health.concurrency).toBe(2);
+  });
+
+  it("B2 keys sharing one account group are not counted as separate accounts", async () => {
+    const harness = await createHarness();
+    const providerId = await createProvider(harness.app, adminHeaders(harness), {
+      name: "shared-account",
+      type: "brave",
+      // Account limits live in the adapter config (billing metadata, not a column).
+      config: { accountGroup: "brave-main", accountRpmLimit: 30, accountDailyQuota: 100 },
+    });
+    await addKey(harness.app, adminHeaders(harness), providerId, "sk-SHARED-ACCOUNT-0000000000");
+    await addKey(harness.app, adminHeaders(harness), providerId, "sk-SHARED-ACCOUNT-1111111111");
+
+    const runtime = harness.ctx.providers.runtimesFor([providerId])[0]!;
+    // The scheduler must expose one account bucket for the group, not one per
+    // key: otherwise 2 keys × 100/day silently becomes 200/day.
+    const account = runtime.scheduler.accountSnapshot() as
+      | { group: string; dailyQuota: number | null; rpmLimit: number }
+      | null;
+    expect(account?.group).toBe("brave-main");
+    // One bucket for the group, not one per key: 2 keys must not double the ceiling.
+    expect(account?.dailyQuota).toBe(100);
+    const providers = (await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: harness.cookie },
+    })).json().providers as Array<{ id: string; accountGroup: string | null; accountDailyQuota: number | null }>;
+    const row = providers.find((item) => item.id === providerId)!;
+    expect(row.accountGroup).toBe("brave-main");
+    expect(row.accountDailyQuota).toBe(100);
+  });
+
+  it("B3 an unhealthy-but-not-terminal source is still allowed to search", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "flaky-live", { resultCount: 2, failMode: "server_error" });
+    const ok = await addMock(harness, "steady", { resultCount: 2 });
+    await probeOne(harness, providerId, "connect");
+
+    // A 5xx is degraded, not terminal: the fan-out must still try it, because a
+    // vendor blip is not a reason to stop sending traffic entirely.
+    expect(harness.ctx.health.blockedProviders().has(providerId)).toBe(false);
+    const search = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      ...adminHeaders(harness),
+      payload: { query: "degraded still tried", mode: "basic", limit: 5, skipCache: true },
+    });
+    const stats = search.json().stats as { providers: Array<{ providerId: string }> };
+    expect(stats.providers.map((item) => item.providerId)).toContain(providerId);
+    expect(stats.providers.map((item) => item.providerId)).toContain(ok);
   });
 
   it("exposes the UTC day and both counters so the UI cannot imply local time", async () => {

@@ -4,6 +4,56 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.7-beta.2 (2026-11-18)
+
+Quality pass on the health centre, a complete English locale, and real
+network-failure coverage. No new providers, no architecture change.
+
+### Added
+
+- **Complete en-US locale** with a header switcher, persisted in `localStorage`.
+  Chinese stays the default. The English dictionary is typed
+  `Record<MessageKey, string>`, so a missing key fails the typecheck instead of
+  rendering Chinese inside an English page; dates and numbers resolve their
+  `Intl` formatter per locale.
+- **Real DNS/TLS/connection failure tests** through the actual fetch path: an
+  `.invalid` hostname, a self-signed certificate, TLS against a plaintext port,
+  a closed port, a server that never answers, an HTML body where JSON is
+  expected, an abort mid-flight, and a redirect into a private address.
+- **systemd + health scheduler acceptance** in the real unit: a scheduled probe
+  under `systemctl`, restart preserving `nextProbeAt` and the budget counter, a
+  stopped unit not probing, and an upgrade + rollback that does not reset the
+  daily counter.
+- **Build provenance** for release assets (`actions/attest-build-provenance`),
+  verified after upload with `gh attestation verify`. SHA256 verification and
+  provenance are reported separately: one proves the bytes, the other proves who
+  built them.
+
+### Fixed
+
+- **Keyless sources were reported as broken.** `/api/health` counted "has a
+  healthy key" as healthy, so Hacker News, Crossref, OpenAlex, PubMed, arXiv and
+  Wikipedia — none of which take a key — showed as unusable on an instance where
+  they work. It now counts enabled-and-usable.
+- **A real search probe was refused for keyless sources** with "paid probes are
+  disabled". A keyless request sends no credential and cannot spend account
+  quota, so blocking it made public sources permanently unverifiable. They now
+  run without the paid switch and are counted in their own
+  `anonymousSearchUsedToday` bucket — counted, not called free, because whether
+  a vendor meters by IP is not knowable here.
+- **A probe used the raw search settings instead of the resolved plan**, so
+  every paginated adapter computed `Math.max(1, undefined)` pages, issued no
+  request, and returned an empty list: a working vendor was recorded as
+  `empty_results`.
+- **Certificate failures were classified as `network`.** safe-fetch wraps socket
+  errors, so the OpenSSL verdict sits in the cause chain; the classifier now
+  looks one level down for a TLS or DNS marker, which changes the cooldown from
+  20 seconds to 30 minutes.
+- **A cancelled probe refunded its budget slot.** A cancel can arrive after the
+  request left the machine, so refunding it let an abort loop spend unbounded
+  paid requests while the ledger reported zero. Only a probe that provably never
+  left is refunded.
+
 ## v0.1.7-beta.1 (2026-11-17)
 
 ### Provider health management centre

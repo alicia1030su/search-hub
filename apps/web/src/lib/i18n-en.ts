@@ -296,7 +296,7 @@ export const en: Record<MessageKey, string> = {
   "providers.health.nextProbe": "Next check {{at}}",
   "providers.health.noNextProbe": "Not scheduled",
   "providers.health.modeLabel": "Probe mode",
-  "providers.health.mode.connect": "Connectivity (free)",
+  "providers.health.mode.connect": "Connectivity (minimal request)",
   "providers.health.mode.search": "Live search (may bill)",
   "providers.health.autoProbe": "Auto probe",
   "providers.health.autoProbeOn": "On",

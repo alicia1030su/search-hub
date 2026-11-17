@@ -282,7 +282,7 @@ export const zh = {
   "providers.health.nextProbe": "下次检测 {{at}}",
   "providers.health.noNextProbe": "未安排",
   "providers.health.modeLabel": "检测模式",
-  "providers.health.mode.connect": "连接探测（免费）",
+  "providers.health.mode.connect": "连接探测（最小请求）",
   "providers.health.mode.search": "真实搜索（可能计费）",
   "providers.health.autoProbe": "自动检测",
   "providers.health.autoProbeOn": "已开启",

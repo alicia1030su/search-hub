@@ -763,6 +763,8 @@ export interface HealthOverview {
     maxPerDay: number;
     usedToday: number;
     connectUsedToday: number;
+    /** Real searches against keyless sources: counted, never called free. */
+    anonymousSearchUsedToday: number;
     remainingToday: number;
     paidProbesEnabled: boolean;
     scheduledEnabled: boolean;

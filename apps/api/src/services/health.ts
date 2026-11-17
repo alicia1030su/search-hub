@@ -395,10 +395,15 @@ export class HealthService {
       const latencyMs = this.clock() - started;
       const cause = classifyError(error);
       // A cancelled probe is not evidence about the source: it says the caller
-      // (or shutdown) stopped it. Recording it would degrade a provider for a
-      // reason it had no part in, so it is dropped and its budget returned.
+      // (or shutdown) stopped it, so nothing is recorded against the provider.
+      //
+      // Its budget is deliberately NOT refunded. A cancel can arrive after the
+      // request left the machine — the vendor may already have counted it — and
+      // this code cannot tell the two apart. Refunding on every cancel would let
+      // a client that aborts in a loop spend an unbounded number of paid requests
+      // while the ledger reports zero. Only a probe that provably never left
+      // (no credential, refused before the call) is refunded.
       if (cause === "cancelled") {
-        if (reservation.ok) this.budgetLedger.release(ledgerKind);
         throw new SearchHubError("cancelled", "The health probe was cancelled; nothing was recorded.");
       }
       const retryAfterMs = parseRetryAfterMs(

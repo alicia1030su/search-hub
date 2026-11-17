@@ -29,6 +29,12 @@ permissions:
   contents: write
   # Only what GHCR needs; no other secrets are exposed.
   packages: write
+  # Build provenance: `attest-build-provenance` signs a statement that binds the
+  # uploaded bytes to this workflow file, this repository and this commit.
+  # Attestations are written to the repository's attestation store, never to the
+  # release assets, so nothing about them is downloadable from a PR run.
+  id-token: write
+  attestations: write
 
 jobs:
   gate:
@@ -224,6 +230,17 @@ jobs:
             echo "release $TAG exists without assets; continuing"
           fi
 
+      # Provenance is generated from the *artifact bytes* that are about to be
+      # uploaded, not from a rebuild: a rebuild could differ and the statement
+      # would then describe something nobody can download.
+      - name: Attest build provenance for the release assets
+        uses: actions/attest-build-provenance@v3.0.0
+        with:
+          subject-path: |
+            artifacts/*/*.zip
+            artifacts/*/*.tar.gz
+            SHA256SUMS
+
       - name: Create the prerelease
         uses: softprops/action-gh-release@v2
         with:
@@ -254,9 +271,22 @@ jobs:
           work=$(mktemp -d)
           gh release download "$TAG" --repo "${GITHUB_REPOSITORY}" --dir "$work"
           cd "$work"
+          # Two independent claims, reported separately on purpose:
+          #  - sha256sum proves the bytes I downloaded match the bytes I shipped;
+          #  - the attestation proves *who* built them, from which commit.
+          # Neither implies the other.
           sha256sum -c SHA256SUMS
+          echo "--- build provenance ---"
+          for asset in *.zip *.tar.gz; do
+            gh attestation verify "$asset" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --format json > "/tmp/attest-${asset}.json" \
+              || { echo "::error::no valid attestation for $asset"; exit 1; }
+            signer=$(jq -r '.[0].verificationResult.signature.certificate.issuer // "unknown"' "/tmp/attest-${asset}.json" 2>/dev/null || echo unknown)
+            echo "attested: $asset (issuer=$signer)"
+          done
           count=$(ls -1 | wc -l)
-          echo "verified $count files including SHA256SUMS"
+          echo "verified $count files including SHA256SUMS, all attested"
 
   container:
     name: Publish GHCR image for the released version
