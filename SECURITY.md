@@ -146,6 +146,7 @@ Rate limiting is a **safety** feature, not a bug:
 | Snippet-level injection | A malicious page may try to steer the summary | Boundary marker + system guard + pattern detection; not a guarantee, treat summaries as advisory |
 | Proxy trust declaration | With `proxyTrust=trusted-networks` the application accepts the proxy's guarantee; a permissive proxy re-opens internal reachability | Default is `untrusted` (private targets rejected regardless of allowlist); state is logged at boot and shown in `/api/admin/outbound` |
 | Proxy DNS divergence | A malicious proxy can resolve a public hostname to an internal address; the application cannot detect it | Only a network-level control can prevent this — deploy a proxy that enforces egress ACLs, or keep `trusted-networks` unset |
+| Build-time ReDoS with no upstream fix | GHSA-fc5q-39xc-vjpf / CVE-2026-112366: picomatch <= 4.0.7 is vulnerable, and no patched release exists. Not present at run time — every path is a devDependency of `@search-hub/web` or vitest, the runtime image installs with `pnpm install --prod`, and the shipped web bundle is static output | Accepted in `pnpm-workspace.yaml › auditConfig.ignoreGhsas` with the reasoning recorded there; `pnpm audit --audit-level high` still fails on any other advisory. Remove the entry when picomatch publishes a fix |
 
 ## Hardening checklist for operators
 

@@ -54,6 +54,16 @@ network-failure coverage. No new providers, no architecture change.
   paid requests while the ledger reported zero. Only a probe that provably never
   left is refunded.
 
+### Security
+
+- **One advisory is accepted instead of fixed, in writing.** `picomatch <= 4.0.7`
+  (GHSA-fc5q-39xc-vjpf / CVE-2026-112366) has no patched release. Every path to
+  it is a devDependency of `@search-hub/web` or of vitest, the runtime image
+  installs with `pnpm install --prod`, and the web bundle is static output, so it
+  is absent at run time. The exception is recorded in `pnpm-workspace.yaml`
+  with its reasoning; `pnpm audit --audit-level high` still fails on any other
+  advisory, which was verified by pointing the ignore list at a different GHSA.
+
 ## v0.1.7-beta.1 (2026-11-17)
 
 ### Provider health management centre
