@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.7-beta.3 (2026-11-18)
+
+A defect found by accepting the published v0.1.7-beta.2 Windows package rather
+than by reading the code.
+
+### Fixed
+
+- **A malformed request was reported as a server fault.** Fastify rejects an
+  empty JSON body, invalid JSON, an unsupported media type or an oversized body
+  before any handler runs, and those errors carry a 4xx `statusCode`. The global
+  error handler folded everything that was not a `SearchHubError`, a `ZodError`
+  or a 429 into `500 internal_error`, so a caller who posted
+  `content-type: application/json` with an empty body was told the server had
+  broken — and the operator got an error-level log for ordinary bad traffic.
+  These now return 400 / 415 / 413 with a stable `bad_request` code, and are
+  logged at debug level. Genuine internal failures still return 500.
+
+  This was visible from the outside: `curl -X POST -H 'content-type:
+  application/json'` against the downloaded package returned 500.
+
+### Verification
+
+The published package was downloaded from the Release, its SHA256 checked, and
+then started with its bundled Node runtime: health, setup, source creation, a
+real Hacker News search, MCP `initialize` / `tools/list` / `tools/call`
+(`isError=false`), and the database plus `master.key` on disk. The failure above
+was reproduced that way, not from a unit test.
+
 ## v0.1.7-beta.2 (2026-11-18)
 
 Quality pass on the health centre, a complete English locale, and real
