@@ -16,7 +16,11 @@ export type MockFailMode =
   | "server_error"
   | "rate_limited"
   | "auth_invalid"
-  | "timeout";
+  | "timeout"
+  /** Account-level budget exhausted: distinct from a rate limit on purpose. */
+  | "quota_exceeded"
+  /** Permission problem (403 / missing entitlement), not a bad credential. */
+  | "forbidden";
 
 export interface MockConfig {
   resultCount?: number;
@@ -67,6 +71,17 @@ export const mockAdapter: SearchProviderAdapter = {
       throw new ProviderError(ctx.config.id, "mock", "auth_invalid", "Mock HTTP 401 (invalid key)", {
         retryable: false,
         statusCode: 401,
+      });
+    }
+    if (failMode === "quota_exceeded") {
+      throw new ProviderError(ctx.config.id, "mock", "quota_exceeded", "Mock quota exhausted (account level)", {
+        retryable: false,
+      });
+    }
+    if (failMode === "forbidden") {
+      throw new ProviderError(ctx.config.id, "mock", "blocked", "Mock HTTP 403 (not entitled)", {
+        retryable: false,
+        statusCode: 403,
       });
     }
     if (failMode === "server_error") {

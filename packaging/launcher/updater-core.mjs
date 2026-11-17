@@ -219,8 +219,46 @@ export function rollbackProgram({ appDir, previous }) {
   if (!previous || !existsSync(previous)) {
     throw new UpdateError("rollback_unavailable", "No previous program directory to restore");
   }
-  rmSync(appDir, { recursive: true, force: true });
-  renameSync(previous, appDir);
+  // Some Windows builds hold the directory handle even after the process exits.
+  // A short retry inside the helper makes the caller's single call robust.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      return swapRollback({ appDir, previous });
+    } catch (error) {
+      if (attempt === 5) throw error;
+      // Blocking sleep with no external command: Windows has no usable `sleep`.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
+    }
+  }
+  throw new UpdateError("rollback_blocked", "rollback retries exhausted");
+}
+
+function swapRollback({ appDir, previous }) {
+  // Windows keeps file handles for a moment after the process exits, and a
+  // directory holding an open file cannot be removed at all. Rename the failed
+  // build aside instead of deleting it in place, then move the old tree back:
+  // rename needs only the parent directory to be writable.
+  const failed = `${appDir}.failed-${Date.now()}`;
+  try {
+    renameSync(appDir, failed);
+  } catch (error) {
+    throw new UpdateError(
+      "rollback_blocked",
+      `Cannot move the failed build aside (${String(error)}). Stop the service and retry the update.`,
+    );
+  }
+  try {
+    renameSync(previous, appDir);
+  } catch (error) {
+    throw new UpdateError("rollback_blocked", `Cannot restore the previous program: ${String(error)}`);
+  }
+  // Best effort cleanup; a leftover directory is harmless once the old tree is back.
+  try {
+    rmSync(failed, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  } catch {
+    /* the service may still hold a handle; the operator can delete it later */
+  }
+  return { restored: true };
 }
 
 /**

@@ -31,7 +31,10 @@
     "check:docs": "node --import tsx scripts/check-doc-consistency.mjs",
     "check:matrix": "node --import tsx scripts/generate-provider-matrix.mjs --check",
     "generate:matrix": "node --import tsx scripts/generate-provider-matrix.mjs",
-    "test:updater": "node packaging/launcher/updater-test.mjs"
+    "test:updater": "node packaging/launcher/updater-test.mjs",
+    "test:upgrade": "node packaging/upgrade-matrix.mjs",
+    "test:faults": "node packaging/launcher/updater-faults.mjs",
+    "audit:supply-chain": "node packaging/supply-chain-audit.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",

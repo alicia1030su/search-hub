@@ -50,6 +50,9 @@ const ALLOWLIST = [
   "sk-CLEAN-FINGERPRINT",
   "sk-LEAK-",
   "sk-LEGACY-SHOULD-NEVER-BE-STORED",
+  // Credential the cross-version upgrade test writes into a throwaway instance to
+  // prove the key still decrypts after the program is replaced.
+  "sk-UPGRADE-SURVIVES-",
   "sk-dummy-invalid-key-for-probe",
   "tvly-YOUR_API_KEY",
   "tvly-dummy-invalid",
@@ -62,6 +65,8 @@ const ALLOWLIST = [
   "A-very-long-password-1",
   // Password the release acceptance script types into its own throwaway instance.
   "Release-Check-Password-1",
+  // Admin password for the throwaway instance the cross-version upgrade test creates.
+  "Upgrade-Password-1",
   "Clean-Install-Pass-1",
   "Leak-Scan-Password-1",
   "E2E-Admin-Password-1",
@@ -191,6 +196,7 @@ function scanHistory(report) {
       if (!line.trim()) continue;
       const pathMatch = /^[^:]+:(.+?):\d+:/.exec(line);
       const file = pathMatch?.[1] ?? "";
+      re.lastIndex = 0;
       const match = re.exec(line);
       if (match && isAllowlistedValue(match[0])) continue;
       // Fixtures and docs quote credential shapes on purpose.
