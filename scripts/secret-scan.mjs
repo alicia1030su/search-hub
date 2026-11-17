@@ -62,6 +62,8 @@ const ALLOWLIST = [
   "A-very-long-password-1",
   // Password the release acceptance script types into its own throwaway instance.
   "Release-Check-Password-1",
+  // Password the cross-version upgrade harness types into a temp install.
+  "Upgrade-Password-1",
   "Clean-Install-Pass-1",
   "Leak-Scan-Password-1",
   "E2E-Admin-Password-1",
@@ -191,6 +193,11 @@ function scanHistory(report) {
       if (!line.trim()) continue;
       const pathMatch = /^[^:]+:(.+?):\d+:/.exec(line);
       const file = pathMatch?.[1] ?? "";
+      // `re` is global, so its `lastIndex` survives between lines. Without this
+      // reset the next `exec` starts where the previous match ended — it can
+      // return null on a line that does match, which means the allowlist below
+      // never runs and a test fixture is reported as a leaked credential.
+      re.lastIndex = 0;
       const match = re.exec(line);
       if (match && isAllowlistedValue(match[0])) continue;
       // Fixtures and docs quote credential shapes on purpose.
