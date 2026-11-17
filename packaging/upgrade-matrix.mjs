@@ -15,11 +15,11 @@
  * The "to" version may also be a local archive path, which is how CI exercises
  * the current build without waiting for a release.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
-  cpSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -40,14 +40,30 @@ const OS_KEY = IS_WINDOWS ? "windows" : "linux";
 const ARCH_KEY = process.arch;
 
 const FROM = arg("from");
+/**
+ * A local archive/directory to use as the "old" install.
+ *
+ * Exists so the matrix logic itself can be exercised where the network cannot
+ * fetch the published assets; CI still uses the real releases.
+ */
+const FROM_LOCAL = arg("from-local");
 const TO = arg("to");
 const KEEP = hasFlag("--keep");
-const PORT_BASE = Number(arg("port") ?? 8910);
+let PORT_BASE = Number(arg("port") ?? 8910);
 
-if (!FROM) {
-  console.error("usage: upgrade-matrix.mjs --from <tag> [--to <tag|path>] [--keep]");
+if (!FROM && !FROM_LOCAL) {
+  console.error("usage: upgrade-matrix.mjs --from <tag> | --from-local <dir|archive> [--to <tag|path>] [--keep]");
   process.exit(2);
 }
+
+process.on("uncaughtException", (error) => {
+  console.error(`UNCAUGHT: ${error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)}`);
+  process.exitCode = 1;
+});
+process.on("unhandledRejection", (error) => {
+  console.error(`UNHANDLED: ${error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)}`);
+  process.exitCode = 1;
+});
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -55,26 +71,56 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  ${detail}` : ""}`);
 };
 
-const work = mkdtempSync(join(tmpdir(), `search-hub-upgrade-${FROM}-`));
+const work = mkdtempSync(join(tmpdir(), `search-hub-upgrade-${FROM ?? "local"}-`));
 const dataDir = join(work, "data");
 mkdirSync(dataDir, { recursive: true });
 
-try {
-  const oldAsset = await downloadReleaseAsset(FROM);
-  const newAsset = TO && existsSync(TO) ? { path: resolve(TO), tag: "local-build" } : await downloadReleaseAsset(TO ?? "v0.1.6-beta.1");
+/** Finds a port nothing answers on, so a foreign dev server cannot be mistaken for ours. */
+async function pickPort(start) {
+  for (let candidate = start; candidate < start + 40; candidate += 1) {
+    try {
+      await fetch(`http://127.0.0.1:${candidate}/api/health`, { signal: AbortSignal.timeout(400) });
+      continue; // something answers here
+    } catch {
+      return candidate;
+    }
+  }
+  throw new Error(`no free port in ${start}..${start + 40}`);
+}
 
-  const oldRoot = unpack(oldAsset, join(work, "old"));
+try {
+  PORT_BASE = await pickPort(PORT_BASE);
+  console.log(`using port ${PORT_BASE}`);
+  const oldAsset = FROM_LOCAL
+    ? localInstallSource(FROM_LOCAL)
+    : await downloadReleaseAsset(FROM);
+  let newAsset;
+  if (TO && existsSync(TO)) {
+    // A local archive: read the version out of it instead of guessing from the path.
+    const probe = unpack({ path: resolve(TO) }, join(work, "probe"));
+    const version = installedVersion(probe);
+    if (version === "unknown") throw new Error(`cannot read a version from ${TO}`);
+    newAsset = { path: resolve(TO), tag: version };
+    console.log(`local package version: ${version}`);
+  } else {
+    newAsset = await downloadReleaseAsset(TO ?? "v0.1.6-beta.1");
+  }
+
+  const oldRoot = oldAsset.extracted ?? unpack(oldAsset, join(work, "old"));
   const install = join(work, "install");
   // The upgrade happens in place: the new program is installed over the same
   // directory the old one occupied.
-  cpSync(oldRoot, install, { recursive: true });
+  copyTree(oldRoot, install);
 
-  console.log(`from ${FROM} (${oldAsset.path.split("/").pop()})`);
+  console.log(`from ${oldAsset.tag} (${oldAsset.path.split(/[\\/]/).pop()})`);
   console.log(`to   ${newAsset.tag} (${newAsset.path.split("/").pop()})`);
   console.log(`install root: ${install}`);
+  if (!existsSync(install)) throw new Error(`install root was not created: ${install}`);
 
   const versionBefore = installedVersion(install);
-  check("old package reports its own version", versionBefore === FROM.replace(/^v/, ""), versionBefore);
+  const assetVersion = (FROM ?? "").replace(/^v/, "").replace(/-(alpha|beta|rc)\.\d+$/, "");
+  const versionOk = FROM ? versionBefore === assetVersion : versionBefore !== "unknown";
+  check("old package reports its own version", versionOk, `${versionBefore} (source ${oldAsset.tag})`);
 
   // ---- 1. Populate real state on the OLD version -----------------------
   let boot = await start(install, PORT_BASE);
@@ -96,13 +142,19 @@ try {
   await stop(boot);
 
   // ---- 2. Upgrade with the updater that ships in the OLD package -------
-  const updater = join(install, "bin", "updater.mjs");
-  check("the shipped package contains an updater", existsSync(updater));
-  if (!existsSync(updater)) throw new Error("old package has no updater; cannot upgrade in place");
+  // Extract the new package first: its updater is the one that knows how to
+  // install this version. Using the old package's updater would test a code path
+  // no user runs (and v0.1.4-beta.6 shipped no updater at all).
+  const newRoot = unpack(newAsset, join(work, "new"));
+  const updater = join(newRoot, "bin", "updater.mjs");
+  const newRuntime = IS_WINDOWS ? join(newRoot, "runtime", "node.exe") : join(newRoot, "runtime", "bin", "node");
+  check("the new package contains an updater", existsSync(updater), updater);
+  check("the new package bundles a runtime", existsSync(newRuntime));
+  if (!existsSync(updater)) throw new Error("new package has no updater; cannot upgrade in place");
 
   const expectedSha = sha256(newAsset.path);
-  const run = execFileSync(
-    IS_WINDOWS ? join(install, "runtime", "node.exe") : join(install, "runtime", "bin", "node"),
+  const updaterRun = spawnSync(
+    existsSync(newRuntime) ? newRuntime : process.execPath,
     [
       updater,
       "--package",
@@ -120,12 +172,18 @@ try {
       "--port",
       String(PORT_BASE),
     ],
-    { cwd: install, encoding: "utf8", stdio: "pipe" },
+    { cwd: install, encoding: "utf8", timeout: 300_000 },
   );
-  check("updater exits 0", run.includes("completed and healthy"), run.split("\n").slice(-2).join(" | "));
+  const updaterOutput = `${updaterRun.stdout ?? ""}${updaterRun.stderr ?? ""}`.trim();
+  check(
+    "updater reports the new version healthy",
+    updaterRun.status === 0 && updaterOutput.includes("completed and healthy"),
+    `exit=${updaterRun.status} ${updaterOutput.split("\n").slice(-2).join(" | ").slice(0, 200)}`,
+  );
 
   const versionAfter = installedVersion(install);
-  check("new program version installed", versionAfter === newAsset.tag.replace(/^v/, ""), `${versionBefore} → ${versionAfter}`);
+  const wantAfter = newAsset.tag.replace(/^v/, "");
+  check("new program version installed", versionAfter === wantAfter, `${versionBefore} → ${versionAfter}`);
 
   // ---- 3. Verify every piece of state on the NEW version ---------------
   boot = await start(install, PORT_BASE);
@@ -163,7 +221,7 @@ try {
 }
 
 console.log(failures === 0 ? "\nAll upgrade checks passed." : `\n${failures} upgrade check(s) failed.`);
-process.exit(failures === 0 ? 0 : 1);
+process.exitCode = failures === 0 ? 0 : 1;
 
 // ----------------------------------------------------------------- helpers
 
@@ -198,17 +256,34 @@ function installedVersion(root) {
 async function downloadReleaseAsset(tag) {
   // Release assets are named after package.json, which drops the prerelease
   // suffix: v0.1.4-beta.6 ships `search-hub-v0.1.4-linux-x64.tar.gz`.
-  const assetVersion = tag.replace(/^v/, "").replace(/-(alpha|beta|rc)\.\d+$/, "");
-  const assetName = `search-hub-v${assetVersion}-${OS_KEY}-${ARCH_KEY}.${IS_WINDOWS ? "zip" : "tar.gz"}`;
+  const full = tag.replace(/^v/, "");
+  const bare = full.replace(/-(alpha|beta|rc)\.\d+$/, "");
+  const suffix = IS_WINDOWS ? "zip" : "tar.gz";
+  // Older releases drop the prerelease suffix; newer ones keep it. Try the exact
+  // tag version first, then the bare one, and say which was used.
+  const candidates = [...new Set([`search-hub-v${full}-${OS_KEY}-${ARCH_KEY}.${suffix}`, `search-hub-v${bare}-${OS_KEY}-${ARCH_KEY}.${suffix}`])];
+  const assetName = candidates[0];
   const out = join(work, assetName);
   if (existsSync(out) && statSync(out).size > 1_000_000) return { path: out, tag };
   // gh handles auth and redirects better than a hand-rolled fetch, and it is
   // present on every GitHub runner.
-  execFileSync("gh", ["release", "download", tag, "--repo", REPO_SLUG, "--pattern", assetName, "--clobber", "--dir", work], {
-    stdio: "inherit",
-  });
-  if (!existsSync(out)) throw new Error(`asset ${assetName} missing from release ${tag}`);
-  const size = statSync(out).size;
+  let resolved = assetName;
+  for (const candidate of candidates) {
+    try {
+      execFileSync("gh", ["release", "download", tag, "--repo", REPO_SLUG, "--pattern", candidate, "--clobber", "--dir", work], {
+        stdio: "pipe",
+      });
+      if (existsSync(join(work, candidate))) {
+        resolved = candidate;
+        break;
+      }
+    } catch {
+      /* try the next name */
+    }
+  }
+  const outPath = join(work, resolved);
+  if (!existsSync(outPath)) throw new Error(`no asset matching ${candidates.join(" or ")} in ${tag}`);
+  const size = statSync(outPath).size;
   // Compare with the size the release claims: a proxy that truncates a body is the
   // most common way an "upgrade test" silently degrades into a same-version no-op.
   const meta = JSON.parse(
@@ -216,14 +291,41 @@ async function downloadReleaseAsset(tag) {
       encoding: "utf8",
     }),
   );
-  const declared = meta.find((item) => item.name === assetName)?.size;
+  const declared = meta.find((item) => item.name === resolved)?.size;
   if (declared !== undefined && size !== declared) {
-    throw new Error(`asset ${assetName} is ${size} bytes but the release says ${declared}`);
+    throw new Error(`asset ${resolved} is ${size} bytes but the release says ${declared}`);
   }
-  return { path: out, tag };
+  return { path: outPath, tag };
 }
 
 /** Extracts a package; the archive root is the install layout. */
+/**
+ * Recursive copy built on readdir + copyFile.
+ *
+ * `fs.cpSync` dies silently on a tree containing the 87 MB SEA executable in this
+ * environment — the same failure that hit the packaging script — so the copy is
+ * done explicitly and any error surfaces with a path.
+ */
+function copyTree(from, to) {
+  mkdirSync(to, { recursive: true });
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    const source = join(from, entry.name);
+    const target = join(to, entry.name);
+    if (entry.isDirectory()) copyTree(source, target);
+    else copyFileSync(source, target);
+  }
+}
+
+/** Accepts an already-extracted directory or an archive, for offline runs. */
+function localInstallSource(input) {
+  const path = resolve(input);
+  if (!existsSync(path)) throw new Error(`--from-local path not found: ${path}`);
+  if (statSync(path).isDirectory()) {
+    return { path, tag: `local:${installedVersion(path)}`, extracted: path };
+  }
+  return { path, tag: `local:${path.split(/[\\/]/).pop()}` };
+}
+
 function unpack(asset, into) {
   mkdirSync(into, { recursive: true });
   if (asset.path.endsWith(".zip")) {
@@ -252,7 +354,9 @@ function launcherCommand(root) {
   throw new Error(`no launcher in ${root}`);
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
 
 async function start(root, port) {
   const { command, args } = launcherCommand(root);
@@ -267,13 +371,20 @@ async function start(root, port) {
   for (let i = 0; i < 120; i += 1) {
     try {
       const res = await fetch(`${base}/api/health`);
-      if (res.ok) return { ok: true, base, child, root, port, detail: "" };
+      if (res.ok) {
+        const body = await res.json().catch(() => null);
+        // An HTTP 200 is not proof this is Search Hub: any dev server on the port
+        // answers. Require the shape our own health endpoint returns.
+        if (body && body.status === "ok" && typeof body.version === "string") {
+          return { ok: true, base, child, root, port, version: body.version, detail: "" };
+        }
+      }
     } catch {
       /* not up yet */
     }
     await sleep(500);
   }
-  return { ok: false, base, child, root, port, detail: log.join("").slice(-300) };
+  return { ok: false, base, child, root, port, detail: log.join("").slice(-300) || "health endpoint did not identify itself as Search Hub" };
 }
 
 /**

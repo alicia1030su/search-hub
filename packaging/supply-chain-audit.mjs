@@ -303,4 +303,4 @@ console.log(
     ? "\nSupply-chain checks passed (see NOTE lines for what is *not* protected)."
     : `\n${failures} supply-chain check(s) failed.`,
 );
-process.exit(failures === 0 ? 0 : 1);
+process.exitCode = failures === 0 ? 0 : 1;

@@ -364,5 +364,5 @@ try {
 }
 
 console.log(failures === 0 ? "\nAll fault-injection checks passed." : `\n${failures} fault-injection check(s) failed.`);
-process.exit(failures === 0 ? 0 : 1);
+process.exitCode = failures === 0 ? 0 : 1;
 void statSync;

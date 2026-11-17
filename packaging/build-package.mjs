@@ -25,9 +25,8 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET = process.env["PACKAGE_TARGET"] ?? (process.platform === "win32" ? "windows-x64" : "linux-x64");
 // `SEARCH_HUB_VERSION` lets the release workflow stamp the tag version (with its
 // prerelease suffix) so the package and the release agree on what it is.
-const VERSION =
-  process.env["SEARCH_HUB_VERSION"]?.trim() ||
-  JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
+const VERSION = (process.env["SEARCH_HUB_VERSION"]?.trim() ||
+  JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version).replace(/^v/, "");
 const OUT = join(REPO, "dist", "package", TARGET);
 const IS_WINDOWS = TARGET.startsWith("windows");
 

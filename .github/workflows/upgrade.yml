@@ -64,6 +64,9 @@ jobs:
         shell: bash
         env:
           PACKAGE_TARGET: ${{ matrix.os == 'windows-latest' && 'windows-x64' || 'linux-x64' }}
+          # Stamp a version ahead of the old releases so the upgrade is a real
+          # forward move, and so the asset name matches what the updater installs.
+          SEARCH_HUB_VERSION: 0.9.0-ci
         run: node packaging/build-package.mjs
 
       - name: Upgrade v0.1.4-beta.6 → current
@@ -71,20 +74,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node packaging/upgrade-matrix.mjs \
-            --from v0.1.4-beta.6 \
-            --to "$(ls dist/package/*.zip dist/package/*.tar.gz 2>/dev/null | head -1)" \
-            --port 8910
+          TARGET=$(ls dist/package/*.zip dist/package/*.tar.gz 2>/dev/null | head -1)
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.4-beta.6 --to "$TARGET" --port 8910
 
       - name: Upgrade v0.1.5-beta.1 → current
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node packaging/upgrade-matrix.mjs \
-            --from v0.1.5-beta.1 \
-            --to "$(ls dist/package/*.zip dist/package/*.tar.gz 2>/dev/null | head -1)" \
-            --port 8920
+          TARGET=$(ls dist/package/*.zip dist/package/*.tar.gz 2>/dev/null | head -1)
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.5-beta.1 --to "$TARGET" --port 8920
 
       - name: Update fault injection
         shell: bash

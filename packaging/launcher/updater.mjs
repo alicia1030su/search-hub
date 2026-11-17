@@ -103,6 +103,21 @@ function readInstalledVersion(root) {
   );
 }
 
+/** Writes the new version into the package manifest (and package.json if present). */
+function stampVersion(root, version) {
+  for (const name of ["launcher.json", "package.json"]) {
+    const path = join(root, name);
+    if (!existsSync(path)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8"));
+      parsed.version = version;
+      writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    } catch (error) {
+      throw new UpdateError("manifest_update_failed", `Could not update ${name}: ${String(error)}`);
+    }
+  }
+}
+
 function listEntries(dir) {
   const out = [];
   for (const name of readdirSync(dir)) {
@@ -266,7 +281,12 @@ async function main() {
   log(`backup written to ${backup.path} (schema ${String(schemaBefore)})`);
 
   const { previous } = installProgram({ stagingDir: stagedApp, appDir });
-  log(`program installed; previous tree kept at ${previous}`);
+  // The manifest is part of the program's identity: the server reads its version
+  // from launcher.json, so leaving the old value behind makes a successful
+  // upgrade report the previous version — and the health check would then reject
+  // the build it just installed.
+  stampVersion(root, version);
+  log(`program installed as ${version}; previous tree kept at ${previous}`);
 
   // ---- 4. Start and verify --------------------------------------------
   startService(launcher, dataDir, port);

@@ -196,6 +196,7 @@ function scanHistory(report) {
       if (!line.trim()) continue;
       const pathMatch = /^[^:]+:(.+?):\d+:/.exec(line);
       const file = pathMatch?.[1] ?? "";
+      re.lastIndex = 0;
       const match = re.exec(line);
       if (match && isAllowlistedValue(match[0])) continue;
       // Fixtures and docs quote credential shapes on purpose.

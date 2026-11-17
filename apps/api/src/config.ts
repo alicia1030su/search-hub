@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OutboundProxyInput } from "@search-hub/shared";
@@ -12,6 +12,34 @@ import type { OutboundProxyInput } from "@search-hub/shared";
  * assume the presence of `src/`.
  */
 export const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
+/**
+ * Installed version, in priority order:
+ * `SEARCH_HUB_VERSION` → `launcher.json` (a package) → `package.json` (source tree).
+ */
+function resolveVersion(): string {
+  const fromEnv = process.env["SEARCH_HUB_VERSION"]?.trim();
+  if (fromEnv) return fromEnv.replace(/^v/, "");
+  // `launcher.json` is the package manifest and wins over any `package.json`:
+  // the bundled `app/package.json` still carries the build-time version, so
+  // checking it first would report the old version after an in-place update.
+  const roots = [process.cwd(), resolve(process.cwd(), "..")];
+  for (const name of ["launcher.json", "package.json"]) {
+    for (const root of roots) {
+      const path = join(root, name);
+      if (!existsSync(path)) continue;
+      try {
+        const parsed = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown };
+        if (typeof parsed.version === "string" && parsed.version) {
+          return parsed.version.replace(/^v/, "");
+        }
+      } catch {
+        /* try the next candidate */
+      }
+    }
+  }
+  return "0.0.0-unknown";
+}
 
 export interface AppConfig {
   nodeEnv: "development" | "production" | "test";
@@ -192,7 +220,11 @@ export function loadConfig(): AppConfig {
     encryptionKey: env("SEARCH_HUB_ENCRYPTION_KEY"),
     staticDir: existsSync(staticDir) ? staticDir : null,
     migrationsDir,
-    version: "0.1.4",
+    // Reads the version that is actually installed, not a constant:
+    // `/api/health` reports this, and the updater refuses to accept a new build
+    // whose reported version differs from the package it installed. A hardcoded
+    // string made every such check meaningless.
+    version: resolveVersion(),
     rateLimitPerMin: Number(env("SEARCH_HUB_RATE_LIMIT_PER_MIN") ?? 300),
     maxBackupUploadBytes: Math.min(
       // Clamp: too small makes verification useless, too large lets one upload
