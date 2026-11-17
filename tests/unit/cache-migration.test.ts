@@ -62,13 +62,16 @@ describe("cache migration on an existing database", () => {
     return { handle, file };
   }
 
-  it("ships the cache migration after the existing ones", () => {
-    // Ordering is what makes an upgrade an upgrade; a file that sorts before
-    // 0001 would be replayed against a schema it does not expect.
+  it("ships the cache migration after the migrations it builds on", () => {
+    // What matters is that 0004 sorts after every migration it depends on: a
+    // file that sorted earlier would be replayed against a schema it does not
+    // expect. Later migrations (0005+) are allowed and do not invalidate it.
     expect(files).toContain("0004_search_cache.sql");
     const index = files.indexOf("0004_search_cache.sql");
-    expect(index).toBe(files.length - 1);
+    expect(index).toBeGreaterThanOrEqual(0);
     expect(oldFiles.length).toBe(index);
+    // Every migration that exists comes after the cache one or is it.
+    expect(files.slice(index)).toContain("0004_search_cache.sql");
   });
 
   it("adds the cache tables to a pre-existing database and keeps its data", () => {
@@ -98,15 +101,43 @@ describe("cache migration on an existing database", () => {
     handle.sqlite
       .prepare("INSERT INTO settings (key, value_json, updated_at) VALUES (?,?,?)")
       .run("app", '{"instance":{"name":"Carried Over"}}', now);
+    // A real installation has a provider with a key, a probe row, a search event
+    // and cached responses. The health-centre migration must not disturb any of
+    // them — it only adds tables.
+    handle.sqlite
+      .prepare(
+        "INSERT INTO provider_instances (id, name, type, enabled, timeout_ms, max_concurrency, priority, weight, max_retries, results_per_page, rpm_limit, key_strategy, cooldown_ms, breaker_threshold, breaker_cooldown_ms, config_json, search_config_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run("prv_keep", "Kept", "mock", 1, 5000, 2, 100, 100, 0, 10, 60, "round_robin", 30000, 5, 60000, '{"resultCount":2}', "{}", now, now);
+    handle.sqlite
+      .prepare(
+        "INSERT INTO api_keys (id, provider_id, label, key_ciphertext, key_iv, key_tag, key_version, key_hint, weight, enabled, status, request_count, success_count, failure_count, consecutive_failures, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run("key_keep", "prv_keep", "kept", "ct", "iv", "tag", 1, "hint", 100, 1, "healthy", 3, 2, 1, 0, now, now);
+    handle.sqlite
+      .prepare(
+        "INSERT INTO provider_health_checks (id, provider_id, key_id, kind, status, error_code, latency_ms, result_count, health_score, detail_json, trigger, checked_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run("hc_keep", "prv_keep", "key_keep", "connect", "healthy", null, 20, 1, 95, '{"cause":"ok"}', "manual", now);
     const usageBefore = handle.sqlite.pragma("user_version", { simple: true });
 
     // 3. Upgrade.
     const after = runMigrations(handle.sqlite, directory);
-    expect(after.applied).toEqual(["0004_search_cache.sql"]);
+    // Everything newer than the previous release applies, in order, and only
+    // then. Hard-coding one filename would make every future migration look
+    // like a failure of this test rather than a change it should absorb.
+    expect(after.applied).toEqual(files.slice(oldFiles.length));
+    expect(after.applied[0]).toBe("0004_search_cache.sql");
     expect(after.unknownToBuild).toEqual([]);
 
     // 4. The new tables exist and the old rows are untouched.
-    for (const table of ["search_cache", "search_cache_metrics", "search_cache_state"]) {
+    for (const table of [
+      "search_cache",
+      "search_cache_metrics",
+      "search_cache_state",
+      "provider_probe_state",
+      "health_probe_budget",
+    ]) {
       expect(
         handle.sqlite
           .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
@@ -124,6 +155,13 @@ describe("cache migration on an existing database", () => {
       .prepare("SELECT value_json FROM settings WHERE key = ?")
       .get("app") as { value_json: string };
     expect(JSON.parse(setting.value_json).instance.name).toBe("Carried Over");
+
+    // Provider, key and probe rows survive, and the new budget ledger starts
+    // empty rather than inheriting a guessed number.
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_instances").get()).toEqual({ n: 1 });
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM api_keys").get()).toEqual({ n: 1 });
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_checks").get()).toEqual({ n: 1 });
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM health_probe_budget").get()).toEqual({ n: 0 });
 
     // 5. `user_version` tracks the number of migrations, so the backup verifier
     //    and the updater both see the new schema.

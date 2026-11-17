@@ -249,6 +249,26 @@ export const groupCreateSchema = z.object({
   providerIds: z.array(z.string().min(1)).default([]),
 });
 
+/**
+ * Provider-health policy.
+ *
+ * Every limit is bounded on purpose: "unlimited" here means "a background timer
+ * may spend money without a ceiling", which is exactly the bug this surface
+ * exists to prevent. Paid probing also has its own switch, so enabling a
+ * schedule can never start spending on its own.
+ */
+export const healthSettingsPatchSchema = z.object({
+  scheduledEnabled: z.boolean().optional(),
+  intervalMinutes: z.number().int().min(5).max(10_080).optional(),
+  /** Paid probes per run. Capped, never unbounded. */
+  maxRequestsPerRun: z.number().int().min(1).max(200).optional(),
+  /** Paid probes per UTC day. Capped, never unbounded. */
+  maxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
+  paidProbesEnabled: z.boolean().optional(),
+  includeUnverified: z.boolean().optional(),
+  concurrency: z.number().int().min(1).max(4).optional(),
+});
+
 export const settingsUpdateSchema = z.object({
   defaults: z
     .object({
@@ -293,17 +313,7 @@ export const settingsUpdateSchema = z.object({
    * Provider health policy. Defaults keep scheduled probing off and cap paid
    * probes, so enabling this page can never start spending on its own.
    */
-  health: z
-    .object({
-      scheduledEnabled: z.boolean().optional(),
-      intervalMinutes: z.number().int().min(5).max(10_080).optional(),
-      maxRequestsPerRun: z.number().int().min(1).max(200).optional(),
-      maxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
-      paidProbesEnabled: z.boolean().optional(),
-      includeUnverified: z.boolean().optional(),
-      concurrency: z.number().int().min(1).max(4).optional(),
-    })
-    .optional(),
+  health: healthSettingsPatchSchema.optional(),
   logging: z
     .object({
       level: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).optional(),

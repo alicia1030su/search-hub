@@ -20,7 +20,12 @@ export type MockFailMode =
   /** Account-level budget exhausted: distinct from a rate limit on purpose. */
   | "quota_exceeded"
   /** Permission problem (403 / missing entitlement), not a bad credential. */
-  | "forbidden";
+  | "forbidden"
+  /**
+   * The caller aborted the request. Exists so tests can prove that a cancelled
+   * probe is not counted as evidence about the source.
+   */
+  | "cancelled";
 
 export interface MockConfig {
   resultCount?: number;
@@ -75,6 +80,11 @@ export const mockAdapter: SearchProviderAdapter = {
     }
     if (failMode === "quota_exceeded") {
       throw new ProviderError(ctx.config.id, "mock", "quota_exceeded", "Mock quota exhausted (account level)", {
+        retryable: false,
+      });
+    }
+    if (failMode === "cancelled") {
+      throw new ProviderError(ctx.config.id, "mock", "cancelled", "Mock request cancelled", {
         retryable: false,
       });
     }

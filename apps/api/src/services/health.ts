@@ -11,17 +11,18 @@
  * Everything here is budget-first: the budget is checked *before* the request,
  * so an exhausted budget produces `skipped`, never a billed failure.
  */
-import { and, desc, gte, eq } from "drizzle-orm";
+import { and, desc, eq, gte, lte, or, isNull } from "drizzle-orm";
 import type { ProviderErrorCode } from "@search-hub/shared";
 import { SearchHubError } from "@search-hub/shared";
 import {
   apiKeys,
   providerHealthChecks,
   providerInstances,
+  providerProbeState,
   searchEvents,
   type SearchHubDb,
 } from "@search-hub/db";
-import { getAdapter } from "@search-hub/providers";
+import { getAdapter, getCatalogEntry } from "@search-hub/providers";
 import { newId } from "../security/crypto.js";
 import type { Logger, SafeFetch } from "@search-hub/shared";
 import {
@@ -30,14 +31,18 @@ import {
   decideBudget,
   errorCodeFor,
   parseRetryAfterMs,
+  GATING_CAUSES,
   percentile,
+  runtimeHealthFor,
   scoreFor,
   statusFor,
   type HealthCause,
   type HealthProbeKind,
   type HealthStatus,
   type HealthTrigger,
+  type RuntimeHealth,
 } from "./health-classify.js";
+import { ProbeBudget } from "./health-budget.js";
 
 /**
  * The exact slice of the application this service needs.
@@ -75,6 +80,25 @@ export interface HealthCheckResult {
   trigger: HealthTrigger;
   cooldownUntil: string | null;
   sample?: Array<{ title: string; url: string }>;
+  /**
+   * Whether this probe consumed a paid budget slot.
+   *
+   * `false` when the request never left the machine (no credential). The caller
+   * refunds its per-run counter from this, so an impossible probe cannot make
+   * "check all" stop early while nothing was actually spent.
+   */
+  spent?: boolean;
+}
+
+/**
+ * Implementation verification, copied from the catalog and never inferred from
+ * a probe. "The endpoint answered" says nothing about whether anyone has ever
+ * run a real, credentialed search against the vendor.
+ */
+export interface ImplementationStatus {
+  verification: "documented" | "live_tested" | "mock_verified" | "unverified" | "no_official_api";
+  implementation: "builtin" | "generic" | "planned" | "unavailable";
+  docsUrl: string | null;
 }
 
 export interface ProviderHealthSummary {
@@ -82,7 +106,17 @@ export interface ProviderHealthSummary {
   providerName: string;
   providerType: string;
   enabled: boolean;
+  /** Stored four-value status (kept for compatibility). */
   status: HealthStatus;
+  /** Operator-facing state derived from status + cause + credentials. */
+  runtime: RuntimeHealth;
+  implementation: ImplementationStatus;
+  /** Whether the scheduler may probe this provider. */
+  autoProbeEnabled: boolean;
+  /** When the scheduler will next consider it, if a schedule is enabled. */
+  nextProbeAt: string | null;
+  /** Probe kind the scheduler would use right now. */
+  probeMode: HealthProbeKind;
   healthScore: number;
   lastCheckedAt: string | null;
   lastSuccessAt: string | null;
@@ -110,13 +144,21 @@ export interface HealthOverview {
   generatedAt: string;
   providers: ProviderHealthSummary[];
   budget: {
+    /** UTC day the counters belong to, so the API does not imply local time. */
+    day: string;
     maxPerRun: number;
     maxPerDay: number;
+    /** Paid searches reserved today. */
     usedToday: number;
+    /** Free connectivity probes reserved today. */
+    connectUsedToday: number;
     remainingToday: number;
     paidProbesEnabled: boolean;
     scheduledEnabled: boolean;
+    intervalMinutes: number;
   };
+  /** Counted by runtime state; `totals` keeps the four legacy buckets. */
+  runtimeTotals: Record<RuntimeHealth, number>;
   totals: Record<HealthStatus, number>;
 }
 
@@ -135,40 +177,50 @@ const TREND_BUCKETS = 24;
 
 export class HealthService {
   private lastScheduledRun: string | null = null;
+  private readonly budgetLedger: ProbeBudget;
+  /** Providers with a probe in flight; the scheduler must never double-probe. */
+  private readonly inFlight = new Set<string>();
+  private timer: NodeJS.Timeout | null = null;
+  private ticking = false;
+  private stopped = false;
 
-  constructor(private readonly ctx: HealthDependencies) {}
+  constructor(
+    private readonly ctx: HealthDependencies,
+    private readonly clock: () => number = () => Date.now(),
+    /** Injectable for deterministic backoff assertions; never used for security. */
+    private readonly random: () => number = Math.random,
+  ) {
+    this.budgetLedger = new ProbeBudget(ctx.db, clock);
+  }
 
   private get db(): SearchHubDb {
     return this.ctx.db;
   }
 
-  /** Number of *paid* probes started today, read from the probe log itself. */
-  usedToday(): number {
-    const since = new Date();
-    since.setUTCHours(0, 0, 0, 0);
-    const rows = this.db
-      .select({ id: providerHealthChecks.id })
-      .from(providerHealthChecks)
-      .where(
-        and(
-          eq(providerHealthChecks.kind, "search"),
-          gte(providerHealthChecks.checkedAt, since.toISOString()),
-        ),
-      )
-      .all();
-    return rows.length;
-  }
-
+  /**
+   * Budget view for the API and the UI.
+   *
+   * Counts come from the durable ledger, not from counting probe rows: the row
+   * is written *after* the request, so two concurrent probes would both read the
+   * same pre-spend number and both pass.
+   */
   budget() {
     const policy = this.ctx.settings.get().health;
-    const used = this.usedToday();
-    return {
+    const snapshot = this.budgetLedger.snapshot({
+      paidProbesEnabled: policy.paidProbesEnabled,
       maxPerRun: policy.maxRequestsPerRun,
       maxPerDay: policy.maxRequestsPerDay,
-      usedToday: used,
-      remainingToday: Math.max(0, policy.maxRequestsPerDay - used),
-      paidProbesEnabled: policy.paidProbesEnabled,
+    });
+    return {
+      day: snapshot.day,
+      maxPerRun: snapshot.maxPerRun,
+      maxPerDay: snapshot.maxPerDay,
+      usedToday: snapshot.searchUsedToday,
+      connectUsedToday: snapshot.connectUsedToday,
+      remainingToday: snapshot.remainingToday,
+      paidProbesEnabled: snapshot.paidProbesEnabled,
       scheduledEnabled: policy.scheduledEnabled,
+      intervalMinutes: policy.intervalMinutes,
     };
   }
 
@@ -190,26 +242,11 @@ export class HealthService {
 
     const kind = options.kind ?? "connect";
     const trigger = options.trigger ?? "manual";
-
-    if (kind === "search") {
-      const policy = this.ctx.settings.get().health;
-      if (!policy.paidProbesEnabled) {
-        throw new SearchHubError(
-          "validation_error",
-          "Paid search probes are disabled. Enable them in Settings → Provider health, or run a connectivity probe instead.",
-        );
-      }
-      const decision = decideBudget(this.budget(), 1);
-      if (!decision.allowed) {
-        throw new SearchHubError(
-          "quota_exceeded",
-          `Health probe budget exhausted (${decision.reason}). Probes used today: ${this.budget().usedToday}/${policy.maxRequestsPerDay}.`,
-        );
-      }
-    }
+    const policy = this.ctx.settings.get().health;
 
     // Resolve the credential, but do not treat its absence as "unhealthy":
     // without a key we simply cannot tell, and saying so is the honest answer.
+    // Resolved *before* reserving budget so an impossible probe never spends.
     const keys = this.db
       .select()
       .from(apiKeys)
@@ -237,10 +274,44 @@ export class HealthService {
           ? "The stored key could not be decrypted (master key changed?)"
           : "No enabled API key. This provider is unverified, not healthy.",
         trigger,
+        // Nothing was requested, so nothing was spent: the caller refunds its
+        // per-run allowance from this.
+        spent: false,
       });
     }
 
-    const started = Date.now();
+    // Reserve *before* the request. The reservation is a durable ledger write:
+    // if it cannot be recorded we refuse rather than spend money the budget has
+    // no record of. Connectivity probes are counted too (separately) but are
+    // not capped — capping them would leave the page unable to explain itself.
+    const reservation = this.budgetLedger.reserve({
+      kind,
+      paidProbesEnabled: policy.paidProbesEnabled,
+      maxPerRun: policy.maxRequestsPerRun,
+      maxPerDay: policy.maxRequestsPerDay,
+    });
+    if (!reservation.ok) {
+      if (kind === "search") {
+        if (reservation.reason === "paid_disabled") {
+          throw new SearchHubError(
+            "validation_error",
+            "Paid search probes are disabled. Enable them in Settings → Provider health, or run a connectivity probe instead.",
+          );
+        }
+        throw new SearchHubError(
+          "quota_exceeded",
+          `Health probe budget exhausted (${reservation.reason}). Paid probes used today: ${reservation.snapshot.searchUsedToday}/${policy.maxRequestsPerDay}.`,
+        );
+      }
+      // A connectivity probe is free; a broken ledger should not make the
+      // page unusable, but the miss is logged so it is not silent.
+      this.ctx.appLogger.warn(
+        { providerId, reason: reservation.reason },
+        "connect probe ran without a budget reservation",
+      );
+    }
+
+    const started = this.clock();
     const controller = new AbortController();
     const timeoutMs = Math.min(row.timeoutMs, kind === "connect" ? 12_000 : 20_000);
     const timer = setTimeout(() => controller.abort(new Error("timeout")), timeoutMs);
@@ -271,13 +342,13 @@ export class HealthService {
           logger: this.ctx.appLogger,
         },
       );
-      const latencyMs = Date.now() - started;
+      const latencyMs = this.clock() - started;
       const count = result.results.length;
 
       // HTTP 200 with no rows is a degraded answer, not a healthy one: the
       // vendor answered, but the source is not usable for searching right now.
       const cause: HealthCause = count > 0 ? "ok" : "empty_results";
-      return this.record({
+      const recorded = this.record({
         providerId,
         providerName: row.name,
         providerType: row.type,
@@ -293,10 +364,20 @@ export class HealthService {
             : "Endpoint answered but returned no results; treated as degraded, not healthy.",
         trigger,
         sample: result.results.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
+        spent: kind === "search" && reservation.ok,
       });
+      this.advanceSchedule(providerId, cause);
+      return recorded;
     } catch (error) {
-      const latencyMs = Date.now() - started;
+      const latencyMs = this.clock() - started;
       const cause = classifyError(error);
+      // A cancelled probe is not evidence about the source: it says the caller
+      // (or shutdown) stopped it. Recording it would degrade a provider for a
+      // reason it had no part in, so it is dropped and its budget returned.
+      if (cause === "cancelled") {
+        if (reservation.ok) this.budgetLedger.release(kind);
+        throw new SearchHubError("cancelled", "The health probe was cancelled; nothing was recorded.");
+      }
       const retryAfterMs = parseRetryAfterMs(
         (error as { retryAfterMs?: number } | null)?.retryAfterMs != null
           ? String((error as { retryAfterMs?: number }).retryAfterMs! / 1000)
@@ -305,7 +386,7 @@ export class HealthService {
       const cooldown = cooldownFor(cause, retryAfterMs);
       // Account-wide problems must not be "fixed" by rotating keys; the record
       // step parks the key and the scheduler stops offering it.
-      return this.record({
+      const recorded = this.record({
         providerId,
         providerName: row.name,
         providerType: row.type,
@@ -318,10 +399,141 @@ export class HealthService {
         message: error instanceof Error ? error.message : String(error),
         trigger,
         cooldownMs: cooldown ?? undefined,
+        spent: kind === "search" && reservation.ok,
       });
+      this.advanceSchedule(providerId, cause);
+      return recorded;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Moves the provider's next scheduled probe.
+   *
+   * Success resets the backoff to the normal interval. A transient failure
+   * retries sooner (bounded exponential), because waiting a full interval for a
+   * DNS blip is how a source stays "down" for hours after it recovered. A
+   * terminal failure (quota, bad credential) waits for the normal interval —
+   * retrying those in a minute only spends more.
+   *
+   * The jitter keeps every provider from probing on the same tick after a
+   * synchronized deploy or restart.
+   */
+  private advanceSchedule(providerId: string, cause: HealthCause): void {
+    const policy = this.ctx.settings.get().health;
+    const intervalMs = Math.max(5, policy.intervalMinutes) * 60_000;
+    const now = this.clock();
+    const prior = this.db
+      .select()
+      .from(providerProbeState)
+      .where(eq(providerProbeState.providerId, providerId))
+      .get();
+
+    const healthy = cause === "ok";
+    const failures = healthy ? 0 : (prior?.consecutiveFailures ?? 0) + 1;
+    const level = healthy ? 0 : Math.min((prior?.backoffLevel ?? 0) + 1, 6);
+    const transient =
+      cause === "timeout" ||
+      cause === "network" ||
+      cause === "dns" ||
+      cause === "tls" ||
+      cause === "server_error" ||
+      cause === "bad_response" ||
+      cause === "empty_results" ||
+      cause === "rate_limited";
+
+    const baseMs = transient ? Math.min(intervalMs, 60_000 * 2 ** Math.max(0, level - 1)) : intervalMs;
+    // ±20% jitter. `random` is injectable so tests can be deterministic.
+    const jitterMs = Math.round(baseMs * 0.2 * (this.random() * 2 - 1));
+    const nextAt = new Date(now + Math.max(15_000, baseMs + jitterMs)).toISOString();
+    const updatedAt = new Date(now).toISOString();
+
+    this.db
+      .insert(providerProbeState)
+      .values({
+        providerId,
+        autoProbeEnabled: prior?.autoProbeEnabled ?? true,
+        consecutiveFailures: failures,
+        backoffLevel: level,
+        nextProbeAt: nextAt,
+        resetAt: prior?.resetAt ?? null,
+        updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: providerProbeState.providerId,
+        set: { consecutiveFailures: failures, backoffLevel: level, nextProbeAt: nextAt, updatedAt },
+      })
+      .run();
+  }
+
+  /** Switches automatic probing for one provider. */
+  setAutoProbe(providerId: string, enabled: boolean): void {
+    const row = this.db
+      .select({ id: providerInstances.id })
+      .from(providerInstances)
+      .where(eq(providerInstances.id, providerId))
+      .get();
+    if (!row) throw new SearchHubError("not_found", "Provider not found");
+    const now = new Date(this.clock()).toISOString();
+    this.db
+      .insert(providerProbeState)
+      .values({
+        providerId,
+        autoProbeEnabled: enabled,
+        consecutiveFailures: 0,
+        backoffLevel: 0,
+        nextProbeAt: enabled ? now : null,
+        resetAt: null,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: providerProbeState.providerId,
+        set: { autoProbeEnabled: enabled, nextProbeAt: enabled ? now : null, updatedAt: now },
+      })
+      .run();
+  }
+
+  /**
+   * Forgets the recorded health of one provider.
+   *
+   * History is kept — deleting evidence of a failure is not a reset, it is a
+   * cover-up. The marker makes older rows stop determining the status, so the
+   * provider reads `unknown` and the next probe decides. Credentials are *not*
+   * touched: re-enabling a rejected key by "resetting health" would silently
+   * start spending on a key the vendor already refused.
+   */
+  resetProvider(providerId: string): { providerId: string; resetAt: string } {
+    const row = this.db
+      .select({ id: providerInstances.id })
+      .from(providerInstances)
+      .where(eq(providerInstances.id, providerId))
+      .get();
+    if (!row) throw new SearchHubError("not_found", "Provider not found");
+    const now = new Date(this.clock()).toISOString();
+    this.db
+      .insert(providerProbeState)
+      .values({
+        providerId,
+        autoProbeEnabled: true,
+        consecutiveFailures: 0,
+        backoffLevel: 0,
+        nextProbeAt: now,
+        resetAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: providerProbeState.providerId,
+        set: {
+          consecutiveFailures: 0,
+          backoffLevel: 0,
+          nextProbeAt: now,
+          resetAt: now,
+          updatedAt: now,
+        },
+      })
+      .run();
+    return { providerId, resetAt: now };
   }
 
   /**
@@ -332,7 +544,7 @@ export class HealthService {
    */
   async checkMany(
     providerIds: string[] | null,
-    options: { kind?: HealthProbeKind; trigger?: HealthTrigger; gapMs?: number } = {},
+    options: { kind?: HealthProbeKind; trigger?: HealthTrigger; gapMs?: number; respectInFlight?: boolean } = {},
   ): Promise<{
     results: HealthCheckResult[];
     skipped: Array<{ providerId: string; reason: string }>;
@@ -369,6 +581,13 @@ export class HealthService {
       }
     };
     const probe = async (id: string): Promise<void> => {
+      // One probe per provider at a time. Two passes (a scheduled tick and a
+      // manual "check all") would otherwise hit the same vendor twice, and for
+      // a paid probe that is paying twice for one answer.
+      if (options.respectInFlight === true && this.inFlight.has(id)) {
+        skipped.push({ providerId: id, reason: "already_running" });
+        return;
+      }
       if (kind === "search") {
         const remainingRun = this.budget().maxPerRun - spentThisRun;
         if (remainingRun <= 0) {
@@ -382,13 +601,21 @@ export class HealthService {
         }
         spentThisRun += 1;
       }
+      this.inFlight.add(id);
       try {
-        results.push(await this.checkOne(id, { kind, trigger }));
+        const recorded = await this.checkOne(id, { kind, trigger });
+        // A probe that never left the machine (no credential, refused before
+        // the request) must not consume the per-run allowance: otherwise
+        // "check all" stops early while nothing was spent.
+        if (kind === "search" && recorded.spent === false) spentThisRun -= 1;
+        results.push(recorded);
       } catch (error) {
         skipped.push({
           providerId: id,
           reason: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        this.inFlight.delete(id);
       }
     };
 
@@ -403,14 +630,50 @@ export class HealthService {
   async runScheduled(): Promise<{ results: HealthCheckResult[]; skipped: unknown[] } | null> {
     const policy = this.ctx.settings.get().health;
     if (!policy.scheduledEnabled) return null;
-    const last = this.lastScheduledRun ? Date.parse(this.lastScheduledRun) : 0;
-    if (Date.now() - last < policy.intervalMinutes * 60_000) return null;
-    this.lastScheduledRun = new Date().toISOString();
+    const now = this.clock();
+    // The interval lives in each provider's `nextProbeAt`, not in a global gate.
+    // A global gate would also block the *fast* retries that backoff exists for:
+    // a source that failed with a timeout should be retried in a minute, not in
+    // six hours, even though the schedule interval is six hours.
+
+    // Each provider carries its own `nextProbeAt`: a source that just failed
+    // backs off, and a source that just recovered must not wait a full interval
+    // for the next attempt. Providers this pass does not touch stay untouched.
+    const due = this.db
+      .select({ providerId: providerProbeState.providerId })
+      .from(providerProbeState)
+      .innerJoin(providerInstances, eq(providerInstances.id, providerProbeState.providerId))
+      .where(
+        and(
+          eq(providerInstances.enabled, true),
+          eq(providerProbeState.autoProbeEnabled, true),
+          or(isNull(providerProbeState.nextProbeAt), lte(providerProbeState.nextProbeAt, new Date(now).toISOString())),
+        ),
+      )
+      .all();
+
+    // Providers with no state row have never been probed: they are due too.
+    // One query for the state table beats one query per provider.
+    const known = new Set(
+      this.db.select({ providerId: providerProbeState.providerId }).from(providerProbeState).all()
+        .map((row) => row.providerId),
+    );
+    const unscheduled = this.db
+      .select({ id: providerInstances.id })
+      .from(providerInstances)
+      .where(eq(providerInstances.enabled, true))
+      .all()
+      .filter((row) => !known.has(row.id));
+
+    const ids = [...new Set([...due.map((row) => row.providerId), ...unscheduled.map((row) => row.id)])];
+    // Nothing due: report "no pass ran" rather than an empty pass, so a caller
+    // can tell "the schedule is idle" from "the schedule ran and found nothing".
+    if (ids.length === 0) return null;
 
     // Scheduled runs are connectivity-only unless the operator opted into paid
     // probes: a timer must never be the reason money is spent.
     const kind: HealthProbeKind = policy.paidProbesEnabled ? "search" : "connect";
-    const run = await this.checkMany(null, { kind, trigger: "schedule" });
+    const run = await this.checkMany(ids, { kind, trigger: "schedule", respectInFlight: true });
     return { results: run.results, skipped: run.skipped };
   }
 
@@ -437,12 +700,26 @@ export class HealthService {
     const latest = new Map<string, typeof providerHealthChecks.$inferSelect>();
     for (const row of rows) if (!latest.has(row.providerId)) latest.set(row.providerId, row);
 
+    // A manual reset means "stop trusting what we recorded before this moment".
+    // Old rows stay for audit but no longer gate a search.
+    const resets = new Map(
+      this.db
+        .select({ providerId: providerProbeState.providerId, resetAt: providerProbeState.resetAt })
+        .from(providerProbeState)
+        .all()
+        .filter((item) => item.resetAt !== null)
+        .map((item) => [item.providerId, item.resetAt as string] as const),
+    );
+
     for (const [providerId, row] of latest) {
       if (row.status !== "unhealthy" && row.status !== "degraded") continue;
+      const resetAt = resets.get(providerId);
+      if (resetAt && row.checkedAt <= resetAt) continue;
       const detail = safeJson(row.detailJson) as { cause?: string; cooldownUntil?: string };
       const cause = detail.cause ?? "";
-      // Only account-wide / credential causes are terminal.
-      if (cause !== "quota_exceeded" && cause !== "auth_invalid") continue;
+      // Only account-wide / credential causes are terminal. The set lives in
+      // health-classify so the rule has exactly one definition.
+      if (!GATING_CAUSES.has(cause as never)) continue;
       const until = detail.cooldownUntil ?? null;
       if (!until || Date.parse(until) <= now) continue;
       blocked.set(providerId, {
@@ -463,18 +740,61 @@ export class HealthService {
    * nothing here decides to spend money on its own. Returns a stop function.
    */
   startScheduler(intervalMs = 60_000): () => void {
-    const timer = setInterval(() => {
-      void this.runScheduled().catch(() => undefined);
+    if (this.timer) return () => this.stopScheduler();
+    this.stopped = false;
+    this.timer = setInterval(() => {
+      // Two guards, both needed:
+      //  - `stopped` so a tick already queued when the process shuts down does
+      //    not fire a probe during teardown;
+      //  - `ticking` so a slow pass (vendor timeout plus backoff) cannot stack
+      //    a second pass on top of itself and double-probe the same provider.
+      if (this.stopped || this.ticking) return;
+      this.ticking = true;
+      void this.runScheduled()
+        .catch((error: unknown) => {
+          // A scheduled pass failing must never take the API down with it.
+          this.ctx.appLogger.warn({ err: error }, "scheduled health pass failed");
+        })
+        .finally(() => {
+          this.ticking = false;
+        });
     }, intervalMs);
-    // Do not hold the process open just for health probing.
-    timer.unref?.();
-    return () => clearInterval(timer);
+    // Do not hold the process open just for health probing: a background timer
+    // is not a reason to keep the event loop alive, and on Windows a straggling
+    // timer is how a service refuses to exit.
+    this.timer.unref?.();
+    return () => this.stopScheduler();
+  }
+
+  stopScheduler(): void {
+    this.stopped = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  /** True while a scheduled pass is running; used by the tests and the status API. */
+  isPassRunning(): boolean {
+    return this.ticking;
+  }
+
+  /**
+   * Runs one scheduled pass now, ignoring the interval.
+   *
+   * Exists for the tests (and for an operator-triggered "check all"): the
+   * interval gate is a production policy, not a correctness rule, and a test
+   * that has to wait five minutes to see a schedule is not a test.
+   */
+  async runScheduledNow(): Promise<{ results: HealthCheckResult[]; skipped: unknown[] } | null> {
+    this.lastScheduledRun = null;
+    return this.runScheduled();
   }
 
   /** Aggregated view for the dashboard, REST and MCP. */
   overview(): HealthOverview {
     const rows = this.db.select().from(providerInstances).all();
-    const since24h = new Date(Date.now() - 86_400_000).toISOString();
+    const since24h = new Date(this.clock() - 86_400_000).toISOString();
     const checks = this.db
       .select()
       .from(providerHealthChecks)
@@ -487,8 +807,10 @@ export class HealthService {
       .where(gte(searchEvents.createdAt, since24h))
       .all();
     const keys = this.db.select().from(apiKeys).all();
+    const states = this.db.select().from(providerProbeState).all();
+    const stateById = new Map(states.map((item) => [item.providerId, item]));
 
-    const providers = rows.map((row) => this.summarize(row, checks, events, keys));
+    const providers = rows.map((row) => this.summarize(row, checks, events, keys, stateById.get(row.id)));
     const totals: Record<HealthStatus, number> = {
       healthy: 0,
       degraded: 0,
@@ -497,11 +819,27 @@ export class HealthService {
     };
     for (const item of providers) totals[item.status] += 1;
 
+    const runtimeTotals: Record<RuntimeHealth, number> = {
+      unknown: 0,
+      healthy: 0,
+      degraded: 0,
+      unhealthy: 0,
+      rate_limited: 0,
+      quota_exceeded: 0,
+      invalid_credentials: 0,
+      permission_denied: 0,
+      cooldown: 0,
+      unverified: 0,
+      disabled: 0,
+    };
+    for (const item of providers) runtimeTotals[item.runtime] += 1;
+
     return {
-      generatedAt: new Date().toISOString(),
+      generatedAt: new Date(this.clock()).toISOString(),
       providers,
       budget: this.budget(),
       totals,
+      runtimeTotals,
     };
   }
 
@@ -538,8 +876,11 @@ export class HealthService {
     checks: Array<typeof providerHealthChecks.$inferSelect>,
     events: Array<typeof searchEvents.$inferSelect>,
     keys: Array<typeof apiKeys.$inferSelect>,
+    state: typeof providerProbeState.$inferSelect | undefined,
   ): ProviderHealthSummary {
-    const mine = checks.filter((item) => item.providerId === row.id);
+    const mine = checks
+      .filter((item) => item.providerId === row.id)
+      .filter((item) => !state?.resetAt || item.checkedAt > state.resetAt);
     const lastCheck = mine[0] ?? null;
     const lastSuccess = mine.find((item) => item.status === "healthy") ?? null;
 
@@ -570,6 +911,25 @@ export class HealthService {
     // Status comes from the newest probe; with no probe at all the source is
     // unverified, even if it is enabled and has keys.
     const status: HealthStatus = lastCheck ? (lastCheck.status as HealthStatus) : "unverified";
+    const cause = lastCheck
+      ? ((safeJson(lastCheck.detailJson) as { cause?: HealthCause }).cause ?? "ok")
+      : null;
+    const adapter = getAdapter(row.type);
+    const requiresKey = adapter?.requiresKey ?? true;
+    const cooldownUntil = lastCheck
+      ? (safeJson(lastCheck.detailJson) as { cooldownUntil?: string | null }).cooldownUntil ?? null
+      : null;
+    const runtime = runtimeHealthFor({
+      enabled: row.enabled,
+      lastCheck: lastCheck ? { status, cause: cause ?? "ok", cooldownUntil } : null,
+      requiresKey,
+      keyTotal: providerKeys.length,
+      keyAvailable: available,
+      keyInvalid: providerKeys.filter((item) => item.status === "invalid").length,
+      now: this.clock(),
+    });
+    const entry = getCatalogEntry(row.type);
+    const policy = this.ctx.settings.get().health;
 
     return {
       providerId: row.id,
@@ -577,6 +937,15 @@ export class HealthService {
       providerType: row.type,
       enabled: row.enabled,
       status,
+      runtime,
+      implementation: {
+        verification: entry?.verification ?? "unverified",
+        implementation: entry?.implementation ?? "planned",
+        docsUrl: entry?.docsUrl ?? null,
+      },
+      autoProbeEnabled: state?.autoProbeEnabled ?? true,
+      nextProbeAt: state?.nextProbeAt ?? null,
+      probeMode: policy.paidProbesEnabled ? "search" : "connect",
       healthScore: lastCheck?.healthScore ?? 0,
       lastCheckedAt: lastCheck?.checkedAt ?? null,
       lastSuccessAt: lastSuccess?.checkedAt ?? null,
@@ -637,13 +1006,14 @@ export class HealthService {
     trigger: HealthTrigger;
     cooldownMs?: number;
     sample?: Array<{ title: string; url: string }>;
+    spent?: boolean;
   }): HealthCheckResult {
     const id = newId("hc");
-    const checkedAt = new Date().toISOString();
+    const checkedAt = new Date(this.clock()).toISOString();
     const healthScore = scoreFor(input.cause, input.latencyMs);
     const cooldownUntil =
       input.cooldownMs && input.cooldownMs > 0
-        ? new Date(Date.now() + input.cooldownMs).toISOString()
+        ? new Date(this.clock() + input.cooldownMs).toISOString()
         : null;
     const errorCode = errorCodeFor(input.cause);
 
@@ -694,6 +1064,7 @@ export class HealthService {
       trigger: input.trigger,
       cooldownUntil,
       ...(input.sample ? { sample: input.sample } : {}),
+      ...(input.spent === undefined ? {} : { spent: input.spent }),
     };
   }
 
@@ -706,7 +1077,7 @@ export class HealthService {
       // Always park until at least the next UTC midnight: a quota-exhausted key
       // without a cooldown would be retried on the next search and fail again.
       patch["cooldownUntil"] =
-        cooldownUntil ?? new Date(nextUtcMidnight(Date.now())).toISOString();
+        cooldownUntil ?? new Date(nextUtcMidnight(this.clock())).toISOString();
     } else if (cooldownUntil) {
       patch["cooldownUntil"] = cooldownUntil;
     }

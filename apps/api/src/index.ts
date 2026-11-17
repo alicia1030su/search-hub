@@ -27,9 +27,14 @@ async function main(): Promise<void> {
   // not hold the process open.
   const stopCacheSweeper = ctx.cache.startScheduler();
 
+  let stopHealth: (() => void) | null = null;
+
   const close = async (signal: string) => {
     clearInterval(retentionTimer);
     stopCacheSweeper();
+    // Stop the probe timer before closing the database: a probe that fires
+    // during teardown would write to a closing handle.
+    stopHealth?.();
     ctx.logger.info({ signal }, "shutting down");
     try {
       await app.close();
@@ -55,8 +60,11 @@ async function main(): Promise<void> {
     // Background probes. The timer only *ticks*; whether anything is probed is
     // decided by settings (scheduledEnabled / intervalMinutes / budgets), so this
     // never starts spending on its own.
-    const stopHealth = ctx.health.startScheduler();
-    process.on("exit", () => stopHealth());
+    // `close()` already stops it; the `exit` hook covers paths that bypass
+    // signal handling (a hard process exit), where a timer would otherwise
+    // keep the event loop alive on Windows.
+    stopHealth = ctx.health.startScheduler();
+    process.on("exit", () => stopHealth?.());
 
     if (ctx.secrets.source === "file") {
       ctx.logger.warn(

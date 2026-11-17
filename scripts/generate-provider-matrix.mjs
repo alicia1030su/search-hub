@@ -77,6 +77,15 @@ These four states are **not** interchangeable:
 Contract tests use local HTTP fixtures built from the documented wire format. They
 prove protocol fidelity, **not** that a key works.
 
+### This column is not runtime health
+
+The table below answers "how was this adapter validated". It does not answer "is this
+installation's instance working right now" — that is the Provider Health Management
+Centre, surfaced at \`GET /api/admin/provider-health\` and documented in
+[provider-health.md](./provider-health.md). The two are deliberately separate: a probe
+succeeding never rewrites \`verification\`, and a \`documented\` provider can legitimately
+be \`runtime=healthy\` because its code follows the docs and its last probe worked.
+
 ## Implemented providers
 
 | Type | Capability | Category | Auth | Default URL | Verification | Notes |

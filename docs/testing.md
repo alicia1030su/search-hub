@@ -18,7 +18,34 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (367 tests, 25 files)
+## What is covered (724 tests, 48 files)
+
+**Provider health management** — `tests/integration/provider-health-center.test.ts` (32 cases)
+
+- Implementation verification and runtime health are independent: a green probe does not
+  upgrade `documented`/`mock_verified`, and the panel shows both.
+- No API key ⇒ `unverified` before any request leaves the process; a disabled provider is
+  `disabled` whatever the last probe said.
+- The two probe kinds are distinct: `connect` proves reachability, `search` is the only one
+  that can claim "it can search".
+- Cause classification covers 401 / 403 / 429-limited / 429-quota / 5xx / DNS / TLS /
+  timeout / empty results; only quota and invalid credentials gate a search.
+- Budget: 3 per run, 20 per UTC day, persisted across a restart, and **100 concurrent paid
+  probes never exceed the ledger** (exactly 5 of 100 accepted with a cap of 5).
+- Backoff and recovery: consecutive failures raise the backoff level and schedule a retry
+  sooner than the interval; one success clears both.
+- One dead key does not disable a provider; every key rejected reports
+  `invalid_credentials`, never `healthy`.
+- Lifecycle: two passes cannot probe the same provider at once; stopping the scheduler ends
+  the timer and no further probes are written; the timer does not keep the process alive.
+- The API never returns key material, an unauthenticated caller gets 401/403, a
+  `search`-scope token gets 403, and reset parks nothing but also re-enables nothing.
+- A cache hit fabricates no health: no probe row, no success count, runtime stays `unknown`.
+- MCP and REST see the same gate and the same skip reason.
+
+All of it runs on injected clocks with a controllable scheduler — no test waits for a real
+interval, and no test calls a paid vendor.
+
 
 **Scheduler and quotas** — `tests/unit/scheduler.test.ts`, `tests/unit/key-limits.test.ts`
 

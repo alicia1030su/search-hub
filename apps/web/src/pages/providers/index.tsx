@@ -438,6 +438,7 @@ export function ProvidersPage() {
               error={health.error?.message ?? null}
               onCheckAll={runHealthCheck}
               onCheckOne={runHealthCheckOne}
+              onReload={health.reload}
               busy={busy}
             />
           ) : tab === "market" ? (

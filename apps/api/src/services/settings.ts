@@ -147,6 +147,7 @@ export class SettingsService {
     merged.defaults.limit = Math.min(100, Math.max(1, Math.round(merged.defaults.limit)));
     merged.defaults.timeoutMs = Math.min(120_000, Math.max(1000, Math.round(merged.defaults.timeoutMs)));
     this.normalizeCache(merged.cache);
+    this.normalizeHealth(merged.health);
     const previous = this.current;
     this.persist(merged);
     this.current = merged;
@@ -168,6 +169,26 @@ export class SettingsService {
    * Values are not silently clamped: an operator who typed 100 hours should be
    * told, not given 72.
    */
+  /**
+   * Clamps the probe policy into a range that can never run away.
+   *
+   * The zod schema already rejects out-of-range values on the wire; this runs on
+   * the *merged* document so a stored value written by an older build cannot put
+   * the scheduler into a configuration the UI cannot express.
+   */
+  private normalizeHealth(health: AppSettings["health"]): void {
+    health.intervalMinutes = Math.min(10_080, Math.max(5, Math.round(health.intervalMinutes)));
+    // 3 per run / 20 per day are the shipped defaults; the caps are hard.
+    health.maxRequestsPerRun = Math.min(200, Math.max(1, Math.round(health.maxRequestsPerRun)));
+    health.maxRequestsPerDay = Math.min(2000, Math.max(1, Math.round(health.maxRequestsPerDay)));
+    health.concurrency = Math.min(4, Math.max(1, Math.round(health.concurrency)));
+    // A run budget larger than the day budget can never be spent; keeping it
+    // smaller makes "check all" stop at the daily ceiling instead of queuing.
+    if (health.maxRequestsPerRun > health.maxRequestsPerDay) {
+      health.maxRequestsPerRun = health.maxRequestsPerDay;
+    }
+  }
+
   private normalizeCache(cache: AppSettings["cache"]): void {
     const ttl = cache.ttlSeconds;
     if (typeof ttl !== "number" || !Number.isFinite(ttl) || !Number.isInteger(ttl) || ttl < 0) {

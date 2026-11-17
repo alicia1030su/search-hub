@@ -94,6 +94,8 @@ export interface AppContext {
  */
 export interface ContextOptions {
   now?: () => number;
+  /** Injectable jitter source so backoff assertions are deterministic. */
+  random?: () => number;
   cacheLimits?: { maxEntries: number; maxBytes: number };
 }
 
@@ -193,13 +195,17 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
 
   // Built before SearchService because the search path consults the health gate
   // to skip sources parked for an account-wide failure.
-  const health = new HealthService({
-    db: handle.db,
-    settings,
-    providers,
-    fetch: fetchProxy,
-    appLogger,
-  });
+  const health = new HealthService(
+    {
+      db: handle.db,
+      settings,
+      providers,
+      fetch: fetchProxy,
+      appLogger,
+    },
+    options.now,
+    options.random,
+  );
 
   // The cache lives in the same SQLite file as everything else, so it inherits
   // the existing backup, upgrade and volume behaviour for free.

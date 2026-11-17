@@ -1,4 +1,4 @@
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const adminUsers = sqliteTable(
   "admin_users",
@@ -328,3 +328,52 @@ export const providerHealthChecks = sqliteTable(
 );
 
 export type ProviderHealthCheckRow = typeof providerHealthChecks.$inferSelect;
+
+/**
+ * Scheduler bookkeeping for one provider.
+ *
+ * Separate from `provider_health_checks` on purpose: the log is an append-only
+ * record of what happened, this is "what should happen next". Changing a
+ * schedule therefore never rewrites history.
+ */
+export const providerProbeState = sqliteTable(
+  "provider_probe_state",
+  {
+    providerId: text("provider_id")
+      .primaryKey()
+      .references(() => providerInstances.id, { onDelete: "cascade" }),
+    /** Per-provider switch; the global switch still gates everything. */
+    autoProbeEnabled: integer("auto_probe_enabled", { mode: "boolean" }).notNull().default(true),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    backoffLevel: integer("backoff_level").notNull().default(0),
+    nextProbeAt: text("next_probe_at"),
+    /**
+     * Manual reset marker: probe rows older than this no longer determine the
+     * provider's status, but they stay in the log for audit.
+     */
+    resetAt: text("reset_at"),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("idx_probe_state_next").on(table.nextProbeAt)],
+);
+
+/**
+ * Durable probe-spend ledger.
+ *
+ * One row per UTC day and probe kind. A read-then-act count over the probe log
+ * would let two concurrent probes both see "19 used" and both spend; this is
+ * decremented by a conditional UPDATE instead, so the cap holds under
+ * concurrency and across restarts.
+ */
+export const healthProbeBudget = sqliteTable(
+  "health_probe_budget",
+  {
+    day: text("day").notNull(),
+    kind: text("kind").notNull(),
+    used: integer("used").notNull().default(0),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.day, table.kind] })],
+);
+
+export type ProviderProbeStateRow = typeof providerProbeState.$inferSelect;

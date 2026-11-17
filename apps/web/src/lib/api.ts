@@ -30,6 +30,7 @@ import type {
   TokenCreateResult,
   HealthOverview,
   HealthCheckResult,
+  ProviderHealthPolicy,
   McpStatus,
   McpUpdateCheck,
   SkillSummary,
@@ -305,6 +306,31 @@ export const api = {
     request<{ checks: HealthCheckResult[] }>(`/admin/health/history?providerId=${seg(providerId)}`, {
       signal,
     }),
+  providerHealthSettings: (signal?: AbortSignal) =>
+    request<{ policy: ProviderHealthPolicy; budget: HealthOverview["budget"] }>(
+      "/admin/provider-health/settings",
+      { signal },
+    ),
+  updateProviderHealthSettings: (patch: Partial<ProviderHealthPolicy>) =>
+    request<{ policy: ProviderHealthPolicy; budget: HealthOverview["budget"] }>(
+      "/admin/provider-health/settings",
+      { method: "PUT", body: patch },
+    ),
+  probeProvider: (providerId: string, kind: "connect" | "search") =>
+    request<{ result: HealthCheckResult; budget: HealthOverview["budget"] }>(
+      `/admin/provider-health/${seg(providerId)}/probe`,
+      { method: "POST", body: { kind } },
+    ),
+  setProviderAutoProbe: (providerId: string, enabled: boolean) =>
+    request<{ providerId: string; autoProbeEnabled: boolean }>(
+      `/admin/provider-health/${seg(providerId)}/auto-probe`,
+      { method: "POST", body: { enabled } },
+    ),
+  resetProviderHealth: (providerId: string) =>
+    request<{ providerId: string; resetAt: string }>(
+      `/admin/provider-health/${seg(providerId)}/reset`,
+      { method: "POST", body: {} },
+    ),
 
   // ---- MCP / skills / updates ----
   mcpStatus: (signal?: AbortSignal) => request<McpStatus>("/admin/mcp", { signal }),

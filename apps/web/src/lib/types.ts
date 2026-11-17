@@ -661,6 +661,41 @@ export interface GroupInput {
 export type HealthStatusValue = "healthy" | "degraded" | "unhealthy" | "unverified";
 export type HealthProbeKindValue = "connect" | "search";
 
+/**
+ * Runtime health as an operator reads it. Distinct from the implementation
+ * verification below: a provider can be `documented` (never live-tested) and
+ * `healthy` at the same time, and neither implies the other.
+ */
+export type RuntimeHealthValue =
+  | "unknown"
+  | "healthy"
+  | "degraded"
+  | "unhealthy"
+  | "rate_limited"
+  | "quota_exceeded"
+  | "invalid_credentials"
+  | "permission_denied"
+  | "cooldown"
+  | "unverified"
+  | "disabled";
+
+export type VerificationValue =
+  | "documented"
+  | "live_tested"
+  | "mock_verified"
+  | "unverified"
+  | "no_official_api";
+
+export interface ProviderHealthPolicy {
+  scheduledEnabled: boolean;
+  intervalMinutes: number;
+  maxRequestsPerRun: number;
+  maxRequestsPerDay: number;
+  paidProbesEnabled: boolean;
+  includeUnverified: boolean;
+  concurrency: number;
+}
+
 export interface HealthCheckResult {
   id: string;
   providerId: string;
@@ -698,6 +733,15 @@ export interface ProviderHealthRow {
   searchCalls: number;
   keyAvailable: number;
   keyTotal: number;
+  runtime: RuntimeHealthValue;
+  implementation: {
+    verification: VerificationValue;
+    implementation: "builtin" | "generic" | "planned" | "unavailable";
+    docsUrl: string | null;
+  };
+  autoProbeEnabled: boolean;
+  nextProbeAt: string | null;
+  probeMode: HealthProbeKindValue;
   lastProbe: {
     kind: HealthProbeKindValue;
     status: HealthStatusValue;
@@ -712,13 +756,17 @@ export interface HealthOverview {
   generatedAt: string;
   providers: ProviderHealthRow[];
   totals: Record<HealthStatusValue, number>;
+  runtimeTotals: Record<RuntimeHealthValue, number>;
   budget: {
+    day: string;
     maxPerRun: number;
     maxPerDay: number;
     usedToday: number;
+    connectUsedToday: number;
     remainingToday: number;
     paidProbesEnabled: boolean;
     scheduledEnabled: boolean;
+    intervalMinutes: number;
   };
 }
 

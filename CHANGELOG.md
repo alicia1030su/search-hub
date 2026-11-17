@@ -4,7 +4,59 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.1.7-beta.1 (2026-11-17)
+
+### Provider health management centre
+
+- **Two axes, deliberately separate.** Implementation verification
+  (`documented` / `mock_verified` / `live_tested` / `unverified` /
+  `no_official_api`) comes from the catalog and is never written by a probe. A
+  green connectivity check therefore cannot upgrade a `documented` adapter to a
+  "live integration", and a provider with no API key never reports healthy.
+- **Runtime state** is derived from the stored status, the classified cause, the
+  credential pool and the cooldown: `unknown` / `healthy` / `degraded` /
+  `unhealthy` / `rate_limited` / `quota_exceeded` / `invalid_credentials` /
+  `permission_denied` / `cooldown` / `unverified` / `disabled`. Only
+  `quota_exceeded` and `invalid_credentials` gate a search; one timeout never
+  removes a source.
+- **Two probe kinds.** `connect` is free and only proves DNS/TLS/auth/reachability;
+  `search` calls the vendor's paid endpoint and is the only thing that can claim
+  "it can search right now". Fixed, non-private probe queries; paid probing is
+  off by default.
+- **Durable budget.** New table `health_probe_budget` (one row per UTC day per
+  kind) reserved by a conditional `UPDATE ... WHERE used < max`, so concurrent
+  probes cannot overspend. 3 per run / 20 per day by default, hard caps at 200 /
+  2000. Seeded from existing probe rows on upgrade so a mid-day upgrade does not
+  hand out a second day of budget. A reservation that cannot be written means no
+  request is made. Paid probes are 429 when the ledger is full; connectivity
+  probes are counted separately and not capped.
+- **Per-provider scheduling.** New table `provider_probe_state` holds the per
+  provider switch, consecutive failures, backoff level, `nextProbeAt` and the
+  reset marker. Transient failures retry sooner (bounded exponential +
+  jitter); terminal failures wait for the normal interval; success resets
+  everything. In-flight de-duplication keeps two passes from probing one source
+  at once.
+- **Lifecycle.** The scheduler is re-entrancy guarded, unrefs its timer, stops on
+  shutdown before the database closes, and never keeps the process alive.
+- **Admin surface**: `GET/PUT /api/admin/provider-health/settings`,
+  `GET /api/admin/provider-health`, `GET .../history`,
+  `POST .../:id/probe`, `POST .../:id/auto-probe`, `POST .../:id/reset`
+  (reset records a marker so old rows stop deciding the status; it never deletes
+  history and never re-enables a rejected key). Admin scope + CSRF; a
+  `search`-scope token gets 403.
+- **Panel**: runtime state and implementation verification shown side by side,
+  both probe modes (the paid one is labelled), next probe time, history dialog,
+  per-provider auto-probe switch, reset with confirmation, and the policy card
+  with schedule, interval, both budget ceilings and concurrency.
+
+### Fixed
+
+- The scheduled pass applied a single global interval gate, which also blocked
+  the fast retries that backoff exists for. Scheduling is now per provider.
+- A cancelled probe was recorded as a provider failure. Cancellation now
+  records nothing and returns the reserved budget.
+
+
 
 ### Persistent search cache
 
