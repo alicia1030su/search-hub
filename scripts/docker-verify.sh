@@ -436,17 +436,26 @@ DASH_BEFORE=${SEARCH_AFTER:-0}
 PROV_BEFORE=${PROV_AFTER:-0}
 
 # Warm the persistent cache before the container is destroyed. The check after
-# `up` only proves something if there was an entry to survive.
+# `up` only proves something if there was an entry to survive — and only a
+# completed response is cached, so the probe must run against the deterministic
+# mock source alone. Mixing in the live source would make the response partial
+# (and therefore correctly uncached) whenever the vendor is slow.
 CACHE_QUERY="cache-persistence-${STAMP}"
+CACHE_TARGET_JSON="[\"$MOCK_ID\"]"
+if [ -z "$MOCK_ID" ]; then
+  log "  WARN: no mock provider, the cache persistence probe cannot run deterministically"
+fi
 cache_on_code=$(curl -s -b "$COOKIES" -o /dev/null -w '%{http_code}' --max-time 15 \
   -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
   -d '{"cache":{"enabled":true,"ttlSeconds":86400}}' "$BASE/api/admin/settings")
 curl -s -b "$COOKIES" -o "$WORK/cache-warm.json" --max-time 30 \
   -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
-  -d "$(printf '{"query":"%s","mode":"rrf","limit":5}' "$CACHE_QUERY")" "$BASE/api/search" || true
+  -d "$(printf '{"query":"%s","providers":%s,"mode":"rrf","limit":5}' "$CACHE_QUERY" "$CACHE_TARGET_JSON")" \
+  "$BASE/api/search" || true
+CACHE_WARM_STATUS=$(jget "$WORK/cache-warm.json" status)
 CACHE_ENTRIES_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cache" > "$WORK/cache1.json"; \
   jget "$WORK/cache1.json" entries)
-log "  cache: enable=$cache_on_code entries_before_down=${CACHE_ENTRIES_BEFORE:-0}"
+log "  cache: enable=$cache_on_code warm_status=${CACHE_WARM_STATUS:-none} entries_before_down=${CACHE_ENTRIES_BEFORE:-0}"
 
 compose down >>"$REPORT" 2>&1 || true
 VOLUME_AFTER_DOWN=$(docker volume ls --format '{{.Name}}' | grep -c "^${PROJECT}_search-hub-data$" || true)
@@ -462,17 +471,19 @@ if wait_health; then
   # of it, so a hit can only come from the volume.
   curl -s -b "$COOKIES" -o "$WORK/cache2.json" --max-time 30 \
     -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
-    -d "$(printf '{"query":"%s","mode":"rrf","limit":5}' "$CACHE_QUERY")" "$BASE/api/search" || true
+    -d "$(printf '{"query":"%s","providers":%s,"mode":"rrf","limit":5}' "$CACHE_QUERY" "$CACHE_TARGET_JSON")" \
+    "$BASE/api/search" || true
   CACHE_HIT=$(jget "$WORK/cache2.json" stats.cached)
   CACHE_ENTRIES_AFTER=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cache" > "$WORK/cache2stats.json"; \
     jget "$WORK/cache2stats.json" entries)
   log "  after down/up: volume survived=$VOLUME_AFTER_DOWN hn-live=${PROV_AFTER2:-?} searches=${SEARCH_AFTER2:-0} initialized=$SETUP_STATE cache_hit=${CACHE_HIT:-no} entries=${CACHE_ENTRIES_AFTER:-0}"
   if [ "${VOLUME_AFTER_DOWN:-0}" -ge 1 ] && [ "$PROV_AFTER2" = "$PROV_BEFORE" ] \
      && [ "${SEARCH_AFTER2:-x}" = "${DASH_BEFORE:-y}" ] && [ "$SETUP_STATE" = "true" ] \
+     && [ "${CACHE_ENTRIES_BEFORE:-0}" -ge 1 ] \
      && [ "${CACHE_HIT:-false}" = "true" ] && [ "${CACHE_ENTRIES_AFTER:-0}" -ge 1 ]; then
-    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true cache_hit=true entries=$CACHE_ENTRIES_AFTER"
+    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true cache_entries=${CACHE_ENTRIES_BEFORE}->${CACHE_ENTRIES_AFTER} cache_hit=true"
   else
-    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE cache_hit=${CACHE_HIT:-false} entries=${CACHE_ENTRIES_AFTER:-0}"
+    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE warm_status=${CACHE_WARM_STATUS:-none} entries ${CACHE_ENTRIES_BEFORE:-0}->${CACHE_ENTRIES_AFTER:-0} cache_hit=${CACHE_HIT:-false}"
   fi
 else
   record FAIL "7. persistence" "health did not recover after down/up"
