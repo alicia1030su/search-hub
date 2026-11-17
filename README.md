@@ -4,7 +4,7 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.7-beta.2 · 公开预览（Public Preview），不是 production-ready。**
+> **状态：v0.1.7-beta.3 · 公开预览（Public Preview），不是 production-ready。**
 >
 > 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存与搜索源健康管理中心均已实现，并通过 **751 个自动化测试（51 个文件）**。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
@@ -104,18 +104,25 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.7-beta.2）
+## 下载安装（v0.1.7-beta.3）
 
 三种形态，同一套搜索核心、数据库模型与管理后台。
 
 | 平台 | 下载 | 需要什么 |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.7-beta.2-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | [`search-hub-v0.1.7-beta.2-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
-| Linux arm64 | [`search-hub-v0.1.7-beta.2-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-arm64.tar.gz) | **无** |
+| Windows x64 | [`search-hub-v0.1.7-beta.3-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | [`search-hub-v0.1.7-beta.3-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
+| Linux arm64 | [`search-hub-v0.1.7-beta.3-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-arm64.tar.gz) | **无** |
 
-校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
 
+> **v0.1.7-beta.3 修复一个只有在验收发布包时才会暴露的缺陷**：Fastify 在进入路由前
+> 就会拒绝空 JSON body、非法 JSON、不支持的 Content-Type 与超限 body，这些错误带 4xx
+> `statusCode`，但全局错误处理把除 `SearchHubError` / `ZodError` / 429 之外的一切都归成
+> `500 internal_error`——调用方发了坏请求却被告诉"服务器挂了"，运维日志里也留下一条
+> error 级别记录。现在分别返回 **400 / 415 / 413** 与稳定的 `bad_request` 码，日志降到
+> debug；真正的内部故障仍然返回 500。详见 [CHANGELOG](./CHANGELOG.md#v017-beta3-2026-11-18)。
+>
 > **v0.1.7-beta.2 是健康管理与双语界面的收尾版本**：无 Key 的公开源（Hacker News /
 > Crossref / OpenAlex / PubMed / arXiv / Wikipedia）不再被判为「没有可用 Key」，可不经
 > 付费开关做真实搜索验证；探测改用解析后的搜索计划，分页源不再发出 0 请求却被记为
@@ -150,7 +157,7 @@ Search Hub 把这些做成一个可部署的服务：
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.2-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.3-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -159,7 +166,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.2    # 预发布镜像，不带 v 前缀
+docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.3    # 预发布镜像，不带 v 前缀
 docker compose up -d                                        # 或从源码构建
 ```
 

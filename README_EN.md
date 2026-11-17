@@ -4,7 +4,7 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.7-beta.2 · public preview, not production-ready.**
+> **Status: v0.1.7-beta.3 · public preview, not production-ready.**
 >
 > Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache and the provider health centre are implemented and covered by **751 automated tests across 51 files**. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave, SearXNG and the rest are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
 >
@@ -85,19 +85,28 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.7-beta.2)
+## Download (v0.1.7-beta.3)
 
 Three shapes, one search core, one database model, one admin UI.
 
 | Platform | Download | Requirements |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.7-beta.2-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
-| Linux x64 | [`search-hub-v0.1.7-beta.2-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-x64.tar.gz) | **None** (Node runtime bundled) |
-| Linux arm64 | [`search-hub-v0.1.7-beta.2-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-arm64.tar.gz) | **None** |
+| Windows x64 | [`search-hub-v0.1.7-beta.3-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
+| Linux x64 | [`search-hub-v0.1.7-beta.3-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-x64.tar.gz) | **None** (Node runtime bundled) |
+| Linux arm64 | [`search-hub-v0.1.7-beta.3-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-arm64.tar.gz) | **None** |
 
-Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
+Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
 
-> **v0.1.7-beta.2 closes out the health centre and the bilingual UI.** Keyless public sources
+> **v0.1.7-beta.3 fixes a defect only visible when accepting the published package.** Fastify
+> rejects an empty JSON body, malformed JSON, an unsupported content type and an oversized body
+> before any route runs; those errors carry a 4xx `statusCode`, but the global handler folded
+> everything that was not a `SearchHubError`, a `ZodError` or a 429 into `500 internal_error`. A
+> caller who sent a broken request was told the server had broken, and the error log filled with
+> ordinary bad traffic. These now return **400 / 415 / 413** with a stable `bad_request` code and
+> are logged at debug level; a real internal failure still returns 500. See
+> [CHANGELOG](./CHANGELOG.md).
+>
+> **v0.1.7-beta.2 closed out the health centre and the bilingual UI.** Keyless public sources
 > (Hacker News / Crossref / OpenAlex / PubMed / arXiv / Wikipedia) are no longer judged as
 > "no usable key", and can be verified with a real search without the paid switch. Probes now
 > use the resolved search plan, so paginated adapters no longer issue zero requests and get
@@ -135,7 +144,7 @@ Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/relea
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.2-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.3-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
@@ -144,7 +153,7 @@ For long-running use, the package ships `search-hub.service` (non-root, `Protect
 **Docker**:
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.2    # prerelease tag, no leading v
+docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.3    # prerelease tag, no leading v
 docker compose up -d                                        # or build from source
 ```
 
