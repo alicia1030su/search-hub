@@ -17,7 +17,7 @@
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   UpdateError,
@@ -114,6 +114,38 @@ function stampVersion(root, version) {
       writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
     } catch (error) {
       throw new UpdateError("manifest_update_failed", `Could not update ${name}: ${String(error)}`);
+    }
+  }
+}
+
+/**
+ * Remembers the exact manifest bytes before they are rewritten.
+ *
+ * The manifests live next to `app/`, not inside it, so restoring the program
+ * directory alone leaves the *new* version in place: the old server would then
+ * answer with a version that never shipped, and the post-rollback health check
+ * (which insists on the previous version) would call a successful rollback a
+ * failure. Restoring the bytes also puts back every other field.
+ */
+function snapshotManifests(root) {
+  const snapshot = [];
+  for (const name of ["launcher.json", "package.json"]) {
+    const path = join(root, name);
+    if (!existsSync(path)) continue;
+    snapshot.push({ path, bytes: readFileSync(path) });
+  }
+  return snapshot;
+}
+
+function restoreManifests(snapshot) {
+  for (const { path, bytes } of snapshot) {
+    try {
+      writeFileSync(path, bytes);
+    } catch (error) {
+      throw new UpdateError(
+        "manifest_restore_failed",
+        `Could not restore ${basename(path)}: ${String(error)}`,
+      );
     }
   }
 }
@@ -322,7 +354,9 @@ async function main() {
   // The manifest is part of the program's identity: the server reads its version
   // from launcher.json, so leaving the old value behind makes a successful
   // upgrade report the previous version — and the health check would then reject
-  // the build it just installed.
+  // the build it just installed. The original bytes are kept so a rollback can
+  // put back exactly what was there.
+  const manifests = snapshotManifests(root);
   stampVersion(root, version);
   log(`program installed as ${version}; previous tree kept at ${previous}`);
 
@@ -369,6 +403,15 @@ async function main() {
   }
   if (rollbackError) {
     log(`rollback could not restore the program: ${String(rollbackError)}`);
+    return 4;
+  }
+
+  // The program is back; the manifest has to follow it, otherwise the restored
+  // build reports the version of the build that just failed.
+  try {
+    restoreManifests(manifests);
+  } catch (error) {
+    log(`rollback could not restore the manifest: ${String(error)}`);
     return 4;
   }
 
