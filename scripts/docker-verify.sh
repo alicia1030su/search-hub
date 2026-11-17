@@ -446,6 +446,7 @@ if [ -z "$MOCK_ID" ]; then
   log "  WARN: no mock provider, the cache persistence probe cannot run deterministically"
 fi
 cache_on_code=$(curl -s -b "$COOKIES" -o /dev/null -w '%{http_code}' --max-time 15 \
+  -X PUT \
   -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
   -d '{"cache":{"enabled":true,"ttlSeconds":86400}}' "$BASE/api/admin/settings")
 curl -s -b "$COOKIES" -o "$WORK/cache-warm.json" --max-time 30 \
