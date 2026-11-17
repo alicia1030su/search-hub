@@ -218,3 +218,34 @@ jobs:
       # checksum refusal, downgrade refusal and architecture refusal.
       - name: Run updater install / rollback tests
         run: node packaging/launcher/updater-test.mjs
+
+  # The cache suite runs on Linux in `quality`. This job exists because SQLite
+  # path handling, file locking and temp-directory behaviour differ on Windows,
+  # and "it passes on Linux" is not evidence about the platform the desktop
+  # package ships for.
+  cache-windows:
+    name: Persistent cache (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Hits the real SQLite file in a real temp directory, restarts the app on
+      # the same directory, and asserts the migration works on a database that
+      # already has data.
+      - name: Run cache and migration tests
+        run: pnpm vitest run tests/integration/cache.test.ts tests/unit/cache-migration.test.ts
