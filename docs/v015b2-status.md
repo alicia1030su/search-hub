@@ -35,7 +35,7 @@
 | 独立 updater 进程 | ✅ `packaging/launcher/updater.mjs` |
 | 更新后重启 + 健康检查 | ✅ 实测 16 项断言通过 |
 | 健康失败自动回滚 | ✅ 退出码 3 = 已回滚且健康 |
-| Linux systemd 更新流程 | ✅ 同一 CLI；systemd 场景由 `--stop`/`--service` 覆盖（未在真实 systemd 上跑） |
+| Linux systemd 更新流程 | ✅ 已补真实 systemd 验收：`.github/workflows/systemd.yml` 在 PID 1 = systemd 的特权容器里跑 start/restart/stop/升级/回滚，更新器改走 `systemctl`（见 `docs/update-acceptance.md` 第三节） |
 | Docker 只给提示不改镜像 | ✅ `/api/admin/update/apply-plan` 返回 pull/compose 步骤 |
 | 不可逆迁移阻止不安全回滚 | ✅ `planRollback()`：schema 前移且无备份 → `blocked` |
 | 防篡改/路径穿越/错误架构/降级 | ✅ 各有独立测试 |
