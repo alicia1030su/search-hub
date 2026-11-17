@@ -576,6 +576,39 @@ describe("persistent cache", () => {
     expect(cacheEntryCount(harness.ctx.db)).toBe(1);
   });
 
+  it("a cache failure never breaks the search that produced it", async () => {
+    const harness = await createHarness();
+    await addMock(harness, "cache-fault", { resultCount: 2 });
+    await enableCache(harness);
+
+    // A full disk, a locked database or a corrupted file all surface as a thrown
+    // error from the cache layer. The search it belongs to must still answer:
+    // the cache is an optimisation, not a dependency.
+    const deps = harness.ctx.search as unknown as {
+      deps: { cache: { get(key: string): unknown; put(...args: unknown[]): void } };
+    };
+    const realCache = deps.deps.cache;
+    deps.deps.cache = {
+      get: () => {
+        throw new Error("disk I/O error");
+      },
+      put: () => {
+        throw new Error("database or disk is full");
+      },
+    };
+
+    const response = await search(harness, { query: "cache survives a fault" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((response.body as unknown as CachedBody).results.length).toBe(2);
+    expect(cacheEntryCount(harness.ctx.db)).toBe(0);
+
+    // With the real cache back, the next search caches normally.
+    deps.deps.cache = realCache;
+    const again = await search(harness, { query: "cache survives a fault" });
+    expect(again.status).toBe(200);
+    expect(cacheEntryCount(harness.ctx.db)).toBe(1);
+  });
+
   it("T22 the cache key never contains a credential", async () => {
     const harness = await createHarness();
     const providerId = await addMock(harness, "cache-key", { resultCount: 2 });

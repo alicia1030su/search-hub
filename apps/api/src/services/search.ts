@@ -262,7 +262,15 @@ export class SearchService {
       : null;
 
     if (cacheUsable && cacheKey) {
-      const hit = this.deps.cache.get(cacheKey);
+      // A cache read is an optimisation. If it fails — corrupted row, locked
+      // database, full disk — the search must still run and answer; turning a
+      // cache fault into a 500 would make the cache a dependency.
+      let hit: ReturnType<typeof this.deps.cache.get> = null;
+      try {
+        hit = this.deps.cache.get(cacheKey);
+      } catch (error) {
+        this.deps.logger.warn({ err: error }, "cache lookup failed; continuing without a hit");
+      }
       if (hit) {
         const cached: SearchResponse = {
           ...structuredClone(hit.response),
