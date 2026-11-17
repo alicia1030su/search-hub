@@ -172,6 +172,9 @@ erDiagram
 | `search_events` | id, taskId, providerId, providerName, providerType, keyId?, ok, statusCode?, latencyMs, resultCount, errorCode?, errorMessage?, createdAt | `idx_search_events_created/provider/task` | 随 task 清理（默认 30 天） |
 | `access_tokens` | id, name, tokenHash, scopesJson, rpmLimit, createdBy, lastUsedAt, revokedAt, expiresAt | uniq(tokenHash) | 永久（撤销置 revokedAt） |
 | `settings` | key(pk), valueJson, updatedAt | pk(key) | 永久 |
+| `search_cache` | cacheKey(pk, sha256), responseJson, status, mode, createdAt, expiresAt, lastAccessedAt, sizeBytes(UTF-8 字节), hitCount | `idx_search_cache_expires`, `idx_search_cache_accessed` | 按 TTL，另受 5000 条 / 256 MB 上限约束 |
+| `search_cache_metrics` | bucket(UTC 小时, pk), hits, misses, expiredRemoved, evicted, updatedAt | pk(bucket) | 31 天 |
+| `search_cache_state` | key(pk), value, updatedAt | pk(key) | 永久（lastSweepAt 等） |
 | `audit_logs` | id, actorType, actorId, action, targetType, targetId, ipHash, detailJson(脱敏), createdAt | `idx_audit_logs_created` | `logRetentionDays` 默认 14 |
 | `_migrations` | name(pk), applied_at | pk(name) | 永久（**无 checksum 校验**，见 U13） |
 

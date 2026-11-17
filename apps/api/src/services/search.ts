@@ -17,6 +17,7 @@ import { auditLogs, searchEvents, searchGroups, searchTasks } from "@search-hub/
 import type { ProviderService } from "./providers.js";
 import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
+import { CacheService } from "./cache.js";
 
 export interface SearchServiceDeps {
   db: SearchHubDb;
@@ -31,6 +32,8 @@ export interface SearchServiceDeps {
    * probe and therefore cannot spend money.
    */
   health: { blockedProviders(now?: number): Map<string, { code: string; message: string; until: string }> };
+  /** Persistent response cache. Shared by REST, MCP and Skills. */
+  cache: CacheService;
 }
 
 const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
@@ -65,11 +68,12 @@ function modeIncludesSummary(mode: SearchRequest["mode"]): boolean {
  *
  * The cache key must change when the endpoint, the vendor options or the
  * platform search parameters change: reusing a cached response from an old
- * configuration is indistinguishable from a stale result for the user. The
- * fingerprint is deliberately short and versioned so the key stays readable
- * when debugging a cache hit.
+ * configuration is indistinguishable from a stale result for the user.
+ *
+ * `credentialVersion` covers the key pool. It is a hash of key ids, their
+ * enabled flag and the encryption version — never a key, a hint or a secret.
  */
-function providerFingerprint(runtime: ProviderRuntime): string {
+function providerFingerprint(runtime: ProviderRuntime, credentialVersion: string): string {
   const config = runtime.config;
   return [
     config.id,
@@ -80,14 +84,29 @@ function providerFingerprint(runtime: ProviderRuntime): string {
     config.freshness ?? "",
     JSON.stringify(config.config ?? {}),
     JSON.stringify(config.search ?? {}),
+    credentialVersion,
   ].join("|");
+}
+
+/**
+ * Identity of a model configuration, for the cache key.
+ *
+ * Includes what changes the *output* (model id, endpoint, parameters) plus the
+ * row's `updatedAt`, so editing a model invalidates responses produced by the
+ * previous one. The ciphertext and the hint are deliberately absent: they are
+ * credential material and have no business in a cache key.
+ */
+function modelFingerprint(
+  config: { id: string; modelId: string; baseUrl: string; params: Record<string, unknown>; updatedAt: string } | null,
+): string | null {
+  if (!config) return null;
+  return [config.id, config.modelId, config.baseUrl, JSON.stringify(config.params), config.updatedAt].join("|");
 }
 
 export class SearchService {
   private readonly controllers = new Map<string, AbortController>();
   /** Providers the health gate skipped on the current request. */
   private skippedByHealth: SearchErrorSummary[] = [];
-  private readonly cache = new Map<string, { expiresAt: number; response: SearchResponse }>();
 
   constructor(private readonly deps: SearchServiceDeps) {}
 
@@ -186,34 +205,73 @@ export class SearchService {
 
     const startedAt = Date.now();
     const cacheConfig = settings.cache;
-    // Every input that can change the *content* of the response belongs in the
-    // key. The previous key omitted includeRaw, perProviderLimit, timeoutMs, the
-    // capability filter and the provider configuration itself, so a request that
-    // asked for less could be served a richer cached response (leaking the raw
-    // payload) or reuse results from a provider whose endpoint had since changed.
-    const cacheKey = JSON.stringify({
-      query: request.query,
-      mode,
-      capability: capability ?? null,
-      providers: runtimes.map(providerFingerprint).sort(),
-      limit: request.limit ?? settings.defaults.limit,
-      perProviderLimit: request.perProviderLimit ?? null,
-      timeoutMs: request.timeoutMs ?? null,
-      language: request.language ?? null,
-      freshness: request.freshness ?? null,
-      includeRaw: request.includeRaw === true,
-      rerank: wantsRerank,
-      embedding: wantsEmbedding,
-      summarize: wantsSummary,
-      rerankModelId: request.rerankModelId ?? null,
-      embeddingModelId: request.embeddingModelId ?? null,
-      chatModelId: request.chatModelId ?? null,
-    });
+    // `includeRaw` responses carry the upstream payload verbatim. Persisting
+    // them would write provider-internal debug data into the database and hand
+    // it to the next caller, so such requests bypass the persistent cache
+    // entirely — they neither read nor write it. (They still run normally.)
+    const rawBypass = request.includeRaw === true;
+    const cacheUsable =
+      cacheConfig.enabled &&
+      cacheConfig.ttlSeconds > 0 &&
+      request.skipCache !== true &&
+      !rawBypass;
 
-    const cacheUsable = cacheConfig.enabled && cacheConfig.ttlSeconds > 0 && request.skipCache !== true;
-    if (cacheUsable) {
-      const hit = this.cache.get(cacheKey);
-      if (hit && hit.expiresAt > Date.now()) {
+    // Every input that can change the *content* of the response belongs in the
+    // key. Forgetting one is not a performance bug, it is a correctness bug: a
+    // request that asked for less could be served a richer cached response.
+    const cacheKey = cacheUsable
+      ? CacheService.buildKey({
+          v: 1,
+          query: request.query,
+          mode,
+          capability: capability ?? null,
+          // Sorted so provider order in the request cannot split one entry in two.
+          providers: runtimes
+            .map((runtime) =>
+              providerFingerprint(runtime, this.deps.providers.credentialVersion(runtime.config.id)),
+            )
+            .sort(),
+          limit: request.limit ?? settings.defaults.limit,
+          perProviderLimit: request.perProviderLimit ?? null,
+          timeoutMs: request.timeoutMs ?? null,
+          language: request.language ?? null,
+          freshness: request.freshness ?? null,
+          includeRaw: false,
+          rerank: wantsRerank,
+          embedding: wantsEmbedding,
+          summarize: wantsSummary,
+          // The id alone is not enough: the same id can point at a different
+          // model, endpoint or parameter set after an edit.
+          models: {
+            rerank: wantsRerank
+              ? modelFingerprint(this.deps.models.resolveConfig(request.rerankModelId, "rerank"))
+              : null,
+            embedding: wantsEmbedding
+              ? modelFingerprint(this.deps.models.resolveConfig(request.embeddingModelId, "embedding"))
+              : null,
+            chat:
+              wantsSummary || mode === "deep"
+                ? modelFingerprint(this.deps.models.resolveConfig(request.chatModelId, "chat"))
+                : null,
+          },
+          // The health gate decides which sources may be used. A cached entry
+          // produced while a source was parked must not be replayed after the
+          // park lifts and vice versa, so the gate's verdict is part of the key.
+          parked: [...blocked.keys()].sort(),
+        })
+      : null;
+
+    if (cacheUsable && cacheKey) {
+      // A cache read is an optimisation. If it fails — corrupted row, locked
+      // database, full disk — the search must still run and answer; turning a
+      // cache fault into a 500 would make the cache a dependency.
+      let hit: ReturnType<typeof this.deps.cache.get> = null;
+      try {
+        hit = this.deps.cache.get(cacheKey);
+      } catch (error) {
+        this.deps.logger.warn({ err: error }, "cache lookup failed; continuing without a hit");
+      }
+      if (hit) {
         const cached: SearchResponse = {
           ...structuredClone(hit.response),
           taskId,
@@ -223,6 +281,20 @@ export class SearchService {
             timing: { ...hit.response.stats.timing, totalMs: 0 },
           },
         };
+        // The cache is a snapshot of provider results, not of provider health.
+        // Re-apply the current gate so a parked source is still reported as
+        // skipped instead of silently looking healthy because it once worked.
+        if (this.skippedByHealth.length > 0) {
+          cached.errors.push(...this.skippedByHealth);
+          const known = new Set(cached.failedSources.map((item) => item.id));
+          for (const skipped of this.skippedByHealth) {
+            if (!known.has(skipped.providerId)) {
+              cached.failedSources.push({ id: skipped.providerId, code: skipped.code });
+            }
+          }
+          cached.stats.partial = true;
+          if (cached.status === "completed") cached.status = "partial";
+        }
         this.deps.db
           .insert(searchTasks)
           .values({
@@ -245,7 +317,6 @@ export class SearchService {
           .run();
         return cached;
       }
-      if (hit) this.cache.delete(cacheKey);
     }
 
     // Measured so the AC-05 breakdown can separate SQLite cost from fan-out,
@@ -293,14 +364,12 @@ export class SearchService {
       this.persistTask(taskId, response, cancelled ? "cancelled" : null);
       dbWriteMs += performance.now() - persistStarted;
       response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
-      if (cacheUsable && response.status !== "failed" && !cancelled) {
-        this.cache.set(cacheKey, {
-          expiresAt: Date.now() + cacheConfig.ttlSeconds * 1000,
-          response: structuredClone(response),
-        });
-        if (this.cache.size > 100) {
-          const oldest = this.cache.keys().next().value;
-          if (oldest) this.cache.delete(oldest);
+      if (cacheUsable && cacheKey && this.isCacheable(response, cancelled)) {
+        try {
+          this.deps.cache.put(cacheKey, response, cacheConfig.ttlSeconds, mode);
+        } catch (error) {
+          // A cache write must never fail the search that produced it.
+          this.deps.logger.warn({ err: error }, "could not persist the search response cache");
         }
       }
       return response;
@@ -393,6 +462,41 @@ export class SearchService {
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
     this.deps.db.delete(searchTasks).where(lt(searchTasks.createdAt, cutoff)).run();
     this.deps.db.delete(searchEvents).where(lt(searchEvents.createdAt, cutoff)).run();
+  }
+
+  /**
+   * Whether this response may be persisted.
+   *
+   * Only a **fully successful** search is cached:
+   *  - `failed` (every source failed, or the engine threw) — no;
+   *  - `partial` (some sources failed or were skipped) — no, because replaying a
+   *    degraded answer for 24 hours would hide a source that recovered minutes
+   *    later;
+   *  - cancelled — no;
+   *  - anything still carrying an error entry — no, for the same reason;
+   *  - a structured response that violates the contract — no, because writing it
+   *    would poison every later caller.
+   *
+   * A completed search with **zero results** *is* cached: "the internet has
+   * nothing on this" is a legitimate, repeatable answer, and re-querying it
+   * costs money for the same silence.
+   */
+  private isCacheable(response: SearchResponse, cancelled: boolean): boolean {
+    if (cancelled) return false;
+    if (response.status !== "completed") return false;
+    if (response.errors.length > 0) return false;
+    if (response.stats.partial) return false;
+    if (!Array.isArray(response.results) || !Array.isArray(response.failedSources)) return false;
+    if (response.failedSources.length > 0) return false;
+    if (typeof response.taskId !== "string" || typeof response.query !== "string") return false;
+    if (response.stats === undefined || typeof response.stats.rawCount !== "number") return false;
+    // Guard against a malformed entry that would break every later deserialise.
+    try {
+      JSON.stringify(response);
+    } catch {
+      return false;
+    }
+    return true;
   }
 
   /** Structured failure with an explicit reason list; results stay empty. */

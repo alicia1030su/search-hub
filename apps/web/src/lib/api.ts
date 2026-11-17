@@ -4,6 +4,7 @@ import type {
   AppSettings,
   AuditLog,
   AuthSession,
+  CacheStats,
   DashboardStats,
   GenericProviderConfig,
   GroupInput,
@@ -355,6 +356,13 @@ export const api = {
     request<AppSettings>("/admin/settings", { signal }),
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>("/admin/settings", { method: "PUT", body: patch }),
+
+  // ---- cache ----
+  cacheStats: (signal?: AbortSignal) => request<CacheStats>("/admin/cache", { signal }),
+  sweepCache: () => request<{ removed: number }>("/admin/cache/sweep", { method: "POST", body: {} }),
+  /** Explicit `confirm` is required server-side too; this is not a hint. */
+  clearCache: () =>
+    request<{ removed: number }>("/admin/cache/clear", { method: "POST", body: { confirm: true } }),
 
   // ---- tokens ----
   tokens: (signal?: AbortSignal) =>

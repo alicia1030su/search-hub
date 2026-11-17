@@ -432,8 +432,36 @@ fi
 # ------------------------------------------------------------- 7. persistence
 line
 log "=== item 7: compose down (volume kept) -> compose up, data still present ==="
-DASH_BEFORE=${SEARCH_AFTER:-0}
 PROV_BEFORE=${PROV_AFTER:-0}
+
+# Warm the persistent cache before the container is destroyed. The check after
+# `up` only proves something if there was an entry to survive — and only a
+# completed response is cached, so the probe must run against the deterministic
+# mock source alone. Mixing in the live source would make the response partial
+# (and therefore correctly uncached) whenever the vendor is slow.
+CACHE_QUERY="cache-persistence-${STAMP}"
+CACHE_TARGET_JSON="[\"$MOCK_ID\"]"
+if [ -z "$MOCK_ID" ]; then
+  log "  WARN: no mock provider, the cache persistence probe cannot run deterministically"
+fi
+cache_on_code=$(curl -s -b "$COOKIES" -o /dev/null -w '%{http_code}' --max-time 15 \
+  -X PUT \
+  -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -d '{"cache":{"enabled":true,"ttlSeconds":86400}}' "$BASE/api/admin/settings")
+curl -s -b "$COOKIES" -o "$WORK/cache-warm.json" --max-time 30 \
+  -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -d "$(printf '{"query":"%s","providers":%s,"mode":"rrf","limit":5}' "$CACHE_QUERY" "$CACHE_TARGET_JSON")" \
+  "$BASE/api/search" || true
+CACHE_WARM_STATUS=$(jget "$WORK/cache-warm.json" status)
+CACHE_ENTRIES_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cache" > "$WORK/cache1.json"; \
+  jget "$WORK/cache1.json" entries)
+# The baseline is read *after* the warm-up search, because that search is itself
+# one more task: comparing against a count taken before it would fail on the
+# probe's own side effect rather than on persistence.
+DASH_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/dashboard?range=24h" > "$WORK/dash-warm.json"; \
+  jget "$WORK/dash-warm.json" totals.searches)
+log "  cache: enable=$cache_on_code warm_status=${CACHE_WARM_STATUS:-none} entries_before_down=${CACHE_ENTRIES_BEFORE:-0} searches_before_down=${DASH_BEFORE:-0}"
+
 compose down >>"$REPORT" 2>&1 || true
 VOLUME_AFTER_DOWN=$(docker volume ls --format '{{.Name}}' | grep -c "^${PROJECT}_search-hub-data$" || true)
 compose up -d --no-build >>"$REPORT" 2>&1 || true
@@ -444,12 +472,23 @@ if wait_health; then
     jget "$WORK/dash3.json" totals.searches)
   SETUP_STATE=$(curl -s --max-time 15 "$BASE/api/setup/status" > "$WORK/setup2.json"; \
     jget "$WORK/setup2.json" initialized)
-  log "  after down/up: volume survived=$VOLUME_AFTER_DOWN hn-live=${PROV_AFTER2:-?} searches=${SEARCH_AFTER2:-0} initialized=$SETUP_STATE"
+  # Replay the exact query: a container that was really recreated has no memory
+  # of it, so a hit can only come from the volume.
+  curl -s -b "$COOKIES" -o "$WORK/cache2.json" --max-time 30 \
+    -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+    -d "$(printf '{"query":"%s","providers":%s,"mode":"rrf","limit":5}' "$CACHE_QUERY" "$CACHE_TARGET_JSON")" \
+    "$BASE/api/search" || true
+  CACHE_HIT=$(jget "$WORK/cache2.json" stats.cached)
+  CACHE_ENTRIES_AFTER=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cache" > "$WORK/cache2stats.json"; \
+    jget "$WORK/cache2stats.json" entries)
+  log "  after down/up: volume survived=$VOLUME_AFTER_DOWN hn-live=${PROV_AFTER2:-?} searches=${SEARCH_AFTER2:-0} initialized=$SETUP_STATE cache_hit=${CACHE_HIT:-no} entries=${CACHE_ENTRIES_AFTER:-0}"
   if [ "${VOLUME_AFTER_DOWN:-0}" -ge 1 ] && [ "$PROV_AFTER2" = "$PROV_BEFORE" ] \
-     && [ "${SEARCH_AFTER2:-x}" = "${DASH_BEFORE:-y}" ] && [ "$SETUP_STATE" = "true" ]; then
-    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true"
+     && [ "${SEARCH_AFTER2:-x}" = "${DASH_BEFORE:-y}" ] && [ "$SETUP_STATE" = "true" ] \
+     && [ "${CACHE_ENTRIES_BEFORE:-0}" -ge 1 ] \
+     && [ "${CACHE_HIT:-false}" = "true" ] && [ "${CACHE_ENTRIES_AFTER:-0}" -ge 1 ]; then
+    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true cache_entries=${CACHE_ENTRIES_BEFORE}->${CACHE_ENTRIES_AFTER} cache_hit=true"
   else
-    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE"
+    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE warm_status=${CACHE_WARM_STATUS:-none} entries ${CACHE_ENTRIES_BEFORE:-0}->${CACHE_ENTRIES_AFTER:-0} cache_hit=${CACHE_HIT:-false}"
   fi
 else
   record FAIL "7. persistence" "health did not recover after down/up"

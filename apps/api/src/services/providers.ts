@@ -1,4 +1,5 @@
 import { asc, eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import {
   SearchHubError,
   type ApiKeySummary,
@@ -433,6 +434,33 @@ export class ProviderService {
       .from(apiKeys)
       .where(eq(apiKeys.providerId, providerId))
       .all();
+  }
+
+  /**
+   * Version stamp for a provider's credentials, safe to put in a cache key.
+   *
+   * Only identity is hashed — key ids, their enabled flag and the encryption
+   * version — never the ciphertext, the plaintext or the hint. Adding, removing,
+   * disabling or re-encrypting a key changes this stamp, which invalidates
+   * cached responses that were produced with the previous credential set.
+   */
+  credentialVersion(providerId: string): string {
+    const rows = this.db
+      .select({
+        id: apiKeys.id,
+        enabled: apiKeys.enabled,
+        version: apiKeys.keyVersion,
+        updatedAt: apiKeys.updatedAt,
+      })
+      .from(apiKeys)
+      .where(eq(apiKeys.providerId, providerId))
+      .all();
+    if (rows.length === 0) return "none";
+    const material = rows
+      .map((row) => `${row.id}:${row.enabled ? 1 : 0}:${row.version}:${row.updatedAt}`)
+      .sort()
+      .join("|");
+    return createHash("sha256").update(material).digest("hex").slice(0, 16);
   }
 
   assertImplemented(type: string): void {

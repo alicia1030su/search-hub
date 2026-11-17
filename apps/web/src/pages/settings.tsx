@@ -11,9 +11,11 @@ import {
 import { api, toApiError, type ApiError } from "../lib/api";
 import {
   downloadJson,
+  formatBytes,
   formatDateTime,
   formatMs,
   formatNumber,
+  formatPercent,
   parseJsonObject,
   prettyJson,
   timestampSlug,
@@ -51,6 +53,10 @@ import {
 
 type Tab = "general" | "logs" | "audit";
 
+/** Matches the server default (24 hours) so an unset value shows something sane. */
+const DEFAULT_CACHE_TTL_SECONDS = 86_400;
+
+
 const modes: SearchMode[] = [
   "basic",
   "rrf",
@@ -78,7 +84,8 @@ interface SettingsFormState {
   taskRetentionDays: string;
   logRetentionDays: string;
   cacheEnabled: boolean;
-  cacheTtlSeconds: string;
+  /** Hours, 1–72. Converted to seconds on submit. */
+  cacheTtlHours: string;
   logLevel: string;
 }
 
@@ -98,7 +105,7 @@ function toForm(settings: AppSettings): SettingsFormState {
     taskRetentionDays: String(settings.retention.taskRetentionDays),
     logRetentionDays: String(settings.retention.logRetentionDays),
     cacheEnabled: settings.cache.enabled,
-    cacheTtlSeconds: String(settings.cache.ttlSeconds),
+    cacheTtlHours: String(Math.round((settings.cache.ttlSeconds || DEFAULT_CACHE_TTL_SECONDS) / 3600)),
     logLevel: settings.logging.level,
   };
 }
@@ -116,10 +123,40 @@ export function SettingsPage() {
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const cache = useAsyncData((signal) => api.cacheStats(signal), []);
+  const [busy, setBusy] = useState(false);
+  const [cacheActionHint, setCacheActionHint] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings.data) setForm(toForm(settings.data));
   }, [settings.data]);
+
+  const runCacheAction = async (action: "sweep" | "clear") => {
+    // Clearing is irreversible and removes every cached response for every
+    // caller, so it needs an explicit confirmation — not just a red button.
+    if (action === "clear") {
+      const confirmed = window.confirm(
+        t("settings.cache.clearConfirm"),
+      );
+      if (!confirmed) return;
+    }
+    setBusy(true);
+    setCacheActionHint(null);
+    try {
+      const result = action === "clear" ? await api.clearCache() : await api.sweepCache();
+      setCacheActionHint(
+        t(action === "clear" ? "settings.cache.cleared" : "settings.cache.swept", { count: result.removed }),
+      );
+      cache.reload();
+      toast.success({
+        title: t(action === "clear" ? "settings.cache.clearedTitle" : "settings.cache.sweptTitle"),
+      });
+    } catch (caught) {
+      setCacheActionHint(toApiError(caught).message ?? String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const update = <K extends keyof SettingsFormState>(key: K, value: SettingsFormState[K]) => {
     setForm((current) => (current ? { ...current, [key]: value } : current));
@@ -136,7 +173,7 @@ export function SettingsPage() {
     const loginRateLimitPerMin = Number(form.loginRateLimitPerMin);
     const taskRetentionDays = Number(form.taskRetentionDays);
     const logRetentionDays = Number(form.logRetentionDays);
-    const cacheTtlSeconds = Number(form.cacheTtlSeconds);
+    const cacheTtlHours = Number(form.cacheTtlHours);
 
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       problems.push(t("providers.form.rangeError", { label: t("settings.defaults.limit"), min: 1, max: 100 }));
@@ -162,8 +199,10 @@ export function SettingsPage() {
         t("providers.form.rangeError", { label: t("settings.retention.logDays"), min: 1, max: 365 }),
       );
     }
-    if (!Number.isInteger(cacheTtlSeconds) || cacheTtlSeconds < 0 || cacheTtlSeconds > 86400) {
-      problems.push(t("providers.form.rangeError", { label: t("settings.cache.ttl"), min: 0, max: 86400 }));
+    // 1–72 hours. Enforced again server-side; this check only shortens the
+    // feedback loop, it is not the authority.
+    if (!Number.isInteger(cacheTtlHours) || cacheTtlHours < 1 || cacheTtlHours > 72) {
+      problems.push(t("providers.form.rangeError", { label: t("settings.cache.ttl"), min: 1, max: 72 }));
     }
 
     setErrors(problems);
@@ -190,7 +229,7 @@ export function SettingsPage() {
           loginRateLimitPerMin,
         },
         retention: { taskRetentionDays, logRetentionDays },
-        cache: { enabled: form.cacheEnabled, ttlSeconds: cacheTtlSeconds },
+        cache: { enabled: form.cacheEnabled, ttlSeconds: cacheTtlHours * 3600 },
         logging: { level: form.logLevel },
       };
       const updated = await api.updateSettings(payload);
@@ -519,16 +558,127 @@ export function SettingsPage() {
                         label={t("settings.cache.enabled")}
                       />
                     </div>
-                    <Field label={t("settings.cache.ttl")} htmlFor="settings-cache-ttl">
+                    <Field
+                      label={t("settings.cache.ttlHours")}
+                      hint={t("settings.cache.ttlHint")}
+                      htmlFor="settings-cache-ttl"
+                    >
                       <Input
                         id="settings-cache-ttl"
                         type="number"
-                        min={0}
-                        max={86400}
-                        value={form.cacheTtlSeconds}
-                        onChange={(event) => update("cacheTtlSeconds", event.target.value)}
+                        min={1}
+                        max={72}
+                        step={1}
+                        value={form.cacheTtlHours}
+                        onChange={(event) => update("cacheTtlHours", event.target.value)}
                       />
                     </Field>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <div>
+                      <CardTitle>{t("settings.cache.statsTitle")}</CardTitle>
+                      <CardDescription>{t("settings.cache.statsHint")}</CardDescription>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <dl className="grid grid-cols-2 gap-3 text-xs">
+                      <div className="rounded-md border bg-muted/20 px-3 py-2">
+                        <dt className="text-muted-foreground">{t("settings.cache.entries")}</dt>
+                        <dd className="mt-1 text-base font-medium">
+                          {cache.data ? cache.data.entries.toLocaleString() : "—"}
+                          <span className="ml-1 text-xs font-normal text-muted-foreground">
+                            / {cache.data ? cache.data.maxEntries.toLocaleString() : "—"}
+                          </span>
+                        </dd>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 px-3 py-2">
+                        <dt className="text-muted-foreground">{t("settings.cache.bytes")}</dt>
+                        <dd className="mt-1 text-base font-medium">
+                          {cache.data ? formatBytes(cache.data.bytes) : "—"}
+                          <span className="ml-1 text-xs font-normal text-muted-foreground">
+                            / {cache.data ? formatBytes(cache.data.maxBytes) : "—"}
+                          </span>
+                        </dd>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 px-3 py-2">
+                        <dt className="text-muted-foreground">{t("settings.cache.hitRate24h")}</dt>
+                        <dd className="mt-1 text-base font-medium">
+                          {cache.data?.hitRate24h === null || cache.data === null
+                            ? t("settings.cache.noData")
+                            : formatPercent(cache.data.hitRate24h)}
+                        </dd>
+                        <dd className="text-[11px] text-muted-foreground">
+                          {cache.data
+                            ? t("settings.cache.hitRateDetail", {
+                                hits: cache.data.hits24h,
+                                misses: cache.data.misses24h,
+                              })
+                            : ""}
+                        </dd>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 px-3 py-2">
+                        <dt className="text-muted-foreground">{t("settings.cache.hitRateAll")}</dt>
+                        <dd className="mt-1 text-base font-medium">
+                          {cache.data?.hitRate === null || cache.data === null
+                            ? t("settings.cache.noData")
+                            : formatPercent(cache.data.hitRate)}
+                        </dd>
+                        <dd className="text-[11px] text-muted-foreground">
+                          {cache.data
+                            ? t("settings.cache.hitRateDetail", {
+                                hits: cache.data.hits,
+                                misses: cache.data.misses,
+                              })
+                            : ""}
+                        </dd>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 px-3 py-2">
+                        <dt className="text-muted-foreground">{t("settings.cache.expiredRemoved")}</dt>
+                        <dd className="mt-1 text-base font-medium">
+                          {cache.data ? cache.data.expiredRemoved.toLocaleString() : "—"}
+                        </dd>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 px-3 py-2">
+                        <dt className="text-muted-foreground">{t("settings.cache.evicted")}</dt>
+                        <dd className="mt-1 text-base font-medium">
+                          {cache.data ? cache.data.evicted.toLocaleString() : "—"}
+                        </dd>
+                      </div>
+                      <div className="col-span-2 rounded-md border bg-muted/20 px-3 py-2">
+                        <dt className="text-muted-foreground">{t("settings.cache.lastSweep")}</dt>
+                        <dd className="mt-1 text-sm">
+                          {cache.data?.lastSweepAt
+                            ? new Date(cache.data.lastSweepAt).toLocaleString()
+                            : t("settings.cache.noData")}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void runCacheAction("sweep")}
+                      >
+                        {t("settings.cache.sweep")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void runCacheAction("clear")}
+                      >
+                        {t("settings.cache.clear")}
+                      </Button>
+                    </div>
+                    {cacheActionHint ? (
+                      <p className="text-xs text-muted-foreground">{cacheActionHint}</p>
+                    ) : null}
                   </CardContent>
                 </Card>
 

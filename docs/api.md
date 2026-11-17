@@ -207,10 +207,39 @@ GET  /api/admin/audit?limit=
 GET  /api/admin/skills
 GET  /api/admin/config/export
 POST /api/admin/config/import     {config}
+GET  /api/admin/cache
+POST /api/admin/cache/sweep
+POST /api/admin/cache/clear       {confirm:true}
 GET  /api/mcp/info
 ```
 
 Config export contains provider/model/group configuration plus **key labels only**; imported keys must be re-entered.
+
+### Cache
+
+```jsonc
+// PUT /api/admin/settings — TTL in seconds, presented as 1–72 hours in the UI
+{ "cache": { "enabled": true, "ttlSeconds": 86400 } }
+
+// GET /api/admin/cache
+{
+  "entries": 12, "bytes": 148320, "maxEntries": 5000, "maxBytes": 268435456,
+  "hits": 40, "misses": 9, "hitRate": 0.8163,
+  "hits24h": 40, "misses24h": 9, "hitRate24h": 0.8163,
+  "expiredRemoved": 3, "evicted": 0,
+  "lastSweepAt": "2026-11-17T08:10:00.000Z",
+  "enabled": true, "ttlSeconds": 86400, "windowHours": 24
+}
+```
+
+- `ttlSeconds` must be 3600–259200 while `enabled` is true; 0 is only valid when
+  disabled. Negative, fractional and >259200 values return `400`.
+- `hitRate` is `null` until at least one lookup has been recorded — the client
+  shows "no data" rather than 0%.
+- `POST /api/admin/cache/clear` requires `{"confirm": true}`; without it the API
+  returns `400` and nothing is deleted. The action writes an audit record.
+- A search response that was served from the cache has `stats.cached: true` and
+  the MCP `search_web` tool returns `cached: true` for the same reason.
 
 ## Examples
 

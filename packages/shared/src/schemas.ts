@@ -276,7 +276,17 @@ export const settingsUpdateSchema = z.object({
   cache: z
     .object({
       enabled: z.boolean().optional(),
-      ttlSeconds: z.number().int().min(0).max(86_400).optional(),
+      /**
+       * Cache lifetime in seconds, 1 hour to 72 hours.
+       *
+       * Seconds remain the storage unit so existing settings documents and API
+       * clients keep working; the UI talks in hours. The *cross-field* rule
+       * (enabled ⇒ 3600..259200, disabled ⇒ 0 allowed) is enforced in
+       * `SettingsService.update`, because a partial patch cannot see the merged
+       * result: `{enabled:true}` alone would fail here even when the stored TTL
+       * is already valid.
+       */
+      ttlSeconds: z.number().int().min(0).max(259_200).optional(),
     })
     .optional(),
   /**

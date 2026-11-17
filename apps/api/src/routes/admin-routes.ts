@@ -85,6 +85,58 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
     }),
   );
 
+  // ---- cache management -------------------------------------------------
+  /**
+   * Cache usage, hit rate and capacity.
+   *
+   * Every number comes from the database: `entries`/`bytes` are a live
+   * aggregate over `search_cache`, and the hit/miss counters are the hourly
+   * buckets the search path writes. When a window has no lookups the rate is
+   * `null` and the UI says "no data yet" — a fabricated 0% would be worse than
+   * admitting there is nothing to measure.
+   */
+  app.get(
+    "/api/admin/cache",
+    jsonFor(app, async (request) => {
+      requireAdmin(actorOf(request, ctx));
+      const settings = ctx.settings.get();
+      return ctx.cache.stats({
+        enabled: settings.cache.enabled,
+        ttlSeconds: settings.cache.ttlSeconds,
+      });
+    }),
+  );
+
+  app.post(
+    "/api/admin/cache/sweep",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      const removed = ctx.cache.sweepExpired();
+      audit(ctx, actorLabel(actor), "cache.sweep", null, { removed }, request.ip);
+      return { removed };
+    }),
+  );
+
+  app.post(
+    "/api/admin/cache/clear",
+    jsonFor(app, async (request) => {
+      const actor = requireAdmin(actorOf(request, ctx, true));
+      // Destructive and irreversible: require an explicit acknowledgement in the
+      // body, so a stray retry or a mis-wired client cannot wipe the cache.
+      const body = (request.body ?? {}) as { confirm?: unknown };
+      if (body.confirm !== true) {
+        throw new SearchHubError(
+          "validation_error",
+          "Clearing the cache requires {\"confirm\": true}. This cannot be undone.",
+        );
+      }
+      const removed = ctx.cache.clear();
+      audit(ctx, actorLabel(actor), "cache.clear", null, { removed }, request.ip);
+      ctx.logger.warn({ actor: actorLabel(actor), removed }, "cache cleared by an administrator");
+      return { removed };
+    }),
+  );
+
   /**
    * Outbound egress policy for operators: direct vs proxy, the redacted proxy
    * endpoint, NO_PROXY entry count and the trust level. Read-only on purpose —

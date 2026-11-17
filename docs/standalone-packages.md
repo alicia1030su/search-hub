@@ -8,6 +8,10 @@ Search Hub 现在有三种部署形态，共用同一套搜索核心、数据库
 | Linux tar.gz | 无（不需要 Node/pnpm） | `~/.local/share/search-hub`（或 `SEARCH_HUB_DATA_DIR`） |
 | Docker Compose | Docker | 命名卷 `search-hub-data` |
 
+三种形态的搜索缓存都在数据目录下的同一个 SQLite 文件里（表 `search_cache`），
+因此升级、重启、容器重建不会丢缓存；删数据目录/卷才会丢，与其它数据一致。
+详见 [search-cache.md](./search-cache.md)。
+
 ## 构建
 
 ```bash

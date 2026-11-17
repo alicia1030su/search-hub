@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { Freshness, SearchMode } from "@search-hub/shared";
+import { SearchHubError, type Freshness, type SearchMode } from "@search-hub/shared";
 import type { SearchHubDb } from "@search-hub/db";
 import { settings as settingsTable } from "@search-hub/db";
 import type { AppConfig } from "../config.js";
@@ -28,6 +28,13 @@ export interface AppSettings {
   };
   cache: {
     enabled: boolean;
+    /**
+     * Cache lifetime in seconds.
+     *
+     * Seconds are the storage unit (the database and existing clients already
+     * speak seconds); the UI presents hours. Valid range while enabled is
+     * 1–72 hours; disabled may be 0.
+     */
     ttlSeconds: number;
   };
   /**
@@ -70,7 +77,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     loginRateLimitPerMin: 10,
   },
   retention: { taskRetentionDays: 30, logRetentionDays: 14 },
-  cache: { enabled: false, ttlSeconds: 0 },
+  // 24 hours by default, matching the UI. Off until an operator turns it on:
+  // caching results silently changes what callers see, so it stays opt-in.
+  cache: { enabled: false, ttlSeconds: 86_400 },
   health: {
     scheduledEnabled: false,
     intervalMinutes: 360,
@@ -85,6 +94,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 const SETTINGS_KEY = "app";
+
+/** Cache TTL bounds, in seconds. The UI presents them as 1–72 hours. */
+export const CACHE_MIN_TTL_SECONDS = 3_600;
+export const CACHE_MAX_TTL_SECONDS = 259_200;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -108,7 +121,7 @@ function deepMerge<T>(base: T, patch: unknown): T {
  */
 export class SettingsService {
   private current: AppSettings;
-  private readonly listeners = new Set<(settings: AppSettings) => void>();
+  private readonly listeners = new Set<(settings: AppSettings, previous: AppSettings) => void>();
 
   constructor(
     private readonly db: SearchHubDb,
@@ -121,7 +134,7 @@ export class SettingsService {
     return this.current;
   }
 
-  onChange(listener: (settings: AppSettings) => void): void {
+  onChange(listener: (settings: AppSettings, previous: AppSettings) => void): void {
     this.listeners.add(listener);
   }
 
@@ -133,10 +146,55 @@ export class SettingsService {
       .slice(0, 200);
     merged.defaults.limit = Math.min(100, Math.max(1, Math.round(merged.defaults.limit)));
     merged.defaults.timeoutMs = Math.min(120_000, Math.max(1000, Math.round(merged.defaults.timeoutMs)));
+    this.normalizeCache(merged.cache);
+    const previous = this.current;
     this.persist(merged);
     this.current = merged;
-    for (const listener of this.listeners) listener(merged);
+    for (const listener of this.listeners) listener(merged, previous);
     return merged;
+  }
+
+  /**
+   * Enforces the cache TTL contract on the *merged* settings.
+   *
+   * The zod schema cannot do this: a patch of `{enabled:true}` alone has no TTL
+   * to check, yet the resulting state could still be invalid. The rules:
+   *  - enabled ⇒ 1–72 hours (3600–259200 seconds);
+   *  - disabled ⇒ 0 allowed, and anything between 1 and 3599 is still rejected
+   *    because it would silently mean "almost always expired" the moment
+   *    caching is switched back on;
+   *  - anything above 72 hours, negative, or fractional is refused.
+   *
+   * Values are not silently clamped: an operator who typed 100 hours should be
+   * told, not given 72.
+   */
+  private normalizeCache(cache: AppSettings["cache"]): void {
+    const ttl = cache.ttlSeconds;
+    if (typeof ttl !== "number" || !Number.isFinite(ttl) || !Number.isInteger(ttl) || ttl < 0) {
+      throw new SearchHubError("validation_error", "Cache TTL must be a whole number of seconds");
+    }
+    if (ttl > CACHE_MAX_TTL_SECONDS) {
+      throw new SearchHubError(
+        "validation_error",
+        `Cache TTL must not exceed ${CACHE_MAX_TTL_SECONDS} seconds (72 hours)`,
+        { details: { ttlSeconds: ttl, max: CACHE_MAX_TTL_SECONDS } },
+      );
+    }
+    if (cache.enabled) {
+      if (ttl < CACHE_MIN_TTL_SECONDS) {
+        throw new SearchHubError(
+          "validation_error",
+          `Cache TTL must be at least ${CACHE_MIN_TTL_SECONDS} seconds (1 hour) while caching is enabled`,
+          { details: { ttlSeconds: ttl, min: CACHE_MIN_TTL_SECONDS } },
+        );
+      }
+    } else if (ttl !== 0 && ttl < CACHE_MIN_TTL_SECONDS) {
+      throw new SearchHubError(
+        "validation_error",
+        `Cache TTL must be 0 (off) or at least ${CACHE_MIN_TTL_SECONDS} seconds (1 hour)`,
+        { details: { ttlSeconds: ttl, min: CACHE_MIN_TTL_SECONDS } },
+      );
+    }
   }
 
   markInitialized(): AppSettings {

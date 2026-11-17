@@ -568,6 +568,27 @@ export interface AppSettings {
   initializedAt: string | null;
 }
 
+/** Live cache usage, counters and capacity (GET /api/admin/cache). */
+export interface CacheStats {
+  enabled: boolean;
+  ttlSeconds: number;
+  entries: number;
+  bytes: number;
+  maxEntries: number;
+  maxBytes: number;
+  hits: number;
+  misses: number;
+  /** null when nothing has been looked up — never a fabricated 0. */
+  hitRate: number | null;
+  hits24h: number;
+  misses24h: number;
+  hitRate24h: number | null;
+  expiredRemoved: number;
+  evicted: number;
+  lastSweepAt: string | null;
+  windowHours: number;
+}
+
 export interface AccessTokenSummary {
   id: string;
   name: string;

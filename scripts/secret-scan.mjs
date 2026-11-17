@@ -196,6 +196,10 @@ function scanHistory(report) {
       if (!line.trim()) continue;
       const pathMatch = /^[^:]+:(.+?):\d+:/.exec(line);
       const file = pathMatch?.[1] ?? "";
+      // `re` is global, so its `lastIndex` survives between lines. Without this
+      // reset the next `exec` starts where the previous match ended — it can
+      // return null on a line that does match, which means the allowlist below
+      // never runs and a test fixture is reported as a leaked credential.
       re.lastIndex = 0;
       const match = re.exec(line);
       if (match && isAllowlistedValue(match[0])) continue;

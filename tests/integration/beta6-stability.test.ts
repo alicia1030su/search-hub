@@ -195,7 +195,7 @@ describe("cache correctness", () => {
       method: "PUT",
       url: "/api/admin/settings",
       ...adminHeaders(harness),
-      payload: { cache: { enabled: true, ttlSeconds: 600 } },
+      payload: { cache: { enabled: true, ttlSeconds: 3600 } },
     });
     expect(response.json().cache.enabled).toBe(true);
   }
@@ -273,7 +273,7 @@ describe("cache correctness", () => {
     expect(urls.every((url) => url.includes("/v1/"))).toBe(false);
   });
 
-  it("records a cached partial response as partial, not completed", async () => {
+  it("does not cache a partial response, and never records one as completed", async () => {
     const harness = await createHarness();
     // Two providers: one healthy, one failing ⇒ the response is partial.
     await addMock(harness, "good", { resultCount: 3 });
@@ -291,16 +291,21 @@ describe("cache correctness", () => {
     const first = await search();
     expect(first.json().status).toBe("partial");
 
+    // Behaviour change in the persistent cache: a partial answer is no longer
+    // stored. Replaying "one of your sources is broken" for 24 hours would hide
+    // a source that recovered a minute later, so it is re-queried instead.
     const second = await search();
-    expect(second.json().stats.cached).toBe(true);
+    expect(second.json().stats.cached).toBeUndefined();
     expect(second.json().status).toBe("partial");
+    expect(second.json().taskId).not.toBe(first.json().taskId);
 
     const task = await harness.app.inject({
       method: "GET",
       url: `/api/search/tasks/${second.json().taskId}`,
       cookies: { sh_session: harness.cookie },
     });
-    // The cached hit must not inflate the success rate.
+    // A partial run must never be recorded as completed; that would inflate the
+    // dashboard success rate.
     expect(task.json().status).toBe("partial");
   });
 
