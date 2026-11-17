@@ -32,8 +32,8 @@ fixes are what exposed defects #11 and #12.
 
 ## What the tests prove
 
-`packaging/launcher/updater-faults.mjs` — 24 assertions on Windows, all passing
-locally, and the same suite runs on both CI operating systems:
+`packaging/launcher/updater-faults.mjs` — 23 assertions on Windows, 27 on Linux
+(the Linux run adds case H), all passing locally and in CI:
 
 | Case | Injection | Result |
 |---|---|---|

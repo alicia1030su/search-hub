@@ -20,8 +20,8 @@
 
 ## 二、更新中断故障注入
 
-`packaging/launcher/updater-faults.mjs`，本机（Windows）实测 24 项断言全过，
-CI 在 `windows-latest` / `ubuntu-latest` 上再各跑一遍。
+`packaging/launcher/updater-faults.mjs` — Windows 23 项、Linux 27 项（Linux 多 H），
+本机与 CI 全过。
 
 | 用例 | 注入方式 | 结果 |
 |---|---|---|
