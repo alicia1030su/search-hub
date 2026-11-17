@@ -75,6 +75,7 @@ export function dashboardStats(
       providerType: searchEvents.providerType,
       ok: searchEvents.ok,
       latencyMs: searchEvents.latencyMs,
+      errorCode: searchEvents.errorCode,
       createdAt: searchEvents.createdAt,
     })
     .from(searchEvents)
@@ -86,6 +87,10 @@ export function dashboardStats(
     { providerId: string; providerName: string; providerType: string; calls: number; errors: number; latencySum: number }
   >();
   for (const event of events) {
+    // A cancelled call says nothing about the provider: the caller stopped it
+    // mid-flight. Counting it would show a 0% error-free rate for a source that
+    // simply got interrupted.
+    if (event.errorCode === "cancelled") continue;
     let entry = providerMap.get(event.providerId);
     if (!entry) {
       entry = {

@@ -276,7 +276,12 @@ export async function runProvider(
       //  - a SearchHubError("cancelled") from safe-fetch (our structured abort).
       // Both must release the slot without counting a failure, otherwise a
       // user cancel pollutes key stats and can push a healthy key toward cooldown.
-      if (lastCode === "cancelled" || (isAbortError(error) && options.signal.aborted)) {
+      // A third one is common in practice: an adapter that sleeps or awaits with
+      // the caller's signal rejects with the abort *reason*, which is a plain
+      // Error("cancelled by user") — not an AbortError. The caller's signal being
+      // aborted is the authoritative fact here, so anything surfacing after that
+      // point is a cancel, not a verdict about the provider.
+      if (lastCode === "cancelled" || options.signal.aborted) {
         lease?.release({ ok: false, cancelled: true });
         lastCode = "cancelled";
         lastMessage = "Search cancelled by caller";

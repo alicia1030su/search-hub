@@ -349,6 +349,62 @@ describe("health end to end", () => {
     }
   });
 
+  it("does not let a caller's cancel degrade a source", async () => {
+    const harness = await createHarness();
+    // Slow enough that the abort lands while the provider call is in flight.
+    const slow = await addMock(harness, "cancel-me", { resultCount: 2, latencyMs: 800 });
+    const controller = new AbortController();
+    const run = harness.ctx.search.execute(
+      { query: "cancel probe", mode: "basic", limit: 3, skipCache: true },
+      { actor: "admin:admin@example.com", signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(new Error("cancelled by user")), 120);
+    const response = await run;
+
+    // The caller stopped it; the response must say so rather than claim success.
+    expect(response.status).toBe("failed");
+    expect(response.errors.some((item) => item.code === "cancelled")).toBe(true);
+
+    // A cancel is not evidence about the source: no park, no cooldown, no record.
+    expect(harness.ctx.health.blockedProviders().has(slow)).toBe(false);
+    expect(harness.ctx.health.history(slow, 10).some((row) => row.cause === "cancelled")).toBe(false);
+
+    // And the dashboard must not count it as a failed call against the source.
+    const overview = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/health",
+      cookies: { sh_session: harness.cookie },
+    });
+    const summary = (
+      overview.json() as {
+        providers: Array<{
+          providerId: string;
+          searchCalls: number;
+          successRate: number | null;
+          consecutiveFailures: number;
+          status: string;
+        }>;
+      }
+    ).providers.find((item) => item.providerId === slow)!;
+    // Nothing else has run against it, so a cancel that counted would show
+    // searchCalls=1 / successRate=0 / consecutiveFailures=1.
+    expect(summary.searchCalls, JSON.stringify(summary)).toBe(0);
+    expect(summary.consecutiveFailures, JSON.stringify(summary)).toBe(0);
+    expect(summary.status).toBe("unverified");
+
+    // And the next real search still fans out to it.
+    const next = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      ...adminHeaders(harness),
+      payload: { query: "after cancel", mode: "basic", limit: 3, skipCache: true },
+    });
+    const tried = (next.json() as { stats: { providers: Array<{ providerId: string }> } }).stats.providers.map(
+      (provider) => provider.providerId,
+    );
+    expect(tried).toContain(slow);
+  });
+
   it("keeps scheduled probing off until an operator enables it", async () => {
     const harness = await createHarness();
     await addMock(harness, "scheduled", { resultCount: 1 });

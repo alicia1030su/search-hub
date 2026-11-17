@@ -544,7 +544,12 @@ export class HealthService {
     const lastSuccess = mine.find((item) => item.status === "healthy") ?? null;
 
     // Live traffic only: probe rows must not inflate the success rate.
-    const traffic = events.filter((item) => item.providerId === row.id);
+    // A cancelled call is not evidence about the source — the caller stopped it.
+    // Counting it made one cancel look like a failed call (successRate 0,
+    // consecutiveFailures 1) on a provider that had never actually failed.
+    const traffic = events.filter(
+      (item) => item.providerId === row.id && item.errorCode !== "cancelled",
+    );
     const okCount = traffic.filter((item) => item.ok).length;
     const latencies = traffic.filter((item) => item.ok).map((item) => item.latencyMs);
 
