@@ -28,6 +28,25 @@ export function sendError(reply: FastifyReply, error: unknown): void {
     });
     return;
   }
+  // Fastify rejects some requests before a handler runs: an empty JSON body,
+  // malformed JSON, an unsupported media type, a body over the limit. Those
+  // errors carry a 4xx `statusCode` and describe a broken request, not a
+  // broken server — reporting them as 500 both misleads the caller and puts
+  // ordinary traffic in the error log.
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    void reply.status(status).send({
+      error: {
+        code: "bad_request",
+        message:
+          status === 413
+            ? "Request body is too large"
+            : status === 415
+              ? "Unsupported media type; send application/json"
+              : "The request could not be parsed; send valid JSON",
+      },
+    });
+    return;
+  }
   void reply.status(500).send({
     error: { code: "internal_error", message: "Internal server error" },
   });

@@ -146,9 +146,15 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   });
 
   app.setErrorHandler((error, request, reply) => {
+    const status = (error as { statusCode?: number }).statusCode;
     if (error instanceof SearchHubError) {
       request.log.warn({ code: error.code, path: request.url }, error.message);
-    } else if ((error as { statusCode?: number }).statusCode !== 429) {
+    } else if (typeof status === "number" && status >= 400 && status < 500) {
+      // A malformed request is the caller's fault. Logging it at error level
+      // turns routine bad traffic into an alarm, and a 500 would tell the caller
+      // the server broke.
+      request.log.debug({ status, path: request.url }, "rejected malformed request");
+    } else if (status !== 429) {
       request.log.error({ err: error, path: request.url }, "unhandled request error");
     }
     sendError(reply, error);

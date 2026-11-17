@@ -18,7 +18,20 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (746 tests, 50 files)
+## What is covered (751 tests, 51 files)
+
+**Malformed request mapping** — `tests/integration/http-error-mapping.test.ts` (5 cases)
+
+Fastify rejects some requests before a handler runs. Those errors carry a 4xx
+`statusCode`, and the global handler used to fold everything that was not a
+`SearchHubError`, a `ZodError` or a 429 into `500 internal_error`. A caller with
+an empty JSON body was therefore told the server had broken, and routine bad
+traffic was logged at error level. Found while acceptance-testing the published
+v0.1.7-beta.2 Windows package (`curl -X POST -H 'content-type: application/json'`
+with no body returned 500). Now: empty body → 400, invalid JSON → 400,
+unsupported media type → 415, body over the 2 MiB limit → 413, all with a stable
+`bad_request` code and a debug-level log; a genuine internal failure still
+returns 500.
 
 **Credential classes** — `tests/integration/credential-classes.test.ts` (6 cases)
 
