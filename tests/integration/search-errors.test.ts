@@ -224,7 +224,7 @@ describe("configuration hardening", () => {
       url: "/api/admin/settings",
       cookies: { sh_session: cookie },
       headers: { "x-csrf-token": csrf },
-      payload: { cache: { enabled: true, ttlSeconds: 30 } },
+      payload: { cache: { enabled: true, ttlSeconds: 3600 } },
     });
 
     const first = await search({ query: "cache me", providers: [providerId], limit: 5 });

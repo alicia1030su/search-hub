@@ -74,7 +74,7 @@ function errorResult(error: unknown) {
 }
 
 /**
- * All nine tools call the same SearchService used by REST. There is no MCP
+ * Every search tool calls the same SearchService used by REST. There is no MCP
  * specific search implementation, so ranking and de-dup stay identical.
  */
 export function registerTools(server: McpServer, deps: McpDeps): void {
@@ -110,6 +110,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
           results: response.results.map(toToolResult),
           errors: response.errors,
           timing: response.stats.timing,
+          // REST reports `cached`; MCP must too, otherwise an agent cannot tell
+          // whether it is looking at fresh results or a replay.
+          cached: response.stats.cached === true,
           // Grounded answers are kept out of `results` so a caller can never
           // mistake an AI answer for a web page.
           ...(response.answers === undefined ? {} : { answers: response.answers }),

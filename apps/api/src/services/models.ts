@@ -176,6 +176,18 @@ export class ModelService {
     return this.db.select().from(modelConfigs).where(eq(modelConfigs.id, id)).get() ?? null;
   }
 
+  /**
+   * Resolves the model a request would actually use, without building it.
+   *
+   * Used by the cache key: the fingerprint must describe the model that runs,
+   * including the default selected when the caller passed no id. Returning
+   * `null` (rather than throwing) keeps the key path free of side effects when
+   * an optional stage is disabled.
+   */
+  resolveConfig(id: string | undefined, kind: ModelKind): ModelConfig | null {
+    return id ? this.getEnabled(id, kind) : this.findDefault(kind);
+  }
+
   findDefault(kind: ModelKind): ModelConfig | null {
     const row = this.db
       .select()

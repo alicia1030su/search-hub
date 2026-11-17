@@ -215,6 +215,61 @@ export const settings = sqliteTable("settings", {
   updatedAt: text("updated_at").notNull(),
 });
 
+/**
+ * Persistent search-response cache.
+ *
+ * The key is a SHA-256 of every input that can change the response, never the
+ * query itself: a raw query as a primary key makes the table readable as a
+ * search history and lets a long query blow the index size.
+ *
+ * `size_bytes` is the UTF-8 byte length of `response_json` (not the JavaScript
+ * string length), because that is what the file, the WAL and the 256 MB cap
+ * actually measure.
+ */
+export const searchCache = sqliteTable(
+  "search_cache",
+  {
+    cacheKey: text("cache_key").primaryKey(),
+    responseJson: text("response_json").notNull(),
+    /** Kept for diagnostics; never returned to callers. */
+    status: text("status").notNull(),
+    mode: text("mode").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    lastAccessedAt: text("last_accessed_at").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    hitCount: integer("hit_count").notNull().default(0),
+  },
+  (table) => [
+    index("idx_search_cache_expires").on(table.expiresAt),
+    // LRU eviction orders by this column, so it needs its own index.
+    index("idx_search_cache_accessed").on(table.lastAccessedAt),
+  ],
+);
+
+/**
+ * Hourly cache counters.
+ *
+ * One row per UTC hour keeps the 24-hour hit rate a bounded query, and lets the
+ * dashboard say "no data yet" instead of inventing a percentage from a single
+ * request.
+ */
+export const searchCacheMetrics = sqliteTable("search_cache_metrics", {
+  bucket: text("bucket").primaryKey(),
+  hits: integer("hits").notNull().default(0),
+  misses: integer("misses").notNull().default(0),
+  expiredRemoved: integer("expired_removed").notNull().default(0),
+  evicted: integer("evicted").notNull().default(0),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Cache bookkeeping that must survive a restart (last sweep, totals). */
+export const searchCacheState = sqliteTable("search_cache_state", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const auditLogs = sqliteTable(
   "audit_logs",
   {

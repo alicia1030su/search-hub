@@ -21,8 +21,15 @@ async function main(): Promise<void> {
   const retentionTimer = setInterval(runRetention, 3_600_000);
   retentionTimer.unref();
 
+  // Startup sweep + a 10-minute background sweep. `startScheduler` sweeps once
+  // immediately, guards against overlapping runs, catches its own errors (a
+  // failed sweep must never take the API down) and unrefs the timer so it does
+  // not hold the process open.
+  const stopCacheSweeper = ctx.cache.startScheduler();
+
   const close = async (signal: string) => {
     clearInterval(retentionTimer);
+    stopCacheSweeper();
     ctx.logger.info({ signal }, "shutting down");
     try {
       await app.close();

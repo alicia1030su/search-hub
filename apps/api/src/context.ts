@@ -19,6 +19,7 @@ import { ProviderService } from "./services/providers.js";
 import { ModelService } from "./services/models.js";
 import { HealthService } from "./services/health.js";
 import { SearchService } from "./services/search.js";
+import { CacheService } from "./services/cache.js";
 import { SessionService, TokenService, type AuthDependencies } from "./auth.js";
 
 class FetchProvider {
@@ -60,6 +61,14 @@ export interface AppContext {
   providers: ProviderService;
   models: ModelService;
   search: SearchService;
+  /** Persistent search-response cache; shared by REST, MCP and Skills. */
+  /**
+   * Persistent search-response cache.
+   *
+   * Mutable only so a test can substitute one on an injected clock; production
+   * code never reassigns it.
+   */
+  cache: CacheService;
   /** Provider health probes and the aggregated dashboard view. */
   health: HealthService;
   logger: PinoLogger;
@@ -76,7 +85,19 @@ export interface AppContext {
   migrated: string[];
 }
 
-export function createContext(config: AppConfig): AppContext {
+/**
+ * Options that exist for tests and for nothing else.
+ *
+ * `now` and `cacheLimits` let a test drive TTL and capacity without waiting for
+ * a real clock or inserting 5000 rows. Production callers pass no options, so
+ * the defaults are exactly what ships.
+ */
+export interface ContextOptions {
+  now?: () => number;
+  cacheLimits?: { maxEntries: number; maxBytes: number };
+}
+
+export function createContext(config: AppConfig, options: ContextOptions = {}): AppContext {
   ensureDir(config.dataDir);
 
   // Resolve the outbound proxy before any network call. An invalid proxy URL,
@@ -180,6 +201,15 @@ export function createContext(config: AppConfig): AppContext {
     appLogger,
   });
 
+  // The cache lives in the same SQLite file as everything else, so it inherits
+  // the existing backup, upgrade and volume behaviour for free.
+  const cache = new CacheService({
+    db: handle.db,
+    logger: appLogger,
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.cacheLimits === undefined ? {} : { limits: options.cacheLimits }),
+  });
+
   const search = new SearchService({
     db: handle.db,
     providers,
@@ -188,6 +218,22 @@ export function createContext(config: AppConfig): AppContext {
     fetch: fetchProxy,
     logger,
     health,
+    cache,
+  });
+
+  // A TTL change must apply to what is already cached, immediately: shortening
+  // 72h → 1h has to take effect now, and lengthening it must not resurrect
+  // entries that already expired. `retime` implements exactly those two rules.
+  settings.onChange((next, previous) => {
+    if (next.cache.ttlSeconds === previous.cache.ttlSeconds) return;
+    try {
+      const result = cache.retime(next.cache.ttlSeconds);
+      if (result.retimed > 0 || result.removed > 0) {
+        logger.info({ ...result, ttlSeconds: next.cache.ttlSeconds }, "cache entries re-timed after TTL change");
+      }
+    } catch (error) {
+      logger.warn({ err: error }, "could not re-time the cache after a TTL change");
+    }
   });
 
 
@@ -203,6 +249,7 @@ export function createContext(config: AppConfig): AppContext {
     providers,
     models,
     search,
+    cache,
     health,
     logger,
     appLogger,

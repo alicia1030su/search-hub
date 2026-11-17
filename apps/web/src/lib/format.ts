@@ -194,3 +194,17 @@ export function timestampSlug(date = new Date()): string {
 export function orDash(value: string | null | undefined): string {
   return value && value.trim() ? value : "—";
 }
+
+/** Human-readable byte size. Base 1024, because that is what the cap means. */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || Number.isNaN(bytes)) return "—";
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = value >= 100 || unit === 0 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+}
