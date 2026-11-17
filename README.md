@@ -38,8 +38,29 @@ Search Hub 把这些做成一个可部署的服务：
 | Agent Skills | 已实现 | 3 个 `SKILL.md`，遵循 agentskills.io 结构 |
 | AI 摘要 / Embedding / Rerank | 已实现（可选） | OpenAI 兼容 / Anthropic / Gemini / Cohere-Jina 兼容 / custom-http |
 | 结果缓存（SQLite 持久化） | 已实现 | 1–72 小时可配；重启/容器重建后仍有效；容量上限自动 LRU 淘汰，后台每 10 分钟清理过期 |
+| 搜索源健康管理中心 | 已实现 | 实现验证状态与运行状态分离；免费连接探测 / 付费真实搜索探测；预算持久化且并发安全；指数退避自动恢复；单源开关与重置 |
 | PostgreSQL | 未实现 | 当前仅 SQLite；接口已隔离，见[已知限制](#已知限制) |
 | Redis 多实例协调 | 未实现 | 单进程额度保证；多实例方案见架构文档 |
+
+### 搜索源健康管理中心
+
+「配置了」和「能用」是两件事，这个页面把它们分开：
+
+| 维度 | 说明 |
+|---|---|
+| 实现验证 `documented` / `mock_verified` / `live_tested` / `unverified` | 这个适配器当初怎么被验证的。**一次探测成功不会升级它** |
+| 运行状态 `healthy` / `degraded` / `rate_limited` / `quota_exceeded` / `invalid_credentials` / `permission_denied` / `cooldown` / `unknown` / `unverified` / `disabled` | 这个实例现在能不能用 |
+
+- **两种探测**：连接探测免费，只证明端点和凭证能建立会话；真实搜索探测会调用厂商付费
+  接口，只有它拿到结果才能说"现在能搜到"。
+- **预算**：每轮最多 3 次、每日最多 20 次真实搜索探测（可调，但有硬上限）。计数存在
+  数据库里，重启不重置，并发探测也不会突破；写不进账本就不发请求。
+- **自动恢复**：瞬时失败按指数退避尽快重试，终态失败等正常间隔；一次失败永远不会永久
+  禁用一个源，恢复后自动回到 `healthy`。
+- **默认关闭**：后台定时探测默认不开启，开启后才按间隔与预算运行。
+- **没有 API Key 的源永远不显示健康**，只显示 `unverified`。
+
+详见 [docs/provider-health.md](./docs/provider-health.md)。
 
 ## 支持的搜索源
 
@@ -255,8 +276,9 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **689 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试 **724 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 持久化缓存 **23 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
+- 健康管理中心 **32 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、6 类错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、MCP 与 REST 同一门禁。全部使用注入时钟与可控调度，无真实等待、无真实付费调用。
 - 验收矩阵 **16 项**（PASS 11 / PARTIAL 4 / BLOCKED 1），由 `docs/ac-matrix.json` 自动生成，见 [docs/ac-matrix.md](./docs/ac-matrix.md)。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
 - Playwright 覆盖首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注。

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { auditLogs } from "@search-hub/db";
-import { SearchHubError } from "@search-hub/shared";
+import { SearchHubError, healthSettingsPatchSchema } from "@search-hub/shared";
 import { z } from "zod";
 import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, type Actor } from "../auth.js";
@@ -128,4 +128,110 @@ function audit(
   } catch {
     // Auditing a probe must never fail the probe itself.
   }
+}
+
+/**
+ * Provider Health Management Centre.
+ *
+ * `/api/admin/health*` above stays as the compatibility surface; these paths are
+ * the ones the management page calls, and they add the pieces the old surface
+ * never exposed (per-provider switching, reset, policy round-trip, budget
+ * ledger).
+ *
+ * Every handler requires an `admin` scope; the mutating ones additionally require
+ * CSRF. A `search`-scope token must not learn which vendors exist or whether
+ * their credentials still work.
+ */
+const autoProbeSchema = z.object({ enabled: z.boolean() });
+
+const singleProbeSchema = z.object({
+  kind: z.enum(["connect", "search"]).default("connect"),
+  keyId: z.string().min(1).optional(),
+});
+
+export function registerProviderHealthRoutes(app: FastifyInstance, ctx: AppContext): void {
+  app.get(
+    "/api/admin/provider-health",
+    jsonFor(app, async (request) => {
+      adminOf(ctx, request);
+      return ctx.health.overview();
+    }),
+  );
+
+  app.get(
+    "/api/admin/provider-health/settings",
+    jsonFor(app, async (request) => {
+      adminOf(ctx, request);
+      const policy = ctx.settings.get().health;
+      return { policy, budget: ctx.health.budget() };
+    }),
+  );
+
+  app.put(
+    "/api/admin/provider-health/settings",
+    jsonFor(app, async (request) => {
+      const actor = adminOf(ctx, request, true);
+      const input = parseInput(healthSettingsPatchSchema, request.body ?? {});
+      const updated = ctx.settings.update({ health: input });
+      audit(ctx, actor, "provider_health.settings", null, input, request.ip);
+      return { policy: updated.health, budget: ctx.health.budget() };
+    }),
+  );
+
+  app.get(
+    "/api/admin/provider-health/history",
+    jsonFor(app, async (request) => {
+      adminOf(ctx, request);
+      const query = request.query as { providerId?: string; limit?: string };
+      if (!query.providerId) throw new SearchHubError("validation_error", "providerId is required");
+      const limit = query.limit ? Number(query.limit) : 100;
+      return { checks: ctx.health.history(query.providerId, Number.isFinite(limit) ? limit : 100) };
+    }),
+  );
+
+  /**
+   * Probes one provider.
+   *
+   * `kind: "search"` may cost money. The reservation happens inside the service
+   * before the request, so an exhausted budget is a 429 with the ledger numbers
+   * rather than a billed failure.
+   */
+  app.post(
+    "/api/admin/provider-health/:id/probe",
+    jsonFor(app, async (request) => {
+      const actor = adminOf(ctx, request, true);
+      const { id } = request.params as { id: string };
+      const input = parseInput(singleProbeSchema, request.body ?? {});
+      const result = await ctx.health.checkOne(id, {
+        kind: input.kind,
+        ...(input.keyId === undefined ? {} : { keyId: input.keyId }),
+        trigger: "manual",
+      });
+      audit(ctx, actor, "provider_health.probe", id, { kind: input.kind, status: result.status, cause: result.cause }, request.ip);
+      return { result, budget: ctx.health.budget() };
+    }),
+  );
+
+  app.post(
+    "/api/admin/provider-health/:id/auto-probe",
+    jsonFor(app, async (request) => {
+      const actor = adminOf(ctx, request, true);
+      const { id } = request.params as { id: string };
+      const input = parseInput(autoProbeSchema, request.body ?? {});
+      ctx.health.setAutoProbe(id, input.enabled);
+      audit(ctx, actor, "provider_health.auto_probe", id, { enabled: input.enabled }, request.ip);
+      return { providerId: id, autoProbeEnabled: input.enabled };
+    }),
+  );
+
+  app.post(
+    "/api/admin/provider-health/:id/reset",
+    jsonFor(app, async (request) => {
+      const actor = adminOf(ctx, request, true);
+      const { id } = request.params as { id: string };
+      const result = ctx.health.resetProvider(id);
+      audit(ctx, actor, "provider_health.reset", id, result, request.ip);
+      return result;
+    }),
+  );
 }

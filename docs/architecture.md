@@ -175,6 +175,8 @@ erDiagram
 | `search_cache` | cacheKey(pk, sha256), responseJson, status, mode, createdAt, expiresAt, lastAccessedAt, sizeBytes(UTF-8 字节), hitCount | `idx_search_cache_expires`, `idx_search_cache_accessed` | 按 TTL，另受 5000 条 / 256 MB 上限约束 |
 | `search_cache_metrics` | bucket(UTC 小时, pk), hits, misses, expiredRemoved, evicted, updatedAt | pk(bucket) | 31 天 |
 | `search_cache_state` | key(pk), value, updatedAt | pk(key) | 永久（lastSweepAt 等） |
+| `provider_probe_state` | providerId(pk), autoProbeEnabled, consecutiveFailures, backoffLevel, nextProbeAt, resetAt, updatedAt | `idx_probe_state_next` | 永久（每源的探测排期） |
+| `health_probe_budget` | day+kind(pk), used, updatedAt | pk(day, kind) | 按 UTC 日；旧行可清理 |
 | `audit_logs` | id, actorType, actorId, action, targetType, targetId, ipHash, detailJson(脱敏), createdAt | `idx_audit_logs_created` | `logRetentionDays` 默认 14 |
 | `_migrations` | name(pk), applied_at | pk(name) | 永久（**无 checksum 校验**，见 U13） |
 

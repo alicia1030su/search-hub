@@ -215,6 +215,48 @@ GET  /api/mcp/info
 
 Config export contains provider/model/group configuration plus **key labels only**; imported keys must be re-entered.
 
+### Provider health
+
+```http
+GET  /api/admin/provider-health
+GET  /api/admin/provider-health/settings
+PUT  /api/admin/provider-health/settings   {scheduledEnabled?,intervalMinutes?,maxRequestsPerRun?,maxRequestsPerDay?,paidProbesEnabled?,concurrency?}
+GET  /api/admin/provider-health/history?providerId=&limit=
+POST /api/admin/provider-health/:id/probe  {kind:"connect"|"search"}
+POST /api/admin/provider-health/:id/auto-probe  {enabled:boolean}
+POST /api/admin/provider-health/:id/reset
+```
+
+```jsonc
+// GET /api/admin/provider-health — one provider entry
+{
+  "providerId": "prv_…", "providerName": "Brave", "providerType": "brave",
+  "runtime": "healthy",                        // operator-facing state
+  "implementation": {                          // how the adapter was validated
+    "verification": "documented",              // never upgraded by a probe
+    "implementation": "builtin", "docsUrl": "…"
+  },
+  "status": "healthy",                         // stored four-value column
+  "autoProbeEnabled": true, "nextProbeAt": "2026-11-17T14:00:00.000Z",
+  "probeMode": "connect", "keyAvailable": 2, "keyTotal": 3
+}
+
+// budget block (UTC day boundary, both counters explicit)
+{
+  "day": "2026-11-17", "maxPerRun": 3, "maxPerDay": 20,
+  "usedToday": 4, "connectUsedToday": 11, "remainingToday": 16,
+  "paidProbesEnabled": false, "scheduledEnabled": true, "intervalMinutes": 360
+}
+```
+
+- `kind:"search"` may cost money. When paid probing is disabled or the ledger is
+  full the API returns `400` (disabled) or `429` (budget) and records nothing.
+- `maxRequestsPerRun` / `maxRequestsPerDay` / `intervalMinutes` / `concurrency`
+  are bounded server-side; a value outside the range is `400`, not clamped.
+- `reset` writes a marker; probes older than it stop deciding the status. History
+  is kept and credentials are untouched.
+- All routes need `admin` scope; writes need CSRF. A `search`-scope token gets 403.
+
 ### Cache
 
 ```jsonc

@@ -455,6 +455,16 @@ curl -s -b "$COOKIES" -o "$WORK/cache-warm.json" --max-time 30 \
 CACHE_WARM_STATUS=$(jget "$WORK/cache-warm.json" status)
 CACHE_ENTRIES_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cache" > "$WORK/cache1.json"; \
   jget "$WORK/cache1.json" entries)
+
+# Health state and the probe budget must survive too: both are rows in the same
+# database, so a container that loses them has lost more than a cache.
+curl -s -b "$COOKIES" -o "$WORK/probe-before.json" --max-time 30 \
+  -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -d '{"kind":"connect"}' "$BASE/api/admin/provider-health/$MOCK_ID/probe" || true
+HEALTH_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/provider-health" > "$WORK/health1.json"; \
+  jget "$WORK/health1.json" budget.connectUsedToday)
+HEALTH_STATE_BEFORE=$(jget "$WORK/health1.json" providers.0.runtime)
+log "  health: connect_probes_before=${HEALTH_BEFORE:-0} runtime=${HEALTH_STATE_BEFORE:-unknown}"
 # The baseline is read *after* the warm-up search, because that search is itself
 # one more task: comparing against a count taken before it would fail on the
 # probe's own side effect rather than on persistence.
@@ -481,14 +491,18 @@ if wait_health; then
   CACHE_HIT=$(jget "$WORK/cache2.json" stats.cached)
   CACHE_ENTRIES_AFTER=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cache" > "$WORK/cache2stats.json"; \
     jget "$WORK/cache2stats.json" entries)
+  HEALTH_AFTER=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/provider-health" > "$WORK/health2.json"; \
+    jget "$WORK/health2.json" budget.connectUsedToday)
+  HEALTH_STATE_AFTER=$(jget "$WORK/health2.json" providers.0.runtime)
   log "  after down/up: volume survived=$VOLUME_AFTER_DOWN hn-live=${PROV_AFTER2:-?} searches=${SEARCH_AFTER2:-0} initialized=$SETUP_STATE cache_hit=${CACHE_HIT:-no} entries=${CACHE_ENTRIES_AFTER:-0}"
   if [ "${VOLUME_AFTER_DOWN:-0}" -ge 1 ] && [ "$PROV_AFTER2" = "$PROV_BEFORE" ] \
      && [ "${SEARCH_AFTER2:-x}" = "${DASH_BEFORE:-y}" ] && [ "$SETUP_STATE" = "true" ] \
      && [ "${CACHE_ENTRIES_BEFORE:-0}" -ge 1 ] \
-     && [ "${CACHE_HIT:-false}" = "true" ] && [ "${CACHE_ENTRIES_AFTER:-0}" -ge 1 ]; then
-    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true cache_entries=${CACHE_ENTRIES_BEFORE}->${CACHE_ENTRIES_AFTER} cache_hit=true"
+     && [ "${CACHE_HIT:-false}" = "true" ] && [ "${CACHE_ENTRIES_AFTER:-0}" -ge 1 ] \
+     && [ "${HEALTH_BEFORE:-0}" -ge 1 ] && [ "${HEALTH_AFTER:-0}" = "${HEALTH_BEFORE}" ]; then
+    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true cache_entries=${CACHE_ENTRIES_BEFORE}->${CACHE_ENTRIES_AFTER} cache_hit=true connect_probes=${HEALTH_BEFORE}->${HEALTH_AFTER} runtime=${HEALTH_STATE_AFTER:-unknown}"
   else
-    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE warm_status=${CACHE_WARM_STATUS:-none} entries ${CACHE_ENTRIES_BEFORE:-0}->${CACHE_ENTRIES_AFTER:-0} cache_hit=${CACHE_HIT:-false}"
+    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE warm_status=${CACHE_WARM_STATUS:-none} entries ${CACHE_ENTRIES_BEFORE:-0}->${CACHE_ENTRIES_AFTER:-0} cache_hit=${CACHE_HIT:-false} connect_probes ${HEALTH_BEFORE:-0}->${HEALTH_AFTER:-0}"
   fi
 else
   record FAIL "7. persistence" "health did not recover after down/up"

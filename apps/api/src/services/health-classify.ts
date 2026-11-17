@@ -116,6 +116,106 @@ export function statusFor(cause: HealthCause): HealthStatus {
   return STATUS_BY_CAUSE[cause];
 }
 
+/**
+ * Runtime health, as an operator reads it.
+ *
+ * This is a **different axis** from `ProviderVerification` (documented /
+ * mock_verified / live_tested / unavailable), which describes how the adapter
+ * itself was validated and never changes because a probe succeeded. A provider
+ * can legitimately be `verification=documented` and `runtime=healthy`: the code
+ * follows the vendor docs and the last probe worked; nobody has run a real,
+ * credentialed search against it yet.
+ *
+ * `HealthStatus` (the four-value column in `provider_health_checks`) is kept as
+ * the storage contract. This type is derived from it plus the cause, the
+ * credential pool and the cooldown, so the UI can say "quota exhausted" instead
+ * of a vague "unhealthy" without a migration that rewrites history.
+ */
+export type RuntimeHealth =
+  | "unknown"
+  | "healthy"
+  | "degraded"
+  | "unhealthy"
+  | "rate_limited"
+  | "quota_exceeded"
+  | "invalid_credentials"
+  | "permission_denied"
+  | "cooldown"
+  | "unverified"
+  | "disabled";
+
+export interface RuntimeHealthInput {
+  /** The administrator disabled this provider. */
+  enabled: boolean;
+  /** Nothing probed since the last reset (or ever). */
+  lastCheck: { status: HealthStatus; cause: HealthCause; cooldownUntil: string | null } | null;
+  /** The adapter cannot work without a key. */
+  requiresKey: boolean;
+  keyTotal: number;
+  /** Keys that are enabled and not cooling down. */
+  keyAvailable: number;
+  /** Keys the vendor has rejected (`status: "invalid"`). */
+  keyInvalid: number;
+  now: number;
+}
+
+/**
+ * Derives the operator-facing state.
+ *
+ * Precedence is deliberate:
+ *  1. `disabled` — an administrative fact outranks any observation.
+ *  2. specific causes — "quota exhausted" is more useful than "unhealthy", and
+ *     it is the difference between "wait until tomorrow" and "your key is dead".
+ *  3. `cooldown` — a transient failure whose cooldown has not elapsed yet.
+ *  4. the stored status.
+ *
+ * The last rule handles the case the brief calls out: a provider whose every key
+ * is unusable must never read as healthy, even if the last probe passed before
+ * the credentials were rotated away.
+ */
+export function runtimeHealthFor(input: RuntimeHealthInput): RuntimeHealth {
+  if (!input.enabled) return "disabled";
+  const check = input.lastCheck;
+  if (!check) return "unknown";
+
+  switch (check.cause) {
+    case "quota_exceeded":
+      return "quota_exceeded";
+    case "auth_invalid":
+      return "invalid_credentials";
+    case "forbidden":
+      return "permission_denied";
+    case "rate_limited":
+      return "rate_limited";
+    case "no_credential":
+    case "config_incomplete":
+      return "unverified";
+    case "ok":
+      // A stored success with no usable credential is stale evidence, not a
+      // healthy provider. Which kind of unusable matters: every key rejected by
+      // the vendor is `invalid_credentials`, while keys merely disabled or
+      // cooling down leave us unable to say anything — `unverified`.
+      if (input.requiresKey && input.keyTotal === 0) return "unverified";
+      if (input.requiresKey && input.keyAvailable === 0) {
+        return input.keyInvalid > 0 ? "invalid_credentials" : "unverified";
+      }
+      return "healthy";
+    default:
+      break;
+  }
+
+  if (check.cooldownUntil && Date.parse(check.cooldownUntil) > input.now) return "cooldown";
+  return check.status === "unhealthy" ? "unhealthy" : "degraded";
+}
+
+/** Whether this runtime state should keep the provider out of a search. */
+export function blocksSearch(runtime: RuntimeHealth): boolean {
+  // Only terminal, account-wide states gate a search. `cooldown` from a timeout
+  // does not: the scheduler's breaker already handles repeated failures, and a
+  // single timeout must never remove a source.
+  return runtime === "quota_exceeded" || runtime === "invalid_credentials";
+}
+
 const PENALTY_BY_CAUSE: Record<HealthCause, number> = {
   ok: 0,
   config_incomplete: 100,
