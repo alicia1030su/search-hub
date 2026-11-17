@@ -432,7 +432,6 @@ fi
 # ------------------------------------------------------------- 7. persistence
 line
 log "=== item 7: compose down (volume kept) -> compose up, data still present ==="
-DASH_BEFORE=${SEARCH_AFTER:-0}
 PROV_BEFORE=${PROV_AFTER:-0}
 
 # Warm the persistent cache before the container is destroyed. The check after
@@ -456,7 +455,12 @@ curl -s -b "$COOKIES" -o "$WORK/cache-warm.json" --max-time 30 \
 CACHE_WARM_STATUS=$(jget "$WORK/cache-warm.json" status)
 CACHE_ENTRIES_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cache" > "$WORK/cache1.json"; \
   jget "$WORK/cache1.json" entries)
-log "  cache: enable=$cache_on_code warm_status=${CACHE_WARM_STATUS:-none} entries_before_down=${CACHE_ENTRIES_BEFORE:-0}"
+# The baseline is read *after* the warm-up search, because that search is itself
+# one more task: comparing against a count taken before it would fail on the
+# probe's own side effect rather than on persistence.
+DASH_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/dashboard?range=24h" > "$WORK/dash-warm.json"; \
+  jget "$WORK/dash-warm.json" totals.searches)
+log "  cache: enable=$cache_on_code warm_status=${CACHE_WARM_STATUS:-none} entries_before_down=${CACHE_ENTRIES_BEFORE:-0} searches_before_down=${DASH_BEFORE:-0}"
 
 compose down >>"$REPORT" 2>&1 || true
 VOLUME_AFTER_DOWN=$(docker volume ls --format '{{.Name}}' | grep -c "^${PROJECT}_search-hub-data$" || true)
