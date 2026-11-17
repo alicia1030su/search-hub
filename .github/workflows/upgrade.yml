@@ -127,7 +127,9 @@ jobs:
 
       # Downloads every asset, verifies SHA256SUMS against the bytes, cross-checks
       # GitHub's own per-asset digest, and inspects archive entries and modes.
+      # The tag is resolved at run time: a version hardcoded here would keep
+      # auditing an old release while reporting green.
       - name: Audit the latest published release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node packaging/supply-chain-audit.mjs --tag v0.1.6-beta.1
+        run: node packaging/supply-chain-audit.mjs

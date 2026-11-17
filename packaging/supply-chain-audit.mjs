@@ -24,7 +24,31 @@ import { fileURLToPath } from "node:url";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SLUG = "alicia1030su/search-hub";
-const TAG = arg("tag") ?? "v0.1.6-beta.1";
+
+/**
+ * The tag to audit.
+ *
+ * Defaults to the newest published release rather than a hardcoded version: a
+ * constant here quietly audits the *previous* release forever, which is a green
+ * check that proves nothing about what users actually download today.
+ */
+function latestTag() {
+  try {
+    // `gh release view` resolves only the latest *stable* release and answers
+    // "release not found" on a repository that has published only prereleases.
+    // `release list` is ordered newest first, so the first entry is the one a
+    // user is told to download.
+    return execFileSync(
+      "gh",
+      ["release", "list", "--repo", SLUG, "--limit", "1", "--json", "tagName", "--jq", ".[0].tagName"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+  } catch (error) {
+    throw new Error(`cannot resolve the latest release (pass --tag explicitly): ${String(error).slice(0, 120)}`);
+  }
+}
+
+const TAG = arg("tag") ?? latestTag();
 /**
  * `--metadata-only` audits everything that can be checked without pulling the
  * artifacts: tag→main, asset names, the digests GitHub reports and the sums file
@@ -34,13 +58,31 @@ const TAG = arg("tag") ?? "v0.1.6-beta.1";
 const METADATA_ONLY = process.argv.includes("--metadata-only");
 const DIR = resolve(arg("dir") ?? join(REPO, ".data", "supply-chain", TAG));
 const VERSION = TAG.replace(/^v/, "");
-/** Release assets are named after `package.json`, which omits the prerelease suffix. */
-const ASSET_VERSION = VERSION.replace(/-(alpha|beta|rc)\.\d+$/, "");
-const EXPECTED = [
-  `search-hub-v${ASSET_VERSION}-linux-arm64.tar.gz`,
-  `search-hub-v${ASSET_VERSION}-linux-x64.tar.gz`,
-  `search-hub-v${ASSET_VERSION}-windows-x64.zip`,
-];
+
+/**
+ * Release metadata, read once.
+ *
+ * Asset names come from the release itself, not from a naming rule guessed here:
+ * a beta release used to ship assets named `0.1.6`, and newer ones carry the full
+ * `0.1.7-beta.1`. Both are valid as long as the name matches what the tag says,
+ * and only the release can tell us which happened.
+ */
+let assets = [];
+try {
+  assets = JSON.parse(
+    execFileSync("gh", ["api", `repos/${SLUG}/releases/tags/${TAG}`, "--jq", ".assets"], {
+      encoding: "utf8",
+    }),
+  );
+} catch (error) {
+  console.log(`cannot read the release metadata for ${TAG}: ${String(error).slice(0, 160)}`);
+}
+
+const PLATFORM_PATTERNS = [/linux-arm64\.tar\.gz$/, /linux-x64\.tar\.gz$/, /windows-x64\.zip$/];
+const EXPECTED = assets
+  .map((asset) => asset.name)
+  .filter((name) => name.startsWith("search-hub-") && PLATFORM_PATTERNS.some((re) => re.test(name)))
+  .sort();
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -59,9 +101,20 @@ console.log(`auditing ${TAG}\n`);
 // ---- 1. tag → commit → main -------------------------------------------
 let tagSha = null;
 try {
-  tagSha = execFileSync("gh", ["api", `repos/${SLUG}/git/ref/tags/${TAG}`, "--jq", ".object.sha"], {
-    encoding: "utf8",
-  }).trim();
+  // `git/ref/tags/<tag>` points at the *tag object* for an annotated tag and at
+  // the commit for a lightweight one. Comparing a tag object's SHA against main
+  // is a guaranteed 404, so an annotated tag has to be dereferenced first.
+  const ref = JSON.parse(
+    execFileSync("gh", ["api", `repos/${SLUG}/git/ref/tags/${TAG}`], { encoding: "utf8" }),
+  );
+  tagSha = ref.object.sha;
+  if (ref.object.type === "tag") {
+    const tagObject = JSON.parse(
+      execFileSync("gh", ["api", `repos/${SLUG}/git/tags/${tagSha}`], { encoding: "utf8" }),
+    );
+    tagSha = tagObject.object.sha;
+    check("annotated tag dereferences to a commit", tagObject.object.type === "commit", tagSha.slice(0, 8));
+  }
   check("tag resolves to a commit", /^[0-9a-f]{40}$/.test(tagSha), tagSha.slice(0, 8));
 } catch (error) {
   check("tag exists", false, String(error).slice(0, 120));
@@ -93,11 +146,7 @@ mkdirSync(DIR, { recursive: true });
 let downloaded = 0;
 const downloadFailures = [];
 try {
-  const assets = JSON.parse(
-    execFileSync("gh", ["api", `repos/${SLUG}/releases/tags/${TAG}`, "--jq", ".assets"], {
-      encoding: "utf8",
-    }),
-  );
+  if (assets.length === 0) throw new Error("no release assets were readable");
   for (const asset of assets) {
     const out = join(DIR, asset.name);
     if (existsSync(out) && statSync(out).size === asset.size) {
@@ -138,19 +187,13 @@ if (downloadFailures.length > 0) {
   // Never quietly continue: an audit that could not fetch the artifacts proves
   // nothing about them.
   check("release assets downloaded", false, downloadFailures.slice(0, 2).join(" | "));
+} else if (METADATA_ONLY) {
+  warn(`metadata-only: ${assets.length} asset(s) listed, none downloaded by design`);
 } else {
-  check("release assets downloaded", true, `${downloaded} assets`);
+  check("release assets downloaded", downloaded === assets.length, `${downloaded} of ${assets.length} assets`);
 }
 
-let publishedSizes = new Map();
-try {
-  const assets = JSON.parse(
-    execFileSync("gh", ["api", `repos/${SLUG}/releases/tags/${TAG}`, "--jq", ".assets"], { encoding: "utf8" }),
-  );
-  publishedSizes = new Map(assets.map((asset) => [asset.name, asset.size]));
-} catch {
-  /* reported by the checks below */
-}
+const publishedSizes = new Map(assets.map((asset) => [asset.name, asset.size]));
 
 for (const name of ["SHA256SUMS", ...EXPECTED]) {
   const path = join(DIR, name);
@@ -160,6 +203,12 @@ for (const name of ["SHA256SUMS", ...EXPECTED]) {
   // A truncated download is the single most common way a "verification" lies: the
   // bytes are wrong, the hash is wrong, and the reason looks like a bad release.
   const sizeOk = present && (expectedSize === undefined || size === expectedSize);
+  if (METADATA_ONLY && !present) {
+    // Nothing was downloaded on purpose; saying "missing" would look like a
+    // failed release. The published size is still checked below.
+    warn(`${name}: not on disk (metadata-only run); published size ${expectedSize ?? "unknown"}`);
+    continue;
+  }
   check(
     `asset present and complete: ${name}`,
     sizeOk,
@@ -189,11 +238,6 @@ if (existsSync(sumsPath)) {
 
 // ---- 4. the release digest GitHub itself reports ----------------------
 try {
-  const assets = JSON.parse(
-    execFileSync("gh", ["api", `repos/${SLUG}/releases/tags/${TAG}`, "--jq", ".assets"], {
-      encoding: "utf8",
-    }),
-  );
   for (const asset of assets) {
     const local = join(DIR, asset.name);
     if (!existsSync(local)) continue;
@@ -212,17 +256,29 @@ try {
 }
 
 // ---- 5. asset name vs tag version / arch ------------------------------
-// An asset named 0.1.6 inside a v0.1.6-beta.1 release is a real (if minor)
-// supply-chain smell: a user can mistake a beta package for the 0.1.6 release.
-if (ASSET_VERSION !== VERSION) {
-  warn(
-    `asset names say ${ASSET_VERSION} while the tag says ${VERSION}: a beta package is ` +
-      "indistinguishable from a 0.1.6 release by filename alone",
+// Every platform must be present exactly once, and each name must carry the
+// version the tag claims. An asset named 0.1.6 inside a v0.1.6-beta.1 release is
+// a real supply-chain smell: a beta package becomes indistinguishable from the
+// final 0.1.6 by filename alone.
+check("three platform assets are published", EXPECTED.length === 3, `${EXPECTED.length}: ${EXPECTED.join(", ")}`);
+for (const pattern of PLATFORM_PATTERNS) {
+  check(
+    `exactly one asset matches ${String(pattern)}`,
+    EXPECTED.filter((name) => pattern.test(name)).length === 1,
   );
 }
+/** The version the tag claims, without a leading `v` (e.g. `0.1.7-beta.1`). */
+const bareVersion = VERSION.replace(/-(alpha|beta|rc)\.\d+$/, "");
 for (const asset of EXPECTED) {
-  const version = ASSET_VERSION;
-  check(`asset name carries the version: ${asset}`, asset.includes(`v${version}`));
+  const carriesFull = asset.includes(`v${VERSION}-`);
+  const carriesBare = new RegExp(`v${bareVersion.replace(/\./g, "\\.")}-(windows|linux)-`).test(asset);
+  check(`asset name carries a version: ${asset}`, carriesFull || carriesBare);
+  if (carriesBare && !carriesFull) {
+    warn(
+      `${asset}: the name says ${bareVersion} while the tag says ${VERSION}; ` +
+        "a beta package is indistinguishable from a final release by filename alone",
+    );
+  }
   check(`asset name carries a platform: ${asset}`, /-(windows|linux)-(x64|arm64)\./.test(asset));
 }
 
