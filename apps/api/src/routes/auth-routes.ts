@@ -185,7 +185,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         providers: {
           total: providers.length,
           enabled: providers.filter((provider) => provider.enabled).length,
-          healthy: providers.filter((provider) => provider.enabled && provider.healthyKeyCount > 0).length,
+          healthy: providers.filter((provider) => provider.enabled && provider.ready).length,
           circuitOpen: providers.filter((provider) => provider.circuitOpen).length,
         },
         database: { driver: "sqlite", migrations: ctx.migrated.length },

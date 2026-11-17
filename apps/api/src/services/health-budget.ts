@@ -22,6 +22,18 @@ import { decideBudget, type HealthProbeKind } from "./health-classify.js";
  * why a source looks dead.
  */
 
+/**
+ * Ledger buckets.
+ *
+ * `search` is a real search made *with a credential*, so it can consume the
+ * operator's account quota. `search_anonymous` is a real search against a
+ * keyless public API: no credential is sent, so no account quota can be spent —
+ * but it is still a request to a third party and is counted separately rather
+ * than being called "free", because whether a vendor meters by IP is not
+ * something this code can know.
+ */
+export type LedgerKind = HealthProbeKind | "search_anonymous";
+
 export interface BudgetSnapshot {
   /** UTC day the counters belong to. */
   day: string;
@@ -33,6 +45,8 @@ export interface BudgetSnapshot {
   searchUsedToday: number;
   /** Free connectivity probes reserved today (counted, not capped). */
   connectUsedToday: number;
+  /** Real searches against keyless sources today (counted, not capped). */
+  anonymousSearchUsedToday: number;
   remainingToday: number;
   paidProbesEnabled: boolean;
 }
@@ -54,7 +68,7 @@ export class ProbeBudget {
     return new Date(nowMs).toISOString().slice(0, 10);
   }
 
-  private raw(kind: HealthProbeKind): number {
+  private raw(kind: LedgerKind): number {
     const day = ProbeBudget.utcDay(this.clock());
     const row = this.db
       .select()
@@ -71,7 +85,7 @@ export class ProbeBudget {
    * the rows are in `provider_health_checks`. Without this seeding, applying the
    * migration would hand out a second full day of paid probes.
    */
-  private ensureSeed(kind: HealthProbeKind): void {
+  private ensureSeed(kind: LedgerKind): void {
     const day = ProbeBudget.utcDay(this.clock());
     const existing = this.db
       .select({ used: healthProbeBudget.used })
@@ -86,7 +100,9 @@ export class ProbeBudget {
       .from(providerHealthChecks)
       .where(
         and(
-          eq(providerHealthChecks.kind, kind),
+          // Anonymous searches are recorded in the probe log as `search`; the
+          // ledger only splits them because their billing class differs.
+          eq(providerHealthChecks.kind, kind === "search_anonymous" ? "search" : kind),
           sql`${providerHealthChecks.checkedAt} >= ${since}`,
         ),
       )
@@ -107,6 +123,7 @@ export class ProbeBudget {
   snapshot(options: { paidProbesEnabled: boolean; maxPerRun: number; maxPerDay: number }): BudgetSnapshot {
     this.ensureSeed("search");
     this.ensureSeed("connect");
+    this.ensureSeed("search_anonymous");
     const day = ProbeBudget.utcDay(this.clock());
     const searchUsed = this.raw("search");
     return {
@@ -115,6 +132,7 @@ export class ProbeBudget {
       maxPerDay: options.maxPerDay,
       searchUsedToday: searchUsed,
       connectUsedToday: this.raw("connect"),
+      anonymousSearchUsedToday: this.raw("search_anonymous"),
       remainingToday: Math.max(0, options.maxPerDay - searchUsed),
       paidProbesEnabled: options.paidProbesEnabled,
     };
@@ -128,7 +146,8 @@ export class ProbeBudget {
    * proceeding would spend money the ledger has no record of.
    */
   reserve(input: {
-    kind: HealthProbeKind;
+    /** `search` is only passed for credential-backed searches. */
+    kind: LedgerKind;
     paidProbesEnabled: boolean;
     maxPerRun: number;
     maxPerDay: number;
@@ -185,7 +204,7 @@ export class ProbeBudget {
   }
 
   /** Gives a reservation back when the probe never left the machine. */
-  release(kind: HealthProbeKind): void {
+  release(kind: LedgerKind): void {
     const day = ProbeBudget.utcDay(this.clock());
     this.db
       .update(healthProbeBudget)

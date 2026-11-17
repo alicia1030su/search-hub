@@ -17,6 +17,13 @@ import {
   scoreFor,
   statusFor,
 } from "../../apps/api/src/services/health-classify.js";
+import {
+  addKey,
+  allowLocalhost,
+  closeStubs,
+  createProvider,
+  startBraveStub,
+} from "../helpers/vendor-stubs.js";
 
 /**
  * Health classification + probe behaviour.
@@ -135,6 +142,7 @@ interface Harness {
 const harnesses: Harness[] = [];
 
 afterEach(async () => {
+  await closeStubs();
   for (const harness of harnesses.splice(0)) {
     await harness.app.close();
     rmSync(harness.dir, { recursive: true, force: true });
@@ -196,6 +204,35 @@ async function addMock(harness: Harness, name: string, config: Record<string, un
   });
   expect(response.statusCode, response.body).toBe(200);
   return response.json().provider.id as string;
+}
+
+/**
+ * Adds a provider whose real searches are made *with a credential*.
+ *
+ * Budget assertions only mean something for such a provider: a keyless source
+ * sends no credential, cannot consume account quota, and is deliberately exempt
+ * from the paid switch. Using `mock` here made "paid probe" a fiction, so these
+ * cases drive a local Brave-shaped stub instead — a real socket, a real key
+ * header, no vendor call.
+ */
+async function addKeyedProvider(harness: Harness, name: string): Promise<string> {
+  await allowLocalhost(harness.app, {
+    cookies: { sh_session: harness.cookie },
+    headers: { "x-csrf-token": harness.csrf },
+  });
+  const stub = await startBraveStub({ results: 2 });
+  const providerId = await createProvider(
+    harness.app,
+    { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } },
+    { name, type: "brave", baseUrl: stub.base, resultsPerPage: 5 },
+  );
+  await addKey(
+    harness.app,
+    { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } },
+    providerId,
+    "sk-HEALTH-BUDGET-STUB-0000000000",
+  );
+  return providerId;
 }
 
 describe("health probes", () => {
@@ -280,7 +317,7 @@ describe("health probes", () => {
 
   it("refuses a paid probe while paid probes are disabled", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "paid", { resultCount: 2 });
+    const providerId = await addKeyedProvider(harness, "paid");
     const run = await harness.app.inject({
       method: "POST",
       url: "/api/admin/health/check",
@@ -294,7 +331,7 @@ describe("health probes", () => {
 
   it("stops spending once the daily paid-probe budget is exhausted", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "budget", { resultCount: 2 });
+    const providerId = await addKeyedProvider(harness, "budget");
     // Enable paid probes but allow exactly one.
     await harness.app.inject({
       method: "PUT",
@@ -323,9 +360,9 @@ describe("health probes", () => {
 
   it("skips the remaining providers once the run budget is used up", async () => {
     const harness = await createHarness();
-    await addMock(harness, "one", { resultCount: 1 });
-    await addMock(harness, "two", { resultCount: 1 });
-    await addMock(harness, "three", { resultCount: 1 });
+    await addKeyedProvider(harness, "one");
+    await addKeyedProvider(harness, "two");
+    await addKeyedProvider(harness, "three");
     await harness.app.inject({
       method: "PUT",
       url: "/api/admin/settings",
