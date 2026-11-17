@@ -13,7 +13,7 @@ import {
 import { api, toApiError, type ApiError } from "../lib/api";
 import { formatDateTime, formatMs, prettyJson } from "../lib/format";
 import { useAsyncData, useDocumentTitle } from "../lib/hooks";
-import { modelKindLabels, modelProviderTypeLabels, t } from "../lib/i18n";
+import { modelKindLabel, modelProviderTypeLabel, t } from "../lib/i18n";
 import type { ModelConfig, ModelInput, ModelKind, ModelProviderType } from "../lib/types";
 import { ConfirmDialog, Dialog } from "../components/overlay";
 import { Tabs } from "../components/tabs";
@@ -204,7 +204,7 @@ export function ModelsPage() {
       <Tabs
         items={kinds.map((kind) => ({
           value: kind,
-          label: modelKindLabels[kind],
+          label: modelKindLabel(kind),
           count: counts[kind],
         }))}
         value={tab}
@@ -236,7 +236,7 @@ export function ModelsPage() {
       ) : visible.length === 0 ? (
         <EmptyState
           icon={Cpu}
-          title={t("models.empty", { kind: modelKindLabels[tab] })}
+          title={t("models.empty", { kind: modelKindLabel(tab) })}
           description={t("models.emptyDesc")}
           action={
             <Button size="sm" onClick={() => setForm({ model: null, kind: tab })}>
@@ -264,7 +264,7 @@ export function ModelsPage() {
                     </div>
                     <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{model.modelId}</p>
                     <p className="truncate text-[10px] text-muted-foreground">
-                      {modelProviderTypeLabels[model.providerType]} · {model.baseUrl}
+                      {modelProviderTypeLabel(model.providerType)} · {model.baseUrl}
                     </p>
                   </div>
                   <Switch
@@ -531,7 +531,7 @@ function ModelFormDialog({
             >
               {kinds.map((kind) => (
                 <option key={kind} value={kind}>
-                  {modelKindLabels[kind]}
+                  {modelKindLabel(kind)}
                 </option>
               ))}
             </Select>
@@ -544,7 +544,7 @@ function ModelFormDialog({
             >
               {providerTypes.map((providerType) => (
                 <option key={providerType} value={providerType}>
-                  {modelProviderTypeLabels[providerType]}
+                  {modelProviderTypeLabel(providerType)}
                 </option>
               ))}
             </Select>

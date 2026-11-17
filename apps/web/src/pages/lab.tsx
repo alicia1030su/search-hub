@@ -24,8 +24,8 @@ import {
 import { useAsyncData, useCopy, useDocumentTitle, useElapsed } from "../lib/hooks";
 import {
   droppedReasonLabel,
-  freshnessLabels,
-  searchModeLabels,
+  freshnessLabel,
+  searchModeLabel,
   t,
 } from "../lib/i18n";
 import type {
@@ -311,7 +311,7 @@ export function LabPage() {
                   >
                     {modes.map((item) => (
                       <option key={item} value={item}>
-                        {searchModeLabels[item]}
+                        {searchModeLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -404,7 +404,7 @@ export function LabPage() {
                       >
                         {freshnessOptions.map((option) => (
                           <option key={option || "none"} value={option}>
-                            {option === "" ? t("providers.freshness.null") : freshnessLabels[option]}
+                            {option === "" ? t("providers.freshness.null") : freshnessLabel(option)}
                           </option>
                         ))}
                       </Select>
@@ -704,7 +704,7 @@ function SearchResultPanel({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <SearchStatusBadge status={response.status} />
-              <Badge tone="outline">{searchModeLabels[response.mode]}</Badge>
+              <Badge tone="outline">{searchModeLabel(response.mode)}</Badge>
               {response.stats.partial ? <Badge tone="warning">{t("states.partial")}</Badge> : null}
               {response.stats.rerankApplied ? <Badge tone="info">rerank</Badge> : null}
               {response.stats.embeddingApplied ? <Badge tone="info">embedding</Badge> : null}

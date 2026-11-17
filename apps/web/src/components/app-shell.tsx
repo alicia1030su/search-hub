@@ -17,8 +17,8 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { classNames as cn } from "../lib/format";
-import { useAsyncData } from "../lib/hooks";
-import { t, type MessageKey } from "../lib/i18n";
+import { useAsyncData, useLocale } from "../lib/hooks";
+import { availableLocales, setLocale, t, type MessageKey } from "../lib/i18n";
 import { useAuth } from "../lib/session";
 import { useTheme } from "../lib/theme";
 import { useToast } from "../components/toast";
@@ -193,6 +193,7 @@ export function AppShell() {
           </div>
 
           <div className="flex items-center gap-1.5">
+            <LanguageSwitcher />
             <Button
               variant="ghost"
               size="icon-sm"
@@ -225,5 +226,33 @@ export function AppShell() {
         </main>
       </div>
     </div>
+  );
+}
+
+/**
+ * Language switcher.
+ *
+ * A native `<select>` on purpose: it is keyboard accessible, works without
+ * extra JavaScript, and the E2E test can drive it with `selectOption`.
+ */
+function LanguageSwitcher() {
+  const { locale } = useLocale();
+  return (
+    <label className="relative">
+      <span className="sr-only">{t("common.language")}</span>
+      <select
+        value={locale}
+        onChange={(event) => setLocale(event.target.value as "zh-CN" | "en-US")}
+        aria-label={t("common.language")}
+        data-testid="locale-switcher"
+        className="h-7 cursor-pointer rounded-md border border-input bg-transparent px-1.5 text-[11px] text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {availableLocales().map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

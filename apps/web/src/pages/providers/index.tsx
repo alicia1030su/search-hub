@@ -16,12 +16,12 @@ import { api, toApiError, type ApiError } from "../../lib/api";
 import { formatDateTime } from "../../lib/format";
 import { useAsyncData, useDocumentTitle } from "../../lib/hooks";
 import {
-  categoryLabels,
-  implementationLabels,
-  keyStrategyLabels,
-  providerAuthLabels,
+  categoryLabel,
+  implementationLabel,
+  keyStrategyLabel,
+  providerAuthLabel,
   t,
-  verificationLabels,
+  verificationLabel,
 } from "../../lib/i18n";
 import type {
   GroupInput,
@@ -464,7 +464,7 @@ export function ProvidersPage() {
                     <option value="all">{t("providers.market.all")}</option>
                     {categoryOrder.map((category) => (
                       <option key={category} value={category}>
-                        {categoryLabels[category]}
+                        {categoryLabel(category)}
                       </option>
                     ))}
                   </Select>
@@ -498,7 +498,7 @@ export function ProvidersPage() {
                 <div key={category} className="space-y-2">
                   <div className="flex items-center gap-2">
                     <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      {categoryLabels[category]}
+                      {categoryLabel(category)}
                     </h3>
                     <Badge tone="outline">{entries.length}</Badge>
                   </div>
@@ -529,7 +529,7 @@ export function ProvidersPage() {
                                 <p className="truncate text-sm font-medium">{entry.name}</p>
                                 <p className="truncate font-mono text-[10px] text-muted-foreground">{entry.type}</p>
                               </div>
-                              <Badge tone={categoryTone[entry.category]}>{categoryLabels[entry.category]}</Badge>
+                              <Badge tone={categoryTone[entry.category]}>{categoryLabel(entry.category)}</Badge>
                             </div>
                             <p className="line-clamp-3 text-[11px] leading-relaxed text-muted-foreground">
                               {entry.description}
@@ -541,12 +541,12 @@ export function ProvidersPage() {
                             ) : null}
                             <div className="flex flex-wrap items-center gap-1">
                               <Badge tone={implementationTone[entry.implementation]}>
-                                {implementationLabels[entry.implementation]}
+                                {implementationLabel(entry.implementation)}
                               </Badge>
                               <Badge tone={entry.verification === "live_tested" ? "success" : "outline"}>
-                                {verificationLabels[entry.verification]}
+                                {verificationLabel(entry.verification)}
                               </Badge>
-                              <Badge tone="muted">{providerAuthLabels[entry.authType]}</Badge>
+                              <Badge tone="muted">{providerAuthLabel(entry.authType)}</Badge>
                               <Badge tone="outline">
                                 {entry.capability === "grounded_answer"
                                   ? t("lab.capability.grounded")
@@ -684,7 +684,7 @@ export function ProvidersPage() {
                               <KeyRound className="size-3" aria-hidden />
                               {provider.healthyKeyCount}/{provider.keyCount}
                             </Badge>
-                            <Badge tone="outline">{keyStrategyLabels[provider.keyStrategy]}</Badge>
+                            <Badge tone="outline">{keyStrategyLabel(provider.keyStrategy)}</Badge>
                             <span>P{provider.priority}</span>
                             <span>W{provider.weight}</span>
                             {snapshot ? (
@@ -810,7 +810,7 @@ export function ProvidersPage() {
                                 {provider.healthyKeyCount}/{provider.keyCount}
                               </Badge>
                             </TD>
-                            <TD className="text-xs">{keyStrategyLabels[provider.keyStrategy]}</TD>
+                            <TD className="text-xs">{keyStrategyLabel(provider.keyStrategy)}</TD>
                             <TD className="font-mono text-xs tabular-nums">
                               {provider.priority} / {provider.weight}
                             </TD>
@@ -1024,7 +1024,7 @@ export function ProvidersPage() {
               </div>
               <div className="rounded-md border bg-muted/25 p-2.5">
                 <p>{t("providers.form.keyStrategy")}</p>
-                <p className="text-foreground">{keyStrategyLabels[keyProvider.keyStrategy]}</p>
+                <p className="text-foreground">{keyStrategyLabel(keyProvider.keyStrategy)}</p>
               </div>
             </div>
             <ProviderKeysPanel providerId={keyProvider.id} providerName={keyProvider.name} />

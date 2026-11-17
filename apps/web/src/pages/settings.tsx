@@ -22,9 +22,9 @@ import {
 } from "../lib/format";
 import { useAsyncData, useDocumentTitle } from "../lib/hooks";
 import {
-  freshnessLabels,
+  freshnessLabel,
   logLevels,
-  searchModeLabels,
+  searchModeLabel,
   t,
 } from "../lib/i18n";
 import type { AppSettings, AuditLog, Freshness, LogEvent, SearchMode } from "../lib/types";
@@ -418,7 +418,7 @@ export function SettingsPage() {
                       >
                         {modes.map((mode) => (
                           <option key={mode} value={mode}>
-                            {searchModeLabels[mode]}
+                            {searchModeLabel(mode)}
                           </option>
                         ))}
                       </Select>
@@ -431,7 +431,7 @@ export function SettingsPage() {
                       >
                         {freshnessOptions.map((freshness) => (
                           <option key={freshness} value={freshness}>
-                            {freshnessLabels[freshness]}
+                            {freshnessLabel(freshness)}
                           </option>
                         ))}
                       </Select>

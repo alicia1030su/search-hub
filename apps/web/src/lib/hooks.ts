@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { isAbortError, toApiError, type ApiError } from "./api";
 import { copyText } from "./format";
+import { getLocale, localeVersion, setLocale, subscribeLocale, type Locale } from "./i18n";
 
 export interface AsyncResource<T> {
   data: T | null;
@@ -112,4 +113,18 @@ export function useDisclosure(initial = false): {
     onOpen: useCallback(() => setOpen(true), []),
     onClose: useCallback(() => setOpen(false), []),
   };
+}
+
+/**
+ * Locale subscription.
+ *
+ * `t()` is a plain function, so a component that only calls it would keep its
+ * rendered strings until something else re-rendered it. Components that show
+ * copy subscribe here, which makes a language switch re-render them without
+ * threading a hook through 900 call sites.
+ */
+export function useLocale(): { locale: Locale; setLocale: (next: Locale) => void } {
+  const snapshot = useSyncExternalStore(subscribeLocale, localeVersion, localeVersion);
+  void snapshot;
+  return { locale: getLocale(), setLocale };
 }
