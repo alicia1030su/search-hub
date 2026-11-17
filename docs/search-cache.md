@@ -133,7 +133,20 @@ MCP 工具 `search_web` 的返回值同时带 `cached` 字段，Agent 能区分"
 - 缓存接口全部要求 admin 会话 + CSRF；`/api/mcp/health` 等只读投影不暴露缓存内容。
 - 命中不绕过健康门禁，也不会把用户取消记成源失败。
 
-## 十、数据位置与迁移
+## 十、REST / MCP / Skills 的一致性
+
+三条入口都调用 `SearchService.execute`：
+
+| 入口 | 路径 | 缓存 |
+|---|---|---|
+| REST | `POST /api/search`、`/api/search/deep` | 读+写 |
+| MCP | `search_web`、`search_multi` 等工具 | 同一个 `SearchService` 实例 |
+| Agent Skills | 按 SKILL.md 用 `curl` 打 `/api/search` | 同上（Skills 是 HTTP 客户端，不是独立实现） |
+
+所以三者之间会互相命中：MCP 写入的条目，REST 能用；Skill 用 Token 写入的条目，
+后台会话也能用。测试 T20（MCP ↔ REST）与 T21（Skill ↔ REST）分别验证了这一点。
+
+## 十一、数据位置与迁移
 
 | 场景 | 缓存是否保留 |
 |---|---|

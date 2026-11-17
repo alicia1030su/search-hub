@@ -255,8 +255,8 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **687 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
-- 持久化缓存 **21 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
+- 单元 + 集成测试 **688 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 持久化缓存 **22 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
 - 验收矩阵 **16 项**（PASS 11 / PARTIAL 4 / BLOCKED 1），由 `docs/ac-matrix.json` 自动生成，见 [docs/ac-matrix.md](./docs/ac-matrix.md)。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
 - Playwright 覆盖首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注。

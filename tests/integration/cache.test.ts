@@ -537,6 +537,45 @@ describe("persistent cache", () => {
     expect(cacheEntryCount(harness.ctx.db)).toBe(1);
   });
 
+  it("T21 a Skill shares the same cache as REST", async () => {
+    const harness = await createHarness();
+    await addMock(harness, "cache-skill", { resultCount: 3 });
+    await enableCache(harness);
+
+    const tokenResponse = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/tokens",
+      ...adminHeaders(harness),
+      payload: { name: "skill-cache", scopes: ["search"], rateLimitPerMin: 600 },
+    });
+    const token = tokenResponse.json().token as string;
+
+    // The exact request a Skill makes: `curl $SEARCH_HUB_URL/api/search -H
+    // "authorization: Bearer $TOKEN"` (packages/skills/search-web/SKILL.md). A
+    // Skill is an HTTP client, so "shares the cache" means this request and the
+    // admin REST call below produce one entry.
+    const skillBody = { query: "skill cache probe", mode: "rrf", limit: 8 };
+    const first = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      payload: skillBody,
+    });
+    expect(first.statusCode, first.body).toBe(200);
+    expect(cacheEntryCount(harness.ctx.db)).toBe(1);
+
+    // Same request, this time as an admin session: a hit proves the token path
+    // and the session path read the same table.
+    const second = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      ...adminHeaders(harness),
+      payload: skillBody,
+    });
+    expect((second.json() as unknown as CachedBody).stats.cached).toBe(true);
+    expect(cacheEntryCount(harness.ctx.db)).toBe(1);
+  });
+
   it("T22 the cache key never contains a credential", async () => {
     const harness = await createHarness();
     const providerId = await addMock(harness, "cache-key", { resultCount: 2 });
