@@ -244,7 +244,8 @@ POST /api/admin/provider-health/:id/reset
 // budget block (UTC day boundary, both counters explicit)
 {
   "day": "2026-11-17", "maxPerRun": 3, "maxPerDay": 20,
-  "usedToday": 4, "connectUsedToday": 11, "remainingToday": 16,
+  "usedToday": 4, "connectUsedToday": 11, "anonymousSearchUsedToday": 6,
+  "remainingToday": 16,
   "paidProbesEnabled": false, "scheduledEnabled": true, "intervalMinutes": 360
 }
 ```
@@ -253,6 +254,13 @@ POST /api/admin/provider-health/:id/reset
   full the API returns `400` (disabled) or `429` (budget) and records nothing.
 - `maxRequestsPerRun` / `maxRequestsPerDay` / `intervalMinutes` / `concurrency`
   are bounded server-side; a value outside the range is `400`, not clamped.
+- `usedToday` counts searches made **with a credential** (the paid bucket).
+  `anonymousSearchUsedToday` counts real searches against keyless sources: they
+  are exempt from the paid switch because no credential can spend account quota,
+  and they are counted rather than labelled free.
+- A cancelled probe records nothing and keeps its reservation: a cancel can
+  arrive after the request left, so refunding it would let an abort loop spend
+  without the ledger noticing.
 - `reset` writes a marker; probes older than it stop deciding the status. History
   is kept and credentials are untouched.
 - All routes need `admin` scope; writes need CSRF. A `search`-scope token gets 403.

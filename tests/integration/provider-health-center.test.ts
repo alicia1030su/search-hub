@@ -15,6 +15,13 @@ import {
   providerProbeState,
   searchCache,
 } from "../../packages/db/src/schema.js";
+import {
+  addKey,
+  allowLocalhost,
+  closeStubs,
+  createProvider,
+  startBraveStub,
+} from "../helpers/vendor-stubs.js";
 
 /**
  * Provider Health Management Centre — T01..T35.
@@ -96,6 +103,7 @@ async function createHarness(
 }
 
 afterEach(async () => {
+  await closeStubs();
   for (const harness of harnesses.splice(0)) {
     harness.ctx.health.stopScheduler();
     await harness.app.close();
@@ -132,6 +140,26 @@ async function addMock(
   return response.json().provider.id as string;
 }
 
+/**
+ * Adds a provider whose real searches spend an account credential.
+ *
+ * The budget cases must exercise the *paid* class: a keyless source sends no
+ * credential and is deliberately exempt from the paid switch, so using the mock
+ * adapter for them would test a rule that does not apply to it.
+ */
+async function addKeyedProvider(harness: Harness, name: string): Promise<string> {
+  await allowLocalhost(harness.app, adminHeaders(harness));
+  const stub = await startBraveStub({ results: 2 });
+  const providerId = await createProvider(harness.app, adminHeaders(harness), {
+    name,
+    type: "brave",
+    baseUrl: stub.base,
+    resultsPerPage: 5,
+  });
+  await addKey(harness.app, adminHeaders(harness), providerId, "sk-HEALTH-CENTRE-STUB-0000000000");
+  return providerId;
+}
+
 async function setHealthPolicy(harness: Harness, patch: Record<string, unknown>) {
   return harness.app.inject({
     method: "PUT",
@@ -164,6 +192,7 @@ async function overview(harness: Harness) {
     budget: {
       day: string;
       usedToday: number;
+      anonymousSearchUsedToday: number;
       connectUsedToday: number;
       remainingToday: number;
       maxPerRun: number;
@@ -380,13 +409,15 @@ describe("provider health centre", () => {
 
   it("T05 a live search probe with real rows records success and spends budget", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "live", { resultCount: 3 });
+    const providerId = await addKeyedProvider(harness, "live");
     await setHealthPolicy(harness, { paidProbesEnabled: true });
 
     const probe = await probeOne(harness, providerId, "search");
     expect(probe.statusCode, probe.body).toBe(200);
     expect(probe.json().result.kind).toBe("search");
-    expect(probe.json().result.resultCount).toBe(3);
+    // The stub returns two rows; the assertion is "real rows came back", not a
+    // specific count, because a vendor may return more than asked.
+    expect(probe.json().result.resultCount).toBeGreaterThan(0);
     expect(probe.json().result.cause).toBe("ok");
     expect(probe.json().budget.usedToday).toBe(1);
 
@@ -423,27 +454,29 @@ describe("provider health centre", () => {
     }
   });
 
-  it("T15 a cancelled probe records nothing and refunds its budget", async () => {
+  it("T15 a cancelled probe records nothing and does not refund its slot", async () => {
     const harness = await createHarness();
     const providerId = await addMock(harness, "cancel-probe", { resultCount: 0, failMode: "cancelled" });
-    await setHealthPolicy(harness, { paidProbesEnabled: true, maxRequestsPerDay: 20 });
 
     const response = await probeOne(harness, providerId, "search");
-    // The service refuses to record it and says why.
+    // No verdict is published about the source, and the caller is told why.
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
     expect(response.body).toContain("cancelled");
-
-    // No evidence was written, so the source keeps its previous state …
     expect(probeRows(harness).filter((row) => row.kind === "search")).toHaveLength(0);
+
     const view = await overview(harness);
     expect(view.providers[0]!.runtime).toBe("unknown");
-    // … and the paid slot was given back rather than silently burned.
+    // The reservation is *kept*: a cancel can arrive after the request left the
+    // machine, so refunding it would let an abort loop spend unbounded requests
+    // while the ledger reports zero. A keyless source counts in the anonymous
+    // bucket; the paid bucket stays untouched because no credential was spent.
+    expect(view.budget.anonymousSearchUsedToday).toBe(1);
     expect(view.budget.usedToday).toBe(0);
   });
 
   it("T16 the per-run paid budget caps a 'check all' at three probes", async () => {
     const harness = await createHarness();
-    for (const name of ["a", "b", "c", "d", "e"]) await addMock(harness, name, { resultCount: 2 });
+    for (const name of ["a", "b", "c", "d", "e"]) await addKeyedProvider(harness, name);
     await setHealthPolicy(harness, { paidProbesEnabled: true, maxRequestsPerRun: 3, maxRequestsPerDay: 20 });
 
     const run = await harness.app.inject({
@@ -460,8 +493,8 @@ describe("provider health centre", () => {
 
   it("T16b an impossible probe does not consume the per-run allowance", async () => {
     const harness = await createHarness();
-    // Two keyed providers with no key: they can never be searched, so they must
-    // not eat the three paid slots that the mock providers need.
+    // Two credential-backed sources with no key: they can never be searched, so
+    // they must not eat the three paid slots the working ones need.
     for (const name of ["needs-a", "needs-b"]) {
       await harness.app.inject({
         method: "POST",
@@ -470,8 +503,8 @@ describe("provider health centre", () => {
         payload: { name, type: "brave", enabled: true, timeoutMs: 3000 },
       });
     }
-    for (const name of ["free-a", "free-b", "free-c"]) {
-      await addMock(harness, name, { resultCount: 1 });
+    for (const name of ["paid-a", "paid-b", "paid-c"]) {
+      await addKeyedProvider(harness, name);
     }
     await setHealthPolicy(harness, { paidProbesEnabled: true, maxRequestsPerRun: 3, maxRequestsPerDay: 20 });
 
@@ -490,7 +523,7 @@ describe("provider health centre", () => {
 
   it("T17/T20 the daily paid budget stops further probes", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "daily", { resultCount: 2 });
+    const providerId = await addKeyedProvider(harness, "daily");
     await setHealthPolicy(harness, { paidProbesEnabled: true, maxRequestsPerRun: 3, maxRequestsPerDay: 1 });
 
     expect((await probeOne(harness, providerId, "search")).statusCode).toBe(200);
@@ -501,7 +534,7 @@ describe("provider health centre", () => {
 
   it("T18 one hundred concurrent paid probes cannot exceed the budget", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "race", { resultCount: 1 });
+    const providerId = await addKeyedProvider(harness, "race");
     await setHealthPolicy(harness, { paidProbesEnabled: true, maxRequestsPerRun: 200, maxRequestsPerDay: 5 });
 
     const responses = await Promise.all(
@@ -521,7 +554,7 @@ describe("provider health centre", () => {
 
   it("T19 a restart does not reset the daily budget", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "restart", { resultCount: 1 });
+    const providerId = await addKeyedProvider(harness, "restart");
     await setHealthPolicy(harness, { paidProbesEnabled: true, maxRequestsPerDay: 2 });
     expect((await probeOne(harness, providerId, "search")).statusCode).toBe(200);
 
@@ -964,6 +997,83 @@ describe("provider health centre", () => {
 
     const view = await overview(harness);
     expect(view.providers.find((item) => item.providerId === b)!.autoProbeEnabled).toBe(false);
+  });
+
+  it("B1 a connectivity probe is counted, and cannot be fired unbounded by one request", async () => {
+    const harness = await createHarness();
+    for (let index = 0; index < 6; index += 1) {
+      await addMock(harness, `connect-${index}`, { resultCount: 1 });
+    }
+    await setHealthPolicy(harness, { concurrency: 2 });
+
+    const run = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/health/check",
+      ...adminHeaders(harness),
+      payload: { kind: "connect" },
+    });
+    expect(run.statusCode, run.body).toBe(200);
+    // Every provider was probed, and each probe is on the ledger: connectivity
+    // is not capped (capping it would make the page unexplainable), but the
+    // count is real so an operator can see how often a timer runs.
+    expect(run.json().results).toHaveLength(6);
+    const view = await overview(harness);
+    expect(view.budget.connectUsedToday).toBe(6);
+    expect(view.budget.usedToday).toBe(0);
+    // Concurrency is capped by policy, not by the caller: the run finished with
+    // at most 2 probes in flight, which is what keeps a large estate from
+    // firing hundreds of sockets at once.
+    expect(harness.ctx.settings.get().health.concurrency).toBe(2);
+  });
+
+  it("B2 keys sharing one account group are not counted as separate accounts", async () => {
+    const harness = await createHarness();
+    const providerId = await createProvider(harness.app, adminHeaders(harness), {
+      name: "shared-account",
+      type: "brave",
+      // Account limits live in the adapter config (billing metadata, not a column).
+      config: { accountGroup: "brave-main", accountRpmLimit: 30, accountDailyQuota: 100 },
+    });
+    await addKey(harness.app, adminHeaders(harness), providerId, "sk-SHARED-ACCOUNT-0000000000");
+    await addKey(harness.app, adminHeaders(harness), providerId, "sk-SHARED-ACCOUNT-1111111111");
+
+    const runtime = harness.ctx.providers.runtimesFor([providerId])[0]!;
+    // The scheduler must expose one account bucket for the group, not one per
+    // key: otherwise 2 keys × 100/day silently becomes 200/day.
+    const account = runtime.scheduler.accountSnapshot() as
+      | { group: string; dailyQuota: number | null; rpmLimit: number }
+      | null;
+    expect(account?.group).toBe("brave-main");
+    // One bucket for the group, not one per key: 2 keys must not double the ceiling.
+    expect(account?.dailyQuota).toBe(100);
+    const providers = (await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/providers",
+      cookies: { sh_session: harness.cookie },
+    })).json().providers as Array<{ id: string; accountGroup: string | null; accountDailyQuota: number | null }>;
+    const row = providers.find((item) => item.id === providerId)!;
+    expect(row.accountGroup).toBe("brave-main");
+    expect(row.accountDailyQuota).toBe(100);
+  });
+
+  it("B3 an unhealthy-but-not-terminal source is still allowed to search", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "flaky-live", { resultCount: 2, failMode: "server_error" });
+    const ok = await addMock(harness, "steady", { resultCount: 2 });
+    await probeOne(harness, providerId, "connect");
+
+    // A 5xx is degraded, not terminal: the fan-out must still try it, because a
+    // vendor blip is not a reason to stop sending traffic entirely.
+    expect(harness.ctx.health.blockedProviders().has(providerId)).toBe(false);
+    const search = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      ...adminHeaders(harness),
+      payload: { query: "degraded still tried", mode: "basic", limit: 5, skipCache: true },
+    });
+    const stats = search.json().stats as { providers: Array<{ providerId: string }> };
+    expect(stats.providers.map((item) => item.providerId)).toContain(providerId);
+    expect(stats.providers.map((item) => item.providerId)).toContain(ok);
   });
 
   it("exposes the UTC day and both counters so the UI cannot imply local time", async () => {

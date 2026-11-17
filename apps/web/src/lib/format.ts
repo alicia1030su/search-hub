@@ -1,38 +1,60 @@
 /** Formatting and browser helpers. All user-facing labels come from i18n. */
-import { t } from "./i18n";
+import { getLocale, t } from "./i18n";
 
-const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-});
+/**
+ * Date/number formatters are rebuilt when the locale changes.
+ *
+ * A formatter built once for a fixed locale would keep Chinese date order in an
+ * English page — exactly the "half translated" result this task forbids.
+ * Formatting is cached per locale so re-rendering does not allocate a formatter
+ * per cell.
+ */
+const formatterCache = new Map<string, Intl.DateTimeFormat | Intl.NumberFormat>();
 
-const shortDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
+function dateTimeFor(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `dt:${getLocale()}:${JSON.stringify(options)}`;
+  const cached = formatterCache.get(key);
+  if (cached) return cached as Intl.DateTimeFormat;
+  const created = new Intl.DateTimeFormat(getLocale(), options);
+  formatterCache.set(key, created);
+  return created;
+}
 
-const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-});
+function numberFor(options: Intl.NumberFormatOptions = {}): Intl.NumberFormat {
+  const key = `n:${getLocale()}:${JSON.stringify(options)}`;
+  const cached = formatterCache.get(key);
+  if (cached) return cached as Intl.NumberFormat;
+  const created = new Intl.NumberFormat(getLocale(), options);
+  formatterCache.set(key, created);
+  return created;
+}
 
-const axisFormatter = new Intl.DateTimeFormat("zh-CN", {
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
+interface FormatterLike { format(value: Date): string }
+
+const dateTimeFormatter: FormatterLike = {
+  format: (value) => dateTimeFor({
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(value),
+};
+
+const shortDateTimeFormatter: FormatterLike = {
+  format: (value) => dateTimeFor({
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(value),
+};
+
+const timeFormatter: FormatterLike = {
+  format: (value) => dateTimeFor({
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(value),
+};
+
+const axisFormatter: FormatterLike = {
+  format: (value) => dateTimeFor({
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(value),
+};
 
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -78,7 +100,7 @@ export function fromDateTimeLocalValue(value: string): string | null {
 
 export function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  return new Intl.NumberFormat("zh-CN").format(value);
+  return numberFor().format(value);
 }
 
 export function formatPercent(ratio: number | null | undefined, digits = 1): string {

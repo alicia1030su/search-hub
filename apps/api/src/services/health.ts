@@ -22,7 +22,12 @@ import {
   searchEvents,
   type SearchHubDb,
 } from "@search-hub/db";
-import { getAdapter, getCatalogEntry } from "@search-hub/providers";
+import {
+  buildManifest,
+  getAdapter,
+  getCatalogEntry,
+  resolveSearchConfig,
+} from "@search-hub/providers";
 import { newId } from "../security/crypto.js";
 import type { Logger, SafeFetch } from "@search-hub/shared";
 import {
@@ -217,6 +222,7 @@ export class HealthService {
       maxPerDay: snapshot.maxPerDay,
       usedToday: snapshot.searchUsedToday,
       connectUsedToday: snapshot.connectUsedToday,
+      anonymousSearchUsedToday: snapshot.anonymousSearchUsedToday,
       remainingToday: snapshot.remainingToday,
       paidProbesEnabled: snapshot.paidProbesEnabled,
       scheduledEnabled: policy.scheduledEnabled,
@@ -243,6 +249,7 @@ export class HealthService {
     const kind = options.kind ?? "connect";
     const trigger = options.trigger ?? "manual";
     const policy = this.ctx.settings.get().health;
+    const catalogEntry = getCatalogEntry(row.type);
 
     // Resolve the credential, but do not treat its absence as "unhealthy":
     // without a key we simply cannot tell, and saying so is the honest answer.
@@ -284,14 +291,21 @@ export class HealthService {
     // if it cannot be recorded we refuse rather than spend money the budget has
     // no record of. Connectivity probes are counted too (separately) but are
     // not capped — capping them would leave the page unable to explain itself.
+    //
+    // A real search against a *keyless* source sends no credential, so it cannot
+    // consume the operator's account quota and must not require the paid switch:
+    // blocking it would make every public source permanently unverifiable. It is
+    // still counted in its own bucket — this code cannot know whether the vendor
+    // meters by IP, so it is counted, not assumed free.
+    const ledgerKind = kind === "search" && !adapter.requiresKey ? "search_anonymous" : kind;
     const reservation = this.budgetLedger.reserve({
-      kind,
+      kind: ledgerKind,
       paidProbesEnabled: policy.paidProbesEnabled,
       maxPerRun: policy.maxRequestsPerRun,
       maxPerDay: policy.maxRequestsPerDay,
     });
     if (!reservation.ok) {
-      if (kind === "search") {
+      if (kind === "search" && ledgerKind === "search") {
         if (reservation.reason === "paid_disabled") {
           throw new SearchHubError(
             "validation_error",
@@ -336,7 +350,16 @@ export class HealthService {
             breakerThreshold: row.breakerThreshold,
             breakerCooldownMs: row.breakerCooldownMs,
             config: safeJson(row.configJson),
-            search: safeJson(row.searchConfigJson) as never,
+            // The search path resolves the platform parameters into a concrete
+            // plan (`targetResults`, `maxPages`, `maxRequestsPerSearch`,
+            // `pageSize`). Passing the raw settings object here made every
+            // paginated adapter compute `Math.max(1, undefined) = NaN` pages,
+            // issue no request at all, and report `empty_results` — a healthy
+            // vendor marked degraded by the probe itself.
+            search: resolveSearchConfig(
+              catalogEntry ? buildManifest(catalogEntry) : buildManifest({ type: row.type } as never),
+              safeJson(row.searchConfigJson),
+            ),
           },
           signal: controller.signal,
           logger: this.ctx.appLogger,
@@ -364,7 +387,7 @@ export class HealthService {
             : "Endpoint answered but returned no results; treated as degraded, not healthy.",
         trigger,
         sample: result.results.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
-        spent: kind === "search" && reservation.ok,
+        spent: kind === "search" && ledgerKind === "search" && reservation.ok,
       });
       this.advanceSchedule(providerId, cause);
       return recorded;
@@ -372,10 +395,15 @@ export class HealthService {
       const latencyMs = this.clock() - started;
       const cause = classifyError(error);
       // A cancelled probe is not evidence about the source: it says the caller
-      // (or shutdown) stopped it. Recording it would degrade a provider for a
-      // reason it had no part in, so it is dropped and its budget returned.
+      // (or shutdown) stopped it, so nothing is recorded against the provider.
+      //
+      // Its budget is deliberately NOT refunded. A cancel can arrive after the
+      // request left the machine — the vendor may already have counted it — and
+      // this code cannot tell the two apart. Refunding on every cancel would let
+      // a client that aborts in a loop spend an unbounded number of paid requests
+      // while the ledger reports zero. Only a probe that provably never left
+      // (no credential, refused before the call) is refunded.
       if (cause === "cancelled") {
-        if (reservation.ok) this.budgetLedger.release(kind);
         throw new SearchHubError("cancelled", "The health probe was cancelled; nothing was recorded.");
       }
       const retryAfterMs = parseRetryAfterMs(
@@ -399,7 +427,7 @@ export class HealthService {
         message: error instanceof Error ? error.message : String(error),
         trigger,
         cooldownMs: cooldown ?? undefined,
-        spent: kind === "search" && reservation.ok,
+        spent: kind === "search" && ledgerKind === "search" && reservation.ok,
       });
       this.advanceSchedule(providerId, cause);
       return recorded;

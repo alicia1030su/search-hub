@@ -5,5 +5,21 @@ packages:
 allowBuilds:
   esbuild: true
 
+# One advisory is accepted rather than fixed, and it is listed here so that it
+# cannot be forgotten: GHSA-fc5q-39xc-vjpf (CVE-2026-112366), a ReDoS in
+# picomatch, reached through vite > tinyglobby > picomatch.
+#   - No patched release exists (the advisory lists vulnerable <= 4.0.7 and no
+#     patched version).
+#   - Every path is a devDependency of @search-hub/web or of vitest. The runtime
+#     image installs with `pnpm install --prod`, and the shipped web bundle is
+#     static output, so picomatch is absent at run time.
+#   - The vulnerable code path is glob matching of build-time paths, not of
+#     user-supplied input.
+# Any advisory not listed here still fails `pnpm audit --audit-level high`,
+# which CI runs on every push. Remove this entry once picomatch publishes a fix.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-fc5q-39xc-vjpf
+
 minimumReleaseAgeExclude:
   - "@fastify/cors@11.4.2"

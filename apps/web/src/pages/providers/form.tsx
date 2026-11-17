@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { AlertTriangle, FileJson, Loader2 } from "lucide-react";
 import { api, toApiError, type ApiError } from "../../lib/api";
 import { parseJsonObject, prettyJson } from "../../lib/format";
-import { keyStrategyLabels, freshnessLabels, providerAuthLabels, t, verificationLabels, implementationLabels } from "../../lib/i18n";
+import { keyStrategyLabel, freshnessLabel, providerAuthLabel, t, verificationLabel, implementationLabel } from "../../lib/i18n";
 import type {
   Freshness,
   GenericProviderConfig,
@@ -617,7 +617,7 @@ export function ProviderForm({
                 <div className="flex h-9 items-center gap-2 rounded-md border bg-muted/40 px-3 text-sm">
                   <span className="font-mono text-xs">{state.type}</span>
                   <Badge tone="outline">
-                    {implementationLabels[(selectedCatalog?.implementation ?? "builtin") as keyof typeof implementationLabels]}
+                    {implementationLabel((selectedCatalog?.implementation ?? "builtin") as keyof typeof implementationLabel)}
                   </Badge>
                 </div>
               ) : (
@@ -630,7 +630,7 @@ export function ProviderForm({
                   <option value="">{t("providers.form.type")}</option>
                   {createTypes.map((entry) => (
                     <option key={entry.type} value={entry.type}>
-                      {entry.name} · {implementationLabels[entry.implementation]}
+                      {entry.name} · {implementationLabel(entry.implementation)}
                     </option>
                   ))}
                 </Select>
@@ -642,9 +642,9 @@ export function ProviderForm({
             <div className="rounded-md border bg-muted/25 p-3 text-[11px] leading-relaxed text-muted-foreground">
               <p className="text-foreground">{selectedCatalog.description}</p>
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                <Badge tone="outline">{providerAuthLabels[selectedCatalog.authType]}</Badge>
+                <Badge tone="outline">{providerAuthLabel(selectedCatalog.authType)}</Badge>
                 <Badge tone={selectedCatalog.verification === "live_tested" ? "success" : "muted"}>
-                  {verificationLabels[selectedCatalog.verification]}
+                  {verificationLabel(selectedCatalog.verification)}
                 </Badge>
                 {selectedCatalog.docsUrl ? (
                   <a
@@ -913,7 +913,7 @@ export function ProviderForm({
               >
                 {freshnessOptions.map((option) => (
                   <option key={option || "none"} value={option}>
-                    {option === "" ? t("providers.freshness.null") : freshnessLabels[option as Freshness]}
+                    {option === "" ? t("providers.freshness.null") : freshnessLabel(option as Freshness)}
                   </option>
                 ))}
               </Select>
@@ -994,7 +994,7 @@ export function ProviderForm({
               >
                 {keyStrategies.map((strategy) => (
                   <option key={strategy} value={strategy}>
-                    {keyStrategyLabels[strategy]}
+                    {keyStrategyLabel(strategy)}
                   </option>
                 ))}
               </Select>

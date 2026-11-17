@@ -15,7 +15,7 @@ import {
 import { api } from "../lib/api";
 import { formatDateTime, formatMs, formatNumber, formatPercent, formatRange } from "../lib/format";
 import { useAsyncData, useDocumentTitle } from "../lib/hooks";
-import { keyStatusLabels, t } from "../lib/i18n";
+import { keyStatusLabel, t } from "../lib/i18n";
 import type { HealthOverview } from "../lib/types";
 import { StackedBar, TimelineChart } from "../components/charts";
 import { Table, TBody, TD, TH, THead, TR } from "../components/table";
@@ -89,27 +89,27 @@ export function DashboardPage() {
   const keySegments = data
     ? [
         {
-          label: keyStatusLabels.healthy,
+          label: keyStatusLabel("healthy"),
           value: data.keys.healthy,
           className: "bg-success",
         },
         {
-          label: keyStatusLabels.rate_limited,
+          label: keyStatusLabel("rate_limited"),
           value: data.keys.rateLimited,
           className: "bg-warning",
         },
         {
-          label: keyStatusLabels.cooldown,
+          label: keyStatusLabel("cooldown"),
           value: data.keys.cooldown,
           className: "bg-warning/55",
         },
         {
-          label: keyStatusLabels.invalid,
+          label: keyStatusLabel("invalid"),
           value: data.keys.invalid,
           className: "bg-destructive",
         },
         {
-          label: keyStatusLabels.disabled,
+          label: keyStatusLabel("disabled"),
           value: data.keys.disabled,
           className: "bg-muted-foreground/35",
         },

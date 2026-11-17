@@ -4,9 +4,9 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: 0.1.4 · public preview, not production-ready.**
+> **Status: v0.1.7-beta.2 · public preview, not production-ready.**
 >
-> Core search, key scheduling, admin UI, REST, MCP (both protocol eras) and Skills are implemented and covered by 471 automated tests. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave and SearXNG are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
+> Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache and the provider health centre are implemented and covered by **746 automated tests across 50 files**. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave, SearXNG and the rest are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
 >
 > Evidence and gaps: [Verification](#verification), [provider matrix](./docs/provider-matrix.md), [capability inventory](./docs/capability-inventory.md), [release readiness](./docs/release-readiness.md). Nothing untested is described as verified.
 
@@ -29,22 +29,41 @@ Search Hub packages that as a deployable service:
 | Capability | Status | Notes |
 |---|---|---|
 | Concurrent multi-source search + partial success | Implemented | Per-source timeout, global deadline, isolation, client cancellation |
-| Key pool scheduling (5 strategies) | Implemented | Atomic slot reservation; 100 concurrent requests cannot exceed the per-key limit |
+| Key pool scheduling (5 strategies) | Implemented | Atomic slot reservation with a bounded wait queue; 100 concurrent requests cannot exceed the per-key concurrency / RPM / daily quota |
 | 429 / 401 / 5xx handling | Implemented | 429 honours `Retry-After`; 401/403 suspends the key; 5xx backs off and trips a breaker |
 | URL canonicalization + dedupe + RRF | Implemented | All sources retained; RRF `k` configurable (default 60) |
-| Admin UI (light/dark, Chinese) | Implemented | Dashboard, sources, keys, models, search lab, integrations, settings, logs |
+| Admin UI (light/dark, Chinese + English) | Implemented | Dashboard, sources, keys, models, search lab, integrations, settings, logs; header language switcher, choice persisted |
 | REST + OpenAPI 3.1 | Implemented | `/api/openapi.json`, `/api/docs` |
 | MCP server | Implemented | 2026-07-28 modern envelope + 2025-11-25 handshake; Streamable HTTP and stdio |
 | Agent Skills | Implemented | Three `SKILL.md` packages |
 | AI summary / embedding / rerank | Implemented, optional | OpenAI-compatible, Anthropic, Gemini, Cohere/Jina-compatible, custom HTTP |
+| Result cache (SQLite, persistent) | Implemented | 1–72 h TTL; survives restart and container rebuild; LRU eviction at a byte cap; expired rows swept every 10 minutes |
+| Provider health centre | Implemented | Implementation verification kept separate from runtime state; connectivity probe (one minimal request) and paid search probe; durable, concurrency-safe budget; exponential backoff and automatic recovery; per-source switch and reset |
 | PostgreSQL | Not implemented | SQLite only; the data layer is isolated |
 | Redis multi-instance coordination | Not implemented | Single-process quota guarantees only |
+
+### Provider health centre
+
+"Configured" and "working" are different claims. This page keeps them apart:
+
+| Axis | Values |
+|---|---|
+| Implementation verification | `documented` / `mock_verified` / `live_tested` / `unverified` — how the adapter was validated. **A passing probe never upgrades it.** |
+| Runtime state | `healthy` / `degraded` / `rate_limited` / `quota_exceeded` / `invalid_credentials` / `permission_denied` / `cooldown` / `unknown` / `unverified` / `disabled` — whether this instance works right now |
+
+- **Two probe kinds.** A connectivity probe sends one minimal request and only proves that DNS, TLS and the credential can establish a session — for a source that needs a credential the request still carries it, so it is not advertised as free. A search probe calls the vendor's search endpoint; only that can claim "it can search right now". Completely keyless sources (HN / Crossref / OpenAlex / PubMed / arXiv / Wikipedia) can be verified with a real search without the paid switch, and are counted in their own bucket.
+- **Budget.** At most 3 search probes per run and 20 per day by default (adjustable, with hard caps). Counters live in the database, survive a restart, and cannot be exceeded by concurrent probes; if the reservation cannot be written, no request is made.
+- **Automatic recovery.** Transient failures retry sooner with exponential backoff; terminal failures wait for the normal interval. One failure never permanently disables a source, and a success returns it to `healthy`.
+- **Off by default.** Scheduled probing only runs once you enable it, within the interval and the budget.
+- **A source with no API key never reports healthy** — it reports `unverified`.
+
+Details: [docs/provider-health.md](./docs/provider-health.md).
 
 ## Supported providers
 
 **Implemented adapters (50 kinds)**
 
-The table below lists the representative ones; the full, generated list is [`docs/provider-matrix.md`](./provider-matrix.md), which CI keeps in sync with `packages/providers/src/catalog.ts`.
+The table below lists the representative ones; the full, generated list is [`docs/provider-matrix.md`](./docs/provider-matrix.md), which CI keeps in sync with `packages/providers/src/catalog.ts`.
 
 | Type | Auth | Notes | Verification |
 |---|---|---|---|
@@ -66,7 +85,72 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-> The catalog has 29 entries: 8 usable adapters, 12 planned, 2 without an official API, 7 generic gateway presets. This project does **not** claim support for 29 providers. Per-provider live-test gaps: [docs/provider-matrix.md](./docs/provider-matrix.md).
+## Download (v0.1.7-beta.2)
+
+Three shapes, one search core, one database model, one admin UI.
+
+| Platform | Download | Requirements |
+|---|---|---|
+| Windows x64 | [`search-hub-v0.1.7-beta.2-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
+| Linux x64 | [`search-hub-v0.1.7-beta.2-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-x64.tar.gz) | **None** (Node runtime bundled) |
+| Linux arm64 | [`search-hub-v0.1.7-beta.2-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-arm64.tar.gz) | **None** |
+
+Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
+
+> **v0.1.7-beta.2 closes out the health centre and the bilingual UI.** Keyless public sources
+> (Hacker News / Crossref / OpenAlex / PubMed / arXiv / Wikipedia) are no longer judged as
+> "no usable key", and can be verified with a real search without the paid switch. Probes now
+> use the resolved search plan, so paginated adapters no longer issue zero requests and get
+> recorded as `empty_results`. A cancelled probe no longer refunds its budget slot. Certificate
+> errors are classified as `tls` instead of `network`. The UI ships a complete en-US locale
+> (923 keys, type-enforced complete, persisted across reload, dates and numbers follow the
+> language). Eight failure modes — DNS, TLS, handshake, timeout, connection refused, HTML
+> masquerading as JSON, mid-flight cancel, redirect into a private address — are covered
+> through the real request path. See [CHANGELOG](./CHANGELOG.md).
+>
+> **v0.1.7-beta.1 rebuilt provider health management**: implementation verification (was it ever
+> really called?) and runtime state (can it be used now?) are fully separated; connectivity
+> probing (one minimal request) and real search probing are distinct, and the latter is off by
+> default and bounded by a durable budget (3 per run / 20 per day, not reset by a restart,
+> not exceedable by concurrency); transient failures retry sooner with exponential backoff and
+> recover automatically — one failure never permanently disables a source.
+>
+> **v0.1.6-beta.1** added the catalogue entries for the MiniMax and Metaso sources that beta.1
+> omitted, plus a `get_provider_health` MCP tool, dashboard health cards, health-aware
+> scheduling and a self-updater with automatic rollback.
+>
+> **v0.1.5-beta.1** introduced provider health monitoring: 401/403/429/quota classified
+> separately, keyless sources shown as `unverified` rather than healthy, and MCP protocol
+> versions reported from **measurement** — the current SDK does not support `2026-07-28`, and
+> the UI says so. See [MCP protocol measurement](./docs/mcp-protocol.md).
+>
+> **v0.1.4-beta.5 and earlier are superseded by a security update; please upgrade.** beta.5 has
+> a confirmed access-control defect: any API token could read and cancel another token's search
+> tasks (see the [beta.6 audit](./docs/beta6-audit.md)). beta.6 fixes it, along with five other
+> issues including fake Deep Search success, an incomplete cache key and disabled models still
+> being callable. Older downloads and tags are left untouched.
+
+**Windows**: unzip → double-click `SearchHub.exe` → the browser opens `http://127.0.0.1:8787`. The first-run setup token is written to `%LOCALAPPDATA%\SearchHub\setup-token`. `--service` runs it headless (a closed Windows Server session does not stop it); `--status / --stop / --logs / --autostart` are documented in the bundled README.txt.
+
+**Linux**:
+
+```bash
+mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.2-linux-x64.tar.gz -C search-hub
+cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
+```
+
+For long-running use, the package ships `search-hub.service` (non-root, `ProtectSystem=strict`, data in `/var/lib/search-hub`).
+
+**Docker**:
+
+```bash
+docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.2    # prerelease tag, no leading v
+docker compose up -d                                        # or build from source
+```
+
+Differences between the standalone packages and the three shapes: [docs/standalone-packages.md](./docs/standalone-packages.md).
+
+> Release artefacts are unpacked and started on real Windows and Linux (x64 / arm64) and run through the same acceptance: health check → first-run initialisation → REST search → MCP initialize/tools.list/tools.call → database and master key on disk → stop → restart with data intact. Before publishing, every asset is downloaded again and its SHA256 checked.
 
 ## Quick start
 
@@ -97,6 +181,7 @@ corepack pnpm install
 corepack pnpm build      # web bundle + server bundle (dist/server.mjs)
 corepack pnpm dev        # API :8787 + Vite :5173
 corepack pnpm test       # unit + integration
+corepack pnpm start      # run the compiled artefact (production shape)
 ```
 
 Requires Node ≥ 22.12 (`better-sqlite3` 13, Vite 8) and pnpm 12.
@@ -173,9 +258,11 @@ Mapping is declarative and restricted to safe dotted paths; no user code is exec
 
 ## Security defaults
 
-- First-run setup requires a real administrator password; no default credentials. Optional `SEARCH_HUB_SETUP_TOKEN`.
+- First-run setup requires a real administrator password and a one-time setup token (generated into `data/setup-token`, or supplied via `SEARCH_HUB_SETUP_TOKEN`), so an exposed port cannot be claimed by someone else.
+- Every non-health request validates the Host header — IP literals, `localhost`, the `SEARCH_HUB_PUBLIC_URL` host, and `SEARCH_HUB_ALLOWED_HOSTS` — which blocks DNS rebinding.
 - Admin API uses an HttpOnly session cookie with a CSRF header on every mutation; external integrations use revocable, scoped, rate-limited bearer tokens.
-- Every outbound request passes SSRF protection: DNS classification, connect-time `lookup` filtering, manual redirect re-validation, and a metadata blocklist. Internal services require an explicit admin allowlist.
+- Every outbound request passes SSRF protection: DNS classification, connect-time `lookup` filtering, manual per-hop redirect re-validation; loopback, private, link-local, CGNAT and cloud-metadata addresses are refused by default. IPv4-mapped IPv6 (`[::ffff:127.0.0.1]`) is covered too.
+- **Proxied egress has an explicit trust boundary**: only `SEARCH_HUB_OUTBOUND_PROXY` enables a proxy (environment variables such as `HTTPS_PROXY` are never read implicitly), and `SEARCH_HUB_OUTBOUND_PROXY_TRUST` defaults to `untrusted`, in which case private targets are refused even when allowlisted. The app still validates every hop, but the target resolves at the proxy; the residual DNS-rebinding risk is covered by the `trusted-networks` declaration plus the proxy egress policy. See [SECURITY.md](./SECURITY.md).
 - Logs redact `authorization`, `cookie`, `apiKey`, `password`, and `token`; keys never appear in API responses, exports, or logs.
 - Retrieved content is always passed to models as untrusted data, with an explicit boundary and injection pattern detection.
 - Production responses carry CSP, `X-Frame-Options: DENY`, `nosniff`, and related headers.
@@ -186,19 +273,25 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- 471 unit/integration tests covering the three quota tiers (concurrency/RPM/daily), a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- **746 unit/integration tests across 50 files**, covering the three quota tiers (concurrency/RPM/daily) and their peaks, a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- **Persistent cache — 23 cases** (`tests/integration/cache.test.ts`) **plus 3 migration cases** (`tests/unit/cache-migration.test.ts`): hits, isolation, TTL expiry, automatic sweep, survival across restart, concurrency, capacity eviction, response validation, credential isolation. TTL is checked with an injected clock, not by sleeping.
+- **Provider health centre — 35 cases** (`tests/integration/provider-health-center.test.ts`): off by default, no-key ⇒ `unverified`, both probe kinds, cause classification, budget concurrency/restart/overrun, backoff and recovery, one dead key, in-flight de-duplication, shutdown cleanup, no key leakage, permissions, reset, the cache never faking health, cancel not refunding, multiple keys on one shared account quota, and MCP/REST sharing the same gate. Injected clocks and controlled scheduling; no real waiting. The "paid" source in these tests is a local Brave contract server with a real key — no vendor is ever called.
+- **Credential classes — 6 cases** (`tests/integration/credential-classes.test.ts`): the catalogue and adapters agree on which sources take a key; a key-required source with no key is `unverified`; a keyless source probed against a local HN-wire-format stub can report `healthy`; `/api/health` stops counting keyless sources as unusable; a source needing its own instance URL is a configuration problem.
+- **Real network failures — 8 cases** (`tests/integration/network-failures.test.ts`): DNS resolution failure, a self-signed certificate, TLS against a plaintext port, a closed port, a server that never answers until the deadline, HTML where JSON is expected, an abort mid-flight, and a redirect into a private address. Every case goes through the real safe-fetch path — no mock objects carrying error strings.
+- **i18n parity — 5 cases** (`tests/unit/i18n-parity.test.ts`): full key coverage, no CJK in English values, identical placeholders, no empty values, no hardcoded zh-CN formatter.
 - A 16-row acceptance matrix (PASS 11 / PARTIAL 4 / BLOCKED 1) generated from `docs/ac-matrix.json`: [docs/ac-matrix.md](./docs/ac-matrix.md).
-- `tests/scripts/smoke.sh`: setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize.
-- Playwright: first-run, login, add source, search lab, theme, settings, integrations.
+- Scripts: `smoke.sh` (setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize), `live-search.mjs` (real HN search, REST/MCP parity), `mcp-live.mjs` (official client, both transports), `leak-scan.mjs` (response/DB/log triple scan), `clean-install.mjs` (production install into a clean directory).
+- Playwright **18 cases**: first-run (including the setup token), login, add source, search lab, theme, settings, integrations, the "not implemented" catalogue marker, and a language switch that leaves no Chinese in `<main>` and survives a reload.
 
 **Not verified (requires credentials or infrastructure)**
 
 - Brave: no subscription key; no live call to `api.search.brave.com`.
 - SearXNG: no self-hosted instance.
+- Docker: **locally** the Docker engine is unavailable (WSL is blocked by policy); **remotely** GitHub Actions builds the image and runs the 11-item container acceptance (24/24, see the Docker workflow under Actions). The two are not interchangeable.
 - AI / embedding / rerank: no vendor keys; request/response contracts tested against local mock servers only.
 - Multi-instance: Redis coordination is not implemented; quotas are guaranteed per process.
 
-These limits are repeated in [docs/testing.md](./docs/testing.md) and release notes.
+These limits are repeated in [docs/testing.md](./docs/testing.md) and the release notes.
 
 ## Known limitations
 
@@ -207,6 +300,7 @@ These limits are repeated in [docs/testing.md](./docs/testing.md) and release no
 - **No persistent vector index** — embeddings re-score results within one request.
 - **No multi-tenancy** — one administrator, no team permissions.
 - **In-process rate limiting** — multiple replicas would each enforce their own limits.
+- **Health probing is per instance** — the budget ledger is a SQLite table, so two replicas keep two ledgers.
 
 ## Layout
 
@@ -227,9 +321,11 @@ tests             unit / integration / e2e / scripts
 ## Testing
 
 ```bash
-pnpm test                    # Vitest: unit + integration
-pnpm build && pnpm test:e2e  # Playwright
+pnpm test                    # Vitest: unit + integration (746 cases)
+pnpm build && pnpm test:e2e  # Playwright (18 cases)
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
+node tests/scripts/leak-scan.mjs        # secret leak scan, starts its own instance
+node tests/scripts/mcp-live.mjs --url http://127.0.0.1:8787 --token sh_xxx
 ```
 
 Layers, coverage, and gaps: [docs/testing.md](./docs/testing.md).

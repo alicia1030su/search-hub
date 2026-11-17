@@ -18,9 +18,42 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (724 tests, 48 files)
+## What is covered (746 tests, 50 files)
 
-**Provider health management** — `tests/integration/provider-health-center.test.ts` (32 cases)
+**Credential classes** — `tests/integration/credential-classes.test.ts` (6 cases)
+
+- The catalogue and every adapter agree on which sources take a key: the six
+  public ones declare `authType: none` and `requiresKey: false`, and `brave` /
+  `tavily` declare the opposite.
+- A key-required source with no key is `unverified`, never healthy.
+- A keyless source is probed for real (a local stub serving the HN wire format),
+  can report healthy, is listed as `ready`, and is counted by `/api/health`
+  instead of inflating a "no key" failure.
+- A source that needs its own instance (SearXNG without a base URL) is a
+  configuration problem, not a keyless success.
+
+**Real network failures** — `tests/integration/network-failures.test.ts` (8 cases)
+
+Every case opens a real socket or deliberately fails to; nothing asserts on a
+hand-written error string:
+
+- `.invalid` hostname → real resolver failure → `dns`
+- self-signed certificate on a local HTTPS server → `tls` (the OpenSSL code is
+  found in the wrapped cause chain)
+- TLS against a plaintext port → handshake never completes
+- closed port → `network`
+- server that accepts and never answers → the request deadline really fires
+- HTML where JSON is expected → `bad_response`, never healthy
+- abort mid-flight → `cancelled`, no cooldown
+- redirect into a private address → refused by the guard before connecting
+
+**i18n parity** — `tests/unit/i18n-parity.test.ts` (5 cases) plus the browser
+switch test in `tests/e2e/admin.spec.ts`: full key coverage, zero CJK in the
+English values, identical `{{placeholders}}`, no empty strings, no hardcoded
+zh-CN formatter, and a real switch → reload → switch-back cycle that asserts no
+Chinese remains in `<main>`.
+
+**Provider health management** — `tests/integration/provider-health-center.test.ts` (35 cases)
 
 - Implementation verification and runtime health are independent: a green probe does not
   upgrade `documented`/`mock_verified`, and the panel shows both.

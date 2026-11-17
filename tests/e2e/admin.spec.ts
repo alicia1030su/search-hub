@@ -409,6 +409,58 @@ test.describe("Search Hub 管理后台端到端", () => {
     }
   });
 
+  test("v0.1.7 语言切换覆盖全站并在刷新后保持", async ({ page }) => {
+    // The shared E2E database is set up once by the first test in this file, so
+    // this one signs in rather than trying to run setup again.
+    await login(page);
+
+    // Default is Chinese: assert copy that only exists in the zh dictionary.
+    await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible();
+    const switcher = page.getByTestId("locale-switcher");
+    await expect(switcher).toHaveValue("zh-CN");
+
+    // Switch to English and verify several *different* pages, not just the nav:
+    // a dictionary that only covers the sidebar would pass a nav-only check.
+    await switcher.selectOption("en-US");
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Sources" })).toBeVisible();
+
+    await page.goto("/providers");
+    await expect(page.getByRole("heading", { name: "Search sources", exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add source" })).toBeVisible();
+
+    await page.goto("/lab");
+    await expect(page.getByRole("heading", { name: "Search lab" })).toBeVisible();
+    await expect(page.getByLabel("Query")).toBeVisible();
+
+    await page.goto("/integrations");
+    await expect(page.getByRole("heading", { name: "Integrations" })).toBeVisible();
+
+    await page.goto("/settings");
+    await expect(page.getByRole("heading", { name: "Settings", exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Search cache")).toBeVisible();
+
+    // No Chinese left in the page content. Scoped to <main> on purpose: the
+    // header legitimately contains the locale's own name ("简体中文") and the
+    // administrator's display name, neither of which is UI copy. Everything a
+    // user reads to operate this page lives in <main>.
+    const mainText = await page.locator("main").innerText();
+    const cjk = /[\u4e00-\u9fff]/;
+    expect(mainText, `Chinese text still visible in /settings: ${mainText.slice(0, 300)}`).not.toMatch(cjk);
+
+    // Persistence: a real reload keeps English.
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Settings", exact: true }).first()).toBeVisible();
+    await expect(page.getByTestId("locale-switcher")).toHaveValue("en-US");
+
+    // And switching back restores Chinese, including after another reload.
+    await page.getByTestId("locale-switcher").selectOption("zh-CN");
+    await expect(page.getByRole("heading", { name: "设置", exact: true }).first()).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "设置", exact: true }).first()).toBeVisible();
+    await expect(page.getByTestId("locale-switcher")).toHaveValue("zh-CN");
+  });
+
   test("v0.1.4 深色主题下搜索源页仍可读", async ({ page }) => {
     await login(page);
     await page.goto("/providers");

@@ -1,6 +1,7 @@
-# Search Hub 架构设计（v0.1.1 事实基线）
+# Search Hub 架构设计（v0.1.1 基线 + v0.1.7-beta.2 增量）
 
 > 本文在 v0.1.1 按**仓库实际代码**重写了对账表。历史版本中的 E-1…E-6 / D-1…D-6 待裁决项均已落地或有结论，不再作为"偏离"保留。
+> v0.1.4–v0.1.7-beta.2 的增量（持久化缓存、健康管理中心、双语界面、发布来源证明）见 [§11](#11-v016--v017-增量缓存健康中心与-i18n)。§8 中已被后续版本实现的三项（U8 / U12 / U14）已就地更正，保留原条目编号以便对照。
 > 标注约定：`【已实现】`＝仓库内可运行且被测试覆盖；`【未实现】`＝不在本期，不得对外声称支持；`【待联调】`＝代码就绪但缺真实凭证/实例。
 > 版本已与 `pnpm-lock.yaml` 核对：fastify 5.12.8、better-sqlite3 13.1.1、drizzle-orm 0.45.4、vite 8.3.8、react 19.3.1、tailwind 4.3.5、zod 4.6.7、undici 8.12.4、typescript 5.9.3、@modelcontextprotocol/server 2.4.0、node ≥22.12。
 
@@ -354,13 +355,13 @@ v0.1.1 的调度分两步：
 | U5 | 大 Key 池（rpm > 2000 或 Key > 500） | **未验证** | `window` 数组用 `slice` 修剪，O(n) 重建；GC 压力随 rpm 增长 | 按 `rpm ≤ 2000` 设计并加断言；超限需改分桶计数 |
 | U6 | 崩溃时额度状态恢复精度 | **未验证** | 见 R-01 | 启动校准 + 风险接受决策 |
 | U7 | 100 并发下 SQLite 写入阻塞 | **未验证** | better-sqlite3 同步 I/O 可能抬 p99 | dirty 批量 flush + 索引约束 + p99 压测门禁 |
-| U8 | 能力目录真实可用性 | **口径已修正** | `catalog.ts` 28 条元数据、**已实现 7 个**（Tavily / Bocha / Brave / SearXNG / Hacker News / Generic HTTP / Mock） | UI 分「已实现/仅目录」；对外只说 7 个源 |
+| U8 | 能力目录真实可用性 | **口径已修正（v0.1.7 复核）** | `catalog.ts` 58 条元数据、**50 个 builtin 适配器**、7 个 generic 预设、1 个无官方接口；`live_tested` 仅 4 个（Hacker News / Crossref / OpenAlex / PubMed） | UI 分「已实现 / 仅目录 / 无官方接口」；对外只说 50 个适配器、4 个已联调。数字由 `scripts/generate-provider-matrix.mjs` 生成、`check:docs` 与 `check:matrix` 双重门禁 |
 | U9 | 工具链版本 | **TS 正确，Node 略低** | 仓库锁 `typescript@5.9.3`（正确，npm latest 是 7.0.2）；但 `engines.node>=22.11` 低于 `vite@8`/`vitest@5` 要求的 **22.12** | 改 `engines.node>=22.12.0`；升级 TS 7 需单开分支验证 drizzle 类型推导 |
 | U10 | MCP 集成方式 | **已实现但与基线不同** | 用的是 v2 包 `@modelcontextprotocol/server@2.4.0` 的 `createMcpHandler().fetch(Request)` → 手工转 Node req/res（**不再需要 reply.hijack**）；基线写的 sdk@1.32.2 `handleRequest` 路线不可复用 | 已可行（`tsc` 通过）；但每次请求要**缓冲整个响应体**，SSE 不可用（R-06）。若要 SSE，改用 `@modelcontextprotocol/node` 的 `toNodeHandler(handler.fetch)` + `reply.hijack()` `【待验证】` |
 | U11 | zod 与 MCP tool schema | **已规避** | 仓库用 zod 4.6.7；v2 server 包声明 `zod ^4.2.0`，原生 v4 schema | 保持；需补一条 `tools/list` 快照测试断言 inputSchema 正确 |
-| U12 | 结果缓存 / 语义去重 | **未实现**（PM Q6 明确不允许缓存） | 延迟=实时上游；同内容不同 URL 不合并 | Phase 3 |
+| U12 | 结果缓存 / 语义去重 | **已实现（v0.1.7-beta.1）**；语义去重仍不做 | `search_cache` 表按「查询指纹 + 源集合 + 语言 + 时效 + limit + 深度」缓存 1–72 小时，重启与容器重建后仍在；容量上限按字节触发 LRU 淘汰，后台每 10 分钟清理过期。语义去重（内容指纹、向量相似度、跨域等价）仍未实现 | 见 §11.1；`tests/integration/cache.test.ts` 23 项 |
 | U13 | 迁移 checksum 校验 | **未实现**（`_migrations` 只存 name+applied_at） | 迁移文件被改后无法检测，可能静默执行不一致 schema | 加 checksum 列并拒启动（约 0.5 人日） |
-| U14 | Provider 契约测试 | **未实现**（`packages/providers/testing` 不存在） | 4 个适配器行为靠人工；新增源无回归保护 | Phase 1 必须补，见 §4 契约测试 |
+| U14 | Provider 契约测试 | **已实现（v0.1.4 起）** | 50 个适配器均有契约测试（`tests/unit/providers*.test.ts`），断言请求形状、鉴权注入、错误码映射与结果映射；新增源若不加测试，`check:matrix` 与 CI 会拦住。**契约测试不等于联调**：它证明代码路径，不碰厂商 | 未落地的部分：`packages/providers/testing` 这个公共测试包不存在，测试仍写在 `tests/` 内 |
 | U15 | 单实例启动断言 | **未实现** | 若有人 `pm2 -i 2` 或多副本部署，**额度守护静默失效** | 启动检测锁文件 + 文档硬性禁止 |
 
 **去重口径（已实现）**：`packages/shared/src/url.ts` 的 `normalizeUrl()` 做小写 scheme/host、去默认端口、去 `www.`、剔跟踪参数（`utm_`/`pk_`/`mtm_`/`hsa_`）、排序 query、去 fragment/尾斜杠。两层去重（`core/fusion/fuse.ts`）：`exact_url` 基于规范化 URL；`near_title` 基于标题分词 Jaccard 相似度（**这是"近似去重"，不等于语义去重**）。**不做**：跨域等价（`m.` 与桌面版）、内容指纹、向量相似度（U12）。
@@ -374,7 +375,7 @@ v0.1.1 的调度分两步：
 背景：各源 score 量纲不可比（BM25 / 相关性分 / 无分数）。决定：只用源内排名（`RawSearchResult` 数组下标 +1），`score = Σ 1/(k+rank_i)`，等权、k 可配（`fuse.ts` 中 60 为论文原值）。后果：无法表达"某源更重要"（加权留 Phase 4）；RRF 对输入顺序不敏感、可手算、可断言。替代：分数归一化（否决，需假设分布、不可复算）；ML 排序（否决，无标注数据）。
 
 **ADR-003 Provider 是进程内插件，不是外部进程**
-背景：需覆盖长尾源（Generic HTTP 声明式映射）。决定：统一 `SearchProviderAdapter` + 注册表（`packages/providers/src/registry.ts` 注册 5 个 builtin）；适配器只能经注入的 `ctx.fetch`（SafeFetch）出网；能力目录与实现分离。后果：适配器与主进程共享事件循环与内存，一个死循环会拖垮全服务，故适配器内禁止 CPU 密集与同步阻塞（lint + code review）。替代：每适配器独立进程/沙箱（否决，部署复杂度与 Phase 1 目标冲突）。
+背景：需覆盖长尾源（Generic HTTP 声明式映射）。决定：统一 `SearchProviderAdapter` + 注册表（`packages/providers/src/registry.ts` 当前注册 50 个 builtin）；适配器只能经注入的 `ctx.fetch`（SafeFetch）出网；能力目录与实现分离。后果：适配器与主进程共享事件循环与内存，一个死循环会拖垮全服务，故适配器内禁止 CPU 密集与同步阻塞（lint + code review）。替代：每适配器独立进程/沙箱（否决，部署复杂度与 Phase 1 目标冲突）。
 
 **ADR-004 MCP 用 per-request 工厂，stdio 走 REST 代理**
 背景：PM Q3 要求双通道同口径；单进程无会话粘滞。决定：**实际实现**基于 `@modelcontextprotocol/server@2.4.0` 的 `createMcpHandler(factory, { responseMode: "json", legacy: "stateless" })`——每次 HTTP 请求由工厂新建 `McpServer`（即基线要的"无状态 per-request"语义，只是 API 名字不同）；`/mcp` 路由把 Node 请求转成 Web `Request` 调 `handler.fetch()`，再把 `Response` 写回。stdio 由 `serveStdio()` 起独立进程，经 `RestSearchPort` 转发到本机 REST，不复制搜索逻辑。后果：无跨请求会话状态（不需要）；stdio 依赖 REST 可用（关掉 REST，stdio 必须失败——反作弊 R6 的判据）。替代：有状态会话 Map（否决，需清理且单进程无收益）；stdio 直连 core（否决，会产生第二套行为）。
@@ -411,3 +412,71 @@ v0.1.1 的调度分两步：
 | D-4 MCP 依赖 | 固定为 `@modelcontextprotocol/server@2.4.0`，现代/传统双协议均被测试覆盖。 |
 | D-5 100 并发 | 原子占额 + 有界等待队列，等待者由 release 唤醒；超时返回 `queue_timeout`。 |
 | D-6 崩溃恢复 | 接受"启动校准 + 披露"；`SIGTERM` 优雅关闭会 checkpoint/关闭 SQLite；`kill -9` 不构成硬保证。 |
+
+## 11. v0.1.6 – v0.1.7 增量：缓存、健康中心与 i18n
+
+这一节记录 v0.1.1 基线之后新增的三块结构，只写**已实现**的部分，未实现的仍然在 §8。
+
+### 11.1 持久化结果缓存（v0.1.7-beta.1）
+
+| 项 | 事实 |
+|---|---|
+| 表 | `search_cache(cache_key PK, response_json, status, mode, created_at, expires_at, last_accessed_at, size_bytes, hit_count)`，`expires_at` 与 `last_accessed_at` 各有索引（后者供 LRU）；`search_cache_metrics` 按 UTC 小时桶记 `hits/misses/expired_removed/evicted`，`search_cache_state` 存跨重启的清扫水位与累计值 |
+| 键 | `CacheService.buildKey()` 对**全部能改变响应内容的输入**做 SHA-256：`v`（键版本盐）+ 查询 + `mode` + `capability` + 排序后的源指纹（含配置版本与凭证版本）+ `limit` + `perProviderLimit` + `timeoutMs` + 语言 + 时效 + `rerank/embedding/summarize` 开关 + 各模型指纹 + 当前被健康门禁停用的源列表。凭证不进键值本身，但凭证版本进指纹——换 Key 会生成新键 |
+| 两个人为例外 | `includeRaw: true` 完全绕开缓存（读写都不做），否则会把上游原始调试数据写入库并交给下一个调用方；`skipCache: true` 只跳过读，仍可写 |
+| TTL | `CACHE_MIN_TTL_SECONDS = 3600`、`CACHE_MAX_TTL_SECONDS = 259200`（1–72 小时）。`enabled: false` 时 TTL 只能是 0 或 ≥ 1 小时，中间值抛 `validation_error` 而不是静默夹取 |
+| 容量 | `DEFAULT_CACHE_LIMITS` = 5000 条 / 256 MB（`size_bytes` 是 `response_json` 的 UTF-8 字节数，不是字符串长度），超限在事务内按 `last_accessed_at` 淘汰 |
+| 清理 | `CACHE_SWEEP_INTERVAL_MS` = 10 分钟后台扫描过期行；进程退出前停止 |
+| 只缓存完整成功 | `isCacheable()` 要求 `status === "completed"`、`errors` 为空、`stats.partial` 为假、`failedSources` 为空、未被取消、能通过一次 `JSON.stringify`。`partial` / `failed` / 取消一律不写——否则一次网络抖动会被固化 24 小时。**零结果的成功搜索会缓存**：「网上确实没有」也是可重复的答案 |
+| 命中不伪造健康 | 命中时重新套用当前健康门禁：被 park 的源补进 `errors` 与 `failedSources`，`status` 从 `completed` 降为 `partial`，`search_tasks` 也按 `partial` 记账，避免把降级响应记成成功 |
+| 缓存不是依赖 | 读缓存抛错（行损坏、库被锁、磁盘满）只记 warn 并继续真实搜索；把缓存故障变成 500 会让优化项成为单点 |
+
+### 11.2 Provider 健康管理中心（v0.1.7-beta.1）
+
+三层概念，**代码里是三个独立类型，不允许互相赋值**：
+
+| 层 | 类型 | 来源 | 谁能改 |
+|---|---|---|---|
+| 实现验证 | `ImplementationStatus` = `documented` / `mock_verified` / `live_tested` / `unverified` / `no_official_api` | `packages/providers/src/catalog.ts` 常量 | 只有人改目录，探测**永不**写 |
+| 存储状态 | `HealthStatus`（4 值：`healthy` / `degraded` / `unhealthy` / `unverified`） | `provider_health_checks` 行 | 探测写入 |
+| 派生运行状态 | `RuntimeHealth`（11 值） | `runtimeHealthFor()` 由存储状态 + 分类原因 + 凭证池 + 冷却期算出 | 不落库，每次读时计算 |
+
+关键约束（都有测试守着）：
+
+- **门禁原因只有两个**：`GATING_CAUSES = {quota_exceeded, auth_invalid}`。一次超时、一次 5xx、一次 429 限流都不会让源从搜索中消失。
+- **无 Key 且需要 Key** ⇒ `unverified`，在请求离开进程之前就返回，且 `spent: false`（预算不扣）。
+- **完全无 Key 的源**（`authType: none` 且 `requiresKey: false`）走 `search_anonymous` 账本桶，可以绕过付费开关做真实搜索验证；它被**计数**，不被宣称为免费——厂商是否按 IP 计量在本仓库内不可知。
+- **探测使用解析后的搜索计划**：`resolveSearchConfig(buildManifest(catalogEntry), searchConfigJson)`，而不是把原始设置直接塞给适配器。否则 `pagination` 会算出 `Math.max(1, undefined) = NaN` 页，发出 0 个请求却记录 `empty_results`。
+- **取消不退款**：取消可能发生在请求已经离开本机之后，退款会让「取消循环」无限消耗付费额度而账本显示为 0。只有**可证明未发出**的探测才退款。
+- **错误分类看 cause 链**：safe-fetch 把 socket 错误包进 `SearchHubError("network")`，OpenSSL 的判决在第 3 层 cause，`classifyCauseChain()` 只从 cause 链恢复 `tls` / `dns` 两种，避免把 429 猜成网络问题。分类结果决定冷却时间（TLS 30 分钟 vs 网络 20 秒）。
+
+预算与调度：
+
+| 项 | 事实 |
+|---|---|
+| 账本表 | `health_probe_budget(day, kind, used, updated_at)`，`kind` ∈ `connect` / `search` / `search_anonymous`；主键 `(day, kind)`，UTC 日界 |
+| 扣减 | `UPDATE ... SET used = used + 1 WHERE used < :max`，受影响行数为 0 即拒绝；写不进账本就不发请求 |
+| 回填 | `ensureSeed()` 在升级当天从已有 `provider_health_checks` 回填，避免升级后凭空多给一天额度 |
+| 调度状态 | `provider_probe_state(auto_probe_enabled, consecutive_failures, backoff_level, next_probe_at, reset_at)` |
+| 退避 | 瞬时失败 `min(interval, 60s × 2^(level-1))` + ±20% 抖动，下限 15 秒；终态失败等正常间隔；成功清零 |
+| 生命周期 | 调度器有 `ticking` / `stopped` 守卫，`unref()` 不阻止进程退出，关机时先停调度再关数据库 |
+
+### 11.3 双语界面（v0.1.7-beta.2）
+
+| 项 | 事实 |
+|---|---|
+| 词典 | `apps/web/src/lib/i18n-zh.ts`（`as const`，923 键，`MessageKey = keyof typeof zh`）与 `i18n-en.ts`（`Record<MessageKey, string>`） |
+| 完整性 | 英文缺一个键就**编译失败**，不是运行时回退成中文；`tests/unit/i18n-parity.test.ts` 再加一道键覆盖/占位符/无 CJK/无空值检查 |
+| 运行时 | `getLocale()` / `setLocale()` / `subscribeLocale()` / `localeVersion()`，`localStorage` 键 `sh.locale`，`document.documentElement.lang` 同步；`useSyncExternalStore` 驱动 `useLocale()` |
+| 为什么标签是函数不是常量 | 模块级常量表在 import 时求值，语言切换后不会更新；`keyStatusLabel()` / `searchModeLabel()` / `categoryLabel()` 每次调用现取当前词典 |
+| 格式化 | `dateTimeFor()` / `numberFor()` 按 locale 缓存 `Intl` 实例；源码里不允许出现硬编码 zh-CN 格式化器 |
+| 服务端文案 | API 错误返回稳定的 `code` + 英文 `message`，界面按 `code` 取本地化文案；不把英文句子直接显示给中文用户 |
+
+### 11.4 发布来源证明（v0.1.7-beta.2）
+
+`release.yml` 在发布 job 上用 `actions/attest-build-provenance@v3.0.0` 对三类资产签名，权限收紧为
+`contents: write` / `packages: write` / `id-token: write` / `attestations: write`。发布后由
+`gh attestation verify --repo <repo> --format json` 逐一校验。**SHA256 与 provenance 分开报告**：
+前者证明「字节没被换」，后者证明「是哪个工作流、哪个 commit 构建的」，任一失败都不宣称可信。
+
+未实现：Windows 代码签名与 Linux 发行版签名包；多架构镜像合并清单的独立签名。

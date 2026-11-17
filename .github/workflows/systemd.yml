@@ -95,7 +95,7 @@ jobs:
           docker exec sh-systemd bash -lc '
             set -euo pipefail
             apt-get update -qq >/dev/null
-            apt-get install -y -qq curl tar >/dev/null
+            apt-get install -y -qq curl tar jq >/dev/null
 
             mkdir -p /opt/search-hub
             tar -xzf /pkgs/search-hub-v0.9.0-ci-linux-x64.tar.gz -C /opt/search-hub
@@ -161,6 +161,104 @@ jobs:
             systemctl status search-hub --no-pager | head -10
             echo "--- unit properties ---"
             systemctl show search-hub -p User -p Restart -p NoNewPrivileges
+
+            # ---------------------------------------------------------------
+            # Health scheduler under systemd
+            #
+            # Everything below drives the real unit. The point is the things a
+            # CLI-level test cannot show: that a restart neither loses the probe
+            # schedule nor the budget, that a stopped unit really stops probing,
+            # and that an upgrade + rollback does not reset the daily counter.
+            # ---------------------------------------------------------------
+            echo "--- health scheduler: setup ---"
+            TOKEN=$(cat /var/lib/search-hub/setup-token 2>/dev/null || true)
+            if [ -z "$TOKEN" ]; then echo "FAIL: setup token missing"; exit 1; fi
+            BASE=http://127.0.0.1:8787
+            COOKIE=/tmp/sh-cookies.txt
+            rm -f "$COOKIE"
+
+            setup=$(curl -sS -c "$COOKIE" -o /tmp/setup.json -w "%{http_code}" \
+              -H "content-type: application/json" \
+              -d "{\"email\":\"admin@example.com\",\"password\":\"A-very-long-password-1\",\"name\":\"Admin\",\"setupToken\":\"$TOKEN\"}" \
+              "$BASE/api/setup")
+            [ "$setup" = "200" ] || { echo "FAIL: setup returned $setup"; cat /tmp/setup.json; exit 1; }
+            CSRF=$(jq -r .csrfToken /tmp/setup.json)
+            auth=(-b "$COOKIE" -H "x-csrf-token: $CSRF" -H "content-type: application/json")
+
+            # A keyless provider: its probes must work with paid probing OFF, so
+            # a failure here is a health bug, not a budget refusal.
+            curl -sS "${auth[@]}" -o /tmp/prov.json \
+              -d "{\"name\":\"sched-probe\",\"type\":\"mock\",\"enabled\":true,\"timeoutMs\":5000,\"maxRetries\":0,\"config\":{\"resultCount\":2}}" \
+              "$BASE/api/admin/providers"
+            PRV=$(jq -r .provider.id /tmp/prov.json)
+            [ -n "$PRV" ] && [ "$PRV" != "null" ] || { echo "FAIL: provider not created"; cat /tmp/prov.json; exit 1; }
+
+            # 7-day interval so the first probe is the only one this job sees:
+            # every later assertion then measures persistence instead of timing.
+            curl -sS "${auth[@]}" -o /tmp/policy.json -X PUT \
+              -d "{\"scheduledEnabled\":true,\"intervalMinutes\":10080,\"paidProbesEnabled\":false,\"maxRequestsPerRun\":3,\"maxRequestsPerDay\":20}" \
+              "$BASE/api/admin/provider-health/settings"
+            jq -e ".policy.scheduledEnabled == true" /tmp/policy.json >/dev/null || { echo "FAIL: policy not saved"; cat /tmp/policy.json; exit 1; }
+
+            echo "waiting for the first scheduled probe (tick is 60s)"
+            PROBED=0
+            for i in $(seq 1 45); do
+              curl -sS -b "$COOKIE" -o /tmp/health.json "$BASE/api/admin/provider-health"
+              CONNECT=$(jq -r ".budget.connectUsedToday" /tmp/health.json)
+              if [ "${CONNECT:-0}" -ge 1 ]; then PROBED=1; break; fi
+              sleep 2
+            done
+            [ "$PROBED" = "1" ] || { echo "FAIL: no scheduled probe ran within 90s"; cat /tmp/health.json; exit 1; }
+            NEXT_BEFORE=$(jq -r ".providers[0].nextProbeAt" /tmp/health.json)
+            CHECKED_BEFORE=$(jq -r ".providers[0].lastCheckedAt" /tmp/health.json)
+            CONNECT_BEFORE=$(jq -r ".budget.connectUsedToday" /tmp/health.json)
+            RUNTIME_BEFORE=$(jq -r ".providers[0].runtime" /tmp/health.json)
+            echo "before restart: connect=$CONNECT_BEFORE runtime=$RUNTIME_BEFORE next=$NEXT_BEFORE checked=$CHECKED_BEFORE"
+            [ "$NEXT_BEFORE" != "null" ] || { echo "FAIL: nextProbeAt was not persisted"; exit 1; }
+
+            echo "--- health scheduler: restart keeps schedule and budget ---"
+            systemctl restart search-hub
+            for i in $(seq 1 30); do curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break; sleep 2; done
+            sleep 3
+            curl -sS -b "$COOKIE" -o /tmp/health2.json "$BASE/api/admin/provider-health"
+            NEXT_AFTER=$(jq -r ".providers[0].nextProbeAt" /tmp/health2.json)
+            CHECKED_AFTER=$(jq -r ".providers[0].lastCheckedAt" /tmp/health2.json)
+            CONNECT_AFTER=$(jq -r ".budget.connectUsedToday" /tmp/health2.json)
+            echo "after restart: connect=$CONNECT_AFTER next=$NEXT_AFTER checked=$CHECKED_AFTER"
+            [ "$NEXT_AFTER" = "$NEXT_BEFORE" ] || { echo "FAIL: nextProbeAt changed across restart ($NEXT_BEFORE -> $NEXT_AFTER)"; exit 1; }
+            [ "$CHECKED_AFTER" = "$CHECKED_BEFORE" ] || { echo "FAIL: a probe was re-run immediately after restart"; exit 1; }
+            [ "${CONNECT_AFTER:-0}" -ge "${CONNECT_BEFORE:-0}" ] || { echo "FAIL: budget counter went backwards"; exit 1; }
+
+            echo "--- health scheduler: a stopped unit does not probe ---"
+            systemctl stop search-hub
+            if systemctl is-active --quiet search-hub; then echo "FAIL: still active after stop"; exit 1; fi
+            sleep 70
+            systemctl start search-hub
+            for i in $(seq 1 30); do curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break; sleep 2; done
+            sleep 2
+            curl -sS -b "$COOKIE" -o /tmp/health3.json "$BASE/api/admin/provider-health"
+            CONNECT_AFTER_STOP=$(jq -r ".budget.connectUsedToday" /tmp/health3.json)
+            echo "after stop/start: connect=$CONNECT_AFTER_STOP"
+            [ "${CONNECT_AFTER_STOP:-0}" -le $((CONNECT_AFTER + 1)) ] || { echo "FAIL: probes ran while the unit was stopped"; exit 1; }
+
+            echo "--- health scheduler: upgrade + rollback keeps the daily budget ---"
+            PKG2=/pkgs/search-hub-v0.9.9-linux-x64.tar.gz
+            SHA2=$(sha256sum "$PKG2" | awk "{print \$1}")
+            SIZE2=$(stat -c%s "$PKG2")
+            set +e
+            SEARCH_HUB_SYSTEMD_UNIT=search-hub \
+            /opt/search-hub/bin/update --package "$PKG2" --version 0.9.9 \
+              --sha256 "$SHA2" --size "$SIZE2" --root /opt/search-hub --data /var/lib/search-hub --port 8787
+            CODE2=$?
+            set -e
+            [ "$CODE2" = "3" ] || { echo "FAIL: expected rollback exit 3 on the second upgrade, got $CODE2"; exit 1; }
+            for i in $(seq 1 30); do curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break; sleep 2; done
+            curl -sS -b "$COOKIE" -o /tmp/health4.json "$BASE/api/admin/provider-health"
+            CONNECT_FINAL=$(jq -r ".budget.connectUsedToday" /tmp/health4.json)
+            DAY_FINAL=$(jq -r ".budget.day" /tmp/health4.json)
+            echo "after rollback: connect=$CONNECT_FINAL day=$DAY_FINAL"
+            [ "${CONNECT_FINAL:-0}" -ge "${CONNECT_AFTER:-0}" ] || { echo "FAIL: rollback reset the daily budget"; exit 1; }
+            echo "PASS health scheduler under systemd (connect=$CONNECT_BEFORE->$CONNECT_FINAL day=$DAY_FINAL)"
           '
 
       - name: Container logs on failure

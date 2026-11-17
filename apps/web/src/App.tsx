@@ -3,6 +3,7 @@ import { Loader2, PlugZap, RotateCcw } from "lucide-react";
 import { AppShell } from "./components/app-shell";
 import { Button, Card, CardContent } from "./components/ui";
 import { useAuth } from "./lib/session";
+import { useLocale } from "./lib/hooks";
 import { t } from "./lib/i18n";
 import { SetupPage, LoginPage } from "./pages/auth";
 import { DashboardPage } from "./pages/dashboard";
@@ -118,6 +119,11 @@ function AppRoutes() {
 }
 
 export function App() {
+  // Subscribing at the root means a language switch re-renders the whole tree,
+  // including the pre-login screens. `t()` reads the locale at render time, so a
+  // re-render is all that is needed — no dictionary has to be threaded through
+  // props.
+  useLocale();
   return (
     <BrowserRouter>
       <AppRoutes />

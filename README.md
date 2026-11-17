@@ -4,9 +4,9 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：0.1.4 · 公开预览（Public Preview），不是 production-ready。**
+> **状态：v0.1.7-beta.2 · 公开预览（Public Preview），不是 production-ready。**
 >
-> 核心搜索、Key 池调度、管理后台、REST API、MCP（双协议）与 Skills 已实现并通过 572 个自动化测试。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 仅按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存与搜索源健康管理中心均已实现，并通过 **746 个自动化测试（50 个文件）**。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
 > 逐项证据与缺口见[验证状态](#验证状态)、[Provider 状态矩阵](./docs/provider-matrix.md)、[能力清单](./docs/capability-inventory.md) 与[发布就绪报告](./docs/release-readiness.md)。未联调的能力不会被描述为“已验证”。
 
@@ -32,13 +32,14 @@ Search Hub 把这些做成一个可部署的服务：
 | Key 池调度（5 种策略） | 已实现 | 原子占额 + 有界等待队列；100 并发下每 Key 并发 / RPM / 日配额均不被突破 |
 | 429 / 401 / 5xx 差异处理 | 已实现 | 429 按 `Retry-After` 冷却；401/403 暂停 Key；5xx 指数退避 + 熔断 |
 | URL 规范化 + 去重 + RRF | 已实现 | 保留全部来源；RRF k 可配，默认 60 |
-| 管理后台（浅/深色、中文） | 已实现 | 仪表盘、搜索源、Key、模型、搜索实验室、集成、设置与日志 |
+| 管理后台（浅/深色、中英双语） | 已实现 | 仪表盘、搜索源、Key、模型、搜索实验室、集成、设置与日志；header 语言切换，选择持久化 |
 | REST API + OpenAPI 3.1 | 已实现 | `/api/openapi.json` 与 `/api/docs` |
 | MCP Server | 已实现 | 2026-07-28 现代协议 + 2025-11-25 传统握手；Streamable HTTP + stdio |
 | Agent Skills | 已实现 | 3 个 `SKILL.md`，遵循 agentskills.io 结构 |
 | AI 摘要 / Embedding / Rerank | 已实现（可选） | OpenAI 兼容 / Anthropic / Gemini / Cohere-Jina 兼容 / custom-http |
 | 结果缓存（SQLite 持久化） | 已实现 | 1–72 小时可配；重启/容器重建后仍有效；容量上限自动 LRU 淘汰，后台每 10 分钟清理过期 |
-| 搜索源健康管理中心 | 已实现 | 实现验证状态与运行状态分离；免费连接探测 / 付费真实搜索探测；预算持久化且并发安全；指数退避自动恢复；单源开关与重置 |
+| 中英文界面 | 已实现 | zh-CN 为默认，en-US 完整覆盖；语言选择持久化，日期/数字跟随语言 |
+| 搜索源健康管理中心 | 已实现 | 实现验证状态与运行状态分离；连接探测（一次最小请求）/ 真实搜索探测（会消耗额度，默认关闭）；预算持久化且并发安全；指数退避自动恢复；单源开关与重置 |
 | PostgreSQL | 未实现 | 当前仅 SQLite；接口已隔离，见[已知限制](#已知限制) |
 | Redis 多实例协调 | 未实现 | 单进程额度保证；多实例方案见架构文档 |
 
@@ -51,8 +52,10 @@ Search Hub 把这些做成一个可部署的服务：
 | 实现验证 `documented` / `mock_verified` / `live_tested` / `unverified` | 这个适配器当初怎么被验证的。**一次探测成功不会升级它** |
 | 运行状态 `healthy` / `degraded` / `rate_limited` / `quota_exceeded` / `invalid_credentials` / `permission_denied` / `cooldown` / `unknown` / `unverified` / `disabled` | 这个实例现在能不能用 |
 
-- **两种探测**：连接探测免费，只证明端点和凭证能建立会话；真实搜索探测会调用厂商付费
-  接口，只有它拿到结果才能说"现在能搜到"。
+- **两种探测**：连接探测发一次最小请求，只证明端点和凭证能建立会话（对需要凭证的源，
+  这次请求同样带凭证，所以不宣称"一定免费"）；真实搜索探测会调用厂商搜索接口，只有它
+  拿到结果才能说"现在能搜到"。完全无需凭证的源（HN / Crossref / OpenAlex / PubMed /
+  arXiv / Wikipedia）可以不经付费开关直接做真实搜索验证，并单独计数。
 - **预算**：每轮最多 3 次、每日最多 20 次真实搜索探测（可调，但有硬上限）。计数存在
   数据库里，重启不重置，并发探测也不会突破；写不进账本就不发请求。
 - **自动恢复**：瞬时失败按指数退避尽快重试，终态失败等正常间隔；一次失败永远不会永久
@@ -101,20 +104,29 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.7-beta.1）
+## 下载安装（v0.1.7-beta.2）
 
 三种形态，同一套搜索核心、数据库模型与管理后台。
 
 | 平台 | 下载 | 需要什么 |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.7-beta.1-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/search-hub-v0.1.7-beta.1-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | [`search-hub-v0.1.7-beta.1-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/search-hub-v0.1.7-beta.1-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
-| Linux arm64 | [`search-hub-v0.1.7-beta.1-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/search-hub-v0.1.7-beta.1-linux-arm64.tar.gz) | **无** |
+| Windows x64 | [`search-hub-v0.1.7-beta.2-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | [`search-hub-v0.1.7-beta.2-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
+| Linux arm64 | [`search-hub-v0.1.7-beta.2-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/search-hub-v0.1.7-beta.2-linux-arm64.tar.gz) | **无** |
 
-校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.2/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
 
+> **v0.1.7-beta.2 是健康管理与双语界面的收尾版本**：无 Key 的公开源（Hacker News /
+> Crossref / OpenAlex / PubMed / arXiv / Wikipedia）不再被判为「没有可用 Key」，可不经
+> 付费开关做真实搜索验证；探测改用解析后的搜索计划，分页源不再发出 0 请求却被记为
+> `empty_results`；取消的探测不再退还预算；证书错误分类从 `network` 修正为 `tls`；
+> 界面完整支持 en-US（923 个词条强制齐全，刷新后保持，日期与数字跟随语言）；
+> DNS / TLS / 握手 / 超时 / 连接拒绝 / HTML 冒充 JSON / 中途取消 / 重定向进私网
+> 八类故障经**真实网络请求链路**验证；发布产物附带构建来源证明，发布后用
+> `gh attestation verify` 校验。详见 [CHANGELOG](./CHANGELOG.md)。
+>
 > **v0.1.7-beta.1 重建了搜索源健康管理**：实现验证状态（是不是真的联调过）与运行状态
-> （现在能不能用）彻底分离；免费连接探测与付费真实搜索探测分开，付费默认关闭并受
+> （现在能不能用）彻底分离；连接探测（一次最小请求）与真实搜索探测分开，后者默认关闭并受
 > 持久化预算约束（每轮 3 / 每日 20，重启不重置，并发也突破不了）；瞬时失败按指数退避
 > 快速重试并自动恢复，单次失败不会永久禁用任何源。详见[健康管理中心](./docs/provider-health.md)。
 >
@@ -122,7 +134,7 @@ Search Hub 把这些做成一个可部署的服务：
 > 并新增 `get_provider_health` MCP 工具、仪表盘健康卡片、健康感知调度与带自动回滚的程序更新器。
 >
 > **v0.1.5-beta.1 新增搜索源健康监控。** 搜索源不再只靠"配置了就算能用"：
-> 连接探测（免费）与真实搜索探测（付费，默认关闭）分开，401/403/429/余额不足分类处理，
+> 连接探测（一次最小请求）与真实搜索探测（消耗额度，默认关闭）分开，401/403/429/余额不足分类处理，
 > 无凭证的源显示 `unverified` 而不是健康。MCP 协议版本按**实测**报告——当前 SDK 不支持
 > `2026-07-28`，界面会如实显示为不支持。详见 [MCP 协议实测](./docs/mcp-protocol.md)。
 >
@@ -138,7 +150,7 @@ Search Hub 把这些做成一个可部署的服务：
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.1-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.2-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -147,7 +159,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.1    # 预发布镜像，不带 v 前缀
+docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.2    # 预发布镜像，不带 v 前缀
 docker compose up -d                                        # 或从源码构建
 ```
 
@@ -281,18 +293,21 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **724 项**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试 **746 项 / 50 个文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 持久化缓存 **23 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
-- 健康管理中心 **32 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、6 类错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、MCP 与 REST 同一门禁。全部使用注入时钟与可控调度，无真实等待、无真实付费调用。
+- 健康管理中心 **35 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、取消不退款、多 Key 共享账户额度、MCP 与 REST 同一门禁。使用注入时钟与可控调度，无真实等待；「付费」源是本地 Brave 契约服务 + 真实 Key，不调用任何厂商。
+- 凭证类型判断 **6 项**（`tests/integration/credential-classes.test.ts`）：六个公开源声明 `authType: none` 且 `requiresKey: false`；需 Key 无 Key 判 `unverified`；无 Key 源用本地 HN 线格式桩真实探测可判 `healthy`；`/api/health` 不再把无 Key 源算成不可用；需实例地址的源按配置缺失处理。
+- 真实网络故障 **8 项**（`tests/integration/network-failures.test.ts`）：DNS 解析失败、自签证书、明文端口做 TLS、端口关闭、服务端不响应直到 deadline、HTML 冒充 JSON、请求中途取消、重定向进私网。全部经 safe-fetch 真实链路，不开 Mock。
+- 中英文一致性 **5 项**（`tests/unit/i18n-parity.test.ts`）：键全覆盖、英文值无 CJK、占位符一致、无空值、`format.ts` 无硬编码 zh-CN 格式化。
 - 验收矩阵 **16 项**（PASS 11 / PARTIAL 4 / BLOCKED 1），由 `docs/ac-matrix.json` 自动生成，见 [docs/ac-matrix.md](./docs/ac-matrix.md)。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
-- Playwright 覆盖首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注。
+- Playwright **18 项**：首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注，以及语言切换后全站无中文残留并在刷新后保持。
 
 **未验证（需要真实凭证或环境）**
 
 - Brave：没有订阅 Key，且本机网络到 `api.search.brave.com` 超时，未发起真实请求。
 - SearXNG：没有自建实例；公共实例在本机网络不可达，未联调。
-- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** GitHub Actions 已完成镜像构建与 11 项容器验收（24/24，run 43582011942），两者不要混为一谈。
+- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** GitHub Actions 已完成镜像构建与 11 项容器验收（24/24，见 Actions 的 Docker 工作流），两者不要混为一谈。
 - AI 模型、Embedding、Rerank：没有真实厂商 Key，仅用本地模拟服务验证请求/响应契约。
 - 多实例部署：未实现 Redis 协调，当前仅保证单进程额度。
 
@@ -325,7 +340,7 @@ tests              unit / integration / e2e / scripts
 ## 测试
 
 ```bash
-pnpm test                 # Vitest：单元 + 集成（471 项）
+pnpm test                 # Vitest：单元 + 集成（746 项）
 pnpm build && pnpm test:e2e
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 node tests/scripts/leak-scan.mjs        # 密钥泄漏扫描（自起临时实例）

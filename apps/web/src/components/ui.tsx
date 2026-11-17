@@ -15,7 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { classNames as cn } from "../lib/format";
-import { keyStatusLabels, searchStatusLabels } from "../lib/i18n";
+import { keyStatusLabel, searchStatusLabel } from "../lib/i18n";
 import type { KeyStatus, SearchStatus } from "../lib/types";
 
 /* ---- button ------------------------------------------------------------- */
@@ -272,7 +272,7 @@ const keyStatusTones: Record<KeyStatus, BadgeTone> = {
 };
 
 export function KeyStatusBadge({ status }: { status: KeyStatus }) {
-  return <Badge tone={keyStatusTones[status]}>{keyStatusLabels[status]}</Badge>;
+  return <Badge tone={keyStatusTones[status]}>{keyStatusLabel(status)}</Badge>;
 }
 
 const searchStatusTones: Record<SearchStatus, BadgeTone> = {
@@ -284,7 +284,7 @@ const searchStatusTones: Record<SearchStatus, BadgeTone> = {
 };
 
 export function SearchStatusBadge({ status }: { status: SearchStatus }) {
-  return <Badge tone={searchStatusTones[status]}>{searchStatusLabels[status]}</Badge>;
+  return <Badge tone={searchStatusTones[status]}>{searchStatusLabel(status)}</Badge>;
 }
 
 /* ---- feedback ----------------------------------------------------------- */
