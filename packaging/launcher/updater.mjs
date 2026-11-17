@@ -307,6 +307,62 @@ function waitHealthy(port, expectedVersion, timeoutMs = 60_000) {
   return { ok: false, stale: false };
 }
 
+/**
+ * Puts the previous program back after a failed backup or install and starts it.
+ *
+ * The service is already stopped at this point, so returning without doing this
+ * would turn "the update was refused" into "the instance is down" — the operator
+ * asked for an upgrade, not an outage. `installProgram` restores the old tree
+ * itself on a failed copy, so this only has to handle the cases where it could
+ * not (and where the manifest was already stamped).
+ */
+function recoverPrevious({
+  launcher,
+  dataDir,
+  port,
+  currentVersion,
+  appDir,
+  previous,
+  manifests,
+  workRoot,
+  version,
+}) {
+  if (previous && existsSync(previous)) {
+    try {
+      rollbackProgram({ appDir, previous });
+      log("previous program tree restored after the failed install");
+    } catch (error) {
+      log(`could not restore the previous program tree: ${String(error)}`);
+    }
+  }
+  if (manifests.length > 0) {
+    try {
+      restoreManifests(manifests);
+    } catch (error) {
+      log(`could not restore the manifest: ${String(error)}`);
+    }
+  }
+
+  startService(launcher, dataDir, port);
+  const probe = waitHealthy(port, currentVersion);
+  mkdirSync(workRoot, { recursive: true });
+  writeFileSync(
+    join(workRoot, "last-update.json"),
+    JSON.stringify(
+      { version, from: currentVersion, at: new Date().toISOString(), ok: false, rollback: "install_failed" },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  if (probe.ok) {
+    log(`the previous version is serving again (${currentVersion}); nothing was changed`);
+    return true;
+  }
+  log("CRITICAL: the previous version did not come back; this instance needs manual attention");
+  return false;
+}
+
 async function main() {
   const root = resolve(arg("root") ?? join(HERE, ".."));
   const packagePath = arg("package");
@@ -347,18 +403,40 @@ async function main() {
 
   // ---- 3. Back up, then install ---------------------------------------
   const schemaBefore = readSchemaVersion(join(dataDir, "search-hub.db"));
-  const backup = backupCurrent({ dataDir, appDir, backupRoot: join(workRoot, "backups") });
-  log(`backup written to ${backup.path} (schema ${String(schemaBefore)})`);
+  let previous = null;
+  let manifests = [];
+  let backup = null;
+  try {
+    backup = backupCurrent({ dataDir, appDir, backupRoot: join(workRoot, "backups") });
+    log(`backup written to ${backup.path} (schema ${String(schemaBefore)})`);
 
-  const { previous } = installProgram({ stagingDir: stagedApp, appDir });
-  // The manifest is part of the program's identity: the server reads its version
-  // from launcher.json, so leaving the old value behind makes a successful
-  // upgrade report the previous version — and the health check would then reject
-  // the build it just installed. The original bytes are kept so a rollback can
-  // put back exactly what was there.
-  const manifests = snapshotManifests(root);
-  stampVersion(root, version);
-  log(`program installed as ${version}; previous tree kept at ${previous}`);
+    ({ previous } = installProgram({ stagingDir: stagedApp, appDir }));
+    // The manifest is part of the program's identity: the server reads its version
+    // from launcher.json, so leaving the old value behind makes a successful
+    // upgrade report the previous version — and the health check would then reject
+    // the build it just installed. The original bytes are kept so a rollback can
+    // put back exactly what was there.
+    manifests = snapshotManifests(root);
+    stampVersion(root, version);
+    log(`program installed as ${version}; previous tree kept at ${previous}`);
+  } catch (error) {
+    // The service is already stopped. A failed backup or install must not leave
+    // the instance down: put the previous program back and start it again, so a
+    // refused update is a no-op for the operator rather than an outage.
+    log(`install failed: ${String(error)}`);
+    const recovered = recoverPrevious({
+      launcher,
+      dataDir,
+      port,
+      currentVersion,
+      appDir,
+      previous,
+      manifests,
+      workRoot,
+      version,
+    });
+    return recovered ? 3 : 4;
+  }
 
   // ---- 4. Start and verify --------------------------------------------
   startService(launcher, dataDir, port);

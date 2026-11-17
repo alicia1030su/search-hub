@@ -19,9 +19,12 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   statSync,
@@ -120,9 +123,9 @@ function runUpdater(root, pkg, overrides = {}) {
     "--root",
     root,
     "--data",
-    join(root, "data"),
+    overrides.data ?? join(root, "data"),
     "--port",
-    String(PORT),
+    String(overrides.port ?? PORT),
   ];
   const child = spawn(process.execPath, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   const output = [];
@@ -156,6 +159,28 @@ async function processesOn(port) {
   } catch {
     return 0;
   }
+}
+
+/** The version the process on the port reports, or null when nothing answers. */
+async function boundVersion() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/health`);
+    if (!res.ok) return null;
+    const body = await res.json();
+    return typeof body.version === "string" ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Waits until the port answers with the given version (or gives up). */
+async function waitForVersion(version, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await boundVersion()) === version) return true;
+    await sleep(500);
+  }
+  return false;
 }
 
 const roots = [];
@@ -193,31 +218,35 @@ try {
   }
 
   PORT = nextPort();
-  // C) install cannot complete: the install root is read-only, so the swap fails
+  // C) install cannot complete
   {
     const root = makeRoot();
     roots.push(root);
     const pkg = makePackage("healthy", "0.2.9");
     const before = snapshotData(root);
     const appDir = join(root, "app");
-    // Making the *directory* unwritable does not block a rename (rename needs the
-    // parent), so the injection has to remove write access from the parent.
-    if (!IS_WINDOWS) execFileSync("chmod", ["-w", root]);
-    const run = await runUpdater(root, pkg, { version: "0.2.9" });
-    if (!IS_WINDOWS) execFileSync("chmod", ["+w", root]);
+    let release = () => {};
     if (IS_WINDOWS) {
-      // Windows has no equivalent mode bit for directories; assert the invariant
-      // that matters: either the update succeeded or a runnable program is left.
-      const ok =
-        run.code === 0 ||
-        readFileSync(join(appDir, "apps", "api", "dist", "server.mjs"), "utf8").length > 0;
-      check("C install failure leaves a runnable program", ok, `exit=${run.code}`);
+      // Windows has no directory mode bit, so the injection has to be the real
+      // cause of a failed swap: an open handle inside `app` makes the rename
+      // fail with EBUSY, exactly as a still-running server would.
+      const open = openSync(join(appDir, "apps", "api", "dist", "server.mjs"), "r");
+      release = () => closeSync(open);
     } else {
-      check("C install failure is reported", run.code !== 0, `exit=${run.code}`);
-      check("C data untouched", dataIntact(root, before));
-      // The old program must still be there: no half-swapped install.
-      check("C old program still present", existsSync(join(appDir, "apps", "api", "dist", "server.mjs")));
+      // Making the *directory* unwritable does not block a rename (rename needs
+      // the parent), so the injection has to remove write access from the parent.
+      execFileSync("chmod", ["-w", root]);
+      release = () => execFileSync("chmod", ["+w", root]);
     }
+    const run = await runUpdater(root, pkg, { version: "0.2.9" });
+    release();
+    check("C install failure is reported", run.code !== 0, `exit=${run.code}`);
+    check("C data untouched", dataIntact(root, before));
+    // The old program must still be there: no half-swapped install.
+    check("C old program still present", existsSync(join(appDir, "apps", "api", "dist", "server.mjs")));
+    // A refused install must not leave the instance down: the previous build has
+    // to be serving again, with its own version, not the failed one.
+    check("C previous version is serving again", await waitForVersion("0.1.0"), `got ${await boundVersion()}`);
   }
 
   PORT = nextPort();
@@ -311,36 +340,54 @@ try {
     check("G data directory has no half-written files", existsSync(join(root, "data", "master.key")));
   }
 
-  // H) no free space (Linux only): install into a full tmpfs
+  // H) no free space (Linux only): extract the package onto a full filesystem
   if (!IS_WINDOWS && process.env["FAULT_SKIP_DISK"] !== "1") {
     const root = makeRoot();
     roots.push(root);
-    const pkg = makePackage("healthy");
-    const before = snapshotData(root);
+    const pkg = makePackage("healthy", "0.2.8");
     const mount = join(root, "tinydisk");
     mkdirSync(mount, { recursive: true });
-    let mounted = false;
-    try {
-      execFileSync("mount", ["-t", "tmpfs", "-o", "size=64k", "tmpfs", mount], { stdio: "ignore" });
-      mounted = true;
-    } catch {
-      check("H disk-full case skipped (no mount permission in this environment)", true, "documented");
-    }
-    if (mounted) {
+    // A plain runner often needs sudo for `mount`; a privileged container does not.
+    const tryMount = (command, args) => {
       try {
-        // Copy the program onto the tiny filesystem and make it the install root.
-        execFileSync("cp", ["-r", join(root, "app"), join(mount, "app")], { stdio: "ignore" });
+        execFileSync(command, args, { stdio: "ignore" });
+        return true;
       } catch {
-        /* filling the filesystem is the point */
+        return false;
       }
-      const run = await runUpdater(root, pkg);
-      check("H survives a full filesystem", run.code !== 0 || dataIntact(root, before), `exit=${run.code}`);
-      check("H data untouched", dataIntact(root, before));
-      try {
-        execFileSync("umount", [mount], { stdio: "ignore" });
-      } catch {
-        /* best effort */
-      }
+    };
+    const mounted =
+      tryMount("mount", ["-t", "tmpfs", "-o", "size=512k", "tmpfs", mount]) ||
+      tryMount("sudo", ["-n", "mount", "-t", "tmpfs", "-o", "size=512k", "tmpfs", mount]);
+    if (!mounted) {
+      check("H disk-full case skipped (mount not permitted here)", true, "documented, not a pass");
+    } else {
+      // The updater extracts into <data>/updates/staging. Pointing --data at a full
+      // filesystem is the honest injection: the real failure is ENOSPC mid-extract,
+      // not a simulated error code.
+      const tinyData = join(mount, "data");
+      mkdirSync(tinyData, { recursive: true });
+      copyFileSync(join(root, "data", "search-hub.db"), join(tinyData, "search-hub.db"));
+      copyFileSync(join(root, "data", "master.key"), join(tinyData, "master.key"));
+      const snapshotTiny = {
+        db: sha(readFileSync(join(tinyData, "search-hub.db"))),
+        key: readFileSync(join(tinyData, "master.key"), "utf8"),
+      };
+      const run = await runUpdater(root, pkg, { version: "0.2.8", data: tinyData });
+      check("H full filesystem is reported, not hidden", run.code !== 0, `exit=${run.code}`);
+      check(
+        "H data on the full filesystem untouched",
+        sha(readFileSync(join(tinyData, "search-hub.db"))) === snapshotTiny.db &&
+          readFileSync(join(tinyData, "master.key"), "utf8") === snapshotTiny.key,
+      );
+      // Either the program was never swapped, or it was swapped and rolled back.
+      check(
+        "H a runnable program is still installed",
+        existsSync(join(root, "app", "apps", "api", "dist", "server.mjs")),
+      );
+      check("H previous version still serves", await waitForVersion("0.1.0"), `got ${await boundVersion()}`);
+      const unmounted = tryMount("umount", [mount]) || tryMount("sudo", ["-n", "umount", mount]);
+      if (!unmounted) console.log("  note  tmpfs left mounted at", mount);
     }
   }
 } finally {
