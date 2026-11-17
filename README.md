@@ -101,18 +101,23 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.6-beta.1）
+## 下载安装（v0.1.7-beta.1）
 
 三种形态，同一套搜索核心、数据库模型与管理后台。
 
 | 平台 | 下载 | 需要什么 |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.6-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.6-beta.1/search-hub-v0.1.6-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | [`search-hub-v0.1.6-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.6-beta.1/search-hub-v0.1.6-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
-| Linux arm64 | [`search-hub-v0.1.6-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.6-beta.1/search-hub-v0.1.6-linux-arm64.tar.gz) | **无** |
+| Windows x64 | [`search-hub-v0.1.7-beta.1-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/search-hub-v0.1.7-beta.1-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | [`search-hub-v0.1.7-beta.1-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/search-hub-v0.1.7-beta.1-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
+| Linux arm64 | [`search-hub-v0.1.7-beta.1-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/search-hub-v0.1.7-beta.1-linux-arm64.tar.gz) | **无** |
 
-校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.6-beta.1/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.1/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
 
+> **v0.1.7-beta.1 重建了搜索源健康管理**：实现验证状态（是不是真的联调过）与运行状态
+> （现在能不能用）彻底分离；免费连接探测与付费真实搜索探测分开，付费默认关闭并受
+> 持久化预算约束（每轮 3 / 每日 20，重启不重置，并发也突破不了）；瞬时失败按指数退避
+> 快速重试并自动恢复，单次失败不会永久禁用任何源。详见[健康管理中心](./docs/provider-health.md)。
+>
 > **v0.1.6-beta.1 补上了 MiniMax / 秘塔三个搜索源的目录条目**（beta.1 遗漏，市场里看不到），
 > 并新增 `get_provider_health` MCP 工具、仪表盘健康卡片、健康感知调度与带自动回滚的程序更新器。
 >
@@ -133,7 +138,7 @@ Search Hub 把这些做成一个可部署的服务：
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.6-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.1-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -142,7 +147,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.6-beta.1    # 预发布镜像，不带 v 前缀
+docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.1    # 预发布镜像，不带 v 前缀
 docker compose up -d                                        # 或从源码构建
 ```
 
