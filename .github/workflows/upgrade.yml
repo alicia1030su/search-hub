@@ -90,119 +90,14 @@ jobs:
         shell: bash
         env:
           FAULT_PORT: "8930"
+          # No mount permission on the runner; the disk-full case reports a skip
+          # rather than a pass.
+          FAULT_SKIP_DISK: ${{ matrix.os == 'windows-latest' && '1' || '0' }}
         run: node packaging/launcher/updater-faults.mjs
 
       - name: Updater install and rollback
         shell: bash
         run: node packaging/launcher/updater-test.mjs
-
-  systemd:
-    name: systemd service lifecycle (real systemd)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@v6.1.1
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build the Linux package
-        env:
-          PACKAGE_TARGET: linux-x64
-        run: node packaging/build-package.mjs
-
-      # GitHub's ubuntu runner is a container without a running init, so
-      # `systemctl` there would either fail or be a fake. A privileged Docker
-      # container with systemd as PID 1 is the real thing.
-      - name: Run the package under systemd in an isolated container
-        run: |
-          set -euo pipefail
-          docker run --rm --privileged --cgroupns=host \
-            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-            -v "$PWD:/work:ro" \
-            -e SEARCH_HUB_SETUP_TOKEN=systemd-test-token \
-            jrei/systemd-ubuntu:24.04 \
-            bash -lc '
-              set -euo pipefail
-              apt-get update -qq >/dev/null
-              apt-get install -y -qq curl tar >/dev/null
-
-              # Install the package exactly as the README says.
-              mkdir -p /opt/search-hub
-              tar -xzf /work/dist/package/search-hub-v0.1.6-linux-x64.tar.gz -C /opt/search-hub
-              useradd --system --home /var/lib/search-hub --shell /usr/sbin/nologin search-hub || true
-              mkdir -p /var/lib/search-hub
-              chown -R search-hub: /var/lib/search-hub /opt/search-hub
-
-              cp /opt/search-hub/search-hub.service /etc/systemd/system/search-hub.service
-              systemctl daemon-reload
-              systemctl enable --now search-hub
-
-              echo "--- after start ---"
-              systemctl is-active search-hub
-              for i in $(seq 1 60); do
-                if curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1; then break; fi
-                sleep 2
-              done
-              curl -fsS http://127.0.0.1:8787/api/health | head -c 200
-              echo
-
-              echo "--- restart ---"
-              systemctl restart search-hub
-              sleep 5
-              systemctl is-active search-hub
-              curl -fsS http://127.0.0.1:8787/api/health >/dev/null && echo "health after restart: ok"
-
-              echo "--- stop ---"
-              systemctl stop search-hub
-              systemctl is-active search-hub || echo "inactive as expected"
-              if curl -fsS --max-time 3 http://127.0.0.1:8787/api/health >/dev/null 2>&1; then
-                echo "FAIL: service still answering after systemctl stop"; exit 1
-              fi
-
-              echo "--- start again, then upgrade via the shipped updater ---"
-              systemctl start search-hub
-              sleep 5
-              systemctl is-active search-hub
-
-              # A deliberately broken package: the updater must roll back and the
-              # service must come back up under systemd with the old program.
-              mkdir -p /tmp/broken/app/apps/api/dist
-              printf "import { createServer } from \"node:http\";\nsetTimeout(()=>{},600000);\n" > /tmp/broken/app/apps/api/dist/server.mjs
-              printf "0.9.9\\n" > /tmp/broken/app/apps/api/dist/version.txt
-              tar -czf /tmp/broken.tar.gz -C /tmp/broken app
-              SHA=$(sha256sum /tmp/broken.tar.gz | awk "{print \\$1}")
-              SIZE=$(stat -c%s /tmp/broken.tar.gz)
-
-              set +e
-              /opt/search-hub/bin/update --package /tmp/broken.tar.gz --version 0.9.9 --sha256 "$SHA" --size "$SIZE" --root /opt/search-hub --data /var/lib/search-hub --port 8787
-              CODE=$?
-              set -e
-              echo "updater exit: $CODE"
-              # 3 = rolled back and healthy. Anything else means the rollback failed.
-              if [ "$CODE" != "3" ]; then echo "FAIL: expected rollback exit 3, got $CODE"; exit 1; fi
-
-              systemctl is-active search-hub || systemctl start search-hub
-              for i in $(seq 1 30); do
-                if curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1; then break; fi
-                sleep 2
-              done
-              echo "--- after rollback ---"
-              curl -fsS http://127.0.0.1:8787/api/health | head -c 200
-              echo
-              systemctl status search-hub --no-pager | head -8
-            '
 
   supply-chain:
     name: Supply-chain audit (published release)

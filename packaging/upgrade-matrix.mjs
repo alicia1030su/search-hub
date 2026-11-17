@@ -196,7 +196,10 @@ function installedVersion(root) {
 
 /** Downloads a published package for this platform. Fails loudly, never silently skips. */
 async function downloadReleaseAsset(tag) {
-  const assetName = `search-hub-v${tag.replace(/^v/, "").replace(/^search-hub-v/, "")}-${OS_KEY}-${ARCH_KEY}.${IS_WINDOWS ? "zip" : "tar.gz"}`;
+  // Release assets are named after package.json, which drops the prerelease
+  // suffix: v0.1.4-beta.6 ships `search-hub-v0.1.4-linux-x64.tar.gz`.
+  const assetVersion = tag.replace(/^v/, "").replace(/-(alpha|beta|rc)\.\d+$/, "");
+  const assetName = `search-hub-v${assetVersion}-${OS_KEY}-${ARCH_KEY}.${IS_WINDOWS ? "zip" : "tar.gz"}`;
   const out = join(work, assetName);
   if (existsSync(out) && statSync(out).size > 1_000_000) return { path: out, tag };
   // gh handles auth and redirects better than a hand-rolled fetch, and it is

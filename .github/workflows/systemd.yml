@@ -1,0 +1,167 @@
+name: systemd service lifecycle
+
+# Real systemd: start, restart, stop, upgrade, rollback.
+#
+# GitHub's ubuntu-latest runner has no running init, so `systemctl` there either
+# fails or lies. This workflow boots a container whose PID 1 *is* systemd and
+# drives the service the way an operator would.
+#
+# Kept in its own file so a failure here is unambiguous: it is a systemd problem,
+# not a packaging or upgrade problem.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "search-hub.service"
+      - ".github/workflows/systemd.yml"
+  push:
+    branches: [main]
+
+concurrency:
+  group: systemd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.22.2"
+  PNPM_VERSION: "12.18.0"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  systemd:
+    name: systemctl start / restart / stop / upgrade / rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the Linux package
+        env:
+          PACKAGE_TARGET: linux-x64
+        run: node packaging/build-package.mjs
+
+      - name: Prepare the package for the container
+        run: |
+          set -euo pipefail
+          mkdir -p .data/systemd
+          cp dist/package/*linux-x64.tar.gz .data/systemd/pkg.tar.gz
+          # A deliberately broken package: it installs, then never becomes healthy.
+          # The updater must roll back and leave a running service.
+          rm -rf .data/systemd/broken
+          mkdir -p .data/systemd/broken/app/apps/api/dist
+          printf 'import { createServer } from "node:http";\nsetTimeout(() => {}, 600000);\n' \
+            > .data/systemd/broken/app/apps/api/dist/server.mjs
+          printf '0.9.9\n' > .data/systemd/broken/app/apps/api/dist/version.txt
+          tar -czf .data/systemd/broken.tar.gz -C .data/systemd/broken app
+          ls -la .data/systemd
+
+      # PID 1 must be systemd, otherwise systemctl cannot operate at all.
+      - name: Boot a container with systemd as PID 1
+        run: |
+          set -euo pipefail
+          docker run -d --name sh-systemd --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD/.data/systemd:/pkgs:ro" \
+            jrei/systemd-ubuntu:24.04
+          for i in $(seq 1 30); do
+            if docker exec sh-systemd systemctl is-system-running >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec sh-systemd systemctl is-system-running || true
+          docker exec sh-systemd bash -lc 'ps -o comm= -p 1'
+
+      - name: Install and drive the service through systemd
+        run: |
+          set -euo pipefail
+          docker exec sh-systemd bash -lc '
+            set -euo pipefail
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq curl tar >/dev/null
+
+            mkdir -p /opt/search-hub
+            tar -xzf /pkgs/pkg.tar.gz -C /opt/search-hub
+            test -f /opt/search-hub/search-hub.service || { echo "FAIL: unit file missing"; exit 1; }
+
+            id search-hub >/dev/null 2>&1 || useradd --system --home /var/lib/search-hub --shell /usr/sbin/nologin search-hub
+            mkdir -p /var/lib/search-hub
+            chown -R search-hub: /var/lib/search-hub /opt/search-hub
+
+            cp /opt/search-hub/search-hub.service /etc/systemd/system/
+            systemctl daemon-reload
+            systemctl enable --now search-hub
+
+            echo "--- start ---"
+            systemctl is-active search-hub
+            for i in $(seq 1 60); do
+              curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1 && break
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8787/api/health
+            echo
+
+            echo "--- restart ---"
+            systemctl restart search-hub
+            sleep 6
+            systemctl is-active search-hub
+            curl -fsS http://127.0.0.1:8787/api/health >/dev/null && echo "healthy after restart"
+
+            echo "--- stop ---"
+            systemctl stop search-hub
+            if systemctl is-active --quiet search-hub; then echo "FAIL: still active after stop"; exit 1; fi
+            if curl -fsS --max-time 3 http://127.0.0.1:8787/api/health >/dev/null 2>&1; then
+              echo "FAIL: port still answers after systemctl stop"; exit 1
+            fi
+            echo "stopped cleanly"
+
+            echo "--- upgrade with a package that cannot become healthy ---"
+            systemctl start search-hub
+            sleep 6
+            SHA=$(sha256sum /pkgs/broken.tar.gz | awk "{print \$1}")
+            SIZE=$(stat -c%s /pkgs/broken.tar.gz)
+            set +e
+            /opt/search-hub/bin/update --package /pkgs/broken.tar.gz --version 0.9.9 \
+              --sha256 "$SHA" --size "$SIZE" --root /opt/search-hub --data /var/lib/search-hub --port 8787
+            CODE=$?
+            set -e
+            echo "updater exit: $CODE"
+            # 3 = rolled back and healthy again.
+            [ "$CODE" = "3" ] || { echo "FAIL: expected rollback exit 3, got $CODE"; exit 1; }
+
+            echo "--- after rollback ---"
+            systemctl is-active search-hub || systemctl start search-hub
+            for i in $(seq 1 30); do
+              curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1 && break
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8787/api/health
+            echo
+            systemctl status search-hub --no-pager | head -10
+            echo "--- unit properties ---"
+            systemctl show search-hub -p User -p Restart -p NoNewPrivileges
+          '
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs --tail 100 sh-systemd || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f sh-systemd || true
