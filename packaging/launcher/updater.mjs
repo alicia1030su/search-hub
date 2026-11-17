@@ -15,7 +15,7 @@
  *   4  update failed and the rollback also failed (manual intervention)
  *   1  refused before touching anything (digest, downgrade, architecture, layout)
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,26 @@ import {
 } from "./updater-core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * How to control the service in a *released* package.
+ *
+ * A released package does not ship `launcher.mjs`: on Windows the launcher is
+ * `SearchHub.exe` (a Node SEA), on Linux it is `bin/search-hub`. The updater has to
+ * drive whichever one exists, otherwise it can only ever work from the source tree.
+ */
+function resolveLauncher(root) {
+  if (process.platform === "win32") {
+    const exe = join(root, "SearchHub.exe");
+    if (existsSync(exe)) return { command: exe, args: [] };
+  }
+  const shell = join(root, "bin", "search-hub");
+  if (existsSync(shell)) return { command: shell, args: [] };
+  // Development / test tree: run the launcher script through this Node runtime.
+  const script = join(HERE, "launcher.mjs");
+  if (existsSync(script)) return { command: process.execPath, args: [script] };
+  throw new UpdateError("no_launcher", `No launcher found under ${root}`);
+}
 
 function arg(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -65,6 +85,24 @@ function extract(archive, into) {
   execFileSync("tar", ["-xzf", name, "-C", into], { cwd: base, stdio: "inherit" });
 }
 
+/** The installed version: `launcher.json` in a package, `package.json` in a source tree. */
+function readInstalledVersion(root) {
+  for (const name of ["launcher.json", "package.json"]) {
+    const path = join(root, name);
+    if (!existsSync(path)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8"));
+      if (typeof parsed.version === "string") return parsed.version;
+    } catch {
+      /* fall through */
+    }
+  }
+  throw new UpdateError(
+    "unknown_version",
+    `Cannot determine the installed version under ${root}; refusing to update without it.`,
+  );
+}
+
 function listEntries(dir) {
   const out = [];
   for (const name of readdirSync(dir)) {
@@ -77,7 +115,7 @@ function listEntries(dir) {
 
 function stopService(launcher, dataDir, port) {
   try {
-    execFileSync(process.execPath, [launcher, "--stop"], {
+    execFileSync(launcher.command, [...launcher.args, "--stop"], {
       env: { ...process.env, SEARCH_HUB_DATA_DIR: dataDir, SEARCH_HUB_PORT: String(port) },
       stdio: "inherit",
       timeout: 60_000,
@@ -95,8 +133,46 @@ function stopService(launcher, dataDir, port) {
  * waiting would block until the timeout and then kill the very process we want
  * to keep running.
  */
+/**
+ * Terminates a server that the launcher no longer tracks.
+ *
+ * When a new build never becomes healthy, the launcher's own health timeout can
+ * fire first and clear its lock, leaving a live child that still holds the
+ * program files. On Windows that makes the rollback fail with EBUSY — and an
+ * orphaned server on the same database is exactly the state to avoid. So the
+ * updater kills the recorded pid itself and waits for it to disappear.
+ */
+function hardStop(dataDir) {
+  const lockPath = join(dataDir, "launcher.lock");
+  if (!existsSync(lockPath)) return;
+  let pid = null;
+  try {
+    pid = JSON.parse(readFileSync(lockPath, "utf8")).pid ?? null;
+  } catch {
+    return;
+  }
+  if (typeof pid !== "number" || pid <= 0) return;
+  for (const signal of ["SIGTERM", "SIGKILL"]) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      return; // already gone
+    }
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return; // exited
+      }
+      sleep(200);
+    }
+    log(`process ${pid} ignored ${signal}; escalating`);
+  }
+}
+
 function startService(launcher, dataDir, port) {
-  const child = spawn(process.execPath, [launcher, "--service", "--no-browser"], {
+  const child = spawn(launcher.command, [...launcher.args, "--service", "--no-browser"], {
     env: { ...process.env, SEARCH_HUB_DATA_DIR: dataDir, SEARCH_HUB_PORT: String(port) },
     stdio: "ignore",
     detached: true,
@@ -105,27 +181,45 @@ function startService(launcher, dataDir, port) {
   child.unref();
 }
 
-/** Synchronous health probe: spawns a tiny node process so we can block on it. */
-function probeOnce(port) {
-  try {
-    execFileSync(
-      process.execPath,
-      ["-e", `fetch("http://127.0.0.1:${port}/api/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`],
-      { stdio: "ignore", timeout: 5_000 },
-    );
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * Health probe that also checks *which build* is answering.
+ *
+ * A bare HTTP 200 is not enough: if an old instance is still bound to the port
+ * (a launcher that failed to stop, a manual start, a stuck child), the probe
+ * would report success while the version the user asked for was never started.
+ * `/api/health` returns `version`, so the updater compares it.
+ */
+function probeOnce(port, expectedVersion) {
+  const script = `
+    fetch("http://127.0.0.1:${port}/api/health")
+      .then(async (r) => {
+        if (!r.ok) process.exit(1);
+        const body = await r.json().catch(() => ({}));
+        const want = ${JSON.stringify(expectedVersion)};
+        // Require an exact match. Accepting a missing version would let any
+        // process on the port (a leftover stub, an older build without the field)
+        // masquerade as the build we just installed.
+        if (want && (!body || body.version !== want)) process.exit(2);
+        process.exit(0);
+      })
+      .catch(() => process.exit(1));
+  `;
+  const result = spawnSync(process.execPath, ["-e", script], { stdio: "ignore", timeout: 5_000 });
+  return result.status === 0 ? "healthy" : result.status === 2 ? "stale" : "down";
 }
 
-function waitHealthy(port, timeoutMs = 60_000) {
+function waitHealthy(port, expectedVersion, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (probeOnce(port)) return true;
+    const state = probeOnce(port, expectedVersion);
+    if (state === "healthy") return { ok: true, stale: false };
+    if (state === "stale") {
+      // A different build answers on this port: the new one never took over.
+      return { ok: false, stale: true };
+    }
     sleep(1_000);
   }
-  return false;
+  return { ok: false, stale: false };
 }
 
 async function main() {
@@ -142,14 +236,11 @@ async function main() {
     process.exit(1);
   }
 
-  const packageJsonPath = join(root, "package.json");
-  const currentVersion = existsSync(packageJsonPath)
-    ? JSON.parse(readFileSync(packageJsonPath, "utf8")).version
-    : "0.0.0";
+  const currentVersion = readInstalledVersion(root);
   const appDir = join(root, "app");
   const workRoot = join(dataDir, "updates");
   const staging = join(workRoot, `staging-${Date.now()}`);
-  const launcher = join(HERE, "launcher.mjs");
+  const launcher = resolveLauncher(root);
 
   // ---- 1. Refuse before touching anything -------------------------------
   assertUpgrade(currentVersion, version);
@@ -167,6 +258,7 @@ async function main() {
 
   // ---- 2. Stop the service ---------------------------------------------
   stopService(launcher, dataDir, port);
+  hardStop(dataDir);
 
   // ---- 3. Back up, then install ---------------------------------------
   const schemaBefore = readSchemaVersion(join(dataDir, "search-hub.db"));
@@ -178,8 +270,13 @@ async function main() {
 
   // ---- 4. Start and verify --------------------------------------------
   startService(launcher, dataDir, port);
-  const healthy = waitHealthy(port);
+  const probe = waitHealthy(port, version);
+  const healthy = probe.ok;
   const schemaAfter = readSchemaVersion(join(dataDir, "search-hub.db"));
+
+  if (probe.stale) {
+    log(`a different build is answering on port ${port}; treating the update as failed`);
+  }
 
   if (healthy) {
     mkdirSync(workRoot, { recursive: true });
@@ -195,6 +292,12 @@ async function main() {
   // ---- 5. Roll back ---------------------------------------------------
   log("health check failed; rolling back");
   stopService(launcher, dataDir, port);
+  // The failed build may still be running with the program files open.
+  hardStop(dataDir);
+
+  // Put the previous program back BEFORE deciding about the database: the
+  // decision only affects the data files, and an install with no program is the
+  // one outcome that must never be left behind.
   rollbackProgram({ appDir, previous });
 
   const plan = planRollback({
@@ -211,7 +314,8 @@ async function main() {
   }
 
   startService(launcher, dataDir, port);
-  const restored = waitHealthy(port);
+  const restoredProbe = waitHealthy(port, currentVersion);
+  const restored = restoredProbe.ok;
   mkdirSync(workRoot, { recursive: true });
   writeFileSync(
     join(workRoot, "last-update.json"),

@@ -465,6 +465,20 @@ export class SearchService {
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
     const response = await executeSearch(deps, request, { signal, taskId });
+    // Report the sources the health gate skipped. Without this the caller sees a
+    // smaller fan-out and no reason for it — indistinguishable from a source that
+    // simply returned nothing.
+    if (this.skippedByHealth.length > 0) {
+      response.errors.push(...this.skippedByHealth);
+      const existing = new Set(response.failedSources.map((item) => item.id));
+      for (const skipped of this.skippedByHealth) {
+        if (!existing.has(skipped.providerId)) {
+          response.failedSources.push({ id: skipped.providerId, code: skipped.code });
+        }
+      }
+      response.stats.partial = true;
+      if (response.status === "completed") response.status = "partial";
+    }
     if (signal.aborted) {
       response.status = "failed";
       response.errors.push({
