@@ -25,7 +25,7 @@
 | 付费源默认不自动调用 | ✅ `paidProbesEnabled=false`，关闭时返回 400 而非降级 |
 | 临时超时不永久禁用 | ✅ 只有 quota_exceeded / auth_invalid 会 park；超时仅冷却 |
 | 管理后台不泄露 Key/内网地址 | ✅ `/api/mcp/health` 投影无 baseUrl、无 history、无 key；`/api/admin/health` 需 admin |
-| Web→REST→MCP→调度器端到端测试 | ✅ `tests/integration/health-e2e.test.ts` 6 项 |
+| Web→REST→MCP→调度器端到端测试 | ✅ `tests/integration/health-e2e.test.ts` 9 项 |
 
 ## 阶段三：更新与回滚
 
@@ -33,7 +33,7 @@
 |---|---|
 | Windows 检查/下载/校验/备份 | ✅ `updater.ts`（stage，digest 来自发布元数据） |
 | 独立 updater 进程 | ✅ `packaging/launcher/updater.mjs` |
-| 更新后重启 + 健康检查 | ✅ 实测 16 项断言通过 |
+| 更新后重启 + 健康检查 | ✅ 实测 17 项断言通过（含回滚后清单必须回到旧版本号） |
 | 健康失败自动回滚 | ✅ 退出码 3 = 已回滚且健康 |
 | Linux systemd 更新流程 | ✅ 已补真实 systemd 验收：`.github/workflows/systemd.yml` 在 PID 1 = systemd 的特权容器里跑 start/restart/stop/升级/回滚，更新器改走 `systemctl`（见 `docs/update-acceptance.md` 第三节） |
 | Docker 只给提示不改镜像 | ✅ `/api/admin/update/apply-plan` 返回 pull/compose 步骤 |
