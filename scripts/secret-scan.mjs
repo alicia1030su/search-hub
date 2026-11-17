@@ -50,6 +50,9 @@ const ALLOWLIST = [
   "sk-CLEAN-FINGERPRINT",
   "sk-LEAK-",
   "sk-LEGACY-SHOULD-NEVER-BE-STORED",
+  // Credential the cross-version upgrade test writes into a throwaway instance to
+  // prove the key still decrypts after the program is replaced.
+  "sk-UPGRADE-SURVIVES-",
   "sk-dummy-invalid-key-for-probe",
   "tvly-YOUR_API_KEY",
   "tvly-dummy-invalid",
@@ -62,7 +65,7 @@ const ALLOWLIST = [
   "A-very-long-password-1",
   // Password the release acceptance script types into its own throwaway instance.
   "Release-Check-Password-1",
-  // Password the cross-version upgrade harness types into a temp install.
+  // Admin password for the throwaway instance the cross-version upgrade test creates.
   "Upgrade-Password-1",
   "Clean-Install-Pass-1",
   "Leak-Scan-Password-1",

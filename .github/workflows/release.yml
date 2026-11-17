@@ -110,6 +110,7 @@ jobs:
         shell: bash
         env:
           PACKAGE_TARGET: windows-x64
+          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
         run: node packaging/build-package.mjs
 
       - name: Verify the package starts and serves REST + MCP
@@ -169,6 +170,7 @@ jobs:
         env:
           PACKAGE_TARGET: linux-${{ matrix.arch }}
           PACKAGE_NODE_BIN: /tmp/node-${{ matrix.arch }}
+          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
         run: node packaging/build-package.mjs
 
       - name: Verify the package starts and serves REST + MCP

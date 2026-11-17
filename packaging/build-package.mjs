@@ -23,7 +23,10 @@ import { writeZip } from "./zip.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET = process.env["PACKAGE_TARGET"] ?? (process.platform === "win32" ? "windows-x64" : "linux-x64");
-const VERSION = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
+// `SEARCH_HUB_VERSION` lets the release workflow stamp the tag version (with its
+// prerelease suffix) so the package and the release agree on what it is.
+const VERSION = (process.env["SEARCH_HUB_VERSION"]?.trim() ||
+  JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version).replace(/^v/, "");
 const OUT = join(REPO, "dist", "package", TARGET);
 const IS_WINDOWS = TARGET.startsWith("windows");
 
@@ -109,6 +112,24 @@ if (IS_WINDOWS) {
 
 log("writing docs");
 log("writing docs");
+// 5b. Ship the updater. A package that cannot update itself is not updatable:
+// the CLI has to travel with the release, not live only in the repository.
+const binDir = join(OUT, "bin");
+mkdirSync(binDir, { recursive: true });
+copyIfExists(join(REPO, "packaging", "launcher", "updater.mjs"), join(binDir, "updater.mjs"));
+copyIfExists(
+  join(REPO, "packaging", "launcher", "updater-core.mjs"),
+  join(binDir, "updater-core.mjs"),
+);
+writeFileSync(
+  join(binDir, IS_WINDOWS ? "update.cmd" : "update"),
+  IS_WINDOWS
+    ? "@echo off\r\nrem Search Hub updater: verifies, backs up, swaps and rolls back.\r\n\"%~dp0..\\runtime\\node.exe\" \"%~dp0updater.mjs\" %*\r\n"
+    : "#!/bin/sh\n# Search Hub updater: verifies, backs up, swaps and rolls back.\nDIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")/..\" && pwd)\nexec \"$DIR/runtime/bin/node\" \"$DIR/bin/updater.mjs\" \"$@\"\n",
+  "utf8",
+);
+if (!IS_WINDOWS) chmodSync(join(binDir, "update"), 0o755);
+
 // 6. Docs and service template.
 writeFileSync(join(OUT, IS_WINDOWS ? "README.txt" : "README.md"), readme(TARGET, VERSION), "utf8");
 if (!IS_WINDOWS) {
@@ -226,6 +247,11 @@ function readme(target, version) {
   SearchHub.exe --logs          查看日志
   SearchHub.exe --autostart     开机自启动（写入当前用户的启动文件夹）
 
+升级（不会丢数据）:
+  bin\\update.cmd --package <新包.zip> --version <新版本> --sha256 <校验和>
+  它会先备份数据库与 master.key，再停服、替换程序、启动并健康检查；
+  健康检查失败会自动回滚程序，schema 已前移时连同数据库一起回到升级前。
+
 数据目录: %LOCALAPPDATA%\\SearchHub
   search.db / master.key / launcher-config.json / logs/
 
@@ -260,6 +286,14 @@ unit 已设置 User=search-hub，非 root 运行，数据目录可持久化。
     ./bin/search-hub --stop
     ./bin/search-hub --logs
     ./bin/search-hub --port 9000 --lan
+
+## 升级（不会丢数据）
+
+    ./bin/update --package <新包.tar.gz> --version <新版本> --sha256 <校验和>
+
+先备份数据库与 master.key，再停服、替换程序、启动并健康检查；
+健康检查失败会自动回滚程序，schema 已前移时连同数据库一起回到升级前。
+退出码：0 成功；3 已回滚且健康；4 需要人工介入；1 校验/降级/架构不通过（未动文件）。
 
 ## 升级
 

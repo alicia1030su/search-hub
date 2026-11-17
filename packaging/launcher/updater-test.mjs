@@ -200,12 +200,23 @@ try {
     const pkg = makePackage({ version: "0.3.0", mode: "broken" });
     const run = await runUpdater(root, pkg, { version: "0.3.0" });
     // Exit 3 means "rolled back and healthy again"; that is the pass condition.
-    check("broken update rolls back", run.code === 3, `code=${run.code}`);
+    check(
+      "broken update rolls back",
+      run.code === 3,
+      `code=${run.code} ${run.output.split("\n").filter((l) => /REFUSED|failed|rollback/.test(l)).slice(-2).join(" | ").slice(0, 200)}`,
+    );
     check(
       "old program restored",
       readFileSync(join(root, "app", "apps", "api", "dist", "version.txt"), "utf8").trim() === "0.1.0",
     );
     check("service is healthy again after rollback", await healthy(p));
+    // The manifest lives outside app/, so restoring only the program would leave
+    // the failed build's version in place — the restored server would then
+    // report a version that never ran.
+    check(
+      "manifest restored with the old program",
+      JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version === "0.1.0",
+    );
     check(
       "data survived the failed update",
       readFileSync(join(root, "data", "search-hub.db"), "utf8") === "PRE-EXISTING-DB",
@@ -276,4 +287,4 @@ try {
 }
 
 console.log(failures === 0 ? "\nAll updater checks passed." : `\n${failures} updater check(s) failed.`);
-process.exit(failures === 0 ? 0 : 1);
+process.exitCode = failures === 0 ? 0 : 1;

@@ -191,28 +191,92 @@ describe("health end to end", () => {
     expect(blocked.has(good)).toBe(false);
   });
 
-  it("parks a source whose account quota is exhausted and explains why", async () => {
+  it("parks a source whose account quota is exhausted, and only for that cause", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "quota", { resultCount: 0 });
-    // A quota failure is account-wide: the adapter reports quota_exceeded.
-    await harness.app.inject({
-      method: "PATCH",
-      url: `/api/admin/providers/${providerId}`,
-      ...adminHeaders(harness),
-      payload: { config: { resultCount: 0, failMode: "quota_exceeded" } },
-    });
+    const quota = await addMock(harness, "quota", { resultCount: 0, failMode: "quota_exceeded" });
+    const forbidden = await addMock(harness, "forbidden", { resultCount: 0, failMode: "forbidden" });
+    const limited = await addMock(harness, "limited", { resultCount: 0, failMode: "rate_limited" });
 
-    const run = await harness.app.inject({
+    for (const id of [quota, forbidden, limited]) {
+      const run = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/health/check",
+        ...adminHeaders(harness),
+        payload: { kind: "connect", providerId: id },
+      });
+      expect(run.statusCode, run.body).toBe(200);
+    }
+
+    const blocked = harness.ctx.health.blockedProviders();
+    // Account-wide causes park the source...
+    expect(blocked.get(quota)?.code).toBe("quota_exceeded");
+    // `forbidden` is a permission problem: degraded but still allowed to run, because
+    // another key or a fixed entitlement can make it work again without a restart.
+    expect(blocked.has(forbidden)).toBe(false);
+    // A single 429 must never park anything.
+    expect(blocked.has(limited)).toBe(false);
+  });
+
+  it("does not let one timeout or one 429 disable a source", async () => {
+    const harness = await createHarness();
+    const timedOut = await addMock(harness, "slow", { resultCount: 0, failMode: "timeout" });
+    const limited = await addMock(harness, "burst", { resultCount: 0, failMode: "rate_limited" });
+
+    for (const id of [timedOut, limited]) {
+      await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/health/check",
+        ...adminHeaders(harness),
+        payload: { kind: "connect", providerId: id },
+      });
+    }
+
+    const blocked = harness.ctx.health.blockedProviders();
+    expect(blocked.size).toBe(0);
+
+    // And a real search must still fan out to both.
+    const search = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      ...adminHeaders(harness),
+      payload: { query: "still tried", mode: "basic", limit: 3, skipCache: true },
+    });
+    const stats = (search.json() as { stats: { providers: Array<{ providerId: string }> } }).stats;
+    const tried = stats.providers.map((provider) => provider.providerId);
+    expect(tried).toContain(timedOut);
+    expect(tried).toContain(limited);
+  });
+
+  it("reports a health-skipped source in the search response instead of hiding it", async () => {
+    const harness = await createHarness();
+    const healthy = await addMock(harness, "worker", { resultCount: 3 });
+    const parked = await addMock(harness, "parked-quota", { resultCount: 0, failMode: "quota_exceeded" });
+
+    await harness.app.inject({
       method: "POST",
       url: "/api/admin/health/check",
       ...adminHeaders(harness),
-      payload: { kind: "connect", providerId },
+      payload: { kind: "connect", providerId: parked },
     });
-    // The mock adapter has no quota mode; it will fail as server_error, which must
-    // NOT park the provider. Assert the honest outcome instead of forcing one.
-    expect(run.statusCode, run.body).toBe(200);
-    const blocked = harness.ctx.health.blockedProviders();
-    expect(blocked.size).toBe(0);
+    expect(harness.ctx.health.blockedProviders().has(parked)).toBe(true);
+
+    const search = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      ...adminHeaders(harness),
+      payload: { query: "skip visibility", mode: "basic", limit: 3, skipCache: true },
+    });
+    const body = search.json() as {
+      status: string;
+      errors: Array<{ providerId: string; code: string }>;
+      failedSources: Array<{ id: string; code: string }>;
+      stats: { partial: boolean };
+    };
+    expect(body.status).toBe("partial");
+    expect(body.stats.partial).toBe(true);
+    expect(body.failedSources.some((item) => item.id === parked)).toBe(true);
+    expect(body.errors.some((item) => item.providerId === parked)).toBe(true);
+    void healthy;
   });
 
   it("returns a structured failure when every source is parked", async () => {
@@ -283,6 +347,62 @@ describe("health end to end", () => {
       expect(provider).not.toHaveProperty("history");
       expect(JSON.stringify(provider)).not.toMatch(/sk-[A-Za-z0-9]/);
     }
+  });
+
+  it("does not let a caller's cancel degrade a source", async () => {
+    const harness = await createHarness();
+    // Slow enough that the abort lands while the provider call is in flight.
+    const slow = await addMock(harness, "cancel-me", { resultCount: 2, latencyMs: 800 });
+    const controller = new AbortController();
+    const run = harness.ctx.search.execute(
+      { query: "cancel probe", mode: "basic", limit: 3, skipCache: true },
+      { actor: "admin:admin@example.com", signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(new Error("cancelled by user")), 120);
+    const response = await run;
+
+    // The caller stopped it; the response must say so rather than claim success.
+    expect(response.status).toBe("failed");
+    expect(response.errors.some((item) => item.code === "cancelled")).toBe(true);
+
+    // A cancel is not evidence about the source: no park, no cooldown, no record.
+    expect(harness.ctx.health.blockedProviders().has(slow)).toBe(false);
+    expect(harness.ctx.health.history(slow, 10).some((row) => row.cause === "cancelled")).toBe(false);
+
+    // And the dashboard must not count it as a failed call against the source.
+    const overview = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/health",
+      cookies: { sh_session: harness.cookie },
+    });
+    const summary = (
+      overview.json() as {
+        providers: Array<{
+          providerId: string;
+          searchCalls: number;
+          successRate: number | null;
+          consecutiveFailures: number;
+          status: string;
+        }>;
+      }
+    ).providers.find((item) => item.providerId === slow)!;
+    // Nothing else has run against it, so a cancel that counted would show
+    // searchCalls=1 / successRate=0 / consecutiveFailures=1.
+    expect(summary.searchCalls, JSON.stringify(summary)).toBe(0);
+    expect(summary.consecutiveFailures, JSON.stringify(summary)).toBe(0);
+    expect(summary.status).toBe("unverified");
+
+    // And the next real search still fans out to it.
+    const next = await harness.app.inject({
+      method: "POST",
+      url: "/api/search",
+      ...adminHeaders(harness),
+      payload: { query: "after cancel", mode: "basic", limit: 3, skipCache: true },
+    });
+    const tried = (next.json() as { stats: { providers: Array<{ providerId: string }> } }).stats.providers.map(
+      (provider) => provider.providerId,
+    );
+    expect(tried).toContain(slow);
   });
 
   it("keeps scheduled probing off until an operator enables it", async () => {

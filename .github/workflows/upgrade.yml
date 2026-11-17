@@ -1,0 +1,133 @@
+name: Upgrade and update fault injection
+
+# Real cross-version upgrades and real update failures, on the real operating
+# systems. This workflow exists because "it works from the source tree" is not
+# evidence that a downloaded package can be upgraded.
+#
+# It downloads published packages from GitHub Releases, so the upgrade paths are
+# the ones a user actually faces:
+#   v0.1.4-beta.6 -> current
+#   v0.1.5-beta.1 -> current
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "apps/api/src/services/updater.ts"
+      - "apps/api/src/services/health*.ts"
+      - ".github/workflows/upgrade.yml"
+  push:
+    branches: [main]
+
+concurrency:
+  group: upgrade-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.22.2"
+  PNPM_VERSION: "12.18.0"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    name: Cross-version upgrade (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The "current" side of every path is built here, so a PR is tested before
+      # it is released. The "old" side comes from the published releases.
+      - name: Build the current package
+        shell: bash
+        env:
+          PACKAGE_TARGET: ${{ matrix.os == 'windows-latest' && 'windows-x64' || 'linux-x64' }}
+          # Stamp a version ahead of the old releases so the upgrade is a real
+          # forward move, and so the asset name matches what the updater installs.
+          SEARCH_HUB_VERSION: 0.9.0-ci
+        run: node packaging/build-package.mjs
+
+      - name: Upgrade v0.1.4-beta.6 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.4-beta.6 --to "$TARGET" --port 8910
+
+      - name: Upgrade v0.1.5-beta.1 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.5-beta.1 --to "$TARGET" --port 8920
+
+      - name: Update fault injection
+        shell: bash
+        env:
+          FAULT_PORT: "8930"
+          # No mount permission on the runner; the disk-full case reports a skip
+          # rather than a pass.
+          FAULT_SKIP_DISK: ${{ matrix.os == 'windows-latest' && '1' || '0' }}
+        run: node packaging/launcher/updater-faults.mjs
+
+      - name: Updater install and rollback
+        shell: bash
+        run: node packaging/launcher/updater-test.mjs
+
+  supply-chain:
+    name: Supply-chain audit (published release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Only meaningful for a tag that already exists; on a PR it audits the last
+    # published beta, which is what a user would actually download.
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Downloads every asset, verifies SHA256SUMS against the bytes, cross-checks
+      # GitHub's own per-asset digest, and inspects archive entries and modes.
+      - name: Audit the latest published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node packaging/supply-chain-audit.mjs --tag v0.1.6-beta.1
