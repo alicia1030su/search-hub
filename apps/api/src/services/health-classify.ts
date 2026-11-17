@@ -287,6 +287,14 @@ export function classifyError(error: unknown): HealthCause {
   ) {
     return "quota_exceeded";
   }
+  // A wrapped network error hides the real reason one level down: safe-fetch
+  // reports "Network error requesting <url>" with the socket/OpenSSL error as
+  // `cause`. Classifying on the wrapper alone marked certificate failures as
+  // `network`, which retries in 20 seconds — against a certificate that will
+  // never become valid without an operator.
+  const fromCause = classifyCauseChain(error);
+  if (fromCause) return fromCause;
+
   if (typeof code === "string") {
     switch (code) {
       case "auth_invalid":
@@ -320,6 +328,25 @@ export function classifyError(error: unknown): HealthCause {
   if (/\b429\b|too many requests/i.test(message)) return "rate_limited";
   if (/\b5\d\d\b/.test(message)) return "server_error";
   return "server_error";
+}
+
+/**
+ * Looks for a TLS/DNS marker in the wrapped cause chain.
+ *
+ * Only the two causes that a wrapper reliably *hides* are recovered here: a
+ * certificate error and a resolver failure. Everything else is left to the
+ * code/message logic, because guessing from a nested message is how a 429 ends
+ * up classified as a network error.
+ */
+function classifyCauseChain(error: unknown): HealthCause | null {
+  let current: unknown = (error as { cause?: unknown } | null)?.cause;
+  for (let depth = 0; depth < 4 && current; depth += 1) {
+    const message = String((current as { message?: unknown })?.message ?? current ?? "");
+    if (/certificate|self.signed|unable to verify|ssl|tls|err_tls/i.test(message)) return "tls";
+    if (/getaddrinfo|enotfound|eai_again|dns/i.test(message)) return "dns";
+    current = (current as { cause?: unknown })?.cause;
+  }
+  return null;
 }
 
 /** Reads `Retry-After` (seconds or HTTP date) into milliseconds. */
