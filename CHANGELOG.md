@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Persistent search cache
+
+- **The cache survives restarts.** Search responses are now rows in SQLite
+  (migration `0004_search_cache.sql`) instead of a `Map`. A service restart, a
+  host reboot or a Docker `down`/`up` with the data volume kept no longer throws
+  away a full TTL of cached results, and the existing backup/upgrade paths cover
+  it without changes. A cache hit still creates a new `searchTasks` row with a new
+  `taskId`, and `stats.cached` is reported on REST and MCP alike.
+- **TTL is 1–72 hours**, default 24. The UI talks in hours while the stored unit
+  stays `ttlSeconds`, so existing clients and settings documents keep working.
+  Validation runs on the *merged* settings, so `{enabled:true}` cannot slip past,
+  and negative / fractional / >72h values are refused rather than clamped.
+  Changing the TTL re-times existing entries: shortening takes effect immediately
+  and lengthening never revives something that already expired.
+- **Bounded**: 5000 entries / 256 MB, evicting the least recently used row inside
+  the same transaction as the write. `size_bytes` is the UTF-8 byte length of the
+  stored JSON, not the JavaScript string length.
+- **Background sweep** at startup and every 10 minutes: only `expires_at <= now`,
+  re-entrancy guarded, errors logged rather than fatal, timer cleared on shutdown.
+  No VACUUM — a shrunken file is not worth blocking the writer on every sweep.
+- **Only fully successful responses are cached.** Failures, cancellations, partial
+  results and anything carrying an error entry are re-queried. A completed search
+  with zero results *is* cached. `includeRaw=true` bypasses the persistent cache
+  entirely, because raw payloads are provider-internal data.
+- **The cache key is a SHA-256 of the request fingerprint** — query, mode,
+  capability, provider configuration plus a credential version, limit /
+  perProviderLimit / timeoutMs / language / freshness, the rerank / embedding /
+  summary switches, the resolved model fingerprints, and the current health-gate
+  verdict. No query text and no credential ever lands in the table.
+- **A cache hit does not bypass the health gate**: a source parked right now is
+  still reported as skipped instead of looking healthy because it worked before.
+- **Admin surface**: `GET /api/admin/cache` (entries, bytes, cumulative and 24-hour
+  hit rate, evictions, last sweep), `POST /api/admin/cache/sweep`,
+  `POST /api/admin/cache/clear` (requires `{"confirm":true}` and writes an audit
+  log). Statistics come from hourly buckets, so a restart does not zero the rate
+  and an empty window reports `null` rather than a fabricated 0%.
+
+### Changed
+
+- A cached `partial` response is no longer stored at all (it used to be cached and
+  replayed as `partial`). Replaying "one of your sources is broken" for 24 hours
+  would hide a source that recovered a minute later.
+- `packages/mcp` `search_web` now returns `cached`, matching REST.
+
 ## v0.1.6-beta.1 (2026-11-16)
 
 Health monitoring exposed over every surface, health-gated search, and a safe
