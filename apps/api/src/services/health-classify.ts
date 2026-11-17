@@ -208,13 +208,18 @@ export function runtimeHealthFor(input: RuntimeHealthInput): RuntimeHealth {
   return check.status === "unhealthy" ? "unhealthy" : "degraded";
 }
 
-/** Whether this runtime state should keep the provider out of a search. */
-export function blocksSearch(runtime: RuntimeHealth): boolean {
-  // Only terminal, account-wide states gate a search. `cooldown` from a timeout
-  // does not: the scheduler's breaker already handles repeated failures, and a
-  // single timeout must never remove a source.
-  return runtime === "quota_exceeded" || runtime === "invalid_credentials";
-}
+/**
+ * The only causes that keep a provider out of a search.
+ *
+ * Single source of truth: `HealthService.blockedProviders()` filters on this set,
+ * so the gate and the documented behaviour cannot drift. A cooldown from a
+ * timeout is deliberately absent — the scheduler's breaker already handles
+ * repeated failures, and one timeout must never remove a source.
+ */
+export const GATING_CAUSES: ReadonlySet<HealthCause> = new Set<HealthCause>([
+  "quota_exceeded",
+  "auth_invalid",
+]);
 
 const PENALTY_BY_CAUSE: Record<HealthCause, number> = {
   ok: 0,

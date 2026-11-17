@@ -31,6 +31,7 @@ import {
   decideBudget,
   errorCodeFor,
   parseRetryAfterMs,
+  GATING_CAUSES,
   percentile,
   runtimeHealthFor,
   scoreFor,
@@ -716,8 +717,9 @@ export class HealthService {
       if (resetAt && row.checkedAt <= resetAt) continue;
       const detail = safeJson(row.detailJson) as { cause?: string; cooldownUntil?: string };
       const cause = detail.cause ?? "";
-      // Only account-wide / credential causes are terminal.
-      if (cause !== "quota_exceeded" && cause !== "auth_invalid") continue;
+      // Only account-wide / credential causes are terminal. The set lives in
+      // health-classify so the rule has exactly one definition.
+      if (!GATING_CAUSES.has(cause as never)) continue;
       const until = detail.cooldownUntil ?? null;
       if (!until || Date.parse(until) <= now) continue;
       blocked.set(providerId, {
