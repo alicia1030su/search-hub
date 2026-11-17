@@ -128,7 +128,36 @@ function listEntries(dir) {
   return out;
 }
 
+/**
+ * Detects a systemd-managed install.
+ *
+ * When a unit exists, the updater must drive `systemctl` instead of spawning the
+ * launcher itself: systemd owns the process, restarts it on failure, and would
+ * fight a second supervisor over the same port and database.
+ */
+function systemdUnit() {
+  if (process.platform === "win32") return null;
+  for (const path of [
+    "/etc/systemd/system/search-hub.service",
+    "/lib/systemd/system/search-hub.service",
+    "/usr/lib/systemd/system/search-hub.service",
+  ]) {
+    if (existsSync(path)) return process.env["SEARCH_HUB_SYSTEMD_UNIT"] ?? "search-hub";
+  }
+  return null;
+}
+
+function systemctl(args) {
+  return spawnSync("systemctl", args, { stdio: "ignore", timeout: 120_000 });
+}
+
 function stopService(launcher, dataDir, port) {
+  const unit = systemdUnit();
+  if (unit) {
+    const result = systemctl(["stop", unit]);
+    log(`systemctl stop ${unit}: ${result.status === 0 ? "ok" : `exit ${result.status}`}`);
+    return;
+  }
   try {
     execFileSync(launcher.command, [...launcher.args, "--stop"], {
       env: { ...process.env, SEARCH_HUB_DATA_DIR: dataDir, SEARCH_HUB_PORT: String(port) },
@@ -158,6 +187,9 @@ function stopService(launcher, dataDir, port) {
  * updater kills the recorded pid itself and waits for it to disappear.
  */
 function hardStop(dataDir) {
+  // Under systemd the unit owns the process; killing its pid directly would be
+  // undone by Restart=on-failure and could race a fresh start.
+  if (systemdUnit()) return;
   const lockPath = join(dataDir, "launcher.lock");
   if (!existsSync(lockPath)) return;
   let pid = null;
@@ -187,6 +219,12 @@ function hardStop(dataDir) {
 }
 
 function startService(launcher, dataDir, port) {
+  const unit = systemdUnit();
+  if (unit) {
+    const result = systemctl(["start", unit]);
+    log(`systemctl start ${unit}: ${result.status === 0 ? "ok" : `exit ${result.status}`}`);
+    return;
+  }
   const child = spawn(launcher.command, [...launcher.args, "--service", "--no-browser"], {
     env: { ...process.env, SEARCH_HUB_DATA_DIR: dataDir, SEARCH_HUB_PORT: String(port) },
     stdio: "ignore",
@@ -318,7 +356,21 @@ async function main() {
   // Put the previous program back BEFORE deciding about the database: the
   // decision only affects the data files, and an install with no program is the
   // one outcome that must never be left behind.
-  rollbackProgram({ appDir, previous });
+  let rollbackError = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rollbackProgram({ appDir, previous });
+      rollbackError = null;
+      break;
+    } catch (error) {
+      rollbackError = error;
+      sleep(700);
+    }
+  }
+  if (rollbackError) {
+    log(`rollback could not restore the program: ${String(rollbackError)}`);
+    return 4;
+  }
 
   const plan = planRollback({
     schemaBefore,

@@ -139,6 +139,9 @@ jobs:
             SHA=$(sha256sum "$PKG" | awk "{print \$1}")
             SIZE=$(stat -c%s "$PKG")
             set +e
+            # The unit is the supervisor here, so the updater must use systemctl
+            # rather than spawning its own launcher.
+            SEARCH_HUB_SYSTEMD_UNIT=search-hub \
             /opt/search-hub/bin/update --package "$PKG" --version 0.9.9 \
               --sha256 "$SHA" --size "$SIZE" --root /opt/search-hub --data /var/lib/search-hub --port 8787
             CODE=$?

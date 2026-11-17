@@ -193,26 +193,30 @@ try {
   }
 
   PORT = nextPort();
-  // C) unreadable package directory: install fails, previous tree restored
+  // C) install cannot complete: the install root is read-only, so the swap fails
   {
     const root = makeRoot();
     roots.push(root);
-    const pkg = makePackage("healthy");
+    const pkg = makePackage("healthy", "0.2.9");
     const before = snapshotData(root);
-    // Remove write permission on the app dir so the swap cannot complete.
     const appDir = join(root, "app");
-    if (!IS_WINDOWS) execFileSync("chmod", ["-w", appDir]);
-    const run = await runUpdater(root, pkg);
-    if (!IS_WINDOWS) execFileSync("chmod", ["+w", appDir]);
+    // Making the *directory* unwritable does not block a rename (rename needs the
+    // parent), so the injection has to remove write access from the parent.
+    if (!IS_WINDOWS) execFileSync("chmod", ["-w", root]);
+    const run = await runUpdater(root, pkg, { version: "0.2.9" });
+    if (!IS_WINDOWS) execFileSync("chmod", ["+w", root]);
     if (IS_WINDOWS) {
-      // Windows ignores the mode bit for directories; assert the invariant that
-      // matters instead: either the update succeeded or the old program is intact.
-      const ok = run.code === 0 || readFileSync(join(appDir, "apps", "api", "dist", "server.mjs"), "utf8").length > 0;
+      // Windows has no equivalent mode bit for directories; assert the invariant
+      // that matters: either the update succeeded or a runnable program is left.
+      const ok =
+        run.code === 0 ||
+        readFileSync(join(appDir, "apps", "api", "dist", "server.mjs"), "utf8").length > 0;
       check("C install failure leaves a runnable program", ok, `exit=${run.code}`);
     } else {
-      check("C install failure reported", run.code !== 0, `exit=${run.code}`);
+      check("C install failure is reported", run.code !== 0, `exit=${run.code}`);
       check("C data untouched", dataIntact(root, before));
-      check("C old program restored", existsSync(join(appDir, "apps", "api", "dist", "server.mjs")));
+      // The old program must still be there: no half-swapped install.
+      check("C old program still present", existsSync(join(appDir, "apps", "api", "dist", "server.mjs")));
     }
   }
 

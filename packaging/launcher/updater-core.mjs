@@ -219,6 +219,21 @@ export function rollbackProgram({ appDir, previous }) {
   if (!previous || !existsSync(previous)) {
     throw new UpdateError("rollback_unavailable", "No previous program directory to restore");
   }
+  // Some Windows builds hold the directory handle even after the process exits.
+  // A short retry inside the helper makes the caller's single call robust.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      return swapRollback({ appDir, previous });
+    } catch (error) {
+      if (attempt === 5) throw error;
+      // Blocking sleep with no external command: Windows has no usable `sleep`.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
+    }
+  }
+  throw new UpdateError("rollback_blocked", "rollback retries exhausted");
+}
+
+function swapRollback({ appDir, previous }) {
   // Windows keeps file handles for a moment after the process exits, and a
   // directory holding an open file cannot be removed at all. Rename the failed
   // build aside instead of deleting it in place, then move the old tree back:
@@ -243,6 +258,7 @@ export function rollbackProgram({ appDir, previous }) {
   } catch {
     /* the service may still hold a handle; the operator can delete it later */
   }
+  return { restored: true };
 }
 
 /**
