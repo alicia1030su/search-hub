@@ -2,6 +2,36 @@
 
 Target: a 2-core / 2 GB Linux host can run basic search comfortably. No Redis, vector database, GPU, or external model is required.
 
+## Published images and packages (v0.1.8)
+
+Stable release assets:
+
+| Artefact | Where |
+|---|---|
+| Windows x64 | `search-hub-v0.1.8-windows-x64.zip` on the `v0.1.8` Release |
+| Linux x64 | `search-hub-v0.1.8-linux-x64.tar.gz` |
+| Linux arm64 | `search-hub-v0.1.8-linux-arm64.tar.gz` |
+| Container | `ghcr.io/alicia1030su/search-hub:0.1.8` (also `v0.1.8`, `latest`) |
+
+```bash
+docker pull ghcr.io/alicia1030su/search-hub:0.1.8
+SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.8 docker compose up -d
+```
+
+**The image is built for `linux/amd64` only.** On an arm64 host use the arm64 package in
+[standalone-packages.md](./standalone-packages.md); Docker on arm64 would run the amd64 image
+under emulation, which is not a configuration this project tests.
+
+Verify a download before running it:
+
+```bash
+sha256sum -c SHA256SUMS
+gh attestation verify search-hub-v0.1.8-linux-x64.tar.gz --repo alicia1030su/search-hub
+```
+
+The two checks are independent: SHA256 proves the bytes match what was published, the
+attestation proves which workflow and commit produced them.
+
 ## Docker Compose
 
 ```bash

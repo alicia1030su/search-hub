@@ -6,8 +6,13 @@ name: Upgrade and update fault injection
 #
 # It downloads published packages from GitHub Releases, so the upgrade paths are
 # the ones a user actually faces:
-#   v0.1.4-beta.6 -> current
-#   v0.1.5-beta.1 -> current
+#   v0.1.4-beta.6 -> current      (oldest package still installable)
+#   v0.1.7-beta.3 -> current      (the release immediately before v0.1.8)
+#   v0.1.8-beta.1  -> current      (beta to stable of the same version)
+#
+# The last two are the ones that matter for a stable release: an operator on the
+# beta channel must be able to install the stable package over the same data
+# directory without losing keys, cache or evaluation datasets.
 
 on:
   workflow_dispatch:
@@ -88,6 +93,31 @@ jobs:
           test -n "$TARGET" || { echo "no package was built"; exit 1; }
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.5-beta.1 --to "$TARGET" --port 8920
+
+      # The release immediately before the one being shipped. `upgrade-matrix`
+      # resolves the tag at run time, so this stays correct as versions move.
+      - name: Upgrade v0.1.7-beta.3 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.7-beta.3 --to "$TARGET" --port 8925
+
+      # beta -> stable of the same minor version: the path an operator on the
+      # beta channel actually takes, and the one where the updater must accept
+      # "release over prerelease".
+      - name: Upgrade v0.1.8-beta.1 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.8-beta.1 --to "$TARGET" --port 8926
 
       - name: Update fault injection
         shell: bash

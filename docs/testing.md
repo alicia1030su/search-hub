@@ -18,7 +18,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (838 tests, 55 files)
+## What is covered (846 tests, 56 files)
 
 **Malformed request mapping** — `tests/integration/http-error-mapping.test.ts` (5 cases)
 
@@ -65,6 +65,15 @@ switch test in `tests/e2e/admin.spec.ts`: full key coverage, zero CJK in the
 English values, identical `{{placeholders}}`, no empty strings, no hardcoded
 zh-CN formatter, and a real switch → reload → switch-back cycle that asserts no
 Chinese remains in `<main>`.
+
+**Release channel** — `tests/unit/release-channel.test.ts` (8 cases)
+
+The workflow used to hardcode `prerelease: true`, so a stable tag could never be published
+as stable. The classification now lives in `packaging/release-channel.mjs` and is asserted
+here: `v0.1.8` → stable, `v0.1.8-beta.1` / `-rc.N` / `-alpha.N` → prerelease, and anything
+unrecognised (`v0.1.8-nightly.1`, `v0.1`, `0.1.8`) is rejected rather than guessed. Ordering
+is checked too, because "is this newer than the installed version" is what the updater
+relies on.
 
 **Search quality lab** — `tests/unit/quality-metrics.test.ts` (42 cases),
 `tests/unit/quality-migration.test.ts` (4), `tests/unit/quality-gate.test.ts` (4) and

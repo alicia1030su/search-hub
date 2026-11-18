@@ -4,7 +4,10 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.8-beta.1 (2026-11-18)
+## v0.1.8 (2026-11-18)
+
+The first **stable** release of Search Hub. v0.1.8-beta.1 carried the same feature set; this
+entry supersedes it and is what the repository's `latest` points at.
 
 Search quality evaluation lab. The release exists so that "this source is better" can be
 answered with data instead of assertion — and so that a wrong metric is caught by CI rather
@@ -50,6 +53,34 @@ than by a customer.
 - The built-in fixtures (14 queries / 56 judgments, plus a 6-query positive-only variant)
   live under `*.fixture.test` and carry `origin: synthetic_fixture`. Their scores validate
   the machinery; they are not a measurement of any vendor, and the UI says so on the page.
+
+### Release channel
+
+- `vX.Y.Z` publishes a Stable Release (`prerelease=false`, becomes `latest`); `vX.Y.Z-beta.N`
+  / `-rc.N` / `-alpha.N` stays a prerelease and never moves `latest`. The classification is
+  a unit-tested module (`packaging/release-channel.mjs`), not a string check in YAML.
+- The Docker image is tagged `0.1.8`, `v0.1.8` and `latest` for a stable release. **It is
+  built for `linux/amd64` only**; arm64 users install the arm64 package.
+- A stable tag must match `package.json`. The release workflow refuses to publish when the
+  tag and the declared version disagree, because that mismatch is what makes `/api/health`
+  report a version nobody installed.
+
+### Known limitations at this release
+
+These are unchanged by the word "stable" and are listed so nobody has to discover them:
+
+- **Only four providers are verified against the real network**: Hacker News, Crossref,
+  OpenAlex and PubMed. Every other adapter is implemented from official documentation and
+  has never been called with a real credential. See `docs/provider-matrix.md`.
+- **No vendor-labelled quality dataset.** The evaluation lab ships synthetic fixtures only;
+  its numbers validate the machinery and do not rank real search engines.
+- **No AI model keys were available**, so rerank / embedding / summarisation have been
+  exercised against local mock servers only.
+- **Single instance only.** Key quota state is in memory and the evaluation budget ledger is
+  a SQLite table; multi-instance coordination (Redis) is not implemented.
+- **SQLite only.** PostgreSQL is not implemented.
+- One build-time advisory (`GHSA-fc5q-39xc-vjpf`, picomatch) has no upstream fix and is
+  documented as an accepted exception in `SECURITY.md`; it is not reachable at runtime.
 
 ## v0.1.7-beta.3 (2026-11-18)
 
