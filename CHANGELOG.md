@@ -64,6 +64,16 @@ has a regression test that fails against v0.1.8.
   ceiling into a day-long outage of a healthy source. It throws `blocked` now:
   refused locally, no key penalty.
 
+- **A failed update could leave the instance on the rejected build.** `startService`
+  spawns the launcher detached and unref'd without recording the pid, so when a
+  new build never became healthy the rollback had nothing to stop: the failed
+  build kept the port, the previous version could not bind, and the update ended
+  at exit 4 with the instance still on the build that had just been rejected.
+  The spawned pid is recorded and both rollback paths stop it before starting
+  the previous version (SIGTERM, 8 s, then SIGKILL — the same escalation the
+  orphan cleanup already used). Under systemd the unit still owns the process
+  and is left alone.
+
 ### Compatibility
 
 - `ProviderAttemptStat.httpRequests` and the extra `cost` fields are additive.
