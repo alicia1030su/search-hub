@@ -108,11 +108,25 @@ function persistenceFailure(runId: string, cause: unknown): SearchHubError {
   );
 }
 
-/** A page size inside the documented window, defaulted rather than rejected. */
+/**
+ * A page size inside the documented window, defaulted rather than rejected.
+ *
+ * `Number("abc")` is NaN, and `Math.round(NaN)` stays NaN: without the
+ * `isFinite` guard the value reaches SQLite as a limit, the query returns
+ * nothing, and the response echoes `limit: null` — a truncated page that looks
+ * like an empty dataset. A non-numeric page size is a caller mistake, not an
+ * empty result.
+ */
 function clampPage(value: number | undefined, fallback: number, max: number): number {
-  if (value === undefined) return fallback;
-  if (!Number.isFinite(value) || value < 1) return fallback;
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  if (value < 1) return fallback;
   return Math.min(max, Math.round(value));
+}
+
+/** The same rule for an offset: unparseable means "start at the beginning". */
+function clampOffset(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.round(value));
 }
 
 function parseExtraCategories(raw: string | null | undefined): QueryCategory[] {
@@ -591,8 +605,8 @@ export class QualityService {
     limit: number;
     offset: number;
   } {
-    const limit = Math.min(DATASET_PAGE_MAX, Math.max(1, Math.round(options.limit ?? DATASET_PAGE_DEFAULT)));
-    const offset = Math.max(0, Math.round(options.offset ?? 0));
+    const limit = clampPage(options.limit, DATASET_PAGE_DEFAULT, DATASET_PAGE_MAX);
+    const offset = clampOffset(options.offset);
     const totalRow = this.deps.db
       .select({ count: sql<number>`count(*)` })
       .from(qualityDatasets)
@@ -673,9 +687,9 @@ export class QualityService {
     if (!row) throw new SearchHubError("not_found", "Dataset not found");
 
     const queriesLimit = clampPage(options.queriesLimit, DETAIL_PAGE_DEFAULT, DETAIL_PAGE_MAX);
-    const queriesOffset = Math.max(0, Math.round(options.queriesOffset ?? 0));
+    const queriesOffset = clampOffset(options.queriesOffset);
     const judgmentsLimit = clampPage(options.judgmentsLimit, DETAIL_PAGE_DEFAULT, DETAIL_PAGE_MAX);
-    const judgmentsOffset = Math.max(0, Math.round(options.judgmentsOffset ?? 0));
+    const judgmentsOffset = clampOffset(options.judgmentsOffset);
 
     const queryTotal = Number(
       this.deps.db
@@ -866,7 +880,7 @@ export class QualityService {
     if (!row) throw new SearchHubError("not_found", "Dataset not found");
 
     const limit = clampPage(options.limit, 50, 200);
-    const offset = Math.max(0, Math.round(options.offset ?? 0));
+    const offset = clampOffset(options.offset);
 
     const judgedCounts = new Map(
       this.deps.db
@@ -1272,8 +1286,8 @@ export class QualityService {
     total: number;
     hasMore: boolean;
   } {
-    const limit = Math.min(200, Math.max(1, options.limit ?? 50));
-    const offset = Math.max(0, Math.round(options.offset ?? 0));
+    const limit = clampPage(options.limit, 50, 200);
+    const offset = clampOffset(options.offset);
     const where = options.datasetId ? eq(qualityRuns.datasetId, options.datasetId) : undefined;
     const totalRow = this.deps.db
       .select({ count: sql<number>`count(*)` })

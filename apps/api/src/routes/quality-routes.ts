@@ -328,14 +328,21 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
       // names the offending path instead of a generic "invalid payload".
       try {
         assertSafePayload(request.body ?? {});
-        for (const [index, query] of ((request.body as { queries?: unknown[] })?.queries ?? []).entries()) {
-          if (query !== null && typeof query === "object") {
-            const text = (query as { query?: unknown }).query;
-            if (typeof text === "string") assertCleanText(text, `queries[${index}].query`);
-            for (const [judgmentIndex, judgment] of ((query as { judgments?: unknown[] }).judgments ?? []).entries()) {
-              const url = judgment !== null && typeof judgment === "object" ? (judgment as { url?: unknown }).url : undefined;
-              if (typeof url === "string") assertDocumentUrl(url, `queries[${index}].judgments[${judgmentIndex}].url`);
-            }
+        // The body is unvalidated at this point, so every collection is checked
+        // before it is iterated. `"queries": "nope"` used to reach `.entries()`
+        // on a string, throw a TypeError and answer 500 to what is plainly a
+        // malformed request.
+        const body = (request.body ?? {}) as { queries?: unknown };
+        const queries = Array.isArray(body.queries) ? body.queries : [];
+        for (const [index, query] of queries.entries()) {
+          if (query === null || typeof query !== "object") continue;
+          const text = (query as { query?: unknown }).query;
+          if (typeof text === "string") assertCleanText(text, `queries[${index}].query`);
+          const rawJudgments = (query as { judgments?: unknown }).judgments;
+          const judgments = Array.isArray(rawJudgments) ? rawJudgments : [];
+          for (const [judgmentIndex, judgment] of judgments.entries()) {
+            const url = judgment !== null && typeof judgment === "object" ? (judgment as { url?: unknown }).url : undefined;
+            if (typeof url === "string") assertDocumentUrl(url, `queries[${index}].judgments[${judgmentIndex}].url`);
           }
         }
       } catch (error) {
