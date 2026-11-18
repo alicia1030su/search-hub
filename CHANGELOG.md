@@ -4,6 +4,53 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.8-beta.1 (2026-11-18)
+
+Search quality evaluation lab. The release exists so that "this source is better" can be
+answered with data instead of assertion — and so that a wrong metric is caught by CI rather
+than by a customer.
+
+### Added
+
+- **Metric engine** (`packages/core/src/evaluation`), pure functions with no database, no
+  network and no filesystem: P@k, Recall@k, MRR@k, nDCG@k, duplicate rate, domain count,
+  provider coverage, source diversity, latency percentiles and cost accounting.
+- **Four-grade relevance judgments** (0–3) with a provenance column: `human`,
+  `machine_generated`, `synthetic_fixture`. Only `human` is ground truth; a model grading
+  its own results is recorded as such and never promoted.
+- **Versioned datasets**: freeze to make a version read-only, fork to change judgments
+  without rewriting history. Runs record the dataset version they used.
+- **Two run modes.** `offline` reads stored snapshots or the built-in fixture and cannot
+  open a socket — proven by running it on an instance with no provider configured. `live`
+  goes through the same `SearchService` as user traffic (same key pool, scheduler, SSRF
+  guard, health gate), requires an explicit provider list, a request ceiling and
+  `confirmPaid`, and refuses the run when the worst case (queries × providers × 2 attempts)
+  does not fit the budget — before the first request.
+- **Fair comparison** through `snapshotRunId`: a second strategy re-ranks the *same* raw
+  rows. Comparing runs of different dataset versions is refused.
+- **RRF sweep with a development/holdout split**, chosen on development, reported on
+  holdout, with `INSUFFICIENT_EVIDENCE` as a first-class result.
+- **Admin page** with four tabs (datasets / experiments / compare / history), Chinese and
+  English, in the existing design system.
+- **`pnpm quality:eval`** as an offline CI gate: 11 hand-computed self-checks, then a
+  baseline comparison of nDCG@10 for `rrf:k=60`, failing on a regression beyond 0.02.
+
+### Changed
+
+- `SearchService.execute` gains an `evaluate` option that bypasses the response cache and
+  writes no `search_tasks` row, so an experiment can neither be served a stale result nor
+  inflate the user-traffic success rate.
+- The base-mode ordering moved into `orderByBaseRanking()` so the evaluation lab and
+  production sort with the same comparator instead of two copies.
+
+### Notes
+
+- **Production ranking is unchanged.** This release adds offline candidates only; nothing
+  auto-tunes a provider weight or a fusion parameter at runtime.
+- The built-in fixtures (14 queries / 56 judgments, plus a 6-query positive-only variant)
+  live under `*.fixture.test` and carry `origin: synthetic_fixture`. Their scores validate
+  the machinery; they are not a measurement of any vendor, and the UI says so on the page.
+
 ## v0.1.7-beta.3 (2026-11-18)
 
 A defect found by accepting the published v0.1.7-beta.2 Windows package rather

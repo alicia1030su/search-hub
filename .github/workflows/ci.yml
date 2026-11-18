@@ -48,6 +48,13 @@ jobs:
       - name: Documentation consistency (catalog vs docs)
         run: pnpm check:matrix && pnpm check:docs
 
+      # The retrieval metrics are the product here: a formula change that moves
+      # nDCG on the frozen fixture has to be acknowledged by updating
+      # tests/fixtures/quality-baseline.json, and a regression fails the build.
+      # No network, no API key, identical numbers every run.
+      - name: Search quality gate (offline)
+        run: pnpm quality:eval --baseline tests/fixtures/quality-baseline.json --max-drop 0.02
+
       - name: Unit and integration tests
         run: pnpm test
 

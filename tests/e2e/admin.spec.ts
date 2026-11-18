@@ -444,8 +444,10 @@ test.describe("Search Hub 管理后台端到端", () => {
     // header legitimately contains the locale's own name ("简体中文") and the
     // administrator's display name, neither of which is UI copy. Everything a
     // user reads to operate this page lives in <main>.
-    const cjk = /[\u4e00-\u9fff]/;
-    expect(mainText, `Chinese text still visible in /settings: ${mainText.slice(0, 300)}`).not.toMatch(cjk);
+    const settingsText = await page.locator("main").innerText();
+    expect(settingsText, `Chinese text still visible in /settings: ${settingsText.slice(0, 300)}`).not.toMatch(
+      /[\u4e00-\u9fff]/,
+    );
 
     // Persistence: a real reload keeps English.
     await page.reload();

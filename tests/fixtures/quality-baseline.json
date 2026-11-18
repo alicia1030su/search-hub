@@ -1,0 +1,1079 @@
+{
+  "format": "search-hub.quality.report/1",
+  "origin": "synthetic_fixture",
+  "dataset": {
+    "id": "ds_synthetic_core_v1",
+    "name": "Synthetic core (offline fixture)",
+    "version": 1,
+    "queries": 14,
+    "judgments": 56,
+    "judgmentsComplete": true
+  },
+  "cutoff": 10,
+  "note": "Synthetic fixture: these numbers validate the evaluation machinery and guard against ranking regressions. They are not a measurement of any real search vendor.",
+  "selfChecks": [
+    {
+      "name": "nDCG@10 of an ideal ordering is 1",
+      "passed": true,
+      "detail": 1
+    },
+    {
+      "name": "P@10 of 2 relevant in 10 is 0.2",
+      "passed": true
+    },
+    {
+      "name": "MRR@10 of a first-position hit is 1",
+      "passed": true
+    },
+    {
+      "name": "Recall@10 of 2 of 2 is 1",
+      "passed": true
+    },
+    {
+      "name": "nDCG drops when the ranking is reversed",
+      "passed": true
+    },
+    {
+      "name": "DCG uses 2^rel - 1 and log2(i + 1)",
+      "passed": true,
+      "detail": 9.392789260714373
+    },
+    {
+      "name": "recall is N/A when the qrels are incomplete",
+      "passed": true
+    },
+    {
+      "name": "an unjudged document is excluded, not scored as 0",
+      "passed": true
+    },
+    {
+      "name": "a query with no judgments is N/A, not 0",
+      "passed": true
+    },
+    {
+      "name": "empty latency is N/A, not 0",
+      "passed": true
+    },
+    {
+      "name": "unspecified cost is unknown, not 0",
+      "passed": true
+    }
+  ],
+  "strategies": {
+    "single:alpha": {
+      "fusion": {
+        "strategy": "single",
+        "providerId": "alpha"
+      },
+      "metrics": {
+        "precisionAtK": {
+          "value": 0.2142857143,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "recallAtK": {
+          "value": 0.8869047619,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "mrrAtK": {
+          "value": 0.9642857143,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "ndcgAtK": {
+          "value": 0.8554983346,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        }
+      },
+      "perCategory": {
+        "academic": {
+          "nDCG": {
+            "value": 0.82381267,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "chinese": {
+          "nDCG": {
+            "value": 0.9214141325,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "code": {
+          "nDCG": {
+            "value": 0.8678171501,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "documentation": {
+          "nDCG": {
+            "value": 0.7715881582,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "english": {
+          "nDCG": {
+            "value": 0.7037281178,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "factual": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "general": {
+          "nDCG": {
+            "value": 0.7093651728,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "multi_hop": {
+          "nDCG": {
+            "value": 0.9090666697,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "news": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        }
+      },
+      "response": {
+        "resultCount": 3.2143,
+        "emptyResultRate": 0
+      }
+    },
+    "base": {
+      "fusion": {
+        "strategy": "base"
+      },
+      "metrics": {
+        "precisionAtK": {
+          "value": 0.25,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "recallAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "mrrAtK": {
+          "value": 0.9642857143,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "ndcgAtK": {
+          "value": 0.9170975694,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        }
+      },
+      "perCategory": {
+        "academic": {
+          "nDCG": {
+            "value": 0.8636036728,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "chinese": {
+          "nDCG": {
+            "value": 0.9214141325,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "code": {
+          "nDCG": {
+            "value": 0.9318018364,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "documentation": {
+          "nDCG": {
+            "value": 0.8587530664,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "english": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "factual": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "general": {
+          "nDCG": {
+            "value": 0.7759121143,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "multi_hop": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "news": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        }
+      },
+      "response": {
+        "resultCount": 4,
+        "emptyResultRate": 0
+      }
+    },
+    "rrf:k=60": {
+      "fusion": {
+        "strategy": "rrf",
+        "k": 60
+      },
+      "metrics": {
+        "precisionAtK": {
+          "value": 0.25,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "recallAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "mrrAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "ndcgAtK": {
+          "value": 0.9334454571,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        }
+      },
+      "perCategory": {
+        "academic": {
+          "nDCG": {
+            "value": 0.8636036728,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "chinese": {
+          "nDCG": {
+            "value": 0.9214141325,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "code": {
+          "nDCG": {
+            "value": 0.8394099892,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "documentation": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "english": {
+          "nDCG": {
+            "value": 0.8501556677,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "factual": {
+          "nDCG": {
+            "value": 0.9914211139,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "general": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "multi_hop": {
+          "nDCG": {
+            "value": 0.8499865883,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "news": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        }
+      },
+      "response": {
+        "resultCount": 4,
+        "emptyResultRate": 0
+      }
+    },
+    "rrf:k=20": {
+      "fusion": {
+        "strategy": "rrf",
+        "k": 20
+      },
+      "metrics": {
+        "precisionAtK": {
+          "value": 0.25,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "recallAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "mrrAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "ndcgAtK": {
+          "value": 0.9334454571,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        }
+      },
+      "perCategory": {
+        "academic": {
+          "nDCG": {
+            "value": 0.8636036728,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "chinese": {
+          "nDCG": {
+            "value": 0.9214141325,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "code": {
+          "nDCG": {
+            "value": 0.8394099892,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "documentation": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "english": {
+          "nDCG": {
+            "value": 0.8501556677,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "factual": {
+          "nDCG": {
+            "value": 0.9914211139,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "general": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "multi_hop": {
+          "nDCG": {
+            "value": 0.8499865883,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "news": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        }
+      },
+      "response": {
+        "resultCount": 4,
+        "emptyResultRate": 0
+      }
+    },
+    "rrf:k=40": {
+      "fusion": {
+        "strategy": "rrf",
+        "k": 40
+      },
+      "metrics": {
+        "precisionAtK": {
+          "value": 0.25,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "recallAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "mrrAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "ndcgAtK": {
+          "value": 0.9334454571,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        }
+      },
+      "perCategory": {
+        "academic": {
+          "nDCG": {
+            "value": 0.8636036728,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "chinese": {
+          "nDCG": {
+            "value": 0.9214141325,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "code": {
+          "nDCG": {
+            "value": 0.8394099892,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "documentation": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "english": {
+          "nDCG": {
+            "value": 0.8501556677,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "factual": {
+          "nDCG": {
+            "value": 0.9914211139,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "general": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "multi_hop": {
+          "nDCG": {
+            "value": 0.8499865883,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "news": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        }
+      },
+      "response": {
+        "resultCount": 4,
+        "emptyResultRate": 0
+      }
+    },
+    "rrf:k=80": {
+      "fusion": {
+        "strategy": "rrf",
+        "k": 80
+      },
+      "metrics": {
+        "precisionAtK": {
+          "value": 0.25,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "recallAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "mrrAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "ndcgAtK": {
+          "value": 0.9334454571,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        }
+      },
+      "perCategory": {
+        "academic": {
+          "nDCG": {
+            "value": 0.8636036728,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "chinese": {
+          "nDCG": {
+            "value": 0.9214141325,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "code": {
+          "nDCG": {
+            "value": 0.8394099892,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "documentation": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "english": {
+          "nDCG": {
+            "value": 0.8501556677,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "factual": {
+          "nDCG": {
+            "value": 0.9914211139,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "general": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "multi_hop": {
+          "nDCG": {
+            "value": 0.8499865883,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "news": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        }
+      },
+      "response": {
+        "resultCount": 4,
+        "emptyResultRate": 0
+      }
+    },
+    "rrf:k=100": {
+      "fusion": {
+        "strategy": "rrf",
+        "k": 100
+      },
+      "metrics": {
+        "precisionAtK": {
+          "value": 0.25,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "recallAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "mrrAtK": {
+          "value": 1,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        },
+        "ndcgAtK": {
+          "value": 0.9529306467,
+          "status": "ok",
+          "sampleSize": 14,
+          "provisionalCount": 0,
+          "lowSample": false
+        }
+      },
+      "perCategory": {
+        "academic": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "chinese": {
+          "nDCG": {
+            "value": 0.9214141325,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "code": {
+          "nDCG": {
+            "value": 0.9076081528,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "documentation": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "english": {
+          "nDCG": {
+            "value": 0.8501556677,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "factual": {
+          "nDCG": {
+            "value": 0.9914211139,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "general": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 2,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 2
+        },
+        "multi_hop": {
+          "nDCG": {
+            "value": 0.8499865883,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        },
+        "news": {
+          "nDCG": {
+            "value": 1,
+            "status": "ok",
+            "sampleSize": 1,
+            "provisionalCount": 0,
+            "lowSample": true
+          },
+          "queries": 1
+        }
+      },
+      "response": {
+        "resultCount": 4,
+        "emptyResultRate": 0
+      }
+    }
+  },
+  "selection": {
+    "split": {
+      "development": 7,
+      "holdout": 7
+    },
+    "developmentScores": [
+      {
+        "k": 20,
+        "ndcgAtK": {
+          "value": 0.9566573669,
+          "status": "ok",
+          "sampleSize": 7,
+          "provisionalCount": 0,
+          "lowSample": true
+        }
+      },
+      {
+        "k": 40,
+        "ndcgAtK": {
+          "value": 0.9566573669,
+          "status": "ok",
+          "sampleSize": 7,
+          "provisionalCount": 0,
+          "lowSample": true
+        }
+      },
+      {
+        "k": 60,
+        "ndcgAtK": {
+          "value": 0.9566573669,
+          "status": "ok",
+          "sampleSize": 7,
+          "provisionalCount": 0,
+          "lowSample": true
+        }
+      },
+      {
+        "k": 80,
+        "ndcgAtK": {
+          "value": 0.9566573669,
+          "status": "ok",
+          "sampleSize": 7,
+          "provisionalCount": 0,
+          "lowSample": true
+        }
+      },
+      {
+        "k": 100,
+        "ndcgAtK": {
+          "value": 0.9761425565,
+          "status": "ok",
+          "sampleSize": 7,
+          "provisionalCount": 0,
+          "lowSample": true
+        }
+      }
+    ],
+    "chosenK": 100,
+    "holdout": {
+      "metric": "ndcgAtK",
+      "baseline": {
+        "value": 0.9102335474,
+        "status": "ok",
+        "sampleSize": 7,
+        "provisionalCount": 0,
+        "lowSample": true
+      },
+      "candidate": {
+        "value": 0.929718737,
+        "status": "ok",
+        "sampleSize": 7,
+        "provisionalCount": 0,
+        "lowSample": true
+      },
+      "absoluteDelta": null,
+      "relativeDelta": null,
+      "improved": [
+        {
+          "queryId": "q06",
+          "baseline": 0.8636036728,
+          "candidate": 1,
+          "delta": 0.1363963272,
+          "verdict": "improved"
+        }
+      ],
+      "degraded": [],
+      "comparableQueries": 7,
+      "verdict": "insufficient_evidence",
+      "reason": "only 7 comparable queries; at least 8 are required"
+    },
+    "evidence": "INSUFFICIENT_EVIDENCE"
+  }
+}

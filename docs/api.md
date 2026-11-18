@@ -291,6 +291,52 @@ POST /api/admin/provider-health/:id/reset
 - A search response that was served from the cache has `stats.cached: true` and
   the MCP `search_web` tool returns `cached: true` for the same reason.
 
+## Search quality
+
+All routes require an `admin` session; mutations also require `x-csrf-token`.
+A `search`-scope bearer token receives `403`.
+
+```jsonc
+GET  /api/admin/quality/datasets                 → { datasets: QualityDatasetSummary[] }
+POST /api/admin/quality/datasets                 { name, description?, language? }
+GET  /api/admin/quality/datasets/:id             → { dataset, queries, judgments, coverage }
+POST /api/admin/quality/datasets/:id/queries     { queries: [{ query, category?, intent? }] }
+POST /api/admin/quality/datasets/:id/judgments   { judgments: [{ queryId, url|documentId, relevance }] }
+POST /api/admin/quality/datasets/:id/freeze      { judgmentsComplete? }
+POST /api/admin/quality/datasets/:id/fork
+GET  /api/admin/quality/datasets/:id/export      → search-hub.quality.dataset/1
+POST /api/admin/quality/datasets/import
+
+GET  /api/admin/quality/runs?datasetId=&limit=   → { runs }
+POST /api/admin/quality/runs                     { datasetId, mode, fusion, limit?, cutoff?,
+                                                   snapshotRunId?, providerIds?, requestBudget?,
+                                                   confirmPaid?, queryIds?, unitCosts? }
+GET  /api/admin/quality/runs/:id                 → { run, metrics, latency, cost, quality, perQuery }
+POST /api/admin/quality/runs/:id/cancel
+GET  /api/admin/quality/compare?baseline=&candidate=&metric=
+POST /api/admin/quality/sweep                    { datasetId, kValues?, metric?, developmentShare? }
+POST /api/admin/quality/prune                    { olderThanDays, keepLatest? }
+```
+
+A metric that cannot be computed is serialised as
+`{ "value": null, "status": "na", "reason": "qrels_incomplete" }` — never as `0`.
+`reason` is one of `no_results`, `no_judgments`, `qrels_incomplete`,
+`no_relevant_documents`, `not_applicable`.
+
+`POST /api/admin/quality/runs` rejects with `400` when:
+
+- the dataset is not frozen (`conflict` semantics are expressed as 400 here
+  because the request cannot succeed without changing the dataset);
+- `mode: "live"` is missing `confirmPaid`, `providerIds` or a positive
+  `requestBudget`;
+- the worst case (`queries × providers × 2`) exceeds `requestBudget`;
+- an offline run has no snapshot source: no `snapshotRunId`, and the dataset is
+  not a synthetic fixture.
+
+`GET .../compare` returns `verdict: "insufficient_evidence"` with a `reason`
+when there are fewer than 8 comparable queries or either side is unmeasurable.
+The API does not invent a winner in that case.
+
 ## Examples
 
 ```bash

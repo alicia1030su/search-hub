@@ -18,7 +18,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (751 tests, 51 files)
+## What is covered (827 tests, 55 files)
 
 **Malformed request mapping** — `tests/integration/http-error-mapping.test.ts` (5 cases)
 
@@ -65,6 +65,34 @@ switch test in `tests/e2e/admin.spec.ts`: full key coverage, zero CJK in the
 English values, identical `{{placeholders}}`, no empty strings, no hardcoded
 zh-CN formatter, and a real switch → reload → switch-back cycle that asserts no
 Chinese remains in `<main>`.
+
+**Search quality lab** — `tests/unit/quality-metrics.test.ts` (42 cases),
+`tests/unit/quality-migration.test.ts` (4), `tests/unit/quality-gate.test.ts` (4) and
+`tests/integration/quality-lab.test.ts` (26)
+
+Metric maths is asserted against hand-computed values, not against the implementation:
+
+- P@10 keeps the cutoff as denominator (3 relevant of 10 is 0.30, not 1.0); Recall@10 uses
+  the qrels total and is N/A when the qrels are incomplete or hold nothing relevant;
+  MRR@10 covers position 1, 3, 10 and the no-hit case; nDCG@10 is exactly 1 for an ideal
+  ordering, lower when reversed, and N/A when every grade is 0.
+- Unjudged documents are excluded from the ranking (and the query marked provisional), not
+  scored as 0; `as_zero` is available only as a sensitivity view and lowers the score.
+- Aggregation leaves provisional queries out of the headline, reports how many it left out,
+  and returns N/A when every query is provisional. `lowSample` flips at 8.
+- Cost is `unknown` — never 0 — when no unit price is configured.
+- The fusion lab re-ranks a snapshot through the production `dedupeResults` and
+  `orderByBaseRanking`; a provider returning the same URL twice is counted once; ties break
+  deterministically.
+- Dataset API: create, add queries, reject a duplicate query, replace a re-graded document
+  instead of duplicating it, freeze, refuse edits after freezing, fork, export/import round
+  trip, reject an out-of-range grade.
+- Runs: the offline fixture completes with **no provider configured** (so nothing could have
+  left the process), identical snapshots produce identical metrics, a re-rank issues zero
+  requests, live mode refuses without `confirmPaid` / providers / a workable budget, a live
+  run against the local `mock` adapter writes no `search_tasks` row, an unfrozen dataset and
+  a manual dataset without snapshots are both refused.
+- Authorization: 401 without a session, 403 for a `search`-scope token, 403 without CSRF.
 
 **Provider health management** — `tests/integration/provider-health-center.test.ts` (35 cases)
 
