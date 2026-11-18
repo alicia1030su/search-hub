@@ -16,6 +16,13 @@ export interface JudgedQuery {
   queryId: string;
   query: string;
   category: string;
+  /**
+   * Every label this query carries, primary first.
+   *
+   * Optional so an existing caller that only knows the primary label keeps
+   * compiling; `compareRankings` does not read it.
+   */
+  categories?: readonly string[];
   grades: Map<string, RelevanceGrade>;
   relevantTotal: number | null;
 }

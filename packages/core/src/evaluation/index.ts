@@ -6,3 +6,5 @@ export * from "./lab.js";
 export * from "./compare.js";
 export * from "./split.js";
 export * from "./fixture.js";
+export * from "./categories.js";
+export * from "./movements.js";

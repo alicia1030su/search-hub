@@ -60,11 +60,44 @@ class FetchProvider {
  * pushes a run past its ceiling stops the run rather than overspending it — the
  * pre-flight estimate only has to catch the ordinary case.
  */
-function physicalRequestsPerQuery(runtime: {
-  config: { maxRetries: number; search?: { maxRequestsPerSearch?: number } };
-}): number {
+/** A stored JSON object, or an empty one when the column is malformed. */
+function parseJsonRecord(value: string | null | undefined): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function physicalRequestsPerQuery(
+  runtime: {
+    config: {
+      maxRetries: number;
+      maxResults?: number;
+      search?: { maxRequestsPerSearch?: number; pageSize?: number };
+    };
+  },
+  rows?: number,
+): number {
   const attempts = 1 + Math.max(0, runtime.config.maxRetries);
-  const pages = Math.max(1, runtime.config.search?.maxRequestsPerSearch ?? 1);
+  // Pages come from the row count **when it is known**, because that is what
+  // the adapter will actually page through: asking for 50 rows at 20 per page
+  // is three requests inside one attempt. `maxRequestsPerSearch` stays as the
+  // configured ceiling, so an unknown row count is never assumed to be one page
+  // and a known one is never assumed to fit on a single page.
+  const configuredPages = Math.max(1, runtime.config.search?.maxRequestsPerSearch ?? 1);
+  const perPage = Math.max(
+    1,
+    runtime.config.search?.pageSize ?? runtime.config.maxResults ?? 10,
+  );
+  const pages =
+    rows === undefined
+      ? configuredPages
+      : Math.max(configuredPages, Math.ceil(Math.max(1, rows) / perPage));
   return attempts * pages;
 }
 
@@ -265,12 +298,48 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
      * and a budget that counted attempts would authorise a third of the traffic
      * the vendor sees.
      */
-    providerMaxRequests: (providerId: string) => {
+    providerMaxRequests: (providerId: string, perProviderLimit?: number) => {
       const runtime = providers.activeRuntimes().find((entry) => entry.config.id === providerId);
       // No runtime means the provider is disabled or gone; the pessimistic
       // default keeps the pre-check conservative instead of permissive.
-      return runtime ? physicalRequestsPerQuery(runtime) : 8;
+      return runtime ? physicalRequestsPerQuery(runtime, perProviderLimit) : 8;
     },
+    /**
+     * Credential-free provider descriptions for run provenance.
+     *
+     * `activeRuntimes()` carries the adapter and the key scheduler; only the
+     * configuration is projected, and only the fields that can move a ranking
+     * or a request plan. An API key is deliberately absent: rotating one is not
+     * a change to the experiment.
+     */
+    providerSnapshot: () =>
+      providers.listRows().map((row) => ({
+        id: row.id,
+        type: row.type,
+        baseUrl: row.baseUrl,
+        weight: row.weight,
+        timeoutMs: row.timeoutMs,
+        maxConcurrency: row.maxConcurrency,
+        resultsPerPage: row.resultsPerPage,
+        rpmLimit: row.rpmLimit,
+        maxRetries: row.maxRetries,
+        // The resolved search plan is what actually reaches the vendor, and it
+        // is credential-free by construction.
+        searchConfig: {
+          stored: parseJsonRecord(row.searchConfigJson),
+          resolved: providers
+            .activeRuntimes()
+            .find((entry) => entry.config.id === row.id)?.config.search ?? null,
+        },
+      })),
+    modelSnapshot: () =>
+      models.list().map((model) => ({
+        id: model.id,
+        kind: model.kind,
+        providerType: model.providerType,
+        baseUrl: model.baseUrl,
+        modelId: model.modelId,
+      })),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
 
@@ -278,7 +347,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
   // install without an import step. They are frozen synthetic data: they prove
   // the machinery and never claim anything about a real vendor.
   try {
-    if (quality.listDatasets().length === 0) {
+    if (quality.listDatasets({ limit: 1 }).total === 0) {
       const seeded = quality.ensureFixtures();
       if (seeded.created.length > 0) {
         logger.info({ datasets: seeded.created }, "seeded the built-in quality fixtures");
