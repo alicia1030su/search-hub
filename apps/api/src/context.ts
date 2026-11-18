@@ -20,6 +20,7 @@ import { ModelService } from "./services/models.js";
 import { HealthService } from "./services/health.js";
 import { SearchService } from "./services/search.js";
 import { CacheService } from "./services/cache.js";
+import { QualityService } from "./services/quality.js";
 import { SessionService, TokenService, type AuthDependencies } from "./auth.js";
 
 class FetchProvider {
@@ -71,6 +72,8 @@ export interface AppContext {
   cache: CacheService;
   /** Provider health probes and the aggregated dashboard view. */
   health: HealthService;
+  /** Search quality evaluation: datasets, judgments, runs and comparisons. */
+  quality: QualityService;
   logger: PinoLogger;
   appLogger: Logger;
   fetch: SafeFetch;
@@ -227,6 +230,31 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     cache,
   });
 
+  const quality = new QualityService({
+    db: handle.db,
+    settings,
+    search,
+    logger: appLogger,
+    engineVersion: config.version,
+    codeCommit: config.commit ?? null,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+
+  // Seed the built-in offline fixtures once, so the lab is usable on a fresh
+  // install without an import step. They are frozen synthetic data: they prove
+  // the machinery and never claim anything about a real vendor.
+  try {
+    if (quality.listDatasets().length === 0) {
+      const seeded = quality.ensureFixtures();
+      if (seeded.created.length > 0) {
+        logger.info({ datasets: seeded.created }, "seeded the built-in quality fixtures");
+      }
+    }
+  } catch (error) {
+    // A seeding failure must not stop the server: evaluation is optional.
+    logger.warn({ err: error }, "could not seed the built-in quality fixtures");
+  }
+
   // A TTL change must apply to what is already cached, immediately: shortening
   // 72h → 1h has to take effect now, and lengthening it must not resurrect
   // entries that already expired. `retime` implements exactly those two rules.
@@ -257,6 +285,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     search,
     cache,
     health,
+    quality,
     logger,
     appLogger,
     fetch: fetchProxy,

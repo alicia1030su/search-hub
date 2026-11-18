@@ -204,6 +204,22 @@ export function baseScore(result: DedupedResult): number {
   return Number((rankBonus + multiSourceBonus).toFixed(6));
 }
 
+/**
+ * The non-RRF ordering used by `basic` mode, and by the offline evaluation lab
+ * as its "base ranking" baseline.
+ *
+ * It lives here so both paths sort identically: an evaluation that ranks with a
+ * copy of this comparator would eventually disagree with production and blame
+ * the algorithm.
+ */
+export function orderByBaseRanking(rows: readonly DedupedResult[]): DedupedResult[] {
+  return [...rows].sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    if (b.sources.length !== a.sources.length) return b.sources.length - a.sources.length;
+    return a.url < b.url ? -1 : a.url > b.url ? 1 : 0;
+  });
+}
+
 export function titleFingerprint(title: string): string {
   return normalizeTitle(title);
 }

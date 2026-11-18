@@ -377,3 +377,161 @@ export const healthProbeBudget = sqliteTable(
 );
 
 export type ProviderProbeStateRow = typeof providerProbeState.$inferSelect;
+
+/**
+ * A versioned qrel set: a dataset of queries and the grades assessors gave to
+ * documents for them.
+ *
+ * `origin` decides what a score may be called. A `synthetic_fixture` dataset
+ * validates the machinery; it never describes a real vendor's quality.
+ */
+export const qualityDatasets = sqliteTable(
+  "quality_datasets",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    language: text("language").notNull().default("zh"),
+    /** Bumped by `freeze`; a run records the version it used. */
+    version: integer("version").notNull().default(1),
+    /** "draft" | "frozen". A frozen dataset rejects in-place edits. */
+    status: text("status").notNull().default("draft"),
+    /** "manual" | "imported" | "synthetic_fixture". */
+    origin: text("origin").notNull().default("manual"),
+    /**
+     * True only when the qrels are exhaustive for this query set. Recall is
+     * N/A otherwise — a partial ground truth cannot produce a recall figure.
+     */
+    judgmentsComplete: integer("judgments_complete", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    frozenAt: text("frozen_at"),
+  },
+  (table) => [index("idx_quality_datasets_status").on(table.status)],
+);
+
+export const qualityQueries = sqliteTable(
+  "quality_queries",
+  {
+    id: text("id").primaryKey(),
+    datasetId: text("dataset_id")
+      .notNull()
+      .references(() => qualityDatasets.id, { onDelete: "cascade" }),
+    query: text("query").notNull(),
+    /** general | chinese | english | code | academic | news | ... */
+    category: text("category").notNull().default("general"),
+    language: text("language").notNull().default("zh"),
+    intent: text("intent").notNull().default(""),
+    notes: text("notes").notNull().default(""),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("idx_quality_queries_dataset").on(table.datasetId)],
+);
+
+export const qualityJudgments = sqliteTable(
+  "quality_judgments",
+  {
+    id: text("id").primaryKey(),
+    datasetId: text("dataset_id")
+      .notNull()
+      .references(() => qualityDatasets.id, { onDelete: "cascade" }),
+    queryId: text("query_id")
+      .notNull()
+      .references(() => qualityQueries.id, { onDelete: "cascade" }),
+    /** Normalized document identity, never a list position. */
+    documentId: text("document_id").notNull(),
+    /** 0 off-topic … 3 fully answers the intent. */
+    relevance: integer("relevance").notNull(),
+    assessor: text("assessor").notNull(),
+    /** human | machine_generated | synthetic_fixture. Only human is truth. */
+    source: text("source").notNull(),
+    notes: text("notes").notNull().default(""),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_quality_judgments_document").on(table.queryId, table.documentId),
+    index("idx_quality_judgments_dataset").on(table.datasetId),
+  ],
+);
+
+export const qualityRuns = sqliteTable(
+  "quality_runs",
+  {
+    id: text("id").primaryKey(),
+    datasetId: text("dataset_id").notNull(),
+    datasetVersion: integer("dataset_version").notNull(),
+    datasetOrigin: text("dataset_origin").notNull(),
+    name: text("name").notNull().default(""),
+    notes: text("notes").notNull().default(""),
+    /** "offline" (never leaves the process) or "live" (spends vendor quota). */
+    mode: text("mode").notNull(),
+    fusionStrategy: text("fusion_strategy").notNull(),
+    fusionJson: text("fusion_json").notNull(),
+    limitValue: integer("limit_value").notNull(),
+    /** Re-rank the snapshots of another run instead of capturing new ones. */
+    snapshotRunId: text("snapshot_run_id"),
+    codeCommit: text("code_commit"),
+    engineVersion: text("engine_version").notNull(),
+    status: text("status").notNull(),
+    /** Hard ceiling on upstream requests, and what was actually spent. */
+    requestBudget: integer("request_budget").notNull().default(0),
+    requestsUsed: integer("requests_used").notNull().default(0),
+    cacheHits: integer("cache_hits").notNull().default(0),
+    queryCount: integer("query_count").notNull().default(0),
+    errorJson: text("error_json"),
+    metricsJson: text("metrics_json"),
+    actor: text("actor"),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("idx_quality_runs_dataset").on(table.datasetId, table.startedAt)],
+);
+
+/**
+ * The raw per-provider lists captured by a run.
+ *
+ * This is what makes a comparison fair: two fusion strategies are re-ranked
+ * from the same rows instead of from two different moments on the network.
+ */
+export const qualitySnapshots = sqliteTable(
+  "quality_snapshots",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => qualityRuns.id, { onDelete: "cascade" }),
+    queryId: text("query_id").notNull(),
+    snapshotJson: text("snapshot_json").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("idx_quality_snapshots_query").on(table.runId, table.queryId)],
+);
+
+export const qualityRunResults = sqliteTable(
+  "quality_run_results",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => qualityRuns.id, { onDelete: "cascade" }),
+    queryId: text("query_id").notNull(),
+    status: text("status").notNull(),
+    /** Ordered document ids: what a regression is actually about. */
+    rankedJson: text("ranked_json").notNull(),
+    metricsJson: text("metrics_json").notNull(),
+    latencyMs: real("latency_ms"),
+    upstreamRequests: integer("upstream_requests").notNull().default(0),
+    errorJson: text("error_json"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("idx_quality_run_results_run").on(table.runId)],
+);
+
+export type QualityDatasetRow = typeof qualityDatasets.$inferSelect;
+export type QualityQueryRow = typeof qualityQueries.$inferSelect;
+export type QualityJudgmentRow = typeof qualityJudgments.$inferSelect;
+export type QualityRunRow = typeof qualityRuns.$inferSelect;
+export type QualitySnapshotRow = typeof qualitySnapshots.$inferSelect;
+export type QualityRunResultRow = typeof qualityRunResults.$inferSelect;

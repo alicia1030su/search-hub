@@ -61,6 +61,13 @@ export interface AppConfig {
   staticDir: string | null;
   migrationsDir: string;
   version: string;
+  /**
+   * Build commit, when the build knows it.
+   *
+   * Evaluation runs record it so a score can be attributed to a revision; a
+   * build that cannot report one leaves it null rather than guessing.
+   */
+  commit: string | null;
   /** Hard cap for `POST /api/admin/backup/verify` raw uploads (default 64 MB). */
   maxBackupUploadBytes: number;
   /** Global per-IP request budget (default 300/min). Raise for load testing. */
@@ -225,6 +232,7 @@ export function loadConfig(): AppConfig {
     // whose reported version differs from the package it installed. A hardcoded
     // string made every such check meaningless.
     version: resolveVersion(),
+    commit: env("SEARCH_HUB_COMMIT") ?? null,
     rateLimitPerMin: Number(env("SEARCH_HUB_RATE_LIMIT_PER_MIN") ?? 300),
     maxBackupUploadBytes: Math.min(
       // Clamp: too small makes verification useless, too large lets one upload

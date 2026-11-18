@@ -30,6 +30,7 @@
     "verify:package": "node packaging/verify-package.mjs",
     "check:docs": "node --import tsx scripts/check-doc-consistency.mjs",
     "check:matrix": "node --import tsx scripts/generate-provider-matrix.mjs --check",
+    "quality:eval": "node --import tsx scripts/quality-eval.mjs",
     "generate:matrix": "node --import tsx scripts/generate-provider-matrix.mjs",
     "test:updater": "node packaging/launcher/updater-test.mjs",
     "test:upgrade": "node packaging/upgrade-matrix.mjs",
