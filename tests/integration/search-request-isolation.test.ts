@@ -11,6 +11,7 @@
  * inside `executeSearch` when B finishes, because A's provider is configured to
  * take far longer than B's entire request.
  */
+import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,12 +31,14 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
+const servers: Server[] = [];
 
 afterEach(async () => {
   for (const harness of harnesses.splice(0)) {
     await harness.app.close();
     rmSync(harness.dir, { recursive: true, force: true });
   }
+  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
 
 function testConfig(dir: string): AppConfig {
@@ -333,4 +336,75 @@ describe("health-gate skip list isolation", () => {
     }
     expect(body.failedSources?.map((item) => item.id) ?? []).toContain(parked);
   }, 30_000);
+});
+
+/**
+ * Deep Search must report the same failures as a normal search.
+ *
+ * It had no reference to the skip list at all, so a parked source vanished from
+ * a deep answer: the caller saw fewer sources, no reason, and `completed`.
+ */
+describe("deep search health-gate reporting", () => {
+  it("C06b: a parked source appears in a deep response instead of disappearing", async () => {
+    const h = await createHarness();
+    const parked = await addProvider(h, { name: "deep-parked" });
+    const live = await addProvider(h, { name: "deep-live", latencyMs: 1 });
+    park(h, parked);
+
+    // Deep needs a chat model to rewrite the query. Point it at a local server
+    // that fails, so the rewrite falls back to the original query (documented
+    // behaviour) and the retrieval still happens — the gate is what is tested.
+    const modelServer = createServer((_request, response) => {
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "model unavailable" } }));
+    });
+    servers.push(modelServer);
+    await new Promise<void>((resolve) => modelServer.listen(0, "127.0.0.1", () => resolve()));
+    const address = modelServer.address();
+    if (typeof address === "string" || address === null) throw new Error("model stub did not bind");
+
+    await h.app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { security: { privateHostAllowlist: ["127.0.0.1"] } },
+    });
+    const model = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/models",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        kind: "chat",
+        name: "deep-chat",
+        providerType: "openai-compatible",
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        modelId: "stub",
+        batchSize: 4,
+        timeoutMs: 2000,
+        maxConcurrency: 2,
+        enabled: true,
+        isDefault: true,
+        params: {},
+      },
+    });
+    expect(model.statusCode, model.body).toBe(200);
+
+    const response = await search(h, {
+      query: "deep with a parked source",
+      providers: [parked, live],
+      mode: "deep",
+    });
+    const body = response.json() as {
+      status: string;
+      failedSources: Array<{ id: string }>;
+      errors: Array<{ providerId: string; code: string }>;
+    };
+    expect(body.failedSources.map((item) => item.id)).toContain(parked);
+    // Reported once, not once per rewrite.
+    const occurrences = body.errors.filter((item) => item.providerId === parked).length;
+    expect(occurrences).toBe(1);
+    expect(body.status).not.toBe("completed");
+  }, 45_000);
 });

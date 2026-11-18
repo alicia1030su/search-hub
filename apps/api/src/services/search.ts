@@ -800,7 +800,12 @@ export class SearchService {
       seenErrors.add(key);
       errors.push(item);
     }
-    const anyFailure = failed.length > 0 || valid.some((response) => response.status === "partial");
+    // A parked source is a failure of this search even when every rewrite
+    // succeeded: the caller asked for N sources and got N-1.
+    const anyFailure =
+      failed.length > 0 ||
+      skippedByHealth.length > 0 ||
+      valid.some((response) => response.status === "partial");
     return {
       ...base,
       query: request.query,
