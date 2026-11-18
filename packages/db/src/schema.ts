@@ -469,6 +469,8 @@ export const qualityRuns = sqliteTable(
     fusionStrategy: text("fusion_strategy").notNull(),
     fusionJson: text("fusion_json").notNull(),
     limitValue: integer("limit_value").notNull(),
+    /** Metric cutoff; @10 and @20 are different questions. */
+    cutoffValue: integer("cutoff_value").notNull().default(10),
     /** Re-rank the snapshots of another run instead of capturing new ones. */
     snapshotRunId: text("snapshot_run_id"),
     codeCommit: text("code_commit"),

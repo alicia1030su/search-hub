@@ -120,7 +120,6 @@ const runSchema = z.object({
   requestBudget: z.number().int().min(1).max(QUALITY_LIMITS.maxRequestBudget).optional(),
   confirmPaid: z.boolean().optional(),
   unitCosts: z.record(z.string(), z.number().min(0)).optional(),
-  holdoutQueryIds: z.array(z.string().min(1)).optional(),
 });
 
 const sweepSchema = z.object({
@@ -264,45 +263,31 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
     jsonFor(app, async (request) => {
       const actor = adminOf(ctx, request, true);
       const input = parseInput(importSchema, request.body ?? {});
-      const dataset = ctx.quality.createDataset(
+      return ctx.quality.importDataset(
         {
           name: input.name ?? "Imported dataset",
-          description: input.description ?? "",
-          language: input.language ?? "zh",
-          origin: "imported",
-          judgmentsComplete: input.judgmentsComplete ?? false,
+          ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.language === undefined ? {} : { language: input.language }),
+          ...(input.judgmentsComplete === undefined ? {} : { judgmentsComplete: input.judgmentsComplete }),
+          queries: input.queries.map((query) => ({
+            query: query.query,
+            ...(query.category === undefined ? {} : { category: query.category }),
+            ...(query.language === undefined ? {} : { language: query.language }),
+            ...(query.intent === undefined ? {} : { intent: query.intent }),
+            ...(query.notes === undefined ? {} : { notes: query.notes }),
+            ...(query.judgments === undefined
+              ? {}
+              : {
+                  judgments: query.judgments.map((judgment) => ({
+                    url: judgment.url,
+                    relevance: judgment.relevance as 0 | 1 | 2 | 3,
+                    ...(judgment.notes === undefined ? {} : { notes: judgment.notes }),
+                  })),
+                }),
+          })),
         },
         actorLabel(actor),
       );
-      const { ids } = ctx.quality.addQueries(
-        dataset.id,
-        input.queries.map((query) => ({
-          query: query.query,
-          ...(query.category === undefined ? {} : { category: query.category }),
-          ...(query.language === undefined ? {} : { language: query.language }),
-          ...(query.intent === undefined ? {} : { intent: query.intent }),
-          ...(query.notes === undefined ? {} : { notes: query.notes }),
-        })),
-        actorLabel(actor),
-      );
-      const judgments: JudgmentInput[] = [];
-      input.queries.forEach((query, index) => {
-        const queryId = ids[index];
-        if (!queryId) return;
-        for (const judgment of query.judgments ?? []) {
-          judgments.push({
-            queryId,
-            url: judgment.url,
-            relevance: judgment.relevance as 0 | 1 | 2 | 3,
-            source: "human",
-            ...(judgment.notes === undefined ? {} : { notes: judgment.notes }),
-          });
-        }
-      });
-      if (judgments.length > 0) {
-        ctx.quality.upsertJudgments(dataset.id, judgments, actorLabel(actor), actorLabel(actor));
-      }
-      return { dataset: ctx.quality.getDataset(dataset.id).dataset, queries: ids.length, judgments: judgments.length };
     }),
   );
 
@@ -347,7 +332,8 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
     jsonFor(app, async (request) => {
       adminOf(ctx, request, true);
       const { id } = request.params as { id: string };
-      return ctx.quality.cancelRun(id);
+      const actor = adminOf(ctx, request, true);
+      return ctx.quality.cancelRun(id, actorLabel(actor));
     }),
   );
 

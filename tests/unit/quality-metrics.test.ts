@@ -214,6 +214,32 @@ describe("unjudged documents", () => {
   });
 });
 
+describe("the @k window decides provisional, not the whole list", () => {
+  it("does not mark a query provisional for an unjudged row below the cutoff", () => {
+    const ranked = docs(20);
+    const grades: Record<string, RelevanceGrade> = {};
+    for (let index = 0; index < 10; index += 1) grades[ranked[index]!] = index < 3 ? 3 : 0;
+    // Rows 11..20 were never assessed. They cannot change any @10 value.
+    const metrics = evaluateQuery(ranked, judgments(grades), { cutoff: 10 });
+    expect(metrics.provisional).toBe(false);
+    expect(metrics.ndcgAtK.value).toBe(1);
+    expect(metrics.precisionAtK.value).toBe(0.3);
+    expect(metrics.unjudgedCount).toBe(10);
+  });
+
+  it("does mark it provisional when an unjudged row is inside the cutoff", () => {
+    const ranked = docs(20);
+    const grades: Record<string, RelevanceGrade> = {};
+    for (let index = 0; index < 20; index += 1) {
+      if (index === 4) continue; // never judged, inside the top 10
+      grades[ranked[index]!] = index < 3 ? 3 : 0;
+    }
+    const metrics = evaluateQuery(ranked, judgments(grades), { cutoff: 10 });
+    expect(metrics.provisional).toBe(true);
+    expect(metrics.unjudgedCount).toBe(1);
+  });
+});
+
 describe("edge cases", () => {
   it("returns N/A for an empty result list", () => {
     const metrics = evaluateQuery([], judgments({ "https://a.fixture.test/1": 3 }));

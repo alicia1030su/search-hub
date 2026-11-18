@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { SearchHubError, type Logger } from "@search-hub/shared";
+import { SearchHubError, normalizeUrl, type Logger } from "@search-hub/shared";
 import {
   aggregateMetric,
   compareRankings,
@@ -10,6 +10,7 @@ import {
   latencyStats,
   rankSnapshot,
   rateMetric,
+  resultSetQuality,
   shallowFixture,
   splitQueries,
   type AggregateMetric,
@@ -93,6 +94,12 @@ export interface QualityServiceDeps {
   engineVersion: string;
   /** Commit the run was produced from, when the build knows it. */
   codeCommit?: string | null;
+  /**
+   * Attempts one provider may issue for a single query (`1 + maxRetries`).
+   * The quality budget check must use the real value: guessing 2 under-counts
+   * a provider configured with maxRetries=5 by a factor of three.
+   */
+  providerMaxAttempts?: (providerId: string) => number;
   now?: () => number;
 }
 
@@ -141,8 +148,6 @@ export interface RunInput {
   confirmPaid?: boolean;
   /** Optional per-provider price, used only to report cost; never to decide. */
   unitCosts?: Record<string, number>;
-  /** Held-out query ids, excluded from parameter selection. */
-  holdoutQueryIds?: string[];
 }
 
 export interface RunSummary {
@@ -155,6 +160,8 @@ export interface RunSummary {
   fusion: FusionParameters;
   status: string;
   limit: number;
+  /** Metric cutoff that produced the stored numbers. */
+  cutoff: number;
   queryCount: number;
   requestsUsed: number;
   requestBudget: number;
@@ -191,6 +198,7 @@ function toRunSummary(row: typeof qualityRuns.$inferSelect): RunSummary {
     fusion,
     status: row.status,
     limit: row.limitValue,
+    cutoff: row.cutoffValue,
     queryCount: row.queryCount,
     requestsUsed: row.requestsUsed,
     requestBudget: row.requestBudget,
@@ -224,6 +232,121 @@ export class QualityService {
   }
 
   // ---------------------------------------------------------------- datasets
+
+  /**
+   * Imports a dataset in one transaction.
+   *
+   * The route used to create the dataset, add the queries and then add the
+   * judgments as three independent calls: a rejected judgment batch left an
+   * orphan draft dataset behind. Import is one operation, so it commits or
+   * rolls back as one.
+   */
+  importDataset(
+    input: {
+      name: string;
+      description?: string;
+      language?: string;
+      judgmentsComplete?: boolean;
+      queries: Array<{
+        query: string;
+        category?: QueryCategory;
+        language?: string;
+        intent?: string;
+        notes?: string;
+        judgments?: Array<{ url: string; relevance: RelevanceGrade; notes?: string }>;
+      }>;
+    },
+    actor: string,
+  ): { dataset: QualityDataset; queries: number; judgments: number } {
+    if (input.queries.length > QUALITY_LIMITS.maxQueriesPerDataset) {
+      throw new SearchHubError(
+        "validation_error",
+        `A dataset may hold at most ${QUALITY_LIMITS.maxQueriesPerDataset} queries`,
+      );
+    }
+    const totalJudgments = input.queries.reduce((sum, query) => sum + (query.judgments?.length ?? 0), 0);
+    if (totalJudgments > QUALITY_LIMITS.maxJudgmentsPerDataset) {
+      throw new SearchHubError(
+        "validation_error",
+        `This import contains ${totalJudgments} judgments; the limit is ${QUALITY_LIMITS.maxJudgmentsPerDataset}`,
+      );
+    }
+    const seen = new Set<string>();
+    for (const query of input.queries) {
+      const key = query.query.trim().toLowerCase();
+      if (!key) throw new SearchHubError("validation_error", "A query cannot be empty");
+      if (seen.has(key)) {
+        throw new SearchHubError("validation_error", `Duplicate query in this import: "${query.query}"`);
+      }
+      seen.add(key);
+      for (const judgment of query.judgments ?? []) {
+        if (!normalizeUrl(judgment.url)) {
+          throw new SearchHubError(
+            "validation_error",
+            `"${judgment.url}" is not a usable http(s) document URL`,
+          );
+        }
+      }
+    }
+
+    const now = new Date(this.now()).toISOString();
+    const id = `qd_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    let queryCount = 0;
+    let judgmentCount = 0;
+    this.deps.db.transaction((tx) => {
+      tx.insert(qualityDatasets)
+        .values({
+          id,
+          name: input.name,
+          description: input.description ?? "",
+          language: input.language ?? "zh",
+          version: 1,
+          status: "draft",
+          origin: "imported",
+          judgmentsComplete: input.judgmentsComplete ?? false,
+          createdAt: now,
+          updatedAt: now,
+          frozenAt: null,
+        })
+        .run();
+      for (const query of input.queries) {
+        const queryId = `qq_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        queryCount += 1;
+        tx.insert(qualityQueries)
+          .values({
+            id: queryId,
+            datasetId: id,
+            query: query.query.trim(),
+            category: query.category ?? "general",
+            language: query.language ?? input.language ?? "zh",
+            intent: query.intent ?? "",
+            notes: query.notes ?? "",
+            createdAt: now,
+          })
+          .run();
+        for (const judgment of query.judgments ?? []) {
+          judgmentCount += 1;
+          tx.insert(qualityJudgments)
+            .values({
+              id: `qj_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`,
+              datasetId: id,
+              queryId,
+              documentId: normalizeUrl(judgment.url)!,
+              relevance: judgment.relevance,
+              assessor: actor,
+              source: "human",
+              notes: judgment.notes ?? "",
+              createdAt: now,
+              updatedAt: now,
+            })
+            .run();
+        }
+      }
+    });
+    this.audit(actor, "quality.dataset.import", id, `${queryCount} queries / ${judgmentCount} judgments`);
+    const row = this.deps.db.select().from(qualityDatasets).where(eq(qualityDatasets.id, id)).get()!;
+    return { dataset: toDataset(row), queries: queryCount, judgments: judgmentCount };
+  }
 
   listDatasets(): Array<QualityDataset & { queryCount: number; judgmentCount: number }> {
     const rows = this.deps.db.select().from(qualityDatasets).orderBy(desc(qualityDatasets.updatedAt)).all();
@@ -432,7 +555,18 @@ export class QualityService {
     let written = 0;
     this.deps.db.transaction((tx) => {
       for (const input of inputs) {
-        const documentId = input.documentId ?? input.url!;
+        // The document id *is* the normalized URL (see evaluation/types.ts).
+        // Storing the caller's raw string would let `?utm_source=` split one
+        // page into two documents, and the qrel would silently never match the
+        // snapshot — the query would look unjudged instead of mismatched.
+        const raw = input.documentId ?? input.url!;
+        const documentId = normalizeUrl(raw);
+        if (!documentId) {
+          throw new SearchHubError(
+            "validation_error",
+            `"${raw}" is not a usable http(s) document URL`,
+          );
+        }
         // Same document re-assessed: replace, never duplicate.
         const existing = tx
           .select()
@@ -492,12 +626,22 @@ export class QualityService {
         status: "frozen",
         frozenAt: now,
         updatedAt: now,
+        // Freezing is the moment a qrel set becomes a fixed question, so the
+        // version moves here. A later fork continues from it.
+        version: row.version + 1,
         ...(input.judgmentsComplete === undefined ? {} : { judgmentsComplete: input.judgmentsComplete }),
       })
       .where(eq(qualityDatasets.id, datasetId))
       .run();
     this.audit(actor, "quality.dataset.freeze", datasetId, `v${row.version}`);
-    return toDataset({ ...row, status: "frozen", frozenAt: now, updatedAt: now, judgmentsComplete: input.judgmentsComplete ?? row.judgmentsComplete });
+    return toDataset({
+      ...row,
+      status: "frozen",
+      frozenAt: now,
+      updatedAt: now,
+      version: row.version + 1,
+      judgmentsComplete: input.judgmentsComplete ?? row.judgmentsComplete,
+    });
   }
 
   /** Copies a frozen dataset into a new draft version. History stays readable. */
@@ -611,7 +755,15 @@ export class QualityService {
       metrics: (stored["metrics"] as Record<string, MetricValue>) ?? {},
       latency: (stored["latency"] as LatencyStats) ?? latencyStats([]),
       cost:
-        (stored["cost"] as CostSummary) ?? { requests: 0, cacheHits: 0, knownCost: null, estimatedCost: null, unknownCost: true },
+        (stored["cost"] as CostSummary | null) ?? {
+          // A run that failed before finishing has no cost record; reporting 0
+          // requests would be a number we do not have.
+          requests: row.requestsUsed,
+          cacheHits: row.cacheHits,
+          knownCost: null,
+          estimatedCost: null,
+          unknownCost: true,
+        },
       quality: (stored["quality"] as Record<string, MetricValue>) ?? {},
       perQuery: results.map((item) => {
         const metrics = JSON.parse(item.metricsJson) as QueryMetrics;
@@ -628,9 +780,13 @@ export class QualityService {
     };
   }
 
-  cancelRun(runId: string): { cancelled: boolean } {
+  cancelRun(runId: string, actor?: string): { cancelled: boolean } {
     const row = this.deps.db.select().from(qualityRuns).where(eq(qualityRuns.id, runId)).get();
     if (!row) throw new SearchHubError("not_found", "Run not found");
+    // Same rule as a search task: one actor cannot cancel another's work.
+    if (actor !== undefined && row.actor !== null && row.actor !== actor) {
+      throw new SearchHubError("forbidden", "This run belongs to another actor");
+    }
     const controller = this.controllers.get(runId);
     if (!controller) {
       // Not running here: an offline run is instantaneous and a finished run
@@ -694,6 +850,19 @@ export class QualityService {
     if (input.fusion.strategy === "single" && !input.fusion.providerId) {
       throw new SearchHubError("validation_error", "A single-provider baseline needs fusion.providerId");
     }
+    if (
+      input.mode === "live" &&
+      input.fusion.strategy === "single" &&
+      input.fusion.providerId &&
+      !(input.providerIds ?? []).includes(input.fusion.providerId)
+    ) {
+      // Otherwise every request is spent and the run fails on the last step
+      // because the baseline provider is not in the captured snapshot.
+      throw new SearchHubError(
+        "validation_error",
+        "fusion.providerId must also appear in providerIds for a live run",
+      );
+    }
 
     if (input.mode === "live") {
       if (input.confirmPaid !== true) {
@@ -722,9 +891,11 @@ export class QualityService {
           `requestBudget may not exceed ${QUALITY_LIMITS.maxRequestBudget}`,
         );
       }
-      // Worst case: every query × every provider, plus one retry each. If that
-      // does not fit, refuse before spending anything.
-      const worstCase = selected.length * providerIds.length * 2;
+      // Worst case from the *actual* retry allowance, not a guessed one: the
+      // engine issues up to `1 + maxRetries` attempts per provider, and
+      // maxRetries may be 5. Assuming 2 would let a run through that can spend
+      // three times its budget.
+      const worstCase = selected.length * this.attemptsPerQuery(providerIds);
       if (worstCase > budget) {
         throw new SearchHubError(
           "validation_error",
@@ -742,6 +913,19 @@ export class QualityService {
         throw new SearchHubError(
           "validation_error",
           "The snapshot run belongs to a different dataset; re-ranking across datasets is not comparable",
+        );
+      }
+      const stored = this.deps.db
+        .select({ count: sql<number>`count(*)` })
+        .from(qualitySnapshots)
+        .where(eq(qualitySnapshots.runId, input.snapshotRunId))
+        .get();
+      if (Number(stored?.count ?? 0) === 0) {
+        // A fixture run never stores snapshots, so "re-rank it" would produce an
+        // empty run that still reports `completed`.
+        throw new SearchHubError(
+          "validation_error",
+          "That run has no stored snapshots to re-rank; run a live capture first",
         );
       }
     } else if (datasetRow.origin !== "synthetic_fixture") {
@@ -766,6 +950,7 @@ export class QualityService {
         fusionStrategy: input.fusion.strategy,
         fusionJson: JSON.stringify(input.fusion),
         limitValue: limit,
+        cutoffValue: cutoff,
         snapshotRunId: input.snapshotRunId ?? null,
         codeCommit: this.deps.codeCommit ?? null,
         engineVersion: this.deps.engineVersion,
@@ -811,6 +996,7 @@ export class QualityService {
       fusionStrategy: input.fusion.strategy,
       fusionJson: JSON.stringify(input.fusion),
       limitValue: limit,
+      cutoffValue: cutoff,
       snapshotRunId: input.snapshotRunId ?? null,
       codeCommit: this.deps.codeCommit ?? null,
       engineVersion: this.deps.engineVersion,
@@ -865,7 +1051,7 @@ export class QualityService {
         for (const query of queries) {
           if (args.controller.signal.aborted) break;
           // Worst case for this query before issuing it.
-          const worstCase = providerIds.length * 2;
+          const worstCase = this.attemptsPerQuery(providerIds);
           if (requestsUsed + worstCase > budget) {
             this.deps.logger.warn(
               { runId, requestsUsed, budget },
@@ -972,6 +1158,19 @@ export class QualityService {
         for (const snapshot of fixture.snapshots) {
           if (!queries.some((query) => query.id === snapshot.queryId)) continue;
           snapshots.set(snapshot.queryId, snapshot);
+          // Persist them like a live capture so a fixture run can itself be
+          // re-ranked with a different strategy. Without this, `snapshotRunId`
+          // pointing at a fixture run would silently produce an empty run.
+          this.deps.db
+            .insert(qualitySnapshots)
+            .values({
+              runId,
+              queryId: snapshot.queryId,
+              snapshotJson: JSON.stringify(snapshot.providers),
+              createdAt: new Date(this.now()).toISOString(),
+            })
+            .onConflictDoNothing()
+            .run();
         }
       }
 
@@ -1027,12 +1226,25 @@ export class QualityService {
               .map((provider) => provider.providerId),
           ).size,
         );
-        this.persistResult(runId, query.id, "ok", ranked, metrics, latencies[latencies.length - 1] ?? null, null);
+        this.persistResult(
+          runId,
+          query.id,
+          "ok",
+          ranked,
+          metrics,
+          latencies[latencies.length - 1] ?? null,
+          null,
+          snapshot.upstreamRequests,
+        );
       }
 
+      const diversity = this.diversitySignals(queries, snapshots, input.fusion, limit, input.providerIds ?? []);
       const quality = {
         resultCount: this.meanValue(documentCounts),
-        duplicateRate: this.duplicateRate(queries, snapshots, input.fusion, limit),
+        duplicateRate: this.duplicateRate(queries, snapshots, input.fusion),
+        uniqueDomainCount: this.meanValue(diversity.uniqueDomainCount),
+        providerCoverage: this.meanValue([diversity.providerCoverage]),
+        sourceDiversity: this.meanValue(diversity.sourceDiversity),
         emptyResultRate: rateMetric(documentCounts.map((count) => count === 0)),
         failedQueryRate: rateMetric(
           // A query counts as failed when no snapshot was captured for it, which
@@ -1072,6 +1284,63 @@ export class QualityService {
     }
   }
 
+  /**
+   * Upper bound on upstream attempts for one query, from the configured retry
+   * allowance. Falls back to 2 per provider when a runtime is unavailable,
+   * which is the historical assumption rather than an optimistic one.
+   */
+  private attemptsPerQuery(providerIds: readonly string[]): number {
+    let total = 0;
+    for (const id of providerIds) {
+      const attempts = this.deps.providerMaxAttempts?.(id) ?? 2;
+      total += Math.max(1, attempts);
+    }
+    return Math.max(1, total);
+  }
+
+  /**
+   * Structure of the result sets, which says nothing about relevance.
+   *
+   * Reported separately from P@k / nDCG on purpose: "more sources" and "more
+   * domains" are not quality, and a blended score invites exactly that reading.
+   */
+  private diversitySignals(
+    queries: ReadonlyArray<{ id: string }>,
+    snapshots: ReadonlyMap<string, QuerySnapshot>,
+    fusion: FusionParameters,
+    limit: number,
+    providersAsked: readonly string[],
+  ): { uniqueDomainCount: number[]; providerCoverage: number; sourceDiversity: number[] } {
+    const domains: number[] = [];
+    const diversity: number[] = [];
+    const contributing = new Set<string>();
+
+    for (const query of queries) {
+      const snapshot = snapshots.get(query.id);
+      if (!snapshot) continue;
+      const ranked = rankSnapshot(snapshot, fusion, { limit });
+      const rows = ranked.documents.map((document) => ({ url: document.url }));
+      let count = 0;
+      for (const provider of snapshot.providers) {
+        if (provider.results.length > 0) contributing.add(provider.providerId);
+        count += provider.results.length;
+      }
+      const quality = resultSetQuality({
+        documentUrls: rows.map((row) => row.url),
+        providersAsked: Math.max(providersAsked.length, snapshot.providers.length),
+        providersContributing: snapshot.providers.filter((provider) => provider.results.length > 0).length,
+      });
+      domains.push(quality.uniqueDomainCount);
+      diversity.push(quality.sourceDiversity);
+    }
+    void limit;
+    return {
+      uniqueDomainCount: domains,
+      providerCoverage: contributing.size,
+      sourceDiversity: diversity,
+    };
+  }
+
   private meanValue(values: readonly number[]): MetricValue {
     if (values.length === 0) {
       return { value: null, status: "na", reason: "not_applicable", sampleSize: 0, provisionalCount: 0, lowSample: false };
@@ -1097,14 +1366,15 @@ export class QualityService {
     queries: ReadonlyArray<{ id: string }>,
     snapshots: ReadonlyMap<string, QuerySnapshot>,
     fusion: FusionParameters,
-    limit: number,
   ): MetricValue {
     let raw = 0;
     let unique = 0;
     for (const query of queries) {
       const snapshot = snapshots.get(query.id);
       if (!snapshot) continue;
-      const ranked = rankSnapshot(snapshot, fusion, { limit });
+      // De-duplicated *before* the display limit: counting only the first N
+      // rows would make "30 raw rows, 10 shown" look like a 66% duplicate rate.
+      const ranked = rankSnapshot(snapshot, fusion, { limit: QUALITY_LIMITS.maxResultsPerQuery });
       const totalRows = snapshot.providers.reduce((sum, provider) => sum + provider.results.length, 0);
       raw += totalRows;
       unique += ranked.documents.length;
@@ -1129,6 +1399,7 @@ export class QualityService {
     metrics: QueryMetrics,
     latencyMs: number | null,
     error: string | null,
+    upstreamRequests = 0,
   ): void {
     this.deps.db
       .insert(qualityRunResults)
@@ -1139,7 +1410,7 @@ export class QualityService {
         rankedJson: JSON.stringify(ranked.documents),
         metricsJson: JSON.stringify(metrics),
         latencyMs,
-        upstreamRequests: 0,
+        upstreamRequests,
         errorJson: error ? JSON.stringify({ message: error }) : null,
         createdAt: new Date(this.now()).toISOString(),
       })
@@ -1206,6 +1477,13 @@ export class QualityService {
     if (baseline.status !== "completed" || candidate.status !== "completed") {
       throw new SearchHubError("validation_error", "Only completed runs can be compared");
     }
+    if (baseline.cutoffValue !== candidate.cutoffValue) {
+      throw new SearchHubError(
+        "validation_error",
+        `The two runs measured different cutoffs (@${baseline.cutoffValue} vs @${candidate.cutoffValue})`,
+      );
+    }
+    const cutoff = baseline.cutoffValue;
 
     const metric = input.metric ?? "ndcgAtK";
     const queries = this.deps.db
@@ -1277,11 +1555,13 @@ export class QualityService {
             queryId: judged.queryId,
             grades: judged.grades,
             relevantTotal: judged.relevantTotal,
-          }),
+          }, { cutoff }),
       }),
       datasetId: baseline.datasetId,
       datasetVersion: baseline.datasetVersion,
-      holdoutOnly: false,
+      // A stored-run comparison covers exactly the queries both runs measured;
+    // there is no hidden holdout. `sweepRrf` is where the split lives.
+    holdoutOnly: false,
     };
   }
 
@@ -1298,6 +1578,8 @@ export class QualityService {
     kValues?: number[];
     metric?: AggregateMetric;
     developmentShare?: number;
+    /** Re-rank this run's stored snapshots; required for a non-fixture dataset. */
+    snapshotRunId?: string;
   }): Promise<{
     split: { development: number; holdout: number };
     candidates: Array<{
@@ -1321,6 +1603,12 @@ export class QualityService {
       .from(qualityQueries)
       .where(eq(qualityQueries.datasetId, input.datasetId))
       .all();
+    if (dataset.origin !== "synthetic_fixture" && input.snapshotRunId === undefined) {
+      throw new SearchHubError(
+        "validation_error",
+        "A parameter sweep needs stored snapshots. Run a live capture, then pass its run id as snapshotRunId.",
+      );
+    }
     const split = splitQueries(queries.map((row) => row.id), input.developmentShare ?? 0.5);
     const metric = input.metric ?? "ndcgAtK";
     const kValues = input.kValues ?? [20, 40, 60, 80, 100];
@@ -1332,8 +1620,8 @@ export class QualityService {
     }> = [];
 
     for (const k of kValues) {
-      const development = this.evaluateSubset(input.datasetId, split.development, { strategy: "rrf", k });
-      const holdout = this.evaluateSubset(input.datasetId, split.holdout, { strategy: "rrf", k });
+      const development = this.evaluateSubset(input.datasetId, split.development, { strategy: "rrf", k }, input.snapshotRunId);
+      const holdout = this.evaluateSubset(input.datasetId, split.holdout, { strategy: "rrf", k }, input.snapshotRunId);
       evaluated.push({ k, development, holdout });
     }
 
@@ -1362,12 +1650,10 @@ export class QualityService {
     }
 
     // Report on holdout, against the shipped default k=60.
-    const baseline = this.evaluateSubset(input.datasetId, split.holdout, { strategy: "rrf", k: 60 });
-    const candidate = this.evaluateSubset(input.datasetId, split.holdout, { strategy: "rrf", k: chosen });
     const comparison = compareRankings({
       metric,
-      baseline: this.rankSubset(input.datasetId, split.holdout, { strategy: "rrf", k: 60 }),
-      candidate: this.rankSubset(input.datasetId, split.holdout, { strategy: "rrf", k: chosen }),
+      baseline: this.rankSubset(input.datasetId, split.holdout, { strategy: "rrf", k: 60 }, input.snapshotRunId),
+      candidate: this.rankSubset(input.datasetId, split.holdout, { strategy: "rrf", k: chosen }, input.snapshotRunId),
       judgments: this.judgedSubset(input.datasetId, split.holdout),
       metricsFor: (ranked, judged) =>
         evaluateQuery(ranked.documents.map((document) => document.documentId), {
@@ -1376,8 +1662,6 @@ export class QualityService {
           relevantTotal: judged.relevantTotal,
         }),
     });
-    void baseline;
-    void candidate;
 
     // An unmeasured comparison has no verdict to report. Saying
     // "insufficient_evidence" in a field named `holdoutVerdict` would read like a
@@ -1394,13 +1678,74 @@ export class QualityService {
     };
   }
 
-  private snapshotsForSubset(datasetId: string, queryIds: readonly string[]): Map<string, QuerySnapshot> {
+  /**
+   * Snapshots for a parameter sweep.
+   *
+   * A synthetic fixture has them in code; any other dataset needs a completed
+   * live capture, which is what `snapshotRunId` points at. Silently falling
+   * back to the fixture would sweep parameters against queries that are not in
+   * this dataset and report all N/A.
+   */
+  private snapshotsForSubset(
+    datasetId: string,
+    queryIds: readonly string[],
+    snapshotRunId?: string,
+  ): Map<string, QuerySnapshot> {
     const dataset = this.deps.db.select().from(qualityDatasets).where(eq(qualityDatasets.id, datasetId)).get();
     if (!dataset) throw new SearchHubError("not_found", "Dataset not found");
     const allowed = new Set(queryIds);
-    const fixture = dataset.id === shallowFixture().dataset.id ? shallowFixture() : coreFixture();
+
+    if (dataset.origin === "synthetic_fixture" && snapshotRunId === undefined) {
+      const fixture = dataset.id === shallowFixture().dataset.id ? shallowFixture() : coreFixture();
+      return new Map(
+        fixture.snapshots
+          .filter((snapshot) => allowed.has(snapshot.queryId))
+          .map((snapshot) => [snapshot.queryId, snapshot]),
+      );
+    }
+
+    const sourceRunId =
+      snapshotRunId ??
+      this.deps.db
+        .select({ id: qualityRuns.id })
+        .from(qualityRuns)
+        .where(and(eq(qualityRuns.datasetId, datasetId), eq(qualityRuns.status, "completed")))
+        .orderBy(desc(qualityRuns.startedAt))
+        .get()?.id;
+    if (!sourceRunId) return new Map();
+
+    const rows = this.deps.db
+      .select()
+      .from(qualitySnapshots)
+      .where(eq(qualitySnapshots.runId, sourceRunId))
+      .all();
+    const byQuery = new Map<string, ProviderSnapshot[]>();
+    for (const row of rows) {
+      if (!allowed.has(row.queryId)) continue;
+      byQuery.set(row.queryId, JSON.parse(row.snapshotJson) as ProviderSnapshot[]);
+    }
+    const queries = this.deps.db
+      .select()
+      .from(qualityQueries)
+      .where(eq(qualityQueries.datasetId, datasetId))
+      .all();
+    const meta = new Map(queries.map((row) => [row.id, row]));
     return new Map(
-      fixture.snapshots.filter((snapshot) => allowed.has(snapshot.queryId)).map((snapshot) => [snapshot.queryId, snapshot]),
+      [...byQuery.entries()].map(([queryId, providers]) => {
+        const row = meta.get(queryId);
+        return [
+          queryId,
+          {
+            queryId,
+            query: row?.query ?? queryId,
+            category: (row?.category ?? "general") as QueryCategory,
+            providers,
+            capturedAt: new Date(this.now()).toISOString(),
+            upstreamRequests: 0,
+            cacheHits: 0,
+          } satisfies QuerySnapshot,
+        ];
+      }),
     );
   }
 
@@ -1438,8 +1783,8 @@ export class QualityService {
     });
   }
 
-  private rankSubset(datasetId: string, queryIds: readonly string[], fusion: FusionParameters) {
-    const snapshots = this.snapshotsForSubset(datasetId, queryIds);
+  private rankSubset(datasetId: string, queryIds: readonly string[], fusion: FusionParameters, snapshotRunId?: string) {
+    const snapshots = this.snapshotsForSubset(datasetId, queryIds, snapshotRunId);
     return [...snapshots.values()].map((snapshot) => rankSnapshot(snapshot, fusion, { limit: 10 }));
   }
 
@@ -1447,8 +1792,9 @@ export class QualityService {
     datasetId: string,
     queryIds: readonly string[],
     fusion: FusionParameters,
+    snapshotRunId?: string,
   ): Record<string, MetricValue> {
-    const snapshots = this.snapshotsForSubset(datasetId, queryIds);
+    const snapshots = this.snapshotsForSubset(datasetId, queryIds, snapshotRunId);
     const judged = this.judgedSubset(datasetId, queryIds);
     const perQuery: QueryMetrics[] = [];
     for (const entry of judged) {

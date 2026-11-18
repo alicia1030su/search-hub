@@ -915,6 +915,8 @@ export interface QualityRunSummary {
   fusion: QualityFusion;
   status: "running" | "completed" | "failed" | "cancelled";
   limit: number;
+  /** Metric cutoff the stored numbers were measured at. */
+  cutoff: number;
   queryCount: number;
   requestsUsed: number;
   requestBudget: number;

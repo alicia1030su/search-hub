@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS "quality_runs" (
   "fusion_strategy" text NOT NULL,
   "fusion_json" text NOT NULL,
   "limit_value" integer NOT NULL,
+  -- Metric cutoff. Recorded because @10 and @20 are different questions: a
+  -- comparison that re-derives the cutoff from a default would silently compare
+  -- two numbers measured at different depths.
+  "cutoff_value" integer NOT NULL DEFAULT 10,
   -- When set, this run re-ranks the *existing* snapshots of another run, which
   -- is how two fusion strategies are compared over identical raw results.
   "snapshot_run_id" text,

@@ -237,6 +237,17 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     logger: appLogger,
     engineVersion: config.version,
     codeCommit: config.commit ?? null,
+    /**
+     * Retry allowance per provider, read from the live configuration so a
+     * budget pre-check cannot under-count a provider allowed 6 attempts.
+     */
+    providerMaxAttempts: (providerId: string) => {
+      const runtime = providers
+        .activeRuntimes()
+        .find((entry) => entry.config.id === providerId);
+      const retries = runtime?.config.maxRetries ?? 1;
+      return 1 + Math.max(0, retries);
+    },
     ...(options.now === undefined ? {} : { now: options.now }),
   });
 

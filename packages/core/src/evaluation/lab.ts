@@ -82,18 +82,12 @@ export function rankSnapshot(
     const provider = snapshot.providers.find((item) => item.providerId === providerId);
     if (!provider) throw new Error(`provider ${providerId} is not part of this snapshot`);
 
-    // A single-provider baseline is that provider's own order; only duplicate
-    // documents are collapsed so its document set matches the fused lists.
-    const seen = new Set<string>();
-    const documents: RankedList["documents"] = [];
-    for (const result of [...provider.results].sort((a, b) => a.rank - b.rank)) {
-      const documentId = documentIdFor(result.url);
-      if (!documentId || seen.has(documentId)) continue;
-      seen.add(documentId);
-      documents.push({ documentId, url: result.url, title: result.title });
-      if (documents.length >= limit) break;
-    }
-    return { queryId: snapshot.queryId, documents, fusion };
+    // A single-provider baseline is that provider's own order, but it goes
+    // through the *same* de-duplication as the fused lists. Otherwise the
+    // comparison is between two different document sets and any difference
+    // could come from de-duplication rather than from fusion.
+    const single = dedupeResults(toCandidates({ ...snapshot, providers: [provider] }));
+    return toRanked(snapshot, orderByBaseRanking(single.results).slice(0, limit), fusion);
   }
 
   const deduped = dedupeResults(toCandidates(snapshot));

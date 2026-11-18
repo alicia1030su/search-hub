@@ -6,7 +6,7 @@
 
 > **状态：v0.1.8-beta.1 · 公开预览（Public Preview），不是 production-ready。**
 >
-> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存与搜索源健康管理中心均已实现，并通过 **828 个自动化测试（55 个文件）**。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存与搜索源健康管理中心均已实现，并通过 **838 个自动化测试（55 个文件）**。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
 > 逐项证据与缺口见[验证状态](#验证状态)、[Provider 状态矩阵](./docs/provider-matrix.md)、[能力清单](./docs/capability-inventory.md) 与[发布就绪报告](./docs/release-readiness.md)。未联调的能力不会被描述为“已验证”。
 
@@ -326,7 +326,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **828 项 / 55 个文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试 **838 项 / 55 个文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 持久化缓存 **23 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
 - 健康管理中心 **35 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、取消不退款、多 Key 共享账户额度、MCP 与 REST 同一门禁。使用注入时钟与可控调度，无真实等待；「付费」源是本地 Brave 契约服务 + 真实 Key，不调用任何厂商。
 - 凭证类型判断 **6 项**（`tests/integration/credential-classes.test.ts`）：六个公开源声明 `authType: none` 且 `requiresKey: false`；需 Key 无 Key 判 `unverified`；无 Key 源用本地 HN 线格式桩真实探测可判 `healthy`；`/api/health` 不再把无 Key 源算成不可用；需实例地址的源按配置缺失处理。
@@ -373,7 +373,7 @@ tests              unit / integration / e2e / scripts
 ## 测试
 
 ```bash
-pnpm test                 # Vitest：单元 + 集成（828 项）
+pnpm test                 # Vitest：单元 + 集成（838 项）
 pnpm build && pnpm test:e2e
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 node tests/scripts/leak-scan.mjs        # 密钥泄漏扫描（自起临时实例）

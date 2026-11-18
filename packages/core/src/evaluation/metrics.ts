@@ -64,7 +64,9 @@ export function evaluateQuery(
 
   const window = applyUnjudgedPolicy(ranked, judgments.grades, policy, cutoff);
   const judgedInWindow = window.window.filter((item) => item.judged).length;
-  const provisional = window.unjudged.length > 0;
+  // Provisional means "the window that produced this number is not fully
+  // judged". Unjudged rows below the cutoff cannot change a @k value.
+  const provisional = window.unjudgedInWindow.length > 0;
 
   const base = {
     queryId: judgments.queryId,
@@ -75,9 +77,14 @@ export function evaluateQuery(
   };
 
   if (window.window.length === 0) {
-    // Distinguish "the run returned nothing" from "nothing that was judged".
+    // Distinguish "the run returned nothing" from "everything in the window is
+    // unjudged" — the two need different fixes from the operator.
     const reason: MetricNaReason =
-      ranked.length === 0 ? "no_results" : window.unjudged.length > 0 ? "no_judgments" : "no_judgments";
+      ranked.length === 0
+        ? "no_results"
+        : window.unjudgedInWindow.length > 0
+          ? "no_judgments"
+          : "not_applicable";
     return {
       ...base,
       precisionAtK: na(reason),
@@ -149,8 +156,15 @@ export function aggregateMetric(
   }
 
   if (values.length === 0) {
+    // Say which reason actually applies. "Every query is provisional" and
+    // "every query returned nothing" are different problems.
+    const reasons = perQuery.map((query) => query[metric].reason).filter((reason): reason is MetricNaReason => reason !== undefined);
     const reason: MetricNaReason =
-      provisionalCount > 0 && provisionalCount === perQuery.length ? "qrels_incomplete" : "no_judgments";
+      provisionalCount > 0 && provisionalCount === perQuery.length
+        ? "qrels_incomplete"
+        : reasons.length > 0 && reasons.every((item) => item === reasons[0])
+          ? reasons[0]!
+          : "no_judgments";
     return na(reason, 0, provisionalCount);
   }
 

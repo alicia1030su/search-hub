@@ -18,7 +18,13 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../apps/api/src/app.js";
 import { createContext, type AppContext } from "../../apps/api/src/context.js";
 import { loadConfig, type AppConfig } from "../../apps/api/src/config.js";
-import { qualityJudgments, qualityRuns, qualitySnapshots, searchTasks } from "../../packages/db/src/schema.js";
+import {
+  qualityDatasets,
+  qualityJudgments,
+  qualityRuns,
+  qualitySnapshots,
+  searchTasks,
+} from "../../packages/db/src/schema.js";
 
 interface Harness {
   app: FastifyInstance;
@@ -733,6 +739,302 @@ describe("runs", () => {
     expect(row!.engineVersion).toBeTruthy();
     expect(row!.fusionStrategy).toBe("base");
     expect(row!.queryCount).toBeGreaterThanOrEqual(12);
+  });
+});
+
+describe("guards found in review", () => {
+  it("budgets the real retry allowance, not a guessed two attempts", async () => {
+    const h = await createHarness();
+    const created = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        name: "retrying",
+        type: "mock",
+        enabled: true,
+        timeoutMs: 5000,
+        // The engine issues 1 + maxRetries attempts per provider.
+        maxRetries: 5,
+        config: { resultCount: 4 },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const providerId = created.json().provider.id as string;
+
+    const detail = await h.app.inject({
+      method: "GET",
+      url: "/api/admin/quality/datasets/ds_synthetic_core_v1",
+      cookies: { sh_session: h.cookie },
+    });
+    const queryIds = (detail.json().queries as Array<{ id: string }>).slice(0, 5).map((item) => item.id);
+
+    const refused = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/runs",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        datasetId: "ds_synthetic_core_v1",
+        mode: "live",
+        fusion: { strategy: "rrf" },
+        providerIds: [providerId],
+        // 5 queries x 6 attempts = 30; 12 would be enough only if the engine
+        // could not retry.
+        requestBudget: 12,
+        confirmPaid: true,
+        queryIds,
+      },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error.message).toContain("requestBudget");
+    // Nothing was spent: no run row was created.
+    expect(h.ctx.db.select().from(qualityRuns).all()).toHaveLength(0);
+  });
+
+  it("stops an offline re-rank that points at a run with no snapshots", async () => {
+    const h = await createHarness();
+    const created = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/datasets",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { name: "manual, no snapshots" },
+    });
+    const datasetId = created.json().dataset.id as string;
+    await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/datasets/${datasetId}/queries`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { queries: [{ query: "q" }] },
+    });
+    await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/datasets/${datasetId}/freeze`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {},
+    });
+    // A fixture run of a *different* dataset has snapshots, but none for this
+    // dataset's queries; the check is presence, so use a run with none at all.
+    const bogus = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/runs",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        datasetId: "ds_synthetic_core_v1",
+        mode: "offline",
+        fusion: { strategy: "rrf" },
+        queryIds: ["nonexistent-query"],
+      },
+    });
+    // No query matched, so the run was never created.
+    expect(bogus.statusCode).toBe(400);
+
+    const refused = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/runs",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        datasetId,
+        mode: "offline",
+        fusion: { strategy: "rrf" },
+        snapshotRunId: "qr_does_not_exist",
+      },
+    });
+    expect(refused.statusCode).toBe(404);
+  });
+
+  it("stores a judgment under the normalized document id", async () => {
+    const h = await createHarness();
+    const created = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/datasets",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { name: "normalized ids" },
+    });
+    const datasetId = created.json().dataset.id as string;
+    const added = await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/datasets/${datasetId}/queries`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { queries: [{ query: "q" }] },
+    });
+    const queryId = added.json().ids[0] as string;
+
+    const judged = await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/datasets/${datasetId}/judgments`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        judgments: [
+          { queryId, url: "https://Example.com/a/?utm_source=x&utm_medium=y", relevance: 3 },
+        ],
+      },
+    });
+    expect(judged.statusCode, judged.body).toBe(200);
+
+    // The same page written a second way must replace, not duplicate.
+    const again = await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/datasets/${datasetId}/judgments`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { judgments: [{ queryId, url: "https://example.com/a", relevance: 2 }] },
+    });
+    expect(again.statusCode, again.body).toBe(200);
+
+    const rows = h.ctx.db.select().from(qualityJudgments).all().filter((row) => row.datasetId === datasetId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.documentId).toBe("https://example.com/a");
+    expect(rows[0]!.relevance).toBe(2);
+  });
+
+  it("refuses a judgment URL that is not http(s)", async () => {
+    const h = await createHarness();
+    const created = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/datasets",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { name: "bad url" },
+    });
+    const datasetId = created.json().dataset.id as string;
+    const added = await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/datasets/${datasetId}/queries`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { queries: [{ query: "q" }] },
+    });
+    const refused = await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/datasets/${datasetId}/judgments`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { judgments: [{ queryId: added.json().ids[0], url: "file:///etc/passwd", relevance: 3 }] },
+    });
+    expect(refused.statusCode).toBe(400);
+  });
+
+  it("does not leave an orphan dataset when an import is rejected", async () => {
+    const h = await createHarness();
+    const before = h.ctx.db.select().from(qualityDatasets).all().length;
+    // 200 judgments per query x 120 queries would exceed the 20 000 cap; use a
+    // smaller but still invalid shape: one query with 3 judgments is fine, so
+    // make the *URL* invalid instead and assert atomicity of the failure.
+    const refused = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/datasets/import",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        name: "bad import",
+        queries: [
+          { query: "q1", judgments: [{ url: "https://a.fixture.test/1", relevance: 3 }] },
+          { query: "q2", judgments: [{ url: "not-a-url", relevance: 2 }] },
+        ],
+      },
+    });
+    expect(refused.statusCode).toBe(400);
+    const after = h.ctx.db.select().from(qualityDatasets).all().length;
+    expect(after).toBe(before);
+  });
+
+  it("refuses to compare runs measured at different cutoffs", async () => {
+    const h = await createHarness();
+    const start = async (cutoff: number) => {
+      const res = await h.app.inject({
+        method: "POST",
+        url: "/api/admin/quality/runs",
+        cookies: { sh_session: h.cookie },
+        headers: { "x-csrf-token": h.csrf },
+        payload: { datasetId: "ds_synthetic_core_v1", mode: "offline", fusion: { strategy: "rrf" }, cutoff },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const id = res.json().run.id as string;
+      await waitForRun(h, id);
+      return id;
+    };
+    const at10 = await start(10);
+    const at20 = await start(20);
+    const compared = await h.app.inject({
+      method: "GET",
+      url: `/api/admin/quality/compare?baseline=${at10}&candidate=${at20}`,
+      cookies: { sh_session: h.cookie },
+    });
+    expect(compared.statusCode).toBe(400);
+    expect(compared.json().error.message).toContain("cutoff");
+  });
+
+  it("persists the cutoff each run measured at", async () => {
+    const h = await createHarness();
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/runs",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: { datasetId: "ds_synthetic_core_v1", mode: "offline", fusion: { strategy: "rrf" }, cutoff: 20, limit: 20 },
+    });
+    const id = res.json().run.id as string;
+    const detail = await waitForRun(h, id);
+    expect((detail.run as { cutoff: number }).cutoff).toBe(20);
+  });
+
+  it("counts duplicates across the whole result set, not just the shown slice", async () => {
+    const h = await createHarness();
+    // Three distinct mock sources with distinct URLs: nothing is duplicated.
+    const created = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        name: "distinct",
+        type: "mock",
+        enabled: true,
+        timeoutMs: 5000,
+        maxRetries: 0,
+        config: { resultCount: 10, namespace: "one" },
+      },
+    });
+    const providerId = created.json().provider.id as string;
+    const detail = await h.app.inject({
+      method: "GET",
+      url: "/api/admin/quality/datasets/ds_synthetic_core_v1",
+      cookies: { sh_session: h.cookie },
+    });
+    const queryIds = (detail.json().queries as Array<{ id: string }>).slice(0, 2).map((item) => item.id);
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/runs",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        datasetId: "ds_synthetic_core_v1",
+        mode: "live",
+        fusion: { strategy: "rrf" },
+        providerIds: [providerId],
+        requestBudget: 6,
+        confirmPaid: true,
+        queryIds,
+        limit: 5,
+      },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const runId = res.json().run.id as string;
+    const run = await waitForRun(h, runId);
+    const quality = run.quality as Record<string, { status: string; value: number | null }>;
+    // 10 distinct rows captured, 5 shown: the duplicate rate is 0, not 50%.
+    expect(quality.duplicateRate!.status).toBe("ok");
+    expect(quality.duplicateRate!.value).toBe(0);
   });
 });
 

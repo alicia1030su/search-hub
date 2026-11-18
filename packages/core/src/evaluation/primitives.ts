@@ -39,6 +39,15 @@ export interface JudgedWindow {
   window: Array<{ documentId: string; grade: RelevanceGrade; judged: boolean }>;
   /** Documents in the ranked list that have no judgment at all. */
   unjudged: string[];
+  /**
+   * Unjudged documents **inside the cutoff window**.
+   *
+   * Only this decides whether a query is provisional. A list of 50 rows where
+   * the top 10 are all judged is fully measured at k=10; marking it provisional
+   * because row 11 was never assessed would drop a perfectly measurable query
+   * from the headline.
+   */
+  unjudgedInWindow: string[];
   /** Length of the ranking after the policy was applied (before the cutoff). */
   effectiveLength: number;
   /** Total documents handed in. */
@@ -73,9 +82,18 @@ export function applyUnjudgedPolicy(
     effective.push({ documentId, grade, judged: true });
   }
 
+  const window = effective.slice(0, Math.max(0, cutoff));
+  // Counted against the *original* top-k positions: under `exclude` the
+  // unjudged rows are gone from `effective`, but a position that nobody judged
+  // is still a position whose value is unknown.
+  const unjudgedInWindow = ranked
+    .slice(0, Math.max(0, cutoff))
+    .filter((documentId) => !grades.has(documentId));
+
   return {
-    window: effective.slice(0, Math.max(0, cutoff)),
+    window,
     unjudged,
+    unjudgedInWindow,
     effectiveLength: effective.length,
     rankedCount: ranked.length,
   };

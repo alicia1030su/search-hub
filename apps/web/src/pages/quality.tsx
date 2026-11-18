@@ -799,6 +799,9 @@ function RunsTab({
               </div>
               <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
                 <Badge tone="muted">{run.mode}</Badge>
+                {run.datasetOrigin === "synthetic_fixture" ? (
+                  <Badge tone="warning">{t("quality.origin.synthetic")}</Badge>
+                ) : null}
                 <Badge tone="muted">
                   {run.fusion.strategy}
                   {run.fusion.k ? ` k=${run.fusion.k}` : ""}
@@ -847,9 +850,12 @@ function RunDetailPanel({ runId }: { runId: string }) {
   const data: QualityRunDetail | null = detail.data;
   if (!data) return null;
 
-  const k = data.run.limit;
+  const k = data.run.cutoff;
   return (
     <div className="space-y-3 border-t pt-3">
+      {data.run.datasetOrigin === "synthetic_fixture" ? (
+        <Alert tone="warning">{t("quality.synthetic.warning")}</Alert>
+      ) : null}
       <div className="grid gap-2 sm:grid-cols-2">
         <MetricCard label={t("quality.metric.ndcg", { k })} metric={data.metrics.ndcgAtK} />
         <MetricCard label={t("quality.metric.mrr", { k })} metric={data.metrics.mrrAtK} />
