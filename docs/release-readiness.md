@@ -1,4 +1,32 @@
-# 发布就绪报告 — Search Hub v0.1.2 RC
+# 发布就绪报告
+
+## v0.1.8 Stable（2026-11-18）
+
+本节是当前版本的就绪判断；其后的章节是历史记录（v0.1.2 RC / v0.1.3 增量），保留以便对照，
+数字与结论都只对当时的版本成立。
+
+| 项 | 结果 |
+|---|---|
+| 目标版本 | **v0.1.8（Stable）**，前序为 v0.1.8-beta.1（同一功能集） |
+| 自动化测试 | **846 passed / 56 files**（`corepack pnpm test`） |
+| 浏览器 E2E | **19 passed**（`corepack pnpm test:e2e`） |
+| 类型 / Lint | 0 error / 0 warning |
+| 质量门禁 | `pnpm quality:eval` PASS，11 项手算自检全过 |
+| 依赖审计 | `pnpm audit --audit-level high` 通过，1 个已记录的无补丁例外（见 SECURITY.md） |
+| 迁移 | 0001–0006，全部为增量；0006 有升级/幂等/级联测试 |
+| Docker | 11 项容器验收在 GitHub Actions 真实通过；镜像为 `linux/amd64` 单架构 |
+| 三平台包 | Windows x64 / Linux x64 / Linux arm64，各自在对应平台启动验收 |
+| 真实厂商联调 | **4 个源**：Hacker News、Crossref、OpenAlex、PubMed |
+| 未联调 | 其余适配器按官方文档实现，无真实凭证 |
+| 质量评测数据 | 仅合成基准，**无真实厂商标注集** |
+| 多实例 | 未实现（单进程额度 + SQLite 预算账本） |
+
+**判定：具备 Stable 发布条件。** Stable 的定义是「维护者当前选择的公开正式发布渠道」，
+不等于「所有第三方集成已通过生产认证」；上表中「未联调 / 未实现」的项不因发布正式版而改变。
+
+---
+
+# 历史记录 — Search Hub v0.1.2 RC
 
 日期：2026-11-14 ｜ 目标：判断 v0.1.2 是否具备**公开测试版（Release Candidate）**发布条件
 

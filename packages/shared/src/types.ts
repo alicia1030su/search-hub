@@ -4,7 +4,12 @@
  * types instead of re-declaring its own shapes.
  */
 
-export const SEARCH_HUB_VERSION = "0.1.0";
+// There is deliberately no version constant here. The installed version is
+// resolved at runtime (`apps/api/src/config.ts`: SEARCH_HUB_VERSION env →
+// launcher.json → package.json), and a compile-time copy of it is a value that
+// goes stale silently — this file used to export `"0.1.0"` long after the
+// product had moved on, waiting for someone to import it and report a version
+// that does not exist.
 
 export type ProviderCategory = "general" | "ai" | "vertical" | "compat" | "custom";
 export type ProviderAuthType = "none" | "api_key" | "bearer" | "basic";
