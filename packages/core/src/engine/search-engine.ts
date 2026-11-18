@@ -12,7 +12,7 @@ import {
 } from "@search-hub/shared";
 import { fanoutProviders, type CredentialResolver, type FanoutResult, type ProviderRuntime } from "./fanout.js";
 import { RetryBudget, classifyError } from "../errors/classify.js";
-import { baseScore, dedupeResults, fuseWithRrf, type CandidateResult, type DedupDrop } from "../fusion/fuse.js";
+import { baseScore, dedupeResults, fuseWithRrf, orderByBaseRanking, type CandidateResult, type DedupDrop } from "../fusion/fuse.js";
 import type { RawSearchResult } from "@search-hub/shared";
 
 export interface SearchEngineDeps {
@@ -166,11 +166,7 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
     fused = rrf.results;
     scores = new Map(rrf.results.map((item) => [item.normalizedUrl, item.fusionScore]));
   } else {
-    fused = [...deduped.results].sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      if (b.sources.length !== a.sources.length) return b.sources.length - a.sources.length;
-      return a.url < b.url ? -1 : 1;
-    });
+    fused = orderByBaseRanking(deduped.results);
     scores = new Map(fused.map((item) => [item.normalizedUrl, baseScore(item)]));
   }
 

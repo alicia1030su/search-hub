@@ -1,7 +1,7 @@
-# Search Hub 架构设计（v0.1.1 基线 + v0.1.7-beta.2 增量）
+# Search Hub 架构设计（v0.1.1 基线 + v0.1.8-beta.1 增量）
 
 > 本文在 v0.1.1 按**仓库实际代码**重写了对账表。历史版本中的 E-1…E-6 / D-1…D-6 待裁决项均已落地或有结论，不再作为"偏离"保留。
-> v0.1.4–v0.1.7-beta.2 的增量（持久化缓存、健康管理中心、双语界面、发布来源证明）见 [§11](#11-v016--v017-增量缓存健康中心与-i18n)。§8 中已被后续版本实现的三项（U8 / U12 / U14）已就地更正，保留原条目编号以便对照。
+> v0.1.4–v0.1.8-beta.1 的增量（持久化缓存、健康管理中心、双语界面、发布来源证明、搜索质量评测）见 [§11](#11-v016--v017-增量缓存健康中心与-i18n)。§8 中已被后续版本实现的三项（U8 / U12 / U14）已就地更正，保留原条目编号以便对照。
 > 标注约定：`【已实现】`＝仓库内可运行且被测试覆盖；`【未实现】`＝不在本期，不得对外声称支持；`【待联调】`＝代码就绪但缺真实凭证/实例。
 > 版本已与 `pnpm-lock.yaml` 核对：fastify 5.12.8、better-sqlite3 13.1.1、drizzle-orm 0.45.4、vite 8.3.8、react 19.3.1、tailwind 4.3.5、zod 4.6.7、undici 8.12.4、typescript 5.9.3、@modelcontextprotocol/server 2.4.0、node ≥22.12。
 
@@ -480,3 +480,30 @@ v0.1.1 的调度分两步：
 前者证明「字节没被换」，后者证明「是哪个工作流、哪个 commit 构建的」，任一失败都不宣称可信。
 
 未实现：Windows 代码签名与 Linux 发行版签名包；多架构镜像合并清单的独立签名。
+
+### 11.5 搜索质量评测（v0.1.8-beta.1）
+
+评测是与搜索、健康**并列的第三条数据通路**，不复用 `search_tasks`：
+
+```
+数据集（frozen, version）
+   └─ 快照（每个查询的 per-provider 原始列表）
+         └─ rankSnapshot(fusion)  ← 与生产同一套 dedupe + 排序
+               └─ evaluateQuery(judgments) → 每查询指标
+                     └─ aggregateMetric → 头条值（provisional 被排除）
+```
+
+| 设计点 | 决定 | 理由 |
+|---|---|---|
+| 模块位置 | `packages/core/src/evaluation`，纯函数 | 指标必须能脱离 API、数据库和网络被单元测试；否则测的是拼装而不是数学 |
+| 文档身份 | `normalizeUrl` 的输出 | 列表序号会随运行变化；URL 规范化后同一篇文章只算一次 |
+| 未标注处理 | 默认 `exclude`，结果标 provisional | 当成 0 分等于伪造「不相关」，会让标注越少分数越"高" |
+| Recall | `judgmentsComplete=false` 时 N/A | 不完整 qrels 的召回率是伪精确 |
+| 对比 | 同快照重排优先；跨数据集版本拒绝 | 两次抓取的互联网不同，差值包含时间噪声 |
+| 参数选择 | development 选、holdout 报 | 防止在同一批查询上调参再宣称泛化 |
+| live 预算 | 请求前按 `queries × providers × 2` 拒绝 | 事中限流的代价已经付出去了 |
+| 实验写入 | 不写 `search_tasks`、不读写缓存 | 用户流量成功率与实验指标必须互不污染 |
+| 生产影响 | 无：默认 RRF 仍是 k=60 | 离线结论未经验证不得自动上线 |
+
+表结构见 `packages/db/migrations/0006_search_quality.sql`，语义见
+[docs/search-quality.md](./search-quality.md)。

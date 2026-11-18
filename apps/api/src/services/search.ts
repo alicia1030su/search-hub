@@ -112,7 +112,21 @@ export class SearchService {
 
   async execute(
     request: SearchRequest,
-    options: { actor?: string; signal?: AbortSignal } = {},
+    options: {
+      actor?: string;
+      signal?: AbortSignal;
+      /**
+       * Run as a quality-evaluation capture.
+       *
+       * Three things change, all of them about not contaminating the instance:
+       *  - the shared response cache is neither read nor written, so an
+       *    experiment cannot be served a stale result and cannot seed one;
+       *  - no `search_tasks` row is written, so the dashboard's success rate
+       *    stays a measure of user traffic;
+       *  - nothing is counted in search statistics for the same reason.
+       */
+      evaluate?: boolean;
+    } = {},
   ): Promise<SearchResponse> {
     const settings = this.deps.settings.get();
     const taskId = `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
@@ -214,7 +228,8 @@ export class SearchService {
       cacheConfig.enabled &&
       cacheConfig.ttlSeconds > 0 &&
       request.skipCache !== true &&
-      !rawBypass;
+      !rawBypass &&
+      options.evaluate !== true;
 
     // Every input that can change the *content* of the response belongs in the
     // key. Forgetting one is not a performance bug, it is a correctness bug: a
@@ -323,19 +338,21 @@ export class SearchService {
     // fusion and HTTP overhead. Cheap enough to keep on in production.
     let dbWriteMs = 0;
     const insertStarted = performance.now();
-    this.deps.db
-      .insert(searchTasks)
-      .values({
-        id: taskId,
-        query: request.query,
-        mode,
-        status: "running",
-        providersJson: JSON.stringify(runtimes.map((runtime) => runtime.config.id)),
-        requestJson: JSON.stringify(request),
-        actor: options.actor ?? null,
-        createdAt: new Date().toISOString(),
-      })
-      .run();
+    if (options.evaluate !== true) {
+      this.deps.db
+        .insert(searchTasks)
+        .values({
+          id: taskId,
+          query: request.query,
+          mode,
+          status: "running",
+          providersJson: JSON.stringify(runtimes.map((runtime) => runtime.config.id)),
+          requestJson: JSON.stringify(request),
+          actor: options.actor ?? null,
+          createdAt: new Date().toISOString(),
+        })
+        .run();
+    }
     dbWriteMs += performance.now() - insertStarted;
     this.controllers.set(taskId, controller);
 
@@ -361,7 +378,7 @@ export class SearchService {
       const cancelled = controller.signal.aborted && options.signal?.aborted === true;
 
       const persistStarted = performance.now();
-      this.persistTask(taskId, response, cancelled ? "cancelled" : null);
+      if (options.evaluate !== true) this.persistTask(taskId, response, cancelled ? "cancelled" : null);
       dbWriteMs += performance.now() - persistStarted;
       response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
       if (cacheUsable && cacheKey && this.isCacheable(response, cancelled)) {
@@ -376,16 +393,18 @@ export class SearchService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const status = controller.signal.aborted ? "cancelled" : "failed";
-      this.deps.db
-        .update(searchTasks)
-        .set({
-          status,
-          durationMs: Date.now() - startedAt,
-          errorsJson: JSON.stringify([{ providerId: "engine", code: "unknown", message }]),
-          finishedAt: new Date().toISOString(),
-        })
-        .where(eq(searchTasks.id, taskId))
-        .run();
+      if (options.evaluate !== true) {
+        this.deps.db
+          .update(searchTasks)
+          .set({
+            status,
+            durationMs: Date.now() - startedAt,
+            errorsJson: JSON.stringify([{ providerId: "engine", code: "unknown", message }]),
+            finishedAt: new Date().toISOString(),
+          })
+          .where(eq(searchTasks.id, taskId))
+          .run();
+      }
       throw error;
     } finally {
       options.signal?.removeEventListener("abort", onExternalAbort);

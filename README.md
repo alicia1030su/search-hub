@@ -4,9 +4,9 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.7-beta.3 · 公开预览（Public Preview），不是 production-ready。**
+> **状态：v0.1.8-beta.1 · 公开预览（Public Preview），不是 production-ready。**
 >
-> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存与搜索源健康管理中心均已实现，并通过 **751 个自动化测试（51 个文件）**。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存与搜索源健康管理中心均已实现，并通过 **838 个自动化测试（55 个文件）**。**Hacker News 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
 > 逐项证据与缺口见[验证状态](#验证状态)、[Provider 状态矩阵](./docs/provider-matrix.md)、[能力清单](./docs/capability-inventory.md) 与[发布就绪报告](./docs/release-readiness.md)。未联调的能力不会被描述为“已验证”。
 
@@ -39,6 +39,7 @@ Search Hub 把这些做成一个可部署的服务：
 | AI 摘要 / Embedding / Rerank | 已实现（可选） | OpenAI 兼容 / Anthropic / Gemini / Cohere-Jina 兼容 / custom-http |
 | 结果缓存（SQLite 持久化） | 已实现 | 1–72 小时可配；重启/容器重建后仍有效；容量上限自动 LRU 淘汰，后台每 10 分钟清理过期 |
 | 中英文界面 | 已实现 | zh-CN 为默认，en-US 完整覆盖；语言选择持久化，日期/数字跟随语言 |
+| 搜索质量评测实验室 | 已实现 | 人工相关性标注（四级）+ P@10 / Recall@10 / MRR@10 / nDCG@10；离线基准不联网、可复现；单源/基础/RRF 对比；RRF 参数实验用 development/holdout 隔离；标注不足输出 N/A 与 INSUFFICIENT_EVIDENCE |
 | 搜索源健康管理中心 | 已实现 | 实现验证状态与运行状态分离；连接探测（一次最小请求）/ 真实搜索探测（会消耗额度，默认关闭）；预算持久化且并发安全；指数退避自动恢复；单源开关与重置 |
 | PostgreSQL | 未实现 | 当前仅 SQLite；接口已隔离，见[已知限制](#已知限制) |
 | Redis 多实例协调 | 未实现 | 单进程额度保证；多实例方案见架构文档 |
@@ -64,6 +65,26 @@ Search Hub 把这些做成一个可部署的服务：
 - **没有 API Key 的源永远不显示健康**，只显示 `unverified`。
 
 详见 [docs/provider-health.md](./docs/provider-health.md)。
+
+## 搜索质量评测
+
+「哪个源结果更好」不再靠感觉：固定数据集 + 人工相关性标注 + 可复现指标。
+
+- **四级标注**：0 不相关 / 1 弱相关 / 2 部分回答 / 3 充分回答；二元指标以 ≥2 为相关。
+  AI 生成的标注单独记 `machine_generated`，不会冒充人工真值。
+- **未标注 ≠ 不相关**：未标注文档默认被排除在指标之外，查询标记为 provisional；
+  没有标注就返回 **N/A**，而不是 0 分。标注不完整时 Recall 明确显示 N/A。
+- **两种模式**：`offline` 读快照或内置合成基准，**不联网、不消耗额度**；`live` 走与用户
+  搜索同一条链路（同 Key 池、同调度器、同 SSRF 与健康门禁），必须显式选源、设置请求上限
+  并确认可能产生费用，最坏情况（查询 × 源 × 2 次尝试）超出预算时**一个请求都不发**。
+- **公平对比**：用 `snapshotRunId` 对**同一批原始结果**重新排序，而不是拿昨天和今天的两份
+  搜索结果比高低。数据集版本不同直接拒绝比较。
+- **RRF 离线优化**：只比较 k = 20/40/60/80/100 与固定源权重，参数在 development 上选、
+  在 holdout 上评价；证据不足输出 **INSUFFICIENT_EVIDENCE**。线上默认仍是 k=60，本轮不改。
+- **CI 门禁**：`pnpm quality:eval` 先跑 11 项手算自检，再与提交的基线比 nDCG@10，
+  下降超过阈值即失败。合成基准的分数只证明机制正确，**不是任何厂商的检索质量**。
+
+详见 [docs/search-quality.md](./docs/search-quality.md)。
 
 ## 支持的搜索源
 
@@ -104,18 +125,23 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.7-beta.3）
+## 下载安装（v0.1.8-beta.1）
 
 三种形态，同一套搜索核心、数据库模型与管理后台。
 
 | 平台 | 下载 | 需要什么 |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.7-beta.3-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | [`search-hub-v0.1.7-beta.3-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
-| Linux arm64 | [`search-hub-v0.1.7-beta.3-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-arm64.tar.gz) | **无** |
+| Windows x64 | [`search-hub-v0.1.8-beta.1-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/search-hub-v0.1.8-beta.1-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | [`search-hub-v0.1.8-beta.1-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/search-hub-v0.1.8-beta.1-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
+| Linux arm64 | [`search-hub-v0.1.8-beta.1-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/search-hub-v0.1.8-beta.1-linux-arm64.tar.gz) | **无** |
 
-校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
 
+> **v0.1.8-beta.1 新增搜索质量评测实验室**：四级人工相关性标注、P@10 / Recall@10 /
+> MRR@10 / nDCG@10、单源与基础排序与 RRF 的对比、带 development/holdout 隔离的 RRF 参数
+> 实验，以及 `pnpm quality:eval` 这个离线 CI 门禁。未标注文档不会被当成不相关；标注
+> 不完整时 Recall 显示 N/A；证据不足时输出 INSUFFICIENT_EVIDENCE。线上默认 RRF 行为不变。
+>
 > **v0.1.7-beta.3 修复一个只有在验收发布包时才会暴露的缺陷**：Fastify 在进入路由前
 > 就会拒绝空 JSON body、非法 JSON、不支持的 Content-Type 与超限 body，这些错误带 4xx
 > `statusCode`，但全局错误处理把除 `SearchHubError` / `ZodError` / 429 之外的一切都归成
@@ -157,7 +183,7 @@ Search Hub 把这些做成一个可部署的服务：
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.3-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.8-beta.1-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -166,7 +192,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.3    # 预发布镜像，不带 v 前缀
+docker pull ghcr.io/alicia1030su/search-hub:0.1.8-beta.1    # 预发布镜像，不带 v 前缀
 docker compose up -d                                        # 或从源码构建
 ```
 
@@ -300,7 +326,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **751 项 / 51 个文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试 **838 项 / 55 个文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 持久化缓存 **23 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
 - 健康管理中心 **35 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、取消不退款、多 Key 共享账户额度、MCP 与 REST 同一门禁。使用注入时钟与可控调度，无真实等待；「付费」源是本地 Brave 契约服务 + 真实 Key，不调用任何厂商。
 - 凭证类型判断 **6 项**（`tests/integration/credential-classes.test.ts`）：六个公开源声明 `authType: none` 且 `requiresKey: false`；需 Key 无 Key 判 `unverified`；无 Key 源用本地 HN 线格式桩真实探测可判 `healthy`；`/api/health` 不再把无 Key 源算成不可用；需实例地址的源按配置缺失处理。
@@ -347,7 +373,7 @@ tests              unit / integration / e2e / scripts
 ## 测试
 
 ```bash
-pnpm test                 # Vitest：单元 + 集成（751 项）
+pnpm test                 # Vitest：单元 + 集成（838 项）
 pnpm build && pnpm test:e2e
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 node tests/scripts/leak-scan.mjs        # 密钥泄漏扫描（自起临时实例）

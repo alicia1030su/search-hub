@@ -444,9 +444,10 @@ test.describe("Search Hub 管理后台端到端", () => {
     // header legitimately contains the locale's own name ("简体中文") and the
     // administrator's display name, neither of which is UI copy. Everything a
     // user reads to operate this page lives in <main>.
-    const mainText = await page.locator("main").innerText();
-    const cjk = /[\u4e00-\u9fff]/;
-    expect(mainText, `Chinese text still visible in /settings: ${mainText.slice(0, 300)}`).not.toMatch(cjk);
+    const settingsText = await page.locator("main").innerText();
+    expect(settingsText, `Chinese text still visible in /settings: ${settingsText.slice(0, 300)}`).not.toMatch(
+      /[\u4e00-\u9fff]/,
+    );
 
     // Persistence: a real reload keeps English.
     await page.reload();
@@ -459,6 +460,42 @@ test.describe("Search Hub 管理后台端到端", () => {
     await page.reload();
     await expect(page.getByRole("heading", { name: "设置", exact: true }).first()).toBeVisible();
     await expect(page.getByTestId("locale-switcher")).toHaveValue("zh-CN");
+  });
+
+  test("v0.1.8 搜索质量实验室可用，并诚实标注合成基准", async ({ page }) => {
+    await login(page);
+
+    await page.goto("/quality");
+    await expect(page.getByRole("heading", { name: "搜索质量评测实验室" })).toBeVisible();
+
+    // The seeded fixture is selectable and its synthetic origin is stated on the
+    // page, not just in the docs: a score from it must never be read as a
+    // measurement of a real vendor.
+    await expect(page.getByText("合成基准").first()).toBeVisible();
+    await expect(page.getByText(/不能当作任何真实厂商的搜索准确率/)).toBeVisible();
+
+    // Freeze state and counts come from the API, so their presence proves the
+    // dataset endpoint answered rather than the page rendering placeholders.
+    await expect(page.getByText(/v1/).first()).toBeVisible();
+    await expect(page.getByRole("tab", { name: "实验" })).toBeVisible();
+
+    await page.getByRole("tab", { name: "实验" }).click();
+    // Offline is the default and the only mode that cannot spend money.
+    await expect(page.getByTestId("quality-run-mode")).toHaveValue("offline");
+    await expect(page.getByRole("button", { name: "开始实验" })).toBeVisible();
+
+    // English mode must not leave Chinese copy behind on this page either.
+    await page.getByTestId("locale-switcher").selectOption("en-US");
+    await page.goto("/quality");
+    await expect(page.getByRole("heading", { name: "Search quality evaluation lab" })).toBeVisible();
+    // Dataset content is not UI copy: a fixture may legitimately hold a Chinese
+    // query while the interface is in English. Scope the check to the chrome a
+    // user operates — headings, buttons, tabs and labels.
+    const chrome = await page
+      .locator("main h1, main h2, main h3, main button, main [role=tab], main label")
+      .allInnerTexts();
+    expect(chrome.join(" | ")).not.toMatch(/[\u4e00-\u9fff]/);
+    await page.getByTestId("locale-switcher").selectOption("zh-CN");
   });
 
   test("v0.1.4 深色主题下搜索源页仍可读", async ({ page }) => {

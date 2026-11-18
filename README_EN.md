@@ -4,9 +4,9 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.7-beta.3 · public preview, not production-ready.**
+> **Status: v0.1.8-beta.1 · public preview, not production-ready.**
 >
-> Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache and the provider health centre are implemented and covered by **751 automated tests across 51 files**. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave, SearXNG and the rest are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
+> Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache and the provider health centre are implemented and covered by **838 automated tests across 55 files**. **Hacker News is the only provider verified end to end over the real network.** Tavily, Bocha, Brave, SearXNG and the rest are implemented from their official docs and are **not yet verified against real search results**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
 >
 > Evidence and gaps: [Verification](#verification), [provider matrix](./docs/provider-matrix.md), [capability inventory](./docs/capability-inventory.md), [release readiness](./docs/release-readiness.md). Nothing untested is described as verified.
 
@@ -38,6 +38,7 @@ Search Hub packages that as a deployable service:
 | Agent Skills | Implemented | Three `SKILL.md` packages |
 | AI summary / embedding / rerank | Implemented, optional | OpenAI-compatible, Anthropic, Gemini, Cohere/Jina-compatible, custom HTTP |
 | Result cache (SQLite, persistent) | Implemented | 1–72 h TTL; survives restart and container rebuild; LRU eviction at a byte cap; expired rows swept every 10 minutes |
+| Search quality lab | Implemented | Four-grade human relevance judgments + P@10 / Recall@10 / MRR@10 / nDCG@10; offline baseline with no network and reproducible numbers; single / base / RRF comparison; RRF sweep with a development/holdout split; incomplete qrels produce N/A and INSUFFICIENT_EVIDENCE |
 | Provider health centre | Implemented | Implementation verification kept separate from runtime state; connectivity probe (one minimal request) and paid search probe; durable, concurrency-safe budget; exponential backoff and automatic recovery; per-source switch and reset |
 | PostgreSQL | Not implemented | SQLite only; the data layer is isolated |
 | Redis multi-instance coordination | Not implemented | Single-process quota guarantees only |
@@ -58,6 +59,19 @@ Search Hub packages that as a deployable service:
 - **A source with no API key never reports healthy** — it reports `unverified`.
 
 Details: [docs/provider-health.md](./docs/provider-health.md).
+
+## Search quality evaluation
+
+"Which source is better" is now answered with a fixed dataset, human judgments and reproducible metrics instead of intuition.
+
+- **Four grades**: 0 off-topic / 1 mentions it / 2 answers part / 3 answers the intent. Binary metrics treat >= 2 as relevant. Machine-assisted grades are stored as `machine_generated` and never become ground truth.
+- **Unjudged is not non-relevant.** Unjudged documents are removed from the metric window and the query is marked provisional; a query with no judgments returns **N/A**, never 0. Recall is explicitly N/A when the qrels are incomplete.
+- **Two modes**: `offline` reads a stored snapshot or the built-in fixture — **no network, no quota spent**; `live` uses the same path as a user search (same key pool, scheduler, SSRF guard and health gate) and requires an explicit provider list, a request ceiling and a cost acknowledgement. The worst case (queries x providers x 2 attempts) is checked **before** the first request is issued.
+- **Fair comparison**: `snapshotRunId` re-ranks the *same* raw rows. Two runs of different dataset versions are refused outright.
+- **Offline RRF tuning**: only k = 20/40/60/80/100 and fixed provider weights, chosen on the development split and reported on the holdout; without enough evidence it says **INSUFFICIENT_EVIDENCE**. Production stays at k=60 — this release does not change ranking.
+- **CI gate**: `pnpm quality:eval` runs 11 hand-computed self-checks and then compares nDCG@10 against the committed baseline, failing on a regression. Synthetic fixture numbers validate the machinery; they are **not** a measurement of any vendor.
+
+Details: [docs/search-quality.md](./docs/search-quality.md).
 
 ## Supported providers
 
@@ -85,18 +99,25 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.7-beta.3)
+## Download (v0.1.8-beta.1)
 
 Three shapes, one search core, one database model, one admin UI.
 
 | Platform | Download | Requirements |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.7-beta.3-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
-| Linux x64 | [`search-hub-v0.1.7-beta.3-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-x64.tar.gz) | **None** (Node runtime bundled) |
-| Linux arm64 | [`search-hub-v0.1.7-beta.3-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/search-hub-v0.1.7-beta.3-linux-arm64.tar.gz) | **None** |
+| Windows x64 | [`search-hub-v0.1.8-beta.1-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/search-hub-v0.1.8-beta.1-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
+| Linux x64 | [`search-hub-v0.1.8-beta.1-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/search-hub-v0.1.8-beta.1-linux-x64.tar.gz) | **None** (Node runtime bundled) |
+| Linux arm64 | [`search-hub-v0.1.8-beta.1-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/search-hub-v0.1.8-beta.1-linux-arm64.tar.gz) | **None** |
 
-Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.7-beta.3/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
+Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.8-beta.1/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
 
+> **v0.1.8-beta.1 adds the search quality evaluation lab**: four-grade human relevance
+> judgments, P@10 / Recall@10 / MRR@10 / nDCG@10, single-provider vs base vs RRF comparison,
+> an RRF sweep with a development/holdout split, and `pnpm quality:eval` as an offline CI
+> gate. Unjudged documents never count as non-relevant, recall is N/A when the qrels are
+> incomplete, and a comparison without enough evidence says INSUFFICIENT_EVIDENCE. The
+> production RRF behaviour is unchanged.
+>
 > **v0.1.7-beta.3 fixes a defect only visible when accepting the published package.** Fastify
 > rejects an empty JSON body, malformed JSON, an unsupported content type and an oversized body
 > before any route runs; those errors carry a 4xx `statusCode`, but the global handler folded
@@ -144,7 +165,7 @@ Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/relea
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.7-beta.3-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.8-beta.1-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
@@ -153,7 +174,7 @@ For long-running use, the package ships `search-hub.service` (non-root, `Protect
 **Docker**:
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.7-beta.3    # prerelease tag, no leading v
+docker pull ghcr.io/alicia1030su/search-hub:0.1.8-beta.1    # prerelease tag, no leading v
 docker compose up -d                                        # or build from source
 ```
 
@@ -282,7 +303,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- **751 unit/integration tests across 51 files**, covering the three quota tiers (concurrency/RPM/daily) and their peaks, a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- **838 unit/integration tests across 55 files**, covering the three quota tiers (concurrency/RPM/daily) and their peaks, a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
 - **Persistent cache — 23 cases** (`tests/integration/cache.test.ts`) **plus 3 migration cases** (`tests/unit/cache-migration.test.ts`): hits, isolation, TTL expiry, automatic sweep, survival across restart, concurrency, capacity eviction, response validation, credential isolation. TTL is checked with an injected clock, not by sleeping.
 - **Provider health centre — 35 cases** (`tests/integration/provider-health-center.test.ts`): off by default, no-key ⇒ `unverified`, both probe kinds, cause classification, budget concurrency/restart/overrun, backoff and recovery, one dead key, in-flight de-duplication, shutdown cleanup, no key leakage, permissions, reset, the cache never faking health, cancel not refunding, multiple keys on one shared account quota, and MCP/REST sharing the same gate. Injected clocks and controlled scheduling; no real waiting. The "paid" source in these tests is a local Brave contract server with a real key — no vendor is ever called.
 - **Credential classes — 6 cases** (`tests/integration/credential-classes.test.ts`): the catalogue and adapters agree on which sources take a key; a key-required source with no key is `unverified`; a keyless source probed against a local HN-wire-format stub can report `healthy`; `/api/health` stops counting keyless sources as unusable; a source needing its own instance URL is a configuration problem.
@@ -330,7 +351,7 @@ tests             unit / integration / e2e / scripts
 ## Testing
 
 ```bash
-pnpm test                    # Vitest: unit + integration (751 cases)
+pnpm test                    # Vitest: unit + integration (838 cases)
 pnpm build && pnpm test:e2e  # Playwright (18 cases)
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 node tests/scripts/leak-scan.mjs        # secret leak scan, starts its own instance

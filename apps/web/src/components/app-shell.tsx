@@ -11,6 +11,7 @@ import {
   Plug,
   Search,
   Server,
+  BarChart3,
   Settings,
   Sun,
   X,
@@ -42,7 +43,10 @@ const sections: Array<{ title: MessageKey; items: NavItem[] }> = [
   },
   {
     title: "nav.section.test",
-    items: [{ to: "/lab", label: "nav.lab", icon: FlaskConical }],
+    items: [
+      { to: "/lab", label: "nav.lab", icon: FlaskConical },
+      { to: "/quality", label: "nav.quality", icon: BarChart3 },
+    ],
   },
   {
     title: "nav.section.system",

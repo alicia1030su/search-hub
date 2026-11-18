@@ -10,6 +10,7 @@ import { DashboardPage } from "./pages/dashboard";
 import { ProvidersPage } from "./pages/providers";
 import { ModelsPage } from "./pages/models";
 import { LabPage } from "./pages/lab";
+import { QualityPage } from "./pages/quality";
 import { IntegrationsPage } from "./pages/integrations";
 import { SettingsPage } from "./pages/settings";
 
@@ -110,6 +111,7 @@ function AppRoutes() {
         <Route path="/providers" element={<ProvidersPage />} />
         <Route path="/models" element={<ModelsPage />} />
         <Route path="/lab" element={<LabPage />} />
+        <Route path="/quality" element={<QualityPage />} />
         <Route path="/integrations" element={<IntegrationsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
