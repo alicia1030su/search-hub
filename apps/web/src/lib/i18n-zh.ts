@@ -1061,6 +1061,7 @@ export const zh = {
   "quality.cost.title": "成本",
   "quality.cost.unknown": "费用未知",
   "quality.cost.unknownHint": "没有配置单价，因此只报告请求数量，不估算金额。",
+  "quality.cost.breakdown": "{{searches}} 次搜索 · {{attempts}} 次适配器调用 · {{requests}} 次上游请求",
   "quality.cost.requests": "{{count}} 次上游请求",
 
   "quality.compare.title": "对比实验",

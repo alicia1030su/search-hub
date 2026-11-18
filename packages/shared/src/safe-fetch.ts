@@ -433,15 +433,17 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
 
     for (let hop = 0; hop <= policy.maxRedirects; hop += 1) {
       const hopProxy = proxyForUrl(proxyConfig, currentUrl);
-      // Counted per *hop*, not per call: a redirect is a second request to the
-      // vendor and a budget that only saw the first one is not a budget. This
-      // runs before the SSRF validation of this hop, so a caller's refusal can
-      // never be bypassed by a redirect that was already queued.
-      onRequest?.(currentUrl);
       // Validate with the policy that matches how this hop will actually be
       // carried. A proxied hop can never satisfy a private-host allowlist.
       await validateOutboundUrl(currentUrl, hopProxy ? proxiedPolicy : policy, { resolveHost });
       const dispatcher: Dispatcher = hopProxy && proxyDispatcher ? proxyDispatcher : directDispatcher;
+
+      // Counted per *hop*, not per call, and only after this hop passed the
+      // outbound policy: a request rejected by the SSRF guard provably never
+      // left the machine, so charging it would overstate what the vendor saw.
+      // Throwing here aborts before the fetch, which is what makes this a
+      // budget rather than a report.
+      onRequest?.(currentUrl);
 
       const timeoutController = new AbortController();
       const timer = setTimeout(() => timeoutController.abort(new Error("timeout")), timeoutMs);

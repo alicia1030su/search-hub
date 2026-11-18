@@ -225,6 +225,28 @@ describe("physical request counting", () => {
     expect(stub.hits()).toBe(1);
   });
 
+  it("B05: a request blocked by the SSRF guard is not charged", async () => {
+    const stub = await startPaginatedStub({ totalRows: 5, pageSize: 20 });
+    // First hop is the stub (allowed); the redirect target is a private address
+    // the policy forbids, so the second hop is refused by validation.
+    const strict = createSafeFetch({
+      policy: { allowPrivateHosts: [], maxRedirects: 2, allowHttp: true },
+      timeoutMs: 5_000,
+    });
+    let charged = 0;
+    await expect(
+      strict<unknown>(`${stub.base}/res/v1/web/search?q=x&count=20&offset=0`, {
+        onRequest: () => {
+          charged += 1;
+        },
+      }),
+    ).rejects.toThrow();
+    // The refused hop never left the machine, so it is not billed. Counting it
+    // would make a blocked request look like spend.
+    expect(charged).toBe(0);
+    expect(stub.hits()).toBe(0);
+  });
+
   it("B08: a request refused before it leaves does not touch the stub", async () => {
     const stub = await startPaginatedStub({ totalRows: 5, pageSize: 20 });
     const offline = offlineFetch();
