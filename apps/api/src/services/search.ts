@@ -124,6 +124,14 @@ export class SearchService {
        *  - nothing is counted in search statistics for the same reason.
        */
       evaluate?: boolean;
+      /**
+       * Gate called before every physical upstream request this search makes,
+       * including each page of a paginated adapter and each redirect hop.
+       *
+       * It throws to refuse the request. A caller that wants a hard ceiling on
+       * vendor spend passes this instead of counting "attempts" after the fact.
+       */
+      beforeRequest?: (providerId: string, url: string) => void;
     } = {},
   ): Promise<SearchResponse> {
     const settings = this.deps.settings.get();
@@ -367,10 +375,11 @@ export class SearchService {
     this.controllers.set(taskId, controller);
 
     try {
+      const beforeRequest = options.beforeRequest;
       let response =
         mode === "deep"
-          ? await this.runDeep(request, runtimes, controller.signal, taskId, skippedByHealth)
-          : await this.runStandard(request, runtimes, controller.signal, taskId, skippedByHealth);
+          ? await this.runDeep(request, runtimes, controller.signal, taskId, skippedByHealth, beforeRequest)
+          : await this.runStandard(request, runtimes, controller.signal, taskId, skippedByHealth, beforeRequest);
 
       if (wantsEmbedding && mode !== "deep") {
         response = await this.applyEmbedding(response, request, controller.signal);
@@ -616,10 +625,15 @@ export class SearchService {
     signal: AbortSignal,
     taskId: string,
     skippedByHealth: readonly SearchErrorSummary[] = [],
+    beforeRequest?: (providerId: string, url: string) => void,
   ): Promise<SearchResponse> {
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
-    const response = await executeSearch(deps, request, { signal, taskId });
+    const response = await executeSearch(deps, request, {
+      signal,
+      taskId,
+      ...(beforeRequest === undefined ? {} : { beforeRequest }),
+    });
     this.applyHealthSkips(response, skippedByHealth);
     if (signal.aborted) {
       response.status = "failed";
@@ -643,6 +657,7 @@ export class SearchService {
     signal: AbortSignal,
     taskId: string,
     skippedByHealth: readonly SearchErrorSummary[] = [],
+    beforeRequest?: (providerId: string, url: string) => void,
   ): Promise<SearchResponse> {
     const chat = this.deps.models.chatModel(request.chatModelId);
     const rewritten = await rewriteQuery(chat, request.query, 3, signal);
@@ -660,7 +675,7 @@ export class SearchService {
           const response = await executeSearch(
             deps,
             { ...request, query, mode: "rrf", summarize: false, timeoutMs: request.timeoutMs },
-            { signal, taskId },
+            { signal, taskId, ...(beforeRequest === undefined ? {} : { beforeRequest }) },
           );
           return { query, index: queries.indexOf(query), response };
         } catch (error) {

@@ -252,9 +252,35 @@ export interface LatencyStats {
   lowSample: boolean;
 }
 
+/**
+ * What one run actually spent, in the three units that differ from each other.
+ *
+ * They are kept apart because conflating them is how a budget silently fails:
+ * one search over three providers may be 3 adapter attempts and 7 HTTP requests,
+ * and the vendor bills the second number.
+ */
 export interface CostSummary {
-  /** Upstream searches actually issued. */
+  /**
+   * Upstream HTTP requests issued.
+   *
+   * Before v0.1.9 this counted adapter attempts, which under-reported every
+   * paginated provider. `httpRequests` is the same number under its real name.
+   */
   requests: number;
+  /** Logical searches the caller asked for (one per query × provider set). */
+  logicalSearches: number;
+  /** Adapter invocations, retries included. This is what the key scheduler meters. */
+  adapterAttempts: number;
+  /** Physical HTTP requests: pages, retries and redirect hops. */
+  httpRequests: number;
+  /**
+   * What the vendor will invoice, or `null` when it cannot be known.
+   *
+   * Search vendors bill by request, by result, by search, or by a plan quota;
+   * without the operator's contract this is unknowable, and `null` says so
+   * instead of pretending the request count is the bill.
+   */
+  billableUnits: number | null;
   /** Requests answered from cache, which cost nothing upstream. */
   cacheHits: number;
   /** Costs the operator has configured for these providers, when known. */

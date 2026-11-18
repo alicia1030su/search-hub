@@ -95,11 +95,20 @@ export interface QualityServiceDeps {
   /** Commit the run was produced from, when the build knows it. */
   codeCommit?: string | null;
   /**
-   * Attempts one provider may issue for a single query (`1 + maxRetries`).
-   * The quality budget check must use the real value: guessing 2 under-counts
-   * a provider configured with maxRetries=5 by a factor of three.
+   * Upper bound on **physical HTTP requests** one provider may issue for a
+   * single query: retries × pages × redirects.
+   *
+   * Attempts alone are not enough. A Brave-shaped adapter targeting 50 rows
+   * with `count=20` fetches three pages inside one attempt, and a redirect adds
+   * a hop to each. Counting attempts would authorise a third of the traffic the
+   * vendor actually sees.
    */
-  providerMaxAttempts?: (providerId: string) => number;
+  providerMaxRequests?: (providerId: string) => number;
+  /**
+   * Called when a request is refused because the run's ceiling is reached.
+   * The search path uses it to stop the whole run cleanly.
+   */
+  onBudgetExhausted?: (providerId: string, url: string) => never;
   now?: () => number;
 }
 
@@ -756,9 +765,13 @@ export class QualityService {
       latency: (stored["latency"] as LatencyStats) ?? latencyStats([]),
       cost:
         (stored["cost"] as CostSummary | null) ?? {
-          // A run that failed before finishing has no cost record; reporting 0
-          // requests would be a number we do not have.
+          // A run that failed before finishing has no cost record. The counts
+          // come from the run row; the money is unknown, and remains unknown.
           requests: row.requestsUsed,
+          logicalSearches: row.queryCount,
+          adapterAttempts: row.requestsUsed,
+          httpRequests: row.requestsUsed,
+          billableUnits: null,
           cacheHits: row.cacheHits,
           knownCost: null,
           estimatedCost: null,
@@ -895,11 +908,14 @@ export class QualityService {
       // engine issues up to `1 + maxRetries` attempts per provider, and
       // maxRetries may be 5. Assuming 2 would let a run through that can spend
       // three times its budget.
-      const worstCase = selected.length * this.attemptsPerQuery(providerIds);
+      const worstCase = selected.length * this.requestsPerQuery(providerIds);
       if (worstCase > budget) {
         throw new SearchHubError(
           "validation_error",
-          `This run could issue up to ${worstCase} upstream requests (${selected.length} queries × ${providerIds.length} providers × 2 attempts) but requestBudget is ${budget}. Raise the budget or reduce the scope.`,
+          `This run could issue up to ${worstCase} upstream HTTP requests ` +
+            `(${selected.length} queries × ${this.requestsPerQuery(providerIds)} per query across ${providerIds.length} provider(s), ` +
+            `counting retries, pages and redirects) but requestBudget is ${budget}. ` +
+            "Raise the budget or reduce the scope.",
         );
       }
     } else if (input.snapshotRunId) {
@@ -1041,7 +1057,10 @@ export class QualityService {
     let requestsUsed = 0;
     let cacheHits = 0;
     const queryOutcome = new Map<string, { partial: boolean; failed: boolean }>();
+    let adapterAttempts = 0;
     const latencies: number[] = [];
+    /** Measured wall time per query, so a row cannot inherit another's. */
+    const latencyByQuery = new Map<string, number>();
     const requestsByProvider: Record<string, number> = {};
 
     try {
@@ -1051,7 +1070,7 @@ export class QualityService {
         for (const query of queries) {
           if (args.controller.signal.aborted) break;
           // Worst case for this query before issuing it.
-          const worstCase = this.attemptsPerQuery(providerIds);
+          const worstCase = this.requestsPerQuery(providerIds);
           if (requestsUsed + worstCase > budget) {
             this.deps.logger.warn(
               { runId, requestsUsed, budget },
@@ -1060,6 +1079,11 @@ export class QualityService {
             break;
           }
           const started = this.now();
+          // The per-query pre-check above is an early exit; this gate is the
+          // real ceiling. It runs before *every* physical request, so a
+          // paginated adapter cannot spend the budget of three queries by
+          // fetching three pages, and a retry cannot spend it twice.
+          let budgetRefused = false;
           const response = await this.deps.search.execute(
             {
               query: query.query,
@@ -1069,10 +1093,29 @@ export class QualityService {
               providers: providerIds,
               skipCache: true,
             },
-            { signal: args.controller.signal, evaluate: true, actor: `quality:${runId}` },
+            {
+              signal: args.controller.signal,
+              evaluate: true,
+              actor: `quality:${runId}`,
+              beforeRequest: (_providerId, _url) => {
+                if (requestsUsed >= budget) {
+                  budgetRefused = true;
+                  throw new SearchHubError(
+                    "quota_exceeded",
+                    `Request budget of ${budget} upstream calls is exhausted; refusing further traffic.`,
+                  );
+                }
+                requestsUsed += 1;
+              },
+            },
           );
           const latencyMs = Math.max(0, this.now() - started);
           latencies.push(latencyMs);
+          // Bound to the query, not to loop order: the old code wrote
+          // `latencies[latencies.length - 1]` at persist time, which silently
+          // attributed the last measured query's time to whichever row happened
+          // to be written.
+          latencyByQuery.set(query.id, latencyMs);
           const statById = new Map(response.stats.providers.map((stat) => [stat.providerId, stat]));
           const providers: ProviderSnapshot[] = (response.debug?.perProviderResults ?? []).map(
             (entry) => {
@@ -1101,8 +1144,14 @@ export class QualityService {
           const asked = new Set(providerIds);
           for (const stat of response.stats.providers) {
             asked.delete(stat.providerId);
-            requestsByProvider[stat.providerId] = (requestsByProvider[stat.providerId] ?? 0) + stat.attempts;
-            requestsUsed += stat.attempts;
+            // Physical HTTP requests, not adapter attempts: this is what the
+            // vendor sees and what the budget above already consumed.
+            const physical = stat.httpRequests ?? stat.attempts;
+            requestsByProvider[stat.providerId] = (requestsByProvider[stat.providerId] ?? 0) + physical;
+            adapterAttempts += stat.attempts;
+          }
+          if (budgetRefused) {
+            this.deps.logger.warn({ runId, budget }, "quality run stopped at its request budget");
           }
           for (const missing of asked) {
             // A provider that never ran still counts as asked, so the baseline
@@ -1196,13 +1245,14 @@ export class QualityService {
         if (!snapshot) {
           const empty = evaluateQuery([], judged, { cutoff });
           perQueryMetrics.push(empty);
+          queryOutcome.set(query.id, { partial: false, failed: true });
           this.persistResult(
             runId,
             query.id,
             "failed",
             { documents: [] },
             empty,
-            null,
+            latencyByQuery.get(query.id) ?? null,
             "No snapshot was captured for this query",
           );
           continue;
@@ -1226,14 +1276,20 @@ export class QualityService {
               .map((provider) => provider.providerId),
           ).size,
         );
+        // The row status follows the *search* verdict, not the mere presence of
+        // a snapshot. A run whose providers all failed still stores an empty
+        // snapshot for audit, and recording that as "ok" is how a report ends
+        // up claiming 100% success while every request failed.
+        const outcome = queryOutcome.get(query.id);
+        const status = outcome?.failed ? "failed" : "ok";
         this.persistResult(
           runId,
           query.id,
-          "ok",
+          status,
           ranked,
           metrics,
-          latencies[latencies.length - 1] ?? null,
-          null,
+          latencyByQuery.get(query.id) ?? null,
+          status === "failed" ? "Every selected provider failed for this query" : null,
           snapshot.upstreamRequests,
         );
       }
@@ -1247,10 +1303,14 @@ export class QualityService {
         sourceDiversity: this.meanValue(diversity.sourceDiversity),
         emptyResultRate: rateMetric(documentCounts.map((count) => count === 0)),
         failedQueryRate: rateMetric(
-          // A query counts as failed when no snapshot was captured for it, which
-          // is recorded as a zero-length result with a status of "failed".
-          queries.map((query) => snapshots.get(query.id) === undefined),
+          // A query counts as failed when its search verdict was `failed` —
+          // including the case where an empty snapshot exists. Presence of a
+          // snapshot is not evidence that the search worked.
+          queries.map((query) => queryOutcome.get(query.id)?.failed === true),
         ),
+        // System availability, reported separately from relevance: a run where
+        // half the queries errored has a quality problem that P@k cannot express.
+        succeededQueryRate: rateMetric(queries.map((query) => queryOutcome.get(query.id) ? queryOutcome.get(query.id)!.failed === false && queryOutcome.get(query.id)!.partial === false : snapshots.has(query.id))),
         partialQueryRate: rateMetric(queries.map((query) => queryOutcome.get(query.id)?.partial === true)),
       };
 
@@ -1263,6 +1323,8 @@ export class QualityService {
       const latency = latencyStats(latencies);
       const cost = costSummary({
         requests: requestsUsed,
+        logicalSearches: queries.length,
+        adapterAttempts,
         cacheHits,
         requestsByProvider,
         ...(input.unitCosts === undefined ? {} : { unitCosts: input.unitCosts }),
@@ -1285,15 +1347,16 @@ export class QualityService {
   }
 
   /**
-   * Upper bound on upstream attempts for one query, from the configured retry
-   * allowance. Falls back to 2 per provider when a runtime is unavailable,
-   * which is the historical assumption rather than an optimistic one.
+   * Upper bound on physical HTTP requests for one query across all providers.
+   *
+   * When the estimate is unavailable the fallback is deliberately pessimistic
+   * (2 attempts × 4 pages), because an under-estimate is what turns a budget
+   * into a suggestion.
    */
-  private attemptsPerQuery(providerIds: readonly string[]): number {
+  private requestsPerQuery(providerIds: readonly string[]): number {
     let total = 0;
     for (const id of providerIds) {
-      const attempts = this.deps.providerMaxAttempts?.(id) ?? 2;
-      total += Math.max(1, attempts);
+      total += Math.max(1, this.deps.providerMaxRequests?.(id) ?? 8);
     }
     return Math.max(1, total);
   }

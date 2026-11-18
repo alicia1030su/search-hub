@@ -26,6 +26,8 @@ export interface SearchEngineDeps {
 export interface ExecuteSearchOptions {
   signal?: AbortSignal;
   taskId: string;
+  /** Called before each physical upstream request; throw to refuse it. */
+  beforeRequest?: (providerId: string, url: string) => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -84,6 +86,7 @@ export async function executeSearch(
       logger: deps.logger,
       fetch: deps.fetch,
       credentials: deps.credentials,
+      ...(options.beforeRequest === undefined ? {} : { beforeRequest: options.beforeRequest }),
     });
     const fanoutMs = Date.now() - fanoutStarted;
     const cancelled = controller.signal.aborted && options.signal?.aborted === true;
