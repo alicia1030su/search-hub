@@ -118,9 +118,26 @@ try {
   if (!existsSync(install)) throw new Error(`install root was not created: ${install}`);
 
   const versionBefore = installedVersion(install);
-  const assetVersion = (FROM ?? "").replace(/^v/, "").replace(/-(alpha|beta|rc)\.\d+$/, "");
-  const versionOk = FROM ? versionBefore === assetVersion : versionBefore !== "unknown";
-  check("old package reports its own version", versionOk, `${versionBefore} (source ${oldAsset.tag})`);
+  // The manifest must correspond to the tag the asset came from, but the exact
+  // spelling depends on when that package was built:
+  //  - up to v0.1.6 the release workflow did not pass SEARCH_HUB_VERSION, so a
+  //    beta package carried the bare version (`0.1.4` inside v0.1.4-beta.6);
+  //  - from v0.1.7 the tag is stamped verbatim (`0.1.7-beta.3`).
+  // Accept either, and print which one was found: rejecting the older form
+  // would fail an upgrade that is in fact correct, and accepting *any* string
+  // would make this check meaningless.
+  const tagVersion = (FROM ?? "").replace(/^v/, "");
+  const bareVersion = tagVersion.replace(/-(alpha|beta|rc)\.\d+$/, "");
+  const versionOk = FROM
+    ? versionBefore === tagVersion || versionBefore === bareVersion
+    : versionBefore !== "unknown";
+  const versionDetail =
+    versionBefore === tagVersion
+      ? `${versionBefore} (matches ${oldAsset.tag})`
+      : versionBefore === bareVersion
+        ? `${versionBefore} (bare form of ${oldAsset.tag})`
+        : `${versionBefore} (expected ${tagVersion} or ${bareVersion}, source ${oldAsset.tag})`;
+  check("old package reports its own version", versionOk, versionDetail);
 
   // ---- 1. Populate real state on the OLD version -----------------------
   let boot = await start(install, PORT_BASE);
