@@ -940,7 +940,16 @@ export interface QualityRunDetail {
     lowSample: boolean;
   };
   cost: {
+    /** Physical upstream HTTP requests. */
     requests: number;
+    /** Searches the caller asked for. */
+    logicalSearches: number;
+    /** Adapter invocations, retries included. */
+    adapterAttempts: number;
+    /** Same number as `requests`, under its real name. */
+    httpRequests: number;
+    /** `null` when no vendor billing rule is known — never 0. */
+    billableUnits: number | null;
     cacheHits: number;
     knownCost: number | null;
     estimatedCost: number | null;

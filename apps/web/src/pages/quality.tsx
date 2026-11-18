@@ -885,8 +885,17 @@ function RunDetailPanel({ runId }: { runId: string }) {
       <div className="rounded-md border p-2">
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("quality.cost.title")}</p>
         <p className="text-xs">
-          {t("quality.cost.requests", { count: data.cost.requests })}
+          {t("quality.cost.requests", { count: data.cost.httpRequests })}
           {data.cost.unknownCost ? ` · ${t("quality.cost.unknown")}` : ""}
+        </p>
+        {/* The three counts are shown separately: "2 searches" and "6 requests"
+            are both true, and a single number hides which one a budget limits. */}
+        <p className="mt-0.5 text-[10px] text-muted-foreground">
+          {t("quality.cost.breakdown", {
+            searches: String(data.cost.logicalSearches),
+            attempts: String(data.cost.adapterAttempts),
+            requests: String(data.cost.httpRequests),
+          })}
         </p>
         {data.cost.unknownCost ? <p className="mt-0.5 text-[10px] text-muted-foreground">{t("quality.cost.unknownHint")}</p> : null}
       </div>

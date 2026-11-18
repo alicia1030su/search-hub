@@ -584,7 +584,22 @@ describe("runs", () => {
     const run = await waitForRun(h, started.json().run.id as string);
     const summary = run.run as { status: string; requestsUsed: number };
     expect(summary.status).toBe("completed");
-    expect(summary.requestsUsed).toBeGreaterThan(0);
+    // The `mock` adapter answers from memory: it performs a real adapter
+    // attempt but no HTTP request, and the two counters now say exactly that.
+    // Before the split, `requestsUsed` counted attempts and reported 3 "upstream
+    // requests" for a provider that never opened a socket.
+    const cost = run.cost as {
+      requests: number;
+      httpRequests: number;
+      adapterAttempts: number;
+      logicalSearches: number;
+      billableUnits: number | null;
+    };
+    expect(cost.adapterAttempts).toBeGreaterThan(0);
+    expect(cost.httpRequests).toBe(0);
+    expect(cost.requests).toBe(0);
+    expect(cost.logicalSearches).toBe(3);
+    expect(cost.billableUnits).toBeNull();
 
     // Evaluation traffic must not look like user traffic.
     const tasks = h.ctx.db.select().from(searchTasks).all();

@@ -1,6 +1,6 @@
 {
   "name": "search-hub",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "description": "Open-source, self-hosted AI search infrastructure: multi-provider aggregation, key pools, MCP, and agent skills.",

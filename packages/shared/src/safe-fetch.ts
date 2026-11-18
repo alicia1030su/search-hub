@@ -11,7 +11,7 @@ import {
   type ResolvedOutboundProxy,
   type ResolvedProxy,
 } from "./outbound-proxy.js";
-import type { SafeFetch, SafeFetchResponse } from "./types.js";
+import type { SafeFetch, SafeFetchInit, SafeFetchResponse } from "./types.js";
 
 export interface SsrfPolicy {
   /** Exact hostnames or suffix patterns beginning with a dot (".internal"). */
@@ -424,11 +424,12 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
 
   return async function safeFetch<T = unknown>(
     rawUrl: string,
-    init: RequestInit & { timeoutMs?: number; maxBytes?: number } = {},
+    init: SafeFetchInit = {},
   ): Promise<SafeFetchResponse<T>> {
     let currentUrl = rawUrl;
     const timeoutMs = init.timeoutMs ?? defaultTimeout;
     const limit = init.maxBytes ?? maxBytes;
+    const { onRequest, ...requestInit } = init;
 
     for (let hop = 0; hop <= policy.maxRedirects; hop += 1) {
       const hopProxy = proxyForUrl(proxyConfig, currentUrl);
@@ -436,6 +437,13 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
       // carried. A proxied hop can never satisfy a private-host allowlist.
       await validateOutboundUrl(currentUrl, hopProxy ? proxiedPolicy : policy, { resolveHost });
       const dispatcher: Dispatcher = hopProxy && proxyDispatcher ? proxyDispatcher : directDispatcher;
+
+      // Counted per *hop*, not per call, and only after this hop passed the
+      // outbound policy: a request rejected by the SSRF guard provably never
+      // left the machine, so charging it would overstate what the vendor saw.
+      // Throwing here aborts before the fetch, which is what makes this a
+      // budget rather than a report.
+      onRequest?.(currentUrl);
 
       const timeoutController = new AbortController();
       const timer = setTimeout(() => timeoutController.abort(new Error("timeout")), timeoutMs);
@@ -458,7 +466,7 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
         // undici ships its own DOM type declarations; cast to the Node global
         // Response so this module has a single public type surface.
         response = (await undiciFetch(currentUrl, {
-          ...init,
+          ...requestInit,
           headers,
           redirect: "manual",
           signal,

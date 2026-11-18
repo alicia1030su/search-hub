@@ -46,6 +46,15 @@ export interface FanoutOptions {
   logger: Logger;
   fetch: SafeFetch;
   credentials: CredentialResolver;
+  /**
+   * Gate consulted immediately before every physical request this provider
+   * makes — including each page of a paginated adapter and every redirect hop.
+   *
+   * If it throws, the request is not sent. This is what makes a request budget
+   * a limit on the wire rather than a limit on intentions: the fan-out has no
+   * idea how many pages an adapter will fetch.
+   */
+  beforeRequest?: (providerId: string, url: string) => void;
 }
 
 export interface FanoutResult {
@@ -142,6 +151,7 @@ export async function runProvider(
   }
 
   const maxAttempts = 1 + Math.max(0, config.maxRetries);
+  let httpRequestsThisRun: number | undefined;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     attempts += 1;
@@ -210,7 +220,19 @@ export async function runProvider(
     const timer = setTimeout(() => timeoutController.abort(new Error("provider timeout")), timeoutMs);
     const signal = combineSignals(options.signal, timeoutController.signal);
 
+    const counted = { requests: 0 };
     try {
+      // Every physical request an adapter makes passes through here. Counting
+      // is per-invocation so the count belongs to this provider and this
+      // attempt; the gate itself is shared across the whole search.
+      const gatedFetch: SafeFetch = (url, init) =>
+        options.fetch(url, {
+          ...init,
+          onRequest: (target) => {
+            counted.requests += 1;
+            options.beforeRequest?.(config.id, target);
+          },
+        });
       const output: ProviderSearchOutput = await adapter.search(
         {
           query: options.query,
@@ -222,7 +244,7 @@ export async function runProvider(
           signal,
         },
         {
-          fetch: options.fetch,
+          fetch: gatedFetch,
           ...(apiKey === undefined ? {} : { apiKey }),
           config,
           signal,
@@ -254,6 +276,7 @@ export async function runProvider(
             ? { warning: output.warnings.join("; ").slice(0, 500) }
             : {}),
           attempts,
+          httpRequests: counted.requests,
         },
       };
     } catch (error) {
@@ -307,6 +330,9 @@ export async function runProvider(
       await new Promise((resolve) => setTimeout(resolve, wait));
     } finally {
       clearTimeout(timer);
+      // Retries each count from zero; the run total is what the operator is
+      // billed for, so attempts accumulate rather than overwrite.
+      httpRequestsThisRun = (httpRequestsThisRun ?? 0) + counted.requests;
     }
   }
 
@@ -338,6 +364,9 @@ export async function runProvider(
       ...(statusCode === undefined ? {} : { statusCode }),
       ...(usedKeyId === undefined ? {} : { keyId: usedKeyId }),
       errorCode: code,
+      // Failed attempts still spent the requests they issued; reporting 0 here
+      // would understate what the vendor billed.
+      ...(httpRequestsThisRun === undefined ? {} : { httpRequests: httpRequestsThisRun }),
       errorMessage: message,
       attempts,
     },

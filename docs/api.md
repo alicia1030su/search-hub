@@ -318,6 +318,21 @@ POST /api/admin/quality/sweep                    { datasetId, kValues?, metric?,
 POST /api/admin/quality/prune                    { olderThanDays, keepLatest? }
 ```
 
+### Request accounting (v0.1.9)
+
+A run reports three separate counts, because they differ as soon as an adapter paginates:
+
+| Field | Meaning |
+|---|---|
+| `cost.logicalSearches` | searches the caller asked for |
+| `cost.adapterAttempts` | adapter invocations, retries included (what the key scheduler meters) |
+| `cost.httpRequests` / `cost.requests` | physical HTTP requests: pages, retries and redirect hops |
+| `cost.billableUnits` | always `null` — no vendor billing rule is derivable from a request count |
+
+`requestsUsed` on the run row is the physical count. `ProviderAttemptStat.httpRequests`
+carries the same number per provider. A hop refused by the outbound policy is not counted;
+a request already sent is never refunded.
+
 A metric that cannot be computed is serialised as
 `{ "value": null, "status": "na", "reason": "qrels_incomplete" }` — never as `0`.
 `reason` is one of `no_results`, `no_judgments`, `qrels_incomplete`,

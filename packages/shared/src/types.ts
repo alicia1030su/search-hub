@@ -149,7 +149,17 @@ export interface ProviderAttemptStat {
   errorMessage?: string;
   /** Non-fatal upstream degradation, e.g. a legacy gateway reported "partial". */
   warning?: string;
+  /** Adapter invocations, retries included. One logical search may retry. */
   attempts: number;
+  /**
+   * Physical HTTP requests this provider actually made: pages, retries and
+   * redirect hops all counted.
+   *
+   * `attempts` is a logical count used by the key scheduler for per-key RPM and
+   * quota. This one is what the vendor sees on the wire, and the two differ
+   * whenever an adapter paginates.
+   */
+  httpRequests?: number;
 }
 
 export interface SearchErrorSummary {
@@ -401,9 +411,25 @@ export interface SafeFetchResponse<T = unknown> {
   url: string;
 }
 
+/** Options a caller may attach to one fetch beyond the standard request init. */
+export interface SafeFetchInit extends RequestInit {
+  timeoutMs?: number;
+  maxBytes?: number;
+  /**
+   * Called immediately before each **physical** request, including every
+   * redirect hop.
+   *
+   * This is the only place a budget can be enforced against the wire rather than
+   * against a caller's belief about the wire: a paginated adapter issues several
+   * requests per search, and a redirect issues several per fetch. Throwing here
+   * prevents the request from being sent.
+   */
+  onRequest?: (url: string) => void;
+}
+
 export type SafeFetch = <T = unknown>(
   url: string,
-  init?: RequestInit & { timeoutMs?: number; maxBytes?: number },
+  init?: SafeFetchInit,
 ) => Promise<SafeFetchResponse<T>>;
 
 export interface ProviderContext {

@@ -1110,6 +1110,7 @@ export const en: Record<MessageKey, string> = {
   "quality.cost.title": "Cost",
   "quality.cost.unknown": "Cost unknown",
   "quality.cost.unknownHint": "No unit price is configured, so only the request count is reported.",
+  "quality.cost.breakdown": "{{searches}} searches · {{attempts}} adapter calls · {{requests}} upstream requests",
   "quality.cost.requests": "{{count}} upstream requests",
 
   "quality.compare.title": "Compare experiments",

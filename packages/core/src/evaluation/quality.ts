@@ -129,8 +129,13 @@ export function latencyStats(samples: readonly number[]): LatencyStats {
  * treating the missing provider as free.
  */
 export function costSummary(input: {
+  /** Physical upstream requests. */
   requests: number;
   cacheHits: number;
+  /** Logical searches the caller asked for. Defaults to the request count. */
+  logicalSearches?: number;
+  /** Adapter invocations including retries. Defaults to the request count. */
+  adapterAttempts?: number;
   /** Per-provider request counts, so each can be priced separately. */
   requestsByProvider?: Readonly<Record<string, number>>;
   unitCosts?: Readonly<Record<string, number>>;
@@ -158,6 +163,12 @@ export function costSummary(input: {
 
   return {
     requests: input.requests,
+    logicalSearches: input.logicalSearches ?? input.requests,
+    adapterAttempts: input.adapterAttempts ?? input.requests,
+    httpRequests: input.requests,
+    // Never derived from the request count: a vendor that bills per search or
+    // per result would be misreported, and `null` is the honest answer.
+    billableUnits: null,
     cacheHits: input.cacheHits,
     knownCost: hasAnyPrice && !unknownCost ? round(known, 6) : null,
     estimatedCost: unknownCost || !hasAnyPrice ? null : round(known, 6),

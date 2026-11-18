@@ -50,6 +50,24 @@ class FetchProvider {
   }
 }
 
+/**
+ * Worst-case physical requests for one provider and one query.
+ *
+ * `(1 + maxRetries)` attempts × `maxRequestsPerSearch` pages. Redirect hops are
+ * deliberately **not** multiplied in: they are rare, and inflating every
+ * provider by the redirect allowance would reject ordinary runs. The runtime
+ * gate in `QualityService` counts every hop as it happens, so a redirect that
+ * pushes a run past its ceiling stops the run rather than overspending it — the
+ * pre-flight estimate only has to catch the ordinary case.
+ */
+function physicalRequestsPerQuery(runtime: {
+  config: { maxRetries: number; search?: { maxRequestsPerSearch?: number } };
+}): number {
+  const attempts = 1 + Math.max(0, runtime.config.maxRetries);
+  const pages = Math.max(1, runtime.config.search?.maxRequestsPerSearch ?? 1);
+  return attempts * pages;
+}
+
 export interface AppContext {
   config: AppConfig;
   db: DbHandle["db"];
@@ -101,6 +119,7 @@ export interface ContextOptions {
   random?: () => number;
   cacheLimits?: { maxEntries: number; maxBytes: number };
 }
+
 
 export function createContext(config: AppConfig, options: ContextOptions = {}): AppContext {
   ensureDir(config.dataDir);
@@ -238,15 +257,19 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     engineVersion: config.version,
     codeCommit: config.commit ?? null,
     /**
-     * Retry allowance per provider, read from the live configuration so a
-     * budget pre-check cannot under-count a provider allowed 6 attempts.
+     * Worst-case **physical** requests for one provider and one query.
+     *
+     * retries × pages × (1 + allowed redirects). Pages come from the resolved
+     * search plan the adapter will actually use, not from a guess: an adapter
+     * targeting 50 rows with `count=20` fetches 3 pages inside a single attempt,
+     * and a budget that counted attempts would authorise a third of the traffic
+     * the vendor sees.
      */
-    providerMaxAttempts: (providerId: string) => {
-      const runtime = providers
-        .activeRuntimes()
-        .find((entry) => entry.config.id === providerId);
-      const retries = runtime?.config.maxRetries ?? 1;
-      return 1 + Math.max(0, retries);
+    providerMaxRequests: (providerId: string) => {
+      const runtime = providers.activeRuntimes().find((entry) => entry.config.id === providerId);
+      // No runtime means the provider is disabled or gone; the pessimistic
+      // default keeps the pre-check conservative instead of permissive.
+      return runtime ? physicalRequestsPerQuery(runtime) : 8;
     },
     ...(options.now === undefined ? {} : { now: options.now }),
   });
