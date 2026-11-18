@@ -64,6 +64,14 @@ anything it did not.
 - **Stripping a nested secret left an empty container**, so a configuration with
   `{ auth: { token } }` fingerprinted differently from `{}` — a credential
   changing the experimental identity. Empty containers are now dropped.
+- **A cancelled run was recorded as a failure.** The abort path ran through the
+  failure handler, which overwrote `cancelled` with `failed`: the history claimed
+  an outage that the operator had caused. A stop is now `cancelled` with
+  `failureReason: cancelled`.
+- **A malformed request answered 500 on two of the new endpoints.** `?limit=abc`
+  reached SQLite as `NaN`, returning an empty page that looked like an empty
+  dataset; `"queries": "not-an-array"` threw a `TypeError` inside the import
+  guard. Both are 400 (or the documented default page) now.
 
 ### Known limitations
 
