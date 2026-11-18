@@ -4,7 +4,7 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.9 · Stable Release（正式发布渠道）。**
+> **状态：v0.1.10-beta.1 · Beta（预览渠道）。稳定版仍为 v0.1.9。**
 >
 > 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存、搜索源健康管理中心与搜索质量评测实验室均已实现，并通过 **876 个自动化测试（60 个文件）**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
@@ -125,18 +125,27 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.9）
+## 下载安装（v0.1.10-beta.1）
 
 三种形态，同一套搜索核心、数据库模型与管理后台。
 
 | 平台 | 下载 | 需要什么 |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.9-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.9/search-hub-v0.1.9-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | [`search-hub-v0.1.9-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.9/search-hub-v0.1.9-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
-| Linux arm64 | [`search-hub-v0.1.9-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.9/search-hub-v0.1.9-linux-arm64.tar.gz) | **无** |
+| Windows x64 | [`search-hub-v0.1.10-beta.1-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/search-hub-v0.1.10-beta.1-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | [`search-hub-v0.1.10-beta.1-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/search-hub-v0.1.10-beta.1-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
+| Linux arm64 | [`search-hub-v0.1.10-beta.1-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/search-hub-v0.1.10-beta.1-linux-arm64.tar.gz) | **无** |
 
-校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.9/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
 
+> 需要稳定版请用 [`v0.1.9`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.9)；上述三个包属于 **beta 预览渠道**，尚未发布为稳定版。
+
+> **v0.1.10-beta.1 让评测分数可追溯**：每个实验记录实际参与的来源、来源配置指纹、
+> 标注集指纹与模型指纹（六位之外的密钥不参与计算——轮换 Key 不是配置变更），历史 run 明确
+> 标记为「溯源不完整」而不是用当前配置回填；查询支持多分类标签并按类别分组出分，同时说明
+> 分组之间存在重叠；对比报告新增文档级排序变化（单侧存在的文档位移为 `null`，不是 0）；
+> 实验写入失败不再让 run 停在 `running`，磁盘满返回 507。新增迁移 `0007`（仅加列），线上默认
+> RRF 行为不变。
+>
 > **v0.1.9 修正请求预算与并发隔离**：评测预算改为按**真实 HTTP 请求**计量（分页、重试、
 > 重定向都计入，被 SSRF 拦下的请求不计费），并发搜索不再共享健康门禁的跳过列表，Deep
 > Search 也会如实报告被门禁停用的源；评测把「搜索失败」与「搜索成功但结果不相关」彻底

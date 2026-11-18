@@ -858,6 +858,8 @@ export interface QualityQueryRow {
   datasetId: string;
   query: string;
   category: QualityCategory;
+  /** Primary label first, then the secondary labels. Never empty. */
+  categories: QualityCategory[];
   language: string;
   intent: string;
   notes: string;
@@ -879,9 +881,81 @@ export interface QualityJudgmentRow {
 
 export interface QualityDatasetDetail {
   dataset: QualityDatasetSummary;
+  /** At most one page; see `queriesPage`. */
   queries: QualityQueryRow[];
+  /** At most one page; see `judgmentsPage`. */
   judgments: QualityJudgmentRow[];
-  coverage: { judgedDocuments: number; judgedQueries: number; queryCount: number; unjudgedQueries: number };
+  coverage: {
+    judgedDocuments: number;
+    judgedQueries: number;
+    queryCount: number;
+    unjudgedQueries: number;
+    unjudgedQueryIds: string[];
+  };
+  queriesPage: { total: number; offset: number; limit: number; hasMore: boolean };
+  judgmentsPage: { total: number; offset: number; limit: number; hasMore: boolean };
+}
+
+export interface QualityUnjudgedQuery {
+  queryId: string;
+  query: string;
+  categories: QualityCategory[];
+  judgmentCount: number;
+  documents?: Array<{
+    documentId: string;
+    url: string;
+    bestRank: number;
+    providers: string[];
+    seenInRuns: number;
+  }>;
+  reason?: "no_run_results";
+}
+
+export interface QualityUnjudgedPage {
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  queries: QualityUnjudgedQuery[];
+}
+
+export interface QualityCategoryGroup {
+  category: QualityCategory;
+  queryCount: number;
+  comparable: number;
+  lowSample: boolean;
+  precisionAtK: QualityMetricValue;
+  recallAtK: QualityMetricValue;
+  mrrAtK: QualityMetricValue;
+  ndcgAtK: QualityMetricValue;
+}
+
+export interface QualityCategoryBreakdown {
+  groups: QualityCategoryGroup[];
+  /** True when a query carries several labels, so the group counts overlap. */
+  overlappingGroups: boolean;
+  primaryOnly: boolean;
+}
+
+export interface QualityDocumentMovement {
+  documentId: string;
+  url: string;
+  title: string;
+  relevance: 0 | 1 | 2 | 3 | null;
+  baselineRank: number | null;
+  candidateRank: number | null;
+  /** null when the document appears on one side only: it did not "move". */
+  deltaPositions: number | null;
+  movement: "up" | "down" | "entered" | "exited" | "same";
+}
+
+export interface QualityQueryMovements {
+  queryId: string;
+  category: QualityCategory;
+  rows: QualityDocumentMovement[];
+  changedCount: number;
+  hiddenUnjudgedMovements: number;
+  truncatedCount: number;
 }
 
 export interface QualityMetricValue {
@@ -925,11 +999,24 @@ export interface QualityRunSummary {
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  perProviderLimit: number | null;
+  timeoutMs: number | null;
+  providerIds: string[];
+  providerFingerprint: string | null;
+  /** null means no model took part, which is a fact and not a gap. */
+  modelFingerprint: string | null;
+  qrelsFingerprint: string | null;
+  provenanceComplete: boolean;
+  provenanceMissing: string[];
+  failureReason: string | null;
+  partial: boolean;
+  persistedQueryCount: number;
 }
 
 export interface QualityRunDetail {
   run: QualityRunSummary;
   metrics: Record<string, QualityMetricValue>;
+  byCategory: QualityCategoryBreakdown;
   latency: {
     count: number;
     p50: number | null;
@@ -989,6 +1076,12 @@ export interface QualityComparison {
   reason?: string;
   datasetId: string;
   datasetVersion: number;
+  byCategory: QualityCategoryBreakdown;
+  movements: {
+    queries: QualityQueryMovements[];
+    hiddenUnjudgedMovements: number;
+    categoryGroupsOverlap: boolean;
+  };
 }
 
 export interface QualitySweepResult {

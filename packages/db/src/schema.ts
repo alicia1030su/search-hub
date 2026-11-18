@@ -420,6 +420,14 @@ export const qualityQueries = sqliteTable(
     query: text("query").notNull(),
     /** general | chinese | english | code | academic | news | ... */
     category: text("category").notNull().default("general"),
+    /**
+     * Secondary category labels as a JSON array (migration `0007`).
+     *
+     * The primary label stays in `category` so an old client that never sends
+     * extra labels is still valid; the read model exposes them together as
+     * `categories`. A query may hold at most three labels in total.
+     */
+    extraCategories: text("extra_categories").notNull().default("[]"),
     language: text("language").notNull().default("zh"),
     intent: text("intent").notNull().default(""),
     notes: text("notes").notNull().default(""),
@@ -475,6 +483,33 @@ export const qualityRuns = sqliteTable(
     snapshotRunId: text("snapshot_run_id"),
     codeCommit: text("code_commit"),
     engineVersion: text("engine_version").notNull(),
+    /**
+     * Provenance (migration `0007`): the evidence a score is reproducible from.
+     *
+     * Every `*Fingerprint` column is a sha256 of a *credential-free* description
+     * of what participated in this run. They are NULL on runs recorded before
+     * v0.1.10; such a run reports `provenanceComplete: false` instead of
+     * borrowing today's settings, which would describe a run that never
+     * happened.
+     */
+    providerIdsJson: text("provider_ids_json"),
+    providerFingerprint: text("provider_fingerprint"),
+    /** `null` is a fact: no model took part in this run. */
+    modelFingerprint: text("model_fingerprint"),
+    qrelsFingerprint: text("qrels_fingerprint"),
+    /** Per-provider row limit actually requested for each query. */
+    perProviderLimit: integer("per_provider_limit"),
+    /** Request timeout applied to this run only, never written back to a provider. */
+    requestTimeoutMs: integer("request_timeout_ms"),
+    /**
+     * Why a failed run failed, in a small closed vocabulary the UI translates:
+     * `persistence_failed` | `budget_exhausted` | `cancelled` | `internal_error`.
+     */
+    failureReason: text("failure_reason"),
+    /** How many per-query rows were actually written before the run stopped. */
+    persistedQueryCount: integer("persisted_query_count").notNull().default(0),
+    /** True when only part of the requested queries produced a stored row. */
+    partial: integer("partial", { mode: "boolean" }).notNull().default(false),
     status: text("status").notNull(),
     /** Hard ceiling on upstream requests, and what was actually spent. */
     requestBudget: integer("request_budget").notNull().default(0),
@@ -508,7 +543,11 @@ export const qualitySnapshots = sqliteTable(
     snapshotJson: text("snapshot_json").notNull(),
     createdAt: text("created_at").notNull(),
   },
-  (table) => [uniqueIndex("idx_quality_snapshots_query").on(table.runId, table.queryId)],
+  (table) => [
+    uniqueIndex("idx_quality_snapshots_query").on(table.runId, table.queryId),
+    /** The unjudged listing looks a query up across every run. */
+    index("idx_quality_snapshots_query_only").on(table.queryId),
+  ],
 );
 
 export const qualityRunResults = sqliteTable(
@@ -528,7 +567,11 @@ export const qualityRunResults = sqliteTable(
     errorJson: text("error_json"),
     createdAt: text("created_at").notNull(),
   },
-  (table) => [index("idx_quality_run_results_run").on(table.runId)],
+  (table) => [
+    index("idx_quality_run_results_run").on(table.runId),
+    /** The unjudged listing looks a query up across every run. */
+    index("idx_quality_run_results_query").on(table.queryId),
+  ],
 );
 
 export type QualityDatasetRow = typeof qualityDatasets.$inferSelect;

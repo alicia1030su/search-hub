@@ -37,6 +37,7 @@ import type {
   UpdateStatusResponse,
   QualityComparison,
   QualityDatasetDetail,
+  QualityUnjudgedPage,
   QualityDatasetSummary,
   QualityRunDetail,
   QualityRunSummary,
@@ -427,10 +428,36 @@ export const api = {
   skills: (signal?: AbortSignal) =>
     request<{ skills: SkillEntry[] }>("/admin/skills", { signal }),
   // ---- search quality lab ----
-  qualityDatasets: (signal?: AbortSignal) =>
-    request<{ datasets: QualityDatasetSummary[] }>("/admin/quality/datasets", { signal }),
-  qualityDataset: (id: string, signal?: AbortSignal) =>
-    request<QualityDatasetDetail>(`/admin/quality/datasets/${seg(id)}`, { signal }),
+  qualityDatasets: (
+    params: { limit?: number; offset?: number } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<{
+      datasets: QualityDatasetSummary[];
+      total: number;
+      hasMore: boolean;
+      limit: number;
+      offset: number;
+    }>("/admin/quality/datasets", { query: params, signal }),
+  qualityDataset: (
+    id: string,
+    params: {
+      queriesLimit?: number;
+      queriesOffset?: number;
+      judgmentsLimit?: number;
+      judgmentsOffset?: number;
+    } = {},
+    signal?: AbortSignal,
+  ) => request<QualityDatasetDetail>(`/admin/quality/datasets/${seg(id)}`, { query: params, signal }),
+  qualityUnjudged: (
+    id: string,
+    params: { limit?: number; offset?: number; includeDocuments?: boolean } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<QualityUnjudgedPage>(`/admin/quality/datasets/${seg(id)}/unjudged`, {
+      query: { ...params, ...(params.includeDocuments === true ? { includeDocuments: "true" } : {}) },
+      signal,
+    }),
   createQualityDataset: (input: { name: string; description?: string; language?: string }) =>
     request<{ dataset: QualityDatasetSummary }>("/admin/quality/datasets", {
       method: "POST",
@@ -463,8 +490,14 @@ export const api = {
       "/admin/quality/datasets/import",
       { method: "POST", body: payload },
     ),
-  qualityRuns: (params: { datasetId?: string; limit?: number } = {}, signal?: AbortSignal) =>
-    request<{ runs: QualityRunSummary[] }>("/admin/quality/runs", { query: params, signal }),
+  qualityRuns: (
+    params: { datasetId?: string; limit?: number; offset?: number } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<{ runs: QualityRunSummary[]; total: number; hasMore: boolean }>("/admin/quality/runs", {
+      query: params,
+      signal,
+    }),
   createQualityRun: (input: Record<string, unknown>) =>
     request<{ run: QualityRunSummary }>("/admin/quality/runs", { method: "POST", body: input }),
   qualityRun: (id: string, signal?: AbortSignal) =>

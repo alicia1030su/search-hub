@@ -11,6 +11,13 @@ import {
   type QueryInput,
   type RunInput,
 } from "../services/quality.js";
+import {
+  ImportRejection,
+  assertCleanText,
+  assertDocumentUrl,
+  assertSafePayload,
+  safeDownloadName,
+} from "../services/quality-import-guard.js";
 
 /**
  * Search quality evaluation endpoints.
@@ -46,6 +53,7 @@ const createDatasetSchema = z.object({
 const querySchema = z.object({
   query: z.string().trim().min(1).max(500),
   category: categorySchema.optional(),
+  extraCategories: z.array(categorySchema).max(2).optional(),
   language: z.string().trim().min(2).max(16).optional(),
   intent: z.string().max(1000).optional(),
   notes: z.string().max(2000).optional(),
@@ -120,6 +128,14 @@ const runSchema = z.object({
   requestBudget: z.number().int().min(1).max(QUALITY_LIMITS.maxRequestBudget).optional(),
   confirmPaid: z.boolean().optional(),
   unitCosts: z.record(z.string(), z.number().min(0)).optional(),
+  perProviderLimit: z.number().int().min(1).max(QUALITY_LIMITS.maxResultsPerQuery).optional(),
+  timeoutMs: z.number().int().min(500).max(60_000).optional(),
+  /**
+   * Only the implemented value is accepted here. The service repeats the check
+   * so a non-HTTP caller cannot store a policy the engine never applies.
+   */
+  cachePolicy: z.literal("bypass").optional(),
+  maxConcurrency: z.literal(1).optional(),
 });
 
 const sweepSchema = z.object({
@@ -153,7 +169,11 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
     "/api/admin/quality/datasets",
     jsonFor(app, async (request) => {
       adminOf(ctx, request);
-      return { datasets: ctx.quality.listDatasets() };
+      const query = request.query as { limit?: string; offset?: string };
+      return ctx.quality.listDatasets({
+        limit: query.limit === undefined ? undefined : Number(query.limit),
+        offset: query.offset === undefined ? undefined : Number(query.offset),
+      });
     }),
   );
 
@@ -172,7 +192,21 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
     jsonFor(app, async (request) => {
       adminOf(ctx, request);
       const { id } = request.params as { id: string };
-      return ctx.quality.getDataset(id);
+      const query = request.query as Record<string, string | undefined>;
+      const num = (value: string | undefined): number | undefined => {
+        if (value === undefined) return undefined;
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+          throw new SearchHubError("validation_error", `${value} is not a number`);
+        }
+        return parsed;
+      };
+      return ctx.quality.getDataset(id, {
+        queriesLimit: num(query.queriesLimit),
+        queriesOffset: num(query.queriesOffset),
+        judgmentsLimit: num(query.judgmentsLimit),
+        judgmentsOffset: num(query.judgmentsOffset),
+      });
     }),
   );
 
@@ -202,6 +236,26 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
     }),
   );
 
+  app.get(
+    "/api/admin/quality/datasets/:id/unjudged",
+    jsonFor(app, async (request) => {
+      adminOf(ctx, request);
+      const { id } = request.params as { id: string };
+      const query = request.query as { limit?: string; offset?: string; includeDocuments?: string };
+      const num = (value: string | undefined): number | undefined => {
+        if (value === undefined) return undefined;
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) throw new SearchHubError("validation_error", `${value} is not a number`);
+        return parsed;
+      };
+      return ctx.quality.listUnjudged(id, {
+        limit: num(query.limit),
+        offset: num(query.offset),
+        includeDocuments: query.includeDocuments === "true",
+      });
+    }),
+  );
+
   app.post(
     "/api/admin/quality/datasets/:id/freeze",
     jsonFor(app, async (request) => {
@@ -223,10 +277,17 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.get(
     "/api/admin/quality/datasets/:id/export",
-    jsonFor(app, async (request) => {
+    jsonFor(app, async (request, reply) => {
       adminOf(ctx, request);
       const { id } = request.params as { id: string };
-      const detail = ctx.quality.getDataset(id);
+      const detail = ctx.quality.exportDataset(id);
+      // The name is operator-supplied, so it is sanitised before it reaches a
+      // header: a newline in a header is a response-splitting hazard, and a
+      // path separator in a filename surprises whoever downloads it.
+      void reply.header(
+        "content-disposition",
+        `attachment; filename="${safeDownloadName(detail.dataset.name, id)}"`,
+      );
       const byQuery = new Map<string, typeof detail.judgments>();
       for (const judgment of detail.judgments) {
         const list = byQuery.get(judgment.queryId) ?? [];
@@ -245,6 +306,7 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
         queries: detail.queries.map((query) => ({
           query: query.query,
           category: query.category,
+          extraCategories: query.extraCategories,
           language: query.language,
           intent: query.intent,
           notes: query.notes,
@@ -262,6 +324,26 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
     "/api/admin/quality/datasets/import",
     jsonFor(app, async (request) => {
       const actor = adminOf(ctx, request, true);
+      // Structural hazards are rejected before schema validation so the error
+      // names the offending path instead of a generic "invalid payload".
+      try {
+        assertSafePayload(request.body ?? {});
+        for (const [index, query] of ((request.body as { queries?: unknown[] })?.queries ?? []).entries()) {
+          if (query !== null && typeof query === "object") {
+            const text = (query as { query?: unknown }).query;
+            if (typeof text === "string") assertCleanText(text, `queries[${index}].query`);
+            for (const [judgmentIndex, judgment] of ((query as { judgments?: unknown[] }).judgments ?? []).entries()) {
+              const url = judgment !== null && typeof judgment === "object" ? (judgment as { url?: unknown }).url : undefined;
+              if (typeof url === "string") assertDocumentUrl(url, `queries[${index}].judgments[${judgmentIndex}].url`);
+            }
+          }
+        }
+      } catch (error) {
+        if (error instanceof ImportRejection) {
+          throw new SearchHubError("validation_error", error.message, { details: { path: error.path } });
+        }
+        throw error;
+      }
       const input = parseInput(importSchema, request.body ?? {});
       return ctx.quality.importDataset(
         {
@@ -271,6 +353,7 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
           ...(input.judgmentsComplete === undefined ? {} : { judgmentsComplete: input.judgmentsComplete }),
           queries: input.queries.map((query) => ({
             query: query.query,
+            ...(query.extraCategories === undefined ? {} : { extraCategories: query.extraCategories }),
             ...(query.category === undefined ? {} : { category: query.category }),
             ...(query.language === undefined ? {} : { language: query.language }),
             ...(query.intent === undefined ? {} : { intent: query.intent }),
@@ -297,12 +380,13 @@ export function registerQualityRoutes(app: FastifyInstance, ctx: AppContext): vo
     "/api/admin/quality/runs",
     jsonFor(app, async (request) => {
       adminOf(ctx, request);
-      const query = request.query as { datasetId?: string; limit?: string };
+      const query = request.query as { datasetId?: string; limit?: string; offset?: string };
       const limit = query.limit ? Number(query.limit) : 50;
       return {
-        runs: ctx.quality.listRuns({
+        ...ctx.quality.listRuns({
           ...(query.datasetId === undefined ? {} : { datasetId: query.datasetId }),
           limit: Number.isFinite(limit) ? limit : 50,
+          ...(query.offset === undefined ? {} : { offset: Number(query.offset) }),
         }),
       };
     }),

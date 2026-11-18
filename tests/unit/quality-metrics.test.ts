@@ -441,6 +441,30 @@ describe("fusion lab", () => {
     expect(ranked.documents[0]!.documentId).toBe("https://b.fixture.test/1");
   });
 
+  it("lets a provider weight change the order", () => {
+    // B is shared, so it wins on source count while both sources weigh the same
+    // (1/62 + 1/61 > 1/61). The name is a fixture, not a tuning knob: the
+    // comparison only holds while alpha's two contributions are smaller than
+    // beta's one, which is a property of the fixture rather than of the score.
+    const equal = rankSnapshot(snapshot, { strategy: "rrf", k: 60 });
+    const weighted = rankSnapshot(
+      snapshot,
+      { strategy: "rrf", k: 60, providerWeights: { alpha: 100, beta: 1 } },
+    );
+    expect(equal.documents[0]!.documentId).toBe("https://b.fixture.test/1");
+    expect(weighted.documents[0]!.documentId).toBe("https://a.fixture.test/1");
+  });
+
+  it("makes a zero weight sink a source without dropping its documents", () => {
+    // The document was really returned; the source is just not trusted for
+    // ranking yet. It must stay in the list — as the lowest-ranked row, not
+    // removed and not a NaN that would poison a comparison.
+    const zeroed = rankSnapshot(snapshot, { strategy: "rrf", k: 60, providerWeights: { alpha: 0 } });
+    const ids = zeroed.documents.map((item) => item.documentId);
+    expect(ids).toHaveLength(3);
+    expect(ids[ids.length - 1]).toBe("https://a.fixture.test/1");
+  });
+
   it("does not count the same provider twice for one document", () => {
     const doubled: QuerySnapshot = {
       ...snapshot,

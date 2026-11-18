@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { SearchHubError, normalizeUrl, type Logger } from "@search-hub/shared";
 import {
+  aggregateByCategory,
   aggregateMetric,
   compareRankings,
   coreFixture,
@@ -12,8 +13,10 @@ import {
   rateMetric,
   resultSetQuality,
   shallowFixture,
+  queryMovements,
   splitQueries,
   type AggregateMetric,
+  type CategoryBreakdown,
   type ComparisonSummary,
   type CostSummary,
   type DatasetOrigin,
@@ -42,6 +45,13 @@ import {
 } from "@search-hub/db";
 import type { SearchService } from "./search.js";
 import type { SettingsService } from "./settings.js";
+import {
+  modelFingerprint,
+  providerFingerprint,
+  qrelsFingerprint,
+  type ModelFingerprintRow,
+  type ProviderFingerprintRow,
+} from "./quality-fingerprint.js";
 
 /** Bounds that keep one import or one run from exhausting the process. */
 export const QUALITY_LIMITS = {
@@ -54,6 +64,67 @@ export const QUALITY_LIMITS = {
   minCutoff: 1,
   maxCutoff: 50,
 } as const;
+
+/** Datasets per page, and the ceiling a caller may ask for. */
+const DATASET_PAGE_DEFAULT = 50;
+const DATASET_PAGE_MAX = 200;
+/** Queries or judgments per page in a dataset detail response. */
+const DETAIL_PAGE_DEFAULT = 200;
+const DETAIL_PAGE_MAX = 500;
+
+/**
+ * Secondary category labels stored on a query row.
+ *
+ * A malformed value must not make a dataset unreadable: the row was written by
+ * this service, and if the JSON is broken the primary `category` is still a
+ * correct answer. Returning `[]` keeps the query visible as its primary label
+ * instead of failing the whole dataset page.
+ */
+/** True when the database refused the write because the volume is full. */
+function isDiskFull(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  if (typeof code === "string" && code.includes("SQLITE_FULL")) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /disk is full|ENOSPC|database or disk/i.test(message);
+}
+
+/**
+ * A run could not persist a result.
+ *
+ * 507 is the honest status: the request was valid and the server failed to
+ * store its own work, which is a capacity problem rather than a bug in the
+ * caller. `details.runId` survives even when the failure update also failed, so
+ * an operator can find the run once the disk is writable again.
+ */
+function persistenceFailure(runId: string, cause: unknown): SearchHubError {
+  const full = isDiskFull(cause);
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return new SearchHubError(
+    "internal_error",
+    full
+      ? "The evaluation run could not be stored: the database volume is full. Free space and re-run."
+      : `The evaluation run could not be stored: ${message}`,
+    { status: full ? 507 : 500, details: { runId, reason: "persistence_failed" } },
+  );
+}
+
+/** A page size inside the documented window, defaulted rather than rejected. */
+function clampPage(value: number | undefined, fallback: number, max: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value < 1) return fallback;
+  return Math.min(max, Math.round(value));
+}
+
+function parseExtraCategories(raw: string | null | undefined): QueryCategory[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is QueryCategory => typeof item === "string");
+  } catch {
+    return [];
+  }
+}
 
 interface DatasetRowLike {
   id: string;
@@ -85,6 +156,56 @@ function toDataset(row: DatasetRowLike): QualityDataset {
   };
 }
 
+/**
+ * Validates the label set of one query and returns the secondary labels.
+ *
+ * A query carries one primary label in `category` and up to two more in
+ * `extraCategories`. Three labels is the ceiling because the report compares
+ * categories against each other: a query tagged with five overlapping labels
+ * would be counted five times in the same comparison and make every group look
+ * larger than it is.
+ *
+ * Repeating a label is rejected rather than de-duplicated: a caller that sent
+ * it twice is describing a different query than the one that would be stored,
+ * and silently "fixing" it would hide the mistake.
+ */
+function validateCategories(
+  primary: QueryCategory,
+  extras: readonly QueryCategory[] | undefined,
+  context: Record<string, unknown>,
+): QueryCategory[] {
+  const secondary = extras ?? [];
+  const unique = new Set<QueryCategory>([primary, ...secondary]);
+  if (unique.size !== secondary.length + 1) {
+    throw new SearchHubError(
+      "validation_error",
+      `A query's categories must be distinct (primary "${primary}", secondary [${secondary.join(", ")}])`,
+      { details: { ...context, primary, extraCategories: secondary } },
+    );
+  }
+  const total = 1 + secondary.length;
+  if (total > 3) {
+    throw new SearchHubError(
+      "validation_error",
+      "A query may carry at most three categories (one primary plus two secondary)",
+      { details: { ...context, primary, extraCategories: secondary } },
+    );
+  }
+  return [...secondary];
+}
+
+function categoriesJson(extras: readonly QueryCategory[]): string {
+  return JSON.stringify(extras);
+}
+
+/**
+ * Labels as the read model exposes them: primary first, then the secondary ones.
+ * Always at least one element, so callers never need a "what if it is empty" path.
+ */
+function categoriesOf(row: { category: string; extraCategories?: string | null }): QueryCategory[] {
+  return [row.category as QueryCategory, ...parseExtraCategories(row.extraCategories)] as QueryCategory[];
+}
+
 export interface QualityServiceDeps {
   db: SearchHubDb;
   settings: SettingsService;
@@ -103,7 +224,16 @@ export interface QualityServiceDeps {
    * a hop to each. Counting attempts would authorise a third of the traffic the
    * vendor actually sees.
    */
-  providerMaxRequests?: (providerId: string) => number;
+  providerMaxRequests?: (providerId: string, perProviderLimit?: number) => number;
+  /**
+   * Credential-free description of the providers that exist right now.
+   *
+   * Used only to fingerprint a run, so it must never include a key: rotating a
+   * key is not a configuration change and must not move the digest.
+   */
+  providerSnapshot?: () => readonly ProviderFingerprintRow[];
+  /** Credential-free description of configured models. Empty means none exist. */
+  modelSnapshot?: () => readonly ModelFingerprintRow[];
   /**
    * Called when a request is refused because the run's ceiling is reached.
    * The search path uses it to stop the whole run cleanly.
@@ -122,7 +252,13 @@ export interface DatasetInput {
 
 export interface QueryInput {
   query: string;
+  /** Primary category; `general` when omitted, which keeps old clients valid. */
   category?: QueryCategory;
+  /**
+   * Secondary labels. A query is counted once under each label it carries, so
+   * the per-category query counts can exceed the number of queries.
+   */
+  extraCategories?: QueryCategory[];
   language?: string;
   intent?: string;
   notes?: string;
@@ -157,6 +293,21 @@ export interface RunInput {
   confirmPaid?: boolean;
   /** Optional per-provider price, used only to report cost; never to decide. */
   unitCosts?: Record<string, number>;
+  /**
+   * Rows requested from each provider, which is not the same question as rows
+   * shown to the reader: a fusion can only rank what it was given.
+   */
+  perProviderLimit?: number;
+  /** Request timeout for this run only; never written back to a provider. */
+  timeoutMs?: number;
+  /**
+   * Only `bypass` is implemented. Anything else is rejected rather than stored
+   * and silently ignored — a run record that claims a policy the engine did not
+   * apply is worse than an unsupported option.
+   */
+  cachePolicy?: "bypass";
+  /** Only `1` (serial) is implemented; see above. */
+  maxConcurrency?: number;
 }
 
 export interface RunSummary {
@@ -179,6 +330,31 @@ export interface RunSummary {
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  /** Rows requested from each provider; `null` on runs recorded before v0.1.10. */
+  perProviderLimit: number | null;
+  /** Request timeout this run used; `null` on runs recorded before v0.1.10. */
+  timeoutMs: number | null;
+  /** Which providers took part, empty when it was not recorded. */
+  providerIds: string[];
+  /**
+   * Digests that make a score attributable. All `null` on runs recorded before
+   * v0.1.10 — they are never back-filled from today's configuration, which
+   * would describe a run that never happened.
+   */
+  providerFingerprint: string | null;
+  /** `null` is a fact: no model took part in this run. */
+  modelFingerprint: string | null;
+  qrelsFingerprint: string | null;
+  /** False when the provenance columns were never written (pre-v0.1.10 runs). */
+  provenanceComplete: boolean;
+  /** Which provenance fields are missing, so the gap is nameable. */
+  provenanceMissing: string[];
+  /** Why a failed run failed; `null` when it did not fail or the cause is unknown. */
+  failureReason: string | null;
+  /** True when only part of the requested queries produced a stored row. */
+  partial: boolean;
+  /** Per-query rows actually written before the run stopped. */
+  persistedQueryCount: number;
 }
 
 function toRunSummary(row: typeof qualityRuns.$inferSelect): RunSummary {
@@ -197,6 +373,23 @@ function toRunSummary(row: typeof qualityRuns.$inferSelect): RunSummary {
       error = null;
     }
   }
+  let providerIds: string[] = [];
+  if (row.providerIdsJson) {
+    try {
+      const parsed = JSON.parse(row.providerIdsJson) as unknown;
+      if (Array.isArray(parsed)) providerIds = parsed.filter((item): item is string => typeof item === "string");
+    } catch {
+      providerIds = [];
+    }
+  }
+  // A model fingerprint of `null` is a fact ("no model took part"), not a gap.
+  // The three fields that describe what the run actually searched are the ones
+  // whose absence makes it unattributable.
+  const missing: string[] = [];
+  if (providerIds.length === 0) missing.push("providerIds");
+  if (row.providerFingerprint === null) missing.push("providerFingerprint");
+  if (row.qrelsFingerprint === null) missing.push("qrelsFingerprint");
+  const recordedModelFingerprint = row.modelFingerprint;
   return {
     id: row.id,
     datasetId: row.datasetId,
@@ -216,6 +409,17 @@ function toRunSummary(row: typeof qualityRuns.$inferSelect): RunSummary {
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
     error,
+    perProviderLimit: row.perProviderLimit,
+    timeoutMs: row.requestTimeoutMs,
+    providerIds,
+    providerFingerprint: row.providerFingerprint,
+    modelFingerprint: recordedModelFingerprint,
+    qrelsFingerprint: row.qrelsFingerprint,
+    provenanceComplete: missing.length === 0,
+    provenanceMissing: missing,
+    failureReason: row.failureReason,
+    partial: row.partial,
+    persistedQueryCount: row.persistedQueryCount,
   };
 }
 
@@ -234,6 +438,14 @@ function toRunSummary(row: typeof qualityRuns.$inferSelect): RunSummary {
  */
 export class QualityService {
   private readonly controllers = new Map<string, AbortController>();
+  /**
+   * Per-run progress, so a failure can say how much was actually written.
+   *
+   * Kept beside the controller map rather than in the database: it exists to
+   * describe a run that is still in flight, and a run that finished normally
+   * persists the same number.
+   */
+  private readonly runningRuns = new Map<string, { persisted: number; total: number; controller: AbortController }>();
   private readonly now: () => number;
 
   constructor(private readonly deps: QualityServiceDeps) {
@@ -259,6 +471,7 @@ export class QualityService {
       queries: Array<{
         query: string;
         category?: QueryCategory;
+        extraCategories?: QueryCategory[];
         language?: string;
         intent?: string;
         notes?: string;
@@ -281,13 +494,15 @@ export class QualityService {
       );
     }
     const seen = new Set<string>();
-    for (const query of input.queries) {
+    const labelSets: QueryCategory[][] = [];
+    for (const [index, query] of input.queries.entries()) {
       const key = query.query.trim().toLowerCase();
       if (!key) throw new SearchHubError("validation_error", "A query cannot be empty");
       if (seen.has(key)) {
         throw new SearchHubError("validation_error", `Duplicate query in this import: "${query.query}"`);
       }
       seen.add(key);
+      labelSets.push(validateCategories(query.category ?? "general", query.extraCategories, { queries: index }));
       for (const judgment of query.judgments ?? []) {
         if (!normalizeUrl(judgment.url)) {
           throw new SearchHubError(
@@ -318,7 +533,7 @@ export class QualityService {
           frozenAt: null,
         })
         .run();
-      for (const query of input.queries) {
+      for (const [queryIndex, query] of input.queries.entries()) {
         const queryId = `qq_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
         queryCount += 1;
         tx.insert(qualityQueries)
@@ -327,6 +542,7 @@ export class QualityService {
             datasetId: id,
             query: query.query.trim(),
             category: query.category ?? "general",
+            extraCategories: categoriesJson(labelSets[queryIndex]!),
             language: query.language ?? input.language ?? "zh",
             intent: query.intent ?? "",
             notes: query.notes ?? "",
@@ -357,9 +573,39 @@ export class QualityService {
     return { dataset: toDataset(row), queries: queryCount, judgments: judgmentCount };
   }
 
-  listDatasets(): Array<QualityDataset & { queryCount: number; judgmentCount: number }> {
-    const rows = this.deps.db.select().from(qualityDatasets).orderBy(desc(qualityDatasets.updatedAt)).all();
-    if (rows.length === 0) return [];
+  /**
+   * One page of datasets, plus the total.
+   *
+   * Without the total a caller cannot distinguish twelve datasets from twelve
+   * thousand with a first page in front of it, and "load more" would be a guess
+   * rather than a decision.
+   *
+   * The counts are computed for the page only. Aggregating over every dataset
+   * would make listing cost grow with history, and the numbers a caller needs
+   * to decide whether to page further are the ones on the page.
+   */
+  listDatasets(options: { limit?: number; offset?: number } = {}): {
+    datasets: Array<QualityDataset & { queryCount: number; judgmentCount: number }>;
+    total: number;
+    hasMore: boolean;
+    limit: number;
+    offset: number;
+  } {
+    const limit = Math.min(DATASET_PAGE_MAX, Math.max(1, Math.round(options.limit ?? DATASET_PAGE_DEFAULT)));
+    const offset = Math.max(0, Math.round(options.offset ?? 0));
+    const totalRow = this.deps.db
+      .select({ count: sql<number>`count(*)` })
+      .from(qualityDatasets)
+      .get();
+    const total = Number(totalRow?.count ?? 0);
+    const rows = this.deps.db
+      .select()
+      .from(qualityDatasets)
+      .orderBy(desc(qualityDatasets.updatedAt), desc(qualityDatasets.id))
+      .limit(limit)
+      .offset(offset)
+      .all();
+    if (rows.length === 0) return { datasets: [], total, hasMore: false, limit, offset };
     const ids = rows.map((row) => row.id);
     const queries = this.deps.db
       .select({ datasetId: qualityQueries.datasetId, count: sql<number>`count(*)` })
@@ -375,31 +621,91 @@ export class QualityService {
       .all();
     const queryCounts = new Map(queries.map((row) => [row.datasetId, Number(row.count)]));
     const judgmentCounts = new Map(judgments.map((row) => [row.datasetId, Number(row.count)]));
-    return rows.map((row) => ({
-      ...toDataset(row),
-      queryCount: queryCounts.get(row.id) ?? 0,
-      judgmentCount: judgmentCounts.get(row.id) ?? 0,
-    }));
+    return {
+      datasets: rows.map((row) => ({
+        ...toDataset(row),
+        queryCount: queryCounts.get(row.id) ?? 0,
+        judgmentCount: judgmentCounts.get(row.id) ?? 0,
+      })),
+      total,
+      hasMore: offset + rows.length < total,
+      limit,
+      offset,
+    };
   }
 
-  getDataset(id: string): {
+  /**
+   * One dataset with its queries and judgments, paged.
+   *
+   * `queries` and `judgments` keep their original names and type so an existing
+   * caller still works; what changes is that they hold at most one page. The
+   * `*Page` blocks carry the totals, which is the only way a caller can tell a
+   * complete response from a truncated one.
+   *
+   * `coverage` is always computed over the **whole** dataset. Deriving it from
+   * the page would make the reported coverage depend on how far the reader
+   * scrolled, which is exactly the kind of quietly-wrong number this lab is
+   * meant to avoid.
+   */
+  getDataset(
+    id: string,
+    options: {
+      queriesLimit?: number;
+      queriesOffset?: number;
+      judgmentsLimit?: number;
+      judgmentsOffset?: number;
+    } = {},
+  ): {
     dataset: QualityDataset;
     queries: QualityQuery[];
     judgments: QualityJudgment[];
-    coverage: { judgedDocuments: number; judgedQueries: number; queryCount: number; unjudgedQueries: number };
+    coverage: {
+      judgedDocuments: number;
+      judgedQueries: number;
+      queryCount: number;
+      unjudgedQueries: number;
+      unjudgedQueryIds: string[];
+    };
+    queriesPage: { total: number; offset: number; limit: number; hasMore: boolean };
+    judgmentsPage: { total: number; offset: number; limit: number; hasMore: boolean };
   } {
     const row = this.deps.db.select().from(qualityDatasets).where(eq(qualityDatasets.id, id)).get();
     if (!row) throw new SearchHubError("not_found", "Dataset not found");
+
+    const queriesLimit = clampPage(options.queriesLimit, DETAIL_PAGE_DEFAULT, DETAIL_PAGE_MAX);
+    const queriesOffset = Math.max(0, Math.round(options.queriesOffset ?? 0));
+    const judgmentsLimit = clampPage(options.judgmentsLimit, DETAIL_PAGE_DEFAULT, DETAIL_PAGE_MAX);
+    const judgmentsOffset = Math.max(0, Math.round(options.judgmentsOffset ?? 0));
+
+    const queryTotal = Number(
+      this.deps.db
+        .select({ count: sql<number>`count(*)` })
+        .from(qualityQueries)
+        .where(eq(qualityQueries.datasetId, id))
+        .get()?.count ?? 0,
+    );
+    const judgmentTotal = Number(
+      this.deps.db
+        .select({ count: sql<number>`count(*)` })
+        .from(qualityJudgments)
+        .where(eq(qualityJudgments.datasetId, id))
+        .get()?.count ?? 0,
+    );
+
     const queries = this.deps.db
       .select()
       .from(qualityQueries)
       .where(eq(qualityQueries.datasetId, id))
+      .orderBy(qualityQueries.id)
+      .limit(queriesLimit)
+      .offset(queriesOffset)
       .all()
       .map((item) => ({
         id: item.id,
         datasetId: item.datasetId,
         query: item.query,
         category: item.category as QueryCategory,
+        categories: categoriesOf(item),
         language: item.language,
         intent: item.intent,
         notes: item.notes,
@@ -409,6 +715,9 @@ export class QualityService {
       .select()
       .from(qualityJudgments)
       .where(eq(qualityJudgments.datasetId, id))
+      .orderBy(qualityJudgments.queryId, qualityJudgments.documentId)
+      .limit(judgmentsLimit)
+      .offset(judgmentsOffset)
       .all()
       .map((item) => ({
         id: item.id,
@@ -423,21 +732,253 @@ export class QualityService {
         updatedAt: item.updatedAt,
       }));
 
-    const judgedPerQuery = new Map<string, number>();
-    for (const judgment of judgments) {
-      judgedPerQuery.set(judgment.queryId, (judgedPerQuery.get(judgment.queryId) ?? 0) + 1);
-    }
+    // Aggregate over the whole qrel set, in SQL, not over the page.
+    const judgedPerQuery = this.deps.db
+      .select({ queryId: qualityJudgments.queryId, count: sql<number>`count(*)` })
+      .from(qualityJudgments)
+      .where(eq(qualityJudgments.datasetId, id))
+      .groupBy(qualityJudgments.queryId)
+      .all();
+    const judgedIds = new Set(judgedPerQuery.map((item) => item.queryId));
+    const unjudgedIds = this.deps.db
+      .select({ id: qualityQueries.id })
+      .from(qualityQueries)
+      .where(eq(qualityQueries.datasetId, id))
+      .all()
+      .map((item) => item.id)
+      .filter((queryId) => !judgedIds.has(queryId));
+
     return {
       dataset: toDataset(row),
       queries,
       judgments,
       coverage: {
-        judgedDocuments: judgments.length,
-        judgedQueries: judgedPerQuery.size,
-        queryCount: queries.length,
-        unjudgedQueries: queries.filter((item) => !judgedPerQuery.has(item.id)).length,
+        judgedDocuments: judgmentTotal,
+        judgedQueries: judgedPerQuery.length,
+        queryCount: queryTotal,
+        unjudgedQueries: unjudgedIds.length,
+        unjudgedQueryIds: unjudgedIds.slice(0, 200),
+      },
+      queriesPage: {
+        total: queryTotal,
+        offset: queriesOffset,
+        limit: queriesLimit,
+        hasMore: queriesOffset + queries.length < queryTotal,
+      },
+      judgmentsPage: {
+        total: judgmentTotal,
+        offset: judgmentsOffset,
+        limit: judgmentsLimit,
+        hasMore: judgmentsOffset + judgments.length < judgmentTotal,
       },
     };
+  }
+
+  /**
+   * Every query and judgment of one dataset, for export.
+   *
+   * Export is the one caller that legitimately needs the whole set: a partial
+   * export would silently become a smaller dataset when re-imported. The sizes
+   * are bounded by the same limits the import enforces, so this cannot be used
+   * to read an unbounded table.
+   */
+  exportDataset(id: string): {
+    dataset: QualityDataset;
+    queries: Array<QualityQuery & { extraCategories: QueryCategory[] }>;
+    judgments: QualityJudgment[];
+  } {
+    const row = this.deps.db.select().from(qualityDatasets).where(eq(qualityDatasets.id, id)).get();
+    if (!row) throw new SearchHubError("not_found", "Dataset not found");
+    const queries = this.deps.db
+      .select()
+      .from(qualityQueries)
+      .where(eq(qualityQueries.datasetId, id))
+      .orderBy(qualityQueries.id)
+      .all()
+      .map((item) => ({
+        id: item.id,
+        datasetId: item.datasetId,
+        query: item.query,
+        category: item.category as QueryCategory,
+        extraCategories: parseExtraCategories(item.extraCategories),
+        language: item.language,
+        intent: item.intent,
+        notes: item.notes,
+        createdAt: item.createdAt,
+      }));
+    const judgments = this.deps.db
+      .select()
+      .from(qualityJudgments)
+      .where(eq(qualityJudgments.datasetId, id))
+      .orderBy(qualityJudgments.queryId, qualityJudgments.documentId)
+      .all()
+      .map((item) => ({
+        id: item.id,
+        datasetId: item.datasetId,
+        queryId: item.queryId,
+        documentId: item.documentId,
+        relevance: item.relevance as RelevanceGrade,
+        assessor: item.assessor,
+        source: item.source as JudgmentSource,
+        notes: item.notes,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }));
+    return { dataset: toDataset(row), queries, judgments };
+  }
+
+  /**
+   * Queries in a dataset that nobody has judged.
+   *
+   * "unjudged" is not "irrelevant". This endpoint exists so an operator can see
+   * *which* queries are still unmeasured and decide whether to label them or to
+   * accept a provisional score — a count alone invites reading the gap as zero.
+   *
+   * `includeDocuments` scans stored run results for documents that were returned
+   * but never graded. It reports `no_run_results` rather than an empty list when
+   * the query has never been evaluated, so "nothing was found" is not mistaken
+   * for "everything was judged".
+   */
+  listUnjudged(
+    datasetId: string,
+    options: { limit?: number; offset?: number; includeDocuments?: boolean } = {},
+  ): {
+    total: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+    queries: Array<{
+      queryId: string;
+      query: string;
+      categories: QueryCategory[];
+      judgmentCount: number;
+      documents?: Array<{
+        documentId: string;
+        url: string;
+        bestRank: number;
+        providers: string[];
+        seenInRuns: number;
+      }>;
+      reason?: "no_run_results";
+    }>;
+  } {
+    const row = this.deps.db.select().from(qualityDatasets).where(eq(qualityDatasets.id, datasetId)).get();
+    if (!row) throw new SearchHubError("not_found", "Dataset not found");
+
+    const limit = clampPage(options.limit, 50, 200);
+    const offset = Math.max(0, Math.round(options.offset ?? 0));
+
+    const judgedCounts = new Map(
+      this.deps.db
+        .select({ queryId: qualityJudgments.queryId, count: sql<number>`count(*)` })
+        .from(qualityJudgments)
+        .where(eq(qualityJudgments.datasetId, datasetId))
+        .groupBy(qualityJudgments.queryId)
+        .all()
+        .map((item) => [item.queryId, Number(item.count)]),
+    );
+
+    const allQueries = this.deps.db
+      .select()
+      .from(qualityQueries)
+      .where(eq(qualityQueries.datasetId, datasetId))
+      .orderBy(qualityQueries.id)
+      .all()
+      .filter((query) => (judgedCounts.get(query.id) ?? 0) === 0);
+    const total = allQueries.length;
+    const page = allQueries.slice(offset, offset + limit);
+
+    const gradeById = new Map<string, Set<string>>();
+    if (options.includeDocuments === true && page.length > 0) {
+      const judged = this.deps.db
+        .select({ queryId: qualityJudgments.queryId, documentId: qualityJudgments.documentId })
+        .from(qualityJudgments)
+        .where(eq(qualityJudgments.datasetId, datasetId))
+        .all();
+      for (const item of judged) {
+        const set = gradeById.get(item.queryId) ?? new Set<string>();
+        set.add(item.documentId);
+        gradeById.set(item.queryId, set);
+      }
+    }
+
+    const queries = page.map((query) => {
+      const base = {
+        queryId: query.id,
+        query: query.query,
+        categories: categoriesOf(query),
+        judgmentCount: judgedCounts.get(query.id) ?? 0,
+      };
+      if (options.includeDocuments !== true) return base;
+
+      const results = this.deps.db
+        .select()
+        .from(qualityRunResults)
+        .where(eq(qualityRunResults.queryId, query.id))
+        .all();
+      if (results.length === 0) return { ...base, documents: [], reason: "no_run_results" as const };
+
+      const seen = new Map<string, { url: string; bestRank: number; providers: Set<string>; runs: number }>();
+      for (const result of results) {
+        let ranked: Array<{ documentId: string; url: string }> = [];
+        try {
+          ranked = JSON.parse(result.rankedJson) as Array<{ documentId: string; url: string }>;
+        } catch {
+          continue;
+        }
+        ranked.forEach((document, index) => {
+          if (gradeById.get(query.id)?.has(document.documentId)) return;
+          const entry = seen.get(document.documentId) ?? {
+            url: document.url,
+            bestRank: index + 1,
+            providers: new Set<string>(),
+            runs: 0,
+          };
+          entry.bestRank = Math.min(entry.bestRank, index + 1);
+          entry.runs += 1;
+          seen.set(document.documentId, entry);
+        });
+        // Providers are not stored per row; the snapshot is the only place that
+        // records who returned a document, and it is optional by design.
+        const snapshot = this.deps.db
+          .select()
+          .from(qualitySnapshots)
+          .where(eq(qualitySnapshots.queryId, query.id))
+          .get();
+        if (snapshot) {
+          try {
+            const providers = JSON.parse(snapshot.snapshotJson) as Array<{
+              providerId?: string;
+              results?: Array<{ url?: string }>;
+            }>;
+            for (const provider of providers) {
+              for (const providerResult of provider.results ?? []) {
+                if (typeof providerResult.url !== "string") continue;
+                const id = normalizeUrl(providerResult.url);
+                const entry = id === null ? undefined : seen.get(id);
+                if (entry && typeof provider.providerId === "string") entry.providers.add(provider.providerId);
+              }
+            }
+          } catch {
+            /* a corrupt snapshot only costs the provider attribution */
+          }
+        }
+      }
+
+      const documents = [...seen.entries()]
+        .map(([documentId, entry]) => ({
+          documentId,
+          url: entry.url,
+          bestRank: entry.bestRank,
+          providers: [...entry.providers].sort(),
+          seenInRuns: entry.runs,
+        }))
+        .sort((left, right) => left.bestRank - right.bestRank || (left.url < right.url ? -1 : 1))
+        .slice(0, 50);
+      return { ...base, documents };
+    });
+
+    return { total, limit, offset, hasMore: offset + page.length < total, queries };
   }
 
   createDataset(input: DatasetInput, actor: string): QualityDataset {
@@ -501,6 +1042,12 @@ export class QualityService {
       }
       duplicates.add(key);
     }
+    // Validate every label set before writing anything: a rejected query must
+    // not leave the earlier ones behind, because the import would then be
+    // half-applied and the dataset version would claim a change it never made.
+    const labelSets = inputs.map((input, index) =>
+      validateCategories(input.category ?? "general", input.extraCategories, { queries: index }),
+    );
     this.deps.db.transaction((tx) => {
       for (const [index, input] of inputs.entries()) {
         const id = `qq_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -511,6 +1058,7 @@ export class QualityService {
             datasetId,
             query: normalized[index]!,
             category: input.category ?? "general",
+            extraCategories: categoriesJson(labelSets[index]!),
             language: input.language ?? dataset.language,
             intent: input.intent ?? "",
             notes: input.notes ?? "",
@@ -719,18 +1267,29 @@ export class QualityService {
 
   // -------------------------------------------------------------------- runs
 
-  listRuns(options: { datasetId?: string; limit?: number } = {}): RunSummary[] {
+  listRuns(options: { datasetId?: string; limit?: number; offset?: number } = {}): {
+    runs: RunSummary[];
+    total: number;
+    hasMore: boolean;
+  } {
     const limit = Math.min(200, Math.max(1, options.limit ?? 50));
-    const rows = options.datasetId
-      ? this.deps.db
-          .select()
-          .from(qualityRuns)
-          .where(eq(qualityRuns.datasetId, options.datasetId))
-          .orderBy(desc(qualityRuns.startedAt))
-          .limit(limit)
-          .all()
-      : this.deps.db.select().from(qualityRuns).orderBy(desc(qualityRuns.startedAt)).limit(limit).all();
-    return rows.map(toRunSummary);
+    const offset = Math.max(0, Math.round(options.offset ?? 0));
+    const where = options.datasetId ? eq(qualityRuns.datasetId, options.datasetId) : undefined;
+    const totalRow = this.deps.db
+      .select({ count: sql<number>`count(*)` })
+      .from(qualityRuns)
+      .where(where)
+      .get();
+    const total = Number(totalRow?.count ?? 0);
+    const rows = this.deps.db
+      .select()
+      .from(qualityRuns)
+      .where(where)
+      .orderBy(desc(qualityRuns.startedAt), desc(qualityRuns.id))
+      .limit(limit)
+      .offset(offset)
+      .all();
+    return { runs: rows.map(toRunSummary), total, hasMore: offset + rows.length < total };
   }
 
   getRunDetail(runId: string): {
@@ -739,6 +1298,8 @@ export class QualityService {
     latency: LatencyStats;
     cost: CostSummary;
     quality: Record<string, MetricValue>;
+    /** Per-category means; groups overlap when a query carries two labels. */
+    byCategory: CategoryBreakdown;
     perQuery: Array<{
       queryId: string;
       query: string;
@@ -778,6 +1339,10 @@ export class QualityService {
           unknownCost: true,
         },
       quality: (stored["quality"] as Record<string, MetricValue>) ?? {},
+      byCategory: aggregateByCategory(
+        results.map((item) => JSON.parse(item.metricsJson) as QueryMetrics),
+        queries.map((item) => ({ queryId: item.id, categories: categoriesOf(item) })),
+      ),
       perQuery: results.map((item) => {
         const metrics = JSON.parse(item.metricsJson) as QueryMetrics;
         const ranked = JSON.parse(item.rankedJson) as Array<{ documentId: string; title: string; url: string }>;
@@ -860,6 +1425,49 @@ export class QualityService {
       Math.max(cutoff, Math.round(input.limit ?? Math.max(10, cutoff))),
     );
 
+    // ---------------------------------------------------- run configuration
+    //
+    // These are rejected rather than clamped or ignored. A run record that
+    // states a policy the engine never applied is worse than a 400: it makes the
+    // report describe an experiment nobody ran.
+    if (input.cachePolicy !== undefined && input.cachePolicy !== "bypass") {
+      throw new SearchHubError(
+        "validation_error",
+        `cachePolicy "${String(input.cachePolicy)}" is not implemented in this version. ` +
+          "Evaluation runs always bypass the response cache; omit the field or send \"bypass\".",
+        { details: { unsupportedOption: "cachePolicy", supported: ["bypass"] } },
+      );
+    }
+    if (input.maxConcurrency !== undefined && input.maxConcurrency !== 1) {
+      throw new SearchHubError(
+        "validation_error",
+        `maxConcurrency ${String(input.maxConcurrency)} is not implemented in this version. ` +
+          "Queries are evaluated serially; send 1 or omit the field. " +
+          "Parallel execution would need a reservation-based budget, which this release does not have.",
+        { details: { unsupportedOption: "maxConcurrency", supported: [1] } },
+      );
+    }
+    if (input.perProviderLimit !== undefined) {
+      if (
+        !Number.isInteger(input.perProviderLimit) ||
+        input.perProviderLimit < 1 ||
+        input.perProviderLimit > QUALITY_LIMITS.maxResultsPerQuery
+      ) {
+        throw new SearchHubError(
+          "validation_error",
+          `perProviderLimit must be an integer between 1 and ${QUALITY_LIMITS.maxResultsPerQuery}`,
+        );
+      }
+    }
+    if (input.timeoutMs !== undefined) {
+      if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 500 || input.timeoutMs > 60_000) {
+        // Deliberately not clamped: a clamped value would be recorded as if the
+        // caller had asked for it.
+        throw new SearchHubError("validation_error", "timeoutMs must be an integer between 500 and 60000");
+      }
+    }
+    const perProviderLimit = input.perProviderLimit ?? limit;
+
     if (input.fusion.strategy === "single" && !input.fusion.providerId) {
       throw new SearchHubError("validation_error", "A single-provider baseline needs fusion.providerId");
     }
@@ -908,12 +1516,13 @@ export class QualityService {
       // engine issues up to `1 + maxRetries` attempts per provider, and
       // maxRetries may be 5. Assuming 2 would let a run through that can spend
       // three times its budget.
-      const worstCase = selected.length * this.requestsPerQuery(providerIds);
+      const perQueryWorstCase = this.requestsPerQuery(providerIds, perProviderLimit);
+      const worstCase = selected.length * perQueryWorstCase;
       if (worstCase > budget) {
         throw new SearchHubError(
           "validation_error",
           `This run could issue up to ${worstCase} upstream HTTP requests ` +
-            `(${selected.length} queries × ${this.requestsPerQuery(providerIds)} per query across ${providerIds.length} provider(s), ` +
+            `(${selected.length} queries × ${perQueryWorstCase} per query across ${providerIds.length} provider(s), ` +
             `counting retries, pages and redirects) but requestBudget is ${budget}. ` +
             "Raise the budget or reduce the scope.",
         );
@@ -951,11 +1560,30 @@ export class QualityService {
       );
     }
 
+
+    // --------------------------------------------------------- provenance
+    const judgeRows = this.deps.db
+      .select({
+        queryId: qualityJudgments.queryId,
+        documentId: qualityJudgments.documentId,
+        relevance: qualityJudgments.relevance,
+      })
+      .from(qualityJudgments)
+      .where(eq(qualityJudgments.datasetId, input.datasetId))
+      .all();
+    const qrelsDigest = qrelsFingerprint(judgeRows, datasetRow.judgmentsComplete);
+    const usedProviderIds = this.resolveProviderIds(input, datasetRow);
+    const providerDigest = this.providerFingerprintFor(usedProviderIds, datasetRow);
+    // This version's evaluation path never invokes a model, so the honest value
+    // is `null`. It is not "unknown": a run that used a model would report one.
+    const modelDigest = modelFingerprint([]);
+
     const id = `qr_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const now = new Date(this.now()).toISOString();
-    this.deps.db
-      .insert(qualityRuns)
-      .values({
+    try {
+      this.deps.db
+        .insert(qualityRuns)
+        .values({
         id,
         datasetId: input.datasetId,
         datasetVersion: datasetRow.version,
@@ -970,6 +1598,15 @@ export class QualityService {
         snapshotRunId: input.snapshotRunId ?? null,
         codeCommit: this.deps.codeCommit ?? null,
         engineVersion: this.deps.engineVersion,
+        providerIdsJson: JSON.stringify(usedProviderIds),
+        providerFingerprint: providerDigest,
+        modelFingerprint: modelDigest,
+        qrelsFingerprint: qrelsDigest,
+        perProviderLimit,
+        requestTimeoutMs: input.timeoutMs ?? null,
+        failureReason: null,
+        persistedQueryCount: 0,
+        partial: false,
         status: "running",
         requestBudget: input.mode === "live" ? Math.round(input.requestBudget ?? 0) : 0,
         requestsUsed: 0,
@@ -981,65 +1618,73 @@ export class QualityService {
         startedAt: now,
         finishedAt: null,
         createdAt: now,
-      })
-      .run();
+        })
+        .run();
+    } catch (writeError) {
+      // The very first write failed: there is no run row to mark, so the honest
+      // answer is the storage error itself rather than a 500 that hides it.
+      if (isDiskFull(writeError)) throw persistenceFailure(id, writeError);
+      throw writeError;
+    }
 
     const controller = new AbortController();
     this.controllers.set(id, controller);
+    const persistedQueries = selected.map((row) => ({
+      id: row.id,
+      query: row.query,
+      category: row.category as QueryCategory,
+      extraCategories: parseExtraCategories(row.extraCategories),
+      language: row.language,
+    }));
+    this.runningRuns.set(id, { persisted: 0, total: selected.length, controller });
     void this.execute({
       runId: id,
       datasetRow,
-      queries: selected.map((row) => ({
-        id: row.id,
-        query: row.query,
-        category: row.category as QueryCategory,
-        language: row.language,
-      })),
+      queries: persistedQueries,
       input,
       limit,
+      perProviderLimit,
       cutoff,
       controller,
-    }).finally(() => this.controllers.delete(id));
+    })
+      // The promise must be observed. `execute` already records its own
+      // failure, but if that recording throws too (a full disk fails the
+      // *failure* write), an unhandled rejection would take the process down
+      // and lose every other in-flight run with it.
+      .catch((error: unknown) => {
+        this.deps.logger.error({ err: error, runId: id }, "quality run crashed outside its failure handler");
+      })
+      .finally(() => {
+        this.controllers.delete(id);
+        this.runningRuns.delete(id);
+      });
 
-    return toRunSummary({
-      id,
-      datasetId: input.datasetId,
-      datasetVersion: datasetRow.version,
-      datasetOrigin: datasetRow.origin,
-      name: input.name ?? "",
-      notes: input.notes ?? "",
-      mode: input.mode,
-      fusionStrategy: input.fusion.strategy,
-      fusionJson: JSON.stringify(input.fusion),
-      limitValue: limit,
-      cutoffValue: cutoff,
-      snapshotRunId: input.snapshotRunId ?? null,
-      codeCommit: this.deps.codeCommit ?? null,
-      engineVersion: this.deps.engineVersion,
-      status: "running",
-      requestBudget: input.mode === "live" ? Math.round(input.requestBudget ?? 0) : 0,
-      requestsUsed: 0,
-      cacheHits: 0,
-      queryCount: selected.length,
-      errorJson: null,
-      metricsJson: null,
-      actor,
-      startedAt: now,
-      finishedAt: null,
-      createdAt: now,
-    });
+    // Read the row back instead of rebuilding it here: a hand-written copy of
+    // the insert payload silently drifts from the table whenever a column is
+    // added, and the response would then claim values the database does not
+    // hold.
+    const stored = this.deps.db.select().from(qualityRuns).where(eq(qualityRuns.id, id)).get();
+    if (!stored) throw new SearchHubError("internal_error", "The run row could not be read back after insert");
+    return toRunSummary(stored);
   }
 
   private async execute(args: {
     runId: string;
     datasetRow: typeof qualityDatasets.$inferSelect;
-    queries: Array<{ id: string; query: string; category: QueryCategory; language: string }>;
+    queries: Array<{
+      id: string;
+      query: string;
+      category: QueryCategory;
+      extraCategories: QueryCategory[];
+      language: string;
+    }>;
     input: RunInput;
     limit: number;
+    perProviderLimit: number;
     cutoff: number;
     controller: AbortController;
   }): Promise<void> {
-    const { runId, datasetRow, queries, input, limit, cutoff } = args;
+    const { runId, datasetRow, queries, input, limit, perProviderLimit, cutoff } = args;
     const judgmentsComplete = datasetRow.judgmentsComplete;
     const judgmentRows = this.deps.db
       .select()
@@ -1070,7 +1715,7 @@ export class QualityService {
         for (const query of queries) {
           if (args.controller.signal.aborted) break;
           // Worst case for this query before issuing it.
-          const worstCase = this.requestsPerQuery(providerIds);
+          const worstCase = this.requestsPerQuery(providerIds, args.perProviderLimit);
           if (requestsUsed + worstCase > budget) {
             this.deps.logger.warn(
               { runId, requestsUsed, budget },
@@ -1088,10 +1733,11 @@ export class QualityService {
             {
               query: query.query,
               limit,
-              perProviderLimit: limit,
+              perProviderLimit,
               mode: "basic",
               providers: providerIds,
               skipCache: true,
+              ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
             },
             {
               signal: args.controller.signal,
@@ -1342,11 +1988,35 @@ export class QualityService {
         quality,
         requestsUsed,
         cacheHits,
+        // A stop is not a fault. It is still recorded, because a run card that
+        // shows "cancelled" without saying why reads like a crash.
+        ...(cancelled ? { failureReason: "cancelled" } : {}),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.deps.logger.error({ err: error, runId }, "quality run failed");
-      this.finish(runId, "failed", { requestsUsed, cacheHits, error: message });
+      if (args.controller.signal.aborted) {
+        // A cancellation is not a failure: the operator stopped the run, and
+        // recording it as failed would make the history report an outage that
+        // never happened. Whatever was measured stays.
+        this.finish(runId, "cancelled", {
+          requestsUsed,
+          cacheHits,
+          failureReason: "cancelled",
+          error: "cancelled by user",
+        });
+        return;
+      }
+      const reason =
+        error instanceof SearchHubError &&
+        (error.details as { reason?: string } | undefined)?.reason === "persistence_failed"
+          ? "persistence_failed"
+          : "internal_error";
+      this.markFailed(runId, reason, message);
+      // Rethrown only for a storage failure, so the promise settles with the
+      // 507-bearing error and `startRun`'s catch sees it. Every other path has
+      // already been recorded and must not surface as a crashed promise.
+      if (reason === "persistence_failed") throw error;
     }
   }
 
@@ -1356,13 +2026,110 @@ export class QualityService {
    * When the estimate is unavailable the fallback is deliberately pessimistic
    * (2 attempts × 4 pages), because an under-estimate is what turns a budget
    * into a suggestion.
+   *
+   * `perProviderLimit` participates because paging is what turns one adapter
+   * attempt into several requests: asking a Brave-shaped source for 50 rows at
+   * 20 per page costs three requests, and a budget that ignored the row count
+   * would authorise a third of the traffic the vendor sees.
    */
-  private requestsPerQuery(providerIds: readonly string[]): number {
+  private requestsPerQuery(providerIds: readonly string[], perProviderLimit?: number): number {
     let total = 0;
     for (const id of providerIds) {
-      total += Math.max(1, this.deps.providerMaxRequests?.(id) ?? 8);
+      total += Math.max(1, this.deps.providerMaxRequests?.(id, perProviderLimit) ?? 8);
     }
     return Math.max(1, total);
+  }
+
+  /**
+   * Which providers a run is attributable to.
+   *
+   * `live` knows its list up front. An `offline` re-rank is attributable to the
+   * providers inside the snapshots it re-ranked; a fixture run to the fixture's
+   * own providers. Recorded rather than derived at read time, because the
+   * provider set can be edited afterwards and the run must keep describing
+   * itself.
+   */
+  private resolveProviderIds(
+    input: RunInput,
+    datasetRow: typeof qualityDatasets.$inferSelect,
+  ): string[] {
+    if (input.mode === "live") {
+      return [...new Set(input.providerIds ?? [])].sort();
+    }
+    if (input.snapshotRunId) {
+      const rows = this.deps.db
+        .select({ snapshotJson: qualitySnapshots.snapshotJson })
+        .from(qualitySnapshots)
+        .where(eq(qualitySnapshots.runId, input.snapshotRunId))
+        .all();
+      const ids = new Set<string>();
+      for (const row of rows) {
+        try {
+          const providers = JSON.parse(row.snapshotJson) as Array<{ providerId?: unknown }>;
+          for (const provider of providers) {
+            if (typeof provider.providerId === "string") ids.add(provider.providerId);
+          }
+        } catch {
+          /* a corrupt snapshot must not stop the run from being attributable to nothing */
+        }
+      }
+      return [...ids].sort();
+    }
+    if (datasetRow.origin === "synthetic_fixture") {
+      const fixture = datasetRow.id === shallowFixture().dataset.id ? shallowFixture() : coreFixture();
+      const ids = new Set<string>();
+      for (const snapshot of fixture.snapshots) {
+        for (const provider of snapshot.providers) ids.add(provider.providerId);
+      }
+      return [...ids].sort();
+    }
+    return [];
+  }
+
+  /**
+   * Fingerprint of the participating providers, or `null` when the caller
+   * cannot describe them.
+   *
+   * Only the providers that took part are included: adding a source later must
+   * not change the fingerprint of a run that never used it, but changing a
+   * participating source's weight must.
+   */
+  private providerFingerprintFor(
+    providerIds: readonly string[],
+    datasetRow: typeof qualityDatasets.$inferSelect,
+  ): string | null {
+    if (providerIds.length === 0) return null;
+
+    // A synthetic fixture's sources do not exist in the provider registry, so
+    // looking them up would find nothing. They are still describable: the
+    // fixture defines them, and their settings are fixed by the fixture's own
+    // version. Recording that (rather than `null`) keeps a fixture run's
+    // provenance complete while making the synthetic origin visible in the
+    // digest itself.
+    if (datasetRow.origin === "synthetic_fixture") {
+      return providerFingerprint(
+        providerIds.map((id) => ({
+          id,
+          type: "synthetic_fixture",
+          baseUrl: null,
+          weight: 1,
+          timeoutMs: null,
+          maxConcurrency: null,
+          resultsPerPage: null,
+          rpmLimit: null,
+          maxRetries: null,
+          searchConfig: { datasetVersion: datasetRow.version },
+        })),
+      );
+    }
+
+    const snapshot = this.deps.providerSnapshot?.() ?? [];
+    const wanted = new Set(providerIds);
+    const rows = snapshot.filter((row) => wanted.has(row.id));
+    // A provider that no longer exists cannot be described, and describing the
+    // remaining ones would produce a digest of a different set.
+    if (rows.length !== providerIds.length) return null;
+    return providerFingerprint(rows);
   }
 
   /**
@@ -1458,6 +2225,15 @@ export class QualityService {
     };
   }
 
+  /**
+   * Writes one query's result, and turns a write failure into a run failure.
+   *
+   * A database that cannot accept the row (a full disk, a locked file) is not a
+   * problem with this query: the run has already lost the ability to record its
+   * own work. It is marked `failed` here, before the exception leaves, because
+   * the alternative is a run stuck at `running` forever with no explanation —
+   * and an operator would read it as still in progress.
+   */
   private persistResult(
     runId: string,
     queryId: string,
@@ -1468,20 +2244,55 @@ export class QualityService {
     error: string | null,
     upstreamRequests = 0,
   ): void {
-    this.deps.db
-      .insert(qualityRunResults)
-      .values({
-        runId,
-        queryId,
-        status,
-        rankedJson: JSON.stringify(ranked.documents),
-        metricsJson: JSON.stringify(metrics),
-        latencyMs,
-        upstreamRequests,
-        errorJson: error ? JSON.stringify({ message: error }) : null,
-        createdAt: new Date(this.now()).toISOString(),
-      })
-      .run();
+    try {
+      this.deps.db
+        .insert(qualityRunResults)
+        .values({
+          runId,
+          queryId,
+          status,
+          rankedJson: JSON.stringify(ranked.documents),
+          metricsJson: JSON.stringify(metrics),
+          latencyMs,
+          upstreamRequests,
+          errorJson: error ? JSON.stringify({ message: error }) : null,
+          createdAt: new Date(this.now()).toISOString(),
+        })
+        .run();
+      const progress = this.runningRuns.get(runId);
+      if (progress) progress.persisted += 1;
+    } catch (writeError) {
+      throw persistenceFailure(runId, writeError);
+    }
+  }
+
+  /**
+   * Records a failed run without letting the recording itself escape.
+   *
+   * When the same disk fault that broke a result write also breaks this update,
+   * there is nothing left to persist: the caller still needs the 507 (or 500)
+   * response, and an unhandled rejection here would take the process with it.
+   */
+  private markFailed(runId: string, reason: string, message: string, persisted?: number): void {
+    try {
+      this.deps.db
+        .update(qualityRuns)
+        .set({
+          status: "failed",
+          failureReason: reason,
+          persistedQueryCount: persisted ?? this.runningRuns.get(runId)?.persisted ?? 0,
+          partial: true,
+          finishedAt: new Date(this.now()).toISOString(),
+          errorJson: JSON.stringify({ message }),
+        })
+        .where(eq(qualityRuns.id, runId))
+        .run();
+    } catch (writeError) {
+      this.deps.logger.error(
+        { err: writeError, runId, reason },
+        "quality run could not be marked failed; the database is unavailable",
+      );
+    }
   }
 
   private finish(
@@ -1495,8 +2306,14 @@ export class QualityService {
       requestsUsed: number;
       cacheHits: number;
       error?: string;
+      failureReason?: string;
+      persistedQueryCount?: number;
+      partial?: boolean;
     },
   ): void {
+    const progress = this.runningRuns.get(runId);
+    const persisted = payload.persistedQueryCount ?? progress?.persisted ?? 0;
+    const total = progress?.total ?? 0;
     this.deps.db
       .update(qualityRuns)
       .set({
@@ -1504,6 +2321,9 @@ export class QualityService {
         finishedAt: new Date(this.now()).toISOString(),
         requestsUsed: payload.requestsUsed,
         cacheHits: payload.cacheHits,
+        persistedQueryCount: persisted,
+        partial: payload.partial ?? (status !== "completed" || (total > 0 && persisted < total)),
+        failureReason: payload.failureReason ?? null,
         metricsJson: JSON.stringify({
           metrics: payload.metrics ?? {},
           latency: payload.latency ?? latencyStats([]),
@@ -1528,7 +2348,19 @@ export class QualityService {
     baselineRunId: string;
     candidateRunId: string;
     metric?: AggregateMetric;
-  }): ComparisonSummary & { datasetId: string; datasetVersion: number; holdoutOnly: boolean } {
+  }): ComparisonSummary & {
+    datasetId: string;
+    datasetVersion: number;
+    holdoutOnly: boolean;
+    /** Per-category means; groups overlap when a query carries several labels. */
+    byCategory: CategoryBreakdown;
+    /** Document-level rank changes, judged documents only. */
+    movements: {
+      queries: Array<ReturnType<typeof queryMovements>>;
+      hiddenUnjudgedMovements: number;
+      categoryGroupsOverlap: boolean;
+    };
+  } {
     const baseline = this.deps.db.select().from(qualityRuns).where(eq(qualityRuns.id, input.baselineRunId)).get();
     const candidate = this.deps.db.select().from(qualityRuns).where(eq(qualityRuns.id, input.candidateRunId)).get();
     if (!baseline || !candidate) throw new SearchHubError("not_found", "Run not found");
@@ -1593,12 +2425,21 @@ export class QualityService {
       .where(eq(qualityDatasets.id, baseline.datasetId))
       .get()?.judgmentsComplete ?? false;
 
+    const categoriesById = new Map(
+      this.deps.db
+        .select()
+        .from(qualityQueries)
+        .where(eq(qualityQueries.datasetId, baseline.datasetId))
+        .all()
+        .map((row) => [row.id, categoriesOf(row)]),
+    );
     const judgedQueries: JudgedQuery[] = [...baselineRows.keys()].map((queryId) => {
       const grades = gradesByQuery.get(queryId) ?? new Map<string, RelevanceGrade>();
       return {
         queryId,
         query: textById.get(queryId) ?? queryId,
         category: categoryById.get(queryId) ?? "general",
+        categories: categoriesById.get(queryId) ?? [categoryById.get(queryId) ?? "general"],
         grades,
         relevantTotal: complete ? [...grades.values()].filter((grade) => grade >= 2).length : null,
       };
@@ -1627,8 +2468,58 @@ export class QualityService {
       datasetId: baseline.datasetId,
       datasetVersion: baseline.datasetVersion,
       // A stored-run comparison covers exactly the queries both runs measured;
-    // there is no hidden holdout. `sweepRrf` is where the split lives.
-    holdoutOnly: false,
+      // there is no hidden holdout. `sweepRrf` is where the split lives.
+      holdoutOnly: false,
+      byCategory: aggregateByCategory(
+        [...baselineRows.values()].map((row) => row.metrics),
+        judgedQueries.map((item) => ({
+          queryId: item.queryId,
+          categories: (item.categories ?? [item.category]) as QueryCategory[],
+        })),
+        metric,
+      ),
+      movements: this.buildMovements(baselineRows, candidateRows, gradesByQuery, judgedQueries),
+    };
+  }
+
+  /**
+   * Document-level rank changes for every query both runs measured.
+   *
+   * Unjudged documents are counted but withheld: "this unjudged result moved up
+   * five places" is a fact about the ranking, not about quality, and mixing the
+   * two is how a report starts implying that unranked means wrong.
+   */
+  private buildMovements(
+    baselineRows: Map<string, { ranked: Array<{ documentId: string; title: string; url: string }> }>,
+    candidateRows: Map<string, { ranked: Array<{ documentId: string; title: string; url: string }> }>,
+    gradesByQuery: Map<string, Map<string, RelevanceGrade>>,
+    judgedQueries: readonly JudgedQuery[],
+  ): {
+    queries: Array<ReturnType<typeof queryMovements>>;
+    hiddenUnjudgedMovements: number;
+    categoryGroupsOverlap: boolean;
+  } {
+    const categoryById = new Map(judgedQueries.map((item) => [item.queryId, item.category as QueryCategory]));
+    const queries: Array<ReturnType<typeof queryMovements>> = [];
+    let hidden = 0;
+    for (const [queryId, baseline] of baselineRows) {
+      const candidate = candidateRows.get(queryId);
+      if (!candidate) continue;
+      const movements = queryMovements(
+        queryId,
+        categoryById.get(queryId) ?? "general",
+        baseline.ranked,
+        candidate.ranked,
+        gradesByQuery.get(queryId) ?? new Map<string, RelevanceGrade>(),
+      );
+      hidden += movements.hiddenUnjudgedMovements;
+      queries.push(movements);
+    }
+    queries.sort((left, right) => (left.queryId < right.queryId ? -1 : left.queryId > right.queryId ? 1 : 0));
+    return {
+      queries,
+      hiddenUnjudgedMovements: hidden,
+      categoryGroupsOverlap: judgedQueries.some((item) => item.categories !== undefined && item.categories.length > 1),
     };
   }
 
