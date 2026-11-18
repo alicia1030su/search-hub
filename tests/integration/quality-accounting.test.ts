@@ -241,6 +241,57 @@ describe("quality run accounting", () => {
     expect(run.cost.billableUnits).toBeNull();
   }, 60_000);
 
+  it("Q11: a cancelled run is recorded as cancelled, not as a failure", async () => {
+    const h = await createHarness();
+    // A stub that never answers in time: the run has to be stopped from outside,
+    // which is exactly the path this asserts.
+    const server = createServer((request) => {
+      void request;
+      /* deliberately never responds */
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (typeof address === "string" || address === null) throw new Error("stub did not bind");
+    const providerId = await setupBrave(h, `http://127.0.0.1:${address.port}`, {
+      targetResults: 10,
+      maxPages: 1,
+    });
+
+    const detail = await h.app.inject({
+      method: "GET",
+      url: "/api/admin/quality/datasets/ds_synthetic_core_v1",
+      cookies: { sh_session: h.cookie },
+    });
+    const queryIds = (detail.json().queries as Array<{ id: string }>).slice(0, 2).map((item) => item.id);
+
+    const started = await startLiveRun(h, {
+      datasetId: "ds_synthetic_core_v1",
+      mode: "live",
+      fusion: { strategy: "rrf" },
+      providerIds: [providerId],
+      requestBudget: 10,
+      confirmPaid: true,
+      queryIds,
+    });
+    expect(started.statusCode, JSON.stringify(started.json)).toBe(200);
+    const runId = (started.json as { run: { id: string } }).run.id;
+
+    const cancelled = await h.app.inject({
+      method: "POST",
+      url: `/api/admin/quality/runs/${runId}/cancel`,
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+
+    const run = await waitForRun(h, runId);
+    // The operator stopped it. Reporting `failed` would make the history claim
+    // an outage that never happened.
+    expect(run.run.status).toBe("cancelled");
+    expect((run.run as { failureReason?: string | null }).failureReason).toBe("cancelled");
+  }, 60_000);
+
   it("B06a: a budget below the worst case is refused before anything is sent", async () => {
     const h = await createHarness();
     const stub = await startStub({ totalRows: 60, pageSize: 20 });

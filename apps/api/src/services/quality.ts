@@ -1985,17 +1985,30 @@ export class QualityService {
         quality,
         requestsUsed,
         cacheHits,
+        // A stop is not a fault. It is still recorded, because a run card that
+        // shows "cancelled" without saying why reads like a crash.
+        ...(cancelled ? { failureReason: "cancelled" } : {}),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.deps.logger.error({ err: error, runId }, "quality run failed");
+      if (args.controller.signal.aborted) {
+        // A cancellation is not a failure: the operator stopped the run, and
+        // recording it as failed would make the history report an outage that
+        // never happened. Whatever was measured stays.
+        this.finish(runId, "cancelled", {
+          requestsUsed,
+          cacheHits,
+          failureReason: "cancelled",
+          error: "cancelled by user",
+        });
+        return;
+      }
       const reason =
         error instanceof SearchHubError &&
         (error.details as { reason?: string } | undefined)?.reason === "persistence_failed"
           ? "persistence_failed"
-          : args.controller.signal.aborted
-            ? "cancelled"
-            : "internal_error";
+          : "internal_error";
       this.markFailed(runId, reason, message);
       // Rethrown only for a storage failure, so the promise settles with the
       // 507-bearing error and `startRun`'s catch sees it. Every other path has

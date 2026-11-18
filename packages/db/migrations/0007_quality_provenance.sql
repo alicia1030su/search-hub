@@ -57,3 +57,13 @@ ALTER TABLE "quality_runs"
 
 ALTER TABLE "quality_runs"
   ADD COLUMN "partial" integer NOT NULL DEFAULT 0;
+
+-- The unjudged listing asks "which rows mention this query", which is a lookup
+-- by `query_id` alone. Without this index every such request scans the whole
+-- results table, and that table grows with every evaluation ever run.
+CREATE INDEX IF NOT EXISTS "idx_quality_run_results_query"
+  ON "quality_run_results" ("query_id");
+--> statement-breakpoint
+
+CREATE INDEX IF NOT EXISTS "idx_quality_snapshots_query_only"
+  ON "quality_snapshots" ("query_id");

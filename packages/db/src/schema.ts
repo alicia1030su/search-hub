@@ -543,7 +543,11 @@ export const qualitySnapshots = sqliteTable(
     snapshotJson: text("snapshot_json").notNull(),
     createdAt: text("created_at").notNull(),
   },
-  (table) => [uniqueIndex("idx_quality_snapshots_query").on(table.runId, table.queryId)],
+  (table) => [
+    uniqueIndex("idx_quality_snapshots_query").on(table.runId, table.queryId),
+    /** The unjudged listing looks a query up across every run. */
+    index("idx_quality_snapshots_query_only").on(table.queryId),
+  ],
 );
 
 export const qualityRunResults = sqliteTable(
@@ -563,7 +567,11 @@ export const qualityRunResults = sqliteTable(
     errorJson: text("error_json"),
     createdAt: text("created_at").notNull(),
   },
-  (table) => [index("idx_quality_run_results_run").on(table.runId)],
+  (table) => [
+    index("idx_quality_run_results_run").on(table.runId),
+    /** The unjudged listing looks a query up across every run. */
+    index("idx_quality_run_results_query").on(table.queryId),
+  ],
 );
 
 export type QualityDatasetRow = typeof qualityDatasets.$inferSelect;
