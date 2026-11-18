@@ -18,7 +18,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (827 tests, 55 files)
+## What is covered (828 tests, 55 files)
 
 **Malformed request mapping** — `tests/integration/http-error-mapping.test.ts` (5 cases)
 
@@ -68,7 +68,7 @@ Chinese remains in `<main>`.
 
 **Search quality lab** — `tests/unit/quality-metrics.test.ts` (42 cases),
 `tests/unit/quality-migration.test.ts` (4), `tests/unit/quality-gate.test.ts` (4) and
-`tests/integration/quality-lab.test.ts` (26)
+`tests/integration/quality-lab.test.ts` (27)
 
 Metric maths is asserted against hand-computed values, not against the implementation:
 

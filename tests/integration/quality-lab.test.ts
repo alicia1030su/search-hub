@@ -18,7 +18,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../apps/api/src/app.js";
 import { createContext, type AppContext } from "../../apps/api/src/context.js";
 import { loadConfig, type AppConfig } from "../../apps/api/src/config.js";
-import { qualityJudgments, qualityRuns, searchTasks } from "../../packages/db/src/schema.js";
+import { qualityJudgments, qualityRuns, qualitySnapshots, searchTasks } from "../../packages/db/src/schema.js";
 
 interface Harness {
   app: FastifyInstance;
@@ -583,6 +583,68 @@ describe("runs", () => {
     // Evaluation traffic must not look like user traffic.
     const tasks = h.ctx.db.select().from(searchTasks).all();
     expect(tasks).toHaveLength(0);
+  });
+
+  it("records a failed provider as failed in the snapshot, not as an empty success", async () => {
+    const h = await createHarness();
+    const created = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/providers",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        name: "mock-broken",
+        type: "mock",
+        enabled: true,
+        timeoutMs: 5000,
+        maxRetries: 0,
+        config: { resultCount: 4, failMode: "server_error" },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const providerId = created.json().provider.id as string;
+
+    const detail = await h.app.inject({
+      method: "GET",
+      url: "/api/admin/quality/datasets/ds_synthetic_core_v1",
+      cookies: { sh_session: h.cookie },
+    });
+    const queryIds = (detail.json().queries as Array<{ id: string }>).slice(0, 2).map((item) => item.id);
+
+    const started = await h.app.inject({
+      method: "POST",
+      url: "/api/admin/quality/runs",
+      cookies: { sh_session: h.cookie },
+      headers: { "x-csrf-token": h.csrf },
+      payload: {
+        datasetId: "ds_synthetic_core_v1",
+        mode: "live",
+        fusion: { strategy: "rrf" },
+        providerIds: [providerId],
+        requestBudget: 10,
+        confirmPaid: true,
+        queryIds,
+      },
+    });
+    expect(started.statusCode, started.body).toBe(200);
+    const runId = started.json().run.id as string;
+    await waitForRun(h, runId);
+
+    const snapshots = h.ctx.db
+      .select()
+      .from(qualitySnapshots)
+      .all()
+      .filter((row) => row.runId === runId);
+    expect(snapshots.length).toBeGreaterThan(0);
+    for (const row of snapshots) {
+      const providers = JSON.parse(row.snapshotJson) as Array<{ ok: boolean; errorCode?: string }>;
+      expect(providers.length).toBeGreaterThan(0);
+      for (const provider of providers) {
+        // An outage must not be recorded as "returned nothing".
+        expect(provider.ok).toBe(false);
+        expect(provider.errorCode).toBeTruthy();
+      }
+    }
   });
 
   it("refuses to evaluate an unfrozen dataset", async () => {

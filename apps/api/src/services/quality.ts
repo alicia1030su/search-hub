@@ -854,8 +854,7 @@ export class QualityService {
     const snapshots = new Map<string, QuerySnapshot>();
     let requestsUsed = 0;
     let cacheHits = 0;
-    let failed = 0;
-    let partial = 0;
+    const queryOutcome = new Map<string, { partial: boolean; failed: boolean }>();
     const latencies: number[] = [];
     const requestsByProvider: Record<string, number> = {};
 
@@ -888,35 +887,44 @@ export class QualityService {
           );
           const latencyMs = Math.max(0, this.now() - started);
           latencies.push(latencyMs);
-          const providers: ProviderSnapshot[] = (response.debug?.perProviderResults ?? []).map((entry) => ({
-            providerId: entry.providerId,
-            providerName: entry.providerName,
-            providerType:
-              response.stats.providers.find((stat) => stat.providerId === entry.providerId)?.providerType ??
-              "unknown",
-            results: entry.results.map((result, index) => ({
-              documentId: result.id,
-              title: result.title,
-              url: result.url,
-              snippet: result.snippet,
-              rank: index + 1,
-            })),
-            ok: true,
-            latencyMs: response.stats.providers.find((stat) => stat.providerId === entry.providerId)?.latencyMs,
-          }));
+          const statById = new Map(response.stats.providers.map((stat) => [stat.providerId, stat]));
+          const providers: ProviderSnapshot[] = (response.debug?.perProviderResults ?? []).map(
+            (entry) => {
+              const stat = statById.get(entry.providerId);
+              return {
+                providerId: entry.providerId,
+                providerName: entry.providerName,
+                providerType: stat?.providerType ?? "unknown",
+                results: entry.results.map((result, index) => ({
+                  documentId: result.id,
+                  title: result.title,
+                  url: result.url,
+                  snippet: result.snippet,
+                  rank: index + 1,
+                })),
+                // A failed provider must be recorded as failed. Writing `ok`
+                // unconditionally would make an outage look like a source that
+                // simply returned nothing, and every later re-rank of this
+                // snapshot would inherit the lie.
+                ok: stat?.ok ?? entry.results.length > 0,
+                ...(stat?.errorCode === undefined ? {} : { errorCode: stat.errorCode }),
+                ...(stat?.latencyMs === undefined ? {} : { latencyMs: stat.latencyMs }),
+              };
+            },
+          );
           const asked = new Set(providerIds);
           for (const stat of response.stats.providers) {
             asked.delete(stat.providerId);
             requestsByProvider[stat.providerId] = (requestsByProvider[stat.providerId] ?? 0) + stat.attempts;
             requestsUsed += stat.attempts;
-            if (!stat.ok) failed += 1;
           }
           for (const missing of asked) {
             // A provider that never ran still counts as asked, so the baseline
             // comparison knows it produced nothing rather than omitting it.
             requestsByProvider[missing] = requestsByProvider[missing] ?? 0;
           }
-          if (response.status === "partial") partial += 1;
+          // Per query, not per run: one degraded query must not mark all of them.
+          queryOutcome.set(query.id, { partial: response.status === "partial", failed: response.status === "failed" });
           snapshots.set(query.id, {
             queryId: query.id,
             query: query.query,
@@ -1031,7 +1039,7 @@ export class QualityService {
           // is recorded as a zero-length result with a status of "failed".
           queries.map((query) => snapshots.get(query.id) === undefined),
         ),
-        partialQueryRate: rateMetric(queries.map(() => partial > 0)),
+        partialQueryRate: rateMetric(queries.map((query) => queryOutcome.get(query.id)?.partial === true)),
       };
 
       const metrics = {
@@ -1048,7 +1056,6 @@ export class QualityService {
         ...(input.unitCosts === undefined ? {} : { unitCosts: input.unitCosts }),
       });
 
-      void failed;
       const cancelled = args.controller.signal.aborted;
       this.finish(runId, cancelled ? "cancelled" : "completed", {
         metrics,
