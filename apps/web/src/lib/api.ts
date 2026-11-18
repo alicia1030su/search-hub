@@ -35,6 +35,12 @@ import type {
   McpUpdateCheck,
   SkillSummary,
   UpdateStatusResponse,
+  QualityComparison,
+  QualityDatasetDetail,
+  QualityDatasetSummary,
+  QualityRunDetail,
+  QualityRunSummary,
+  QualitySweepResult,
 } from "./types";
 
 const API_PREFIX = "/api";
@@ -420,6 +426,60 @@ export const api = {
   /** Legacy shape used by the integrations page: name + description + content. */
   skills: (signal?: AbortSignal) =>
     request<{ skills: SkillEntry[] }>("/admin/skills", { signal }),
+  // ---- search quality lab ----
+  qualityDatasets: (signal?: AbortSignal) =>
+    request<{ datasets: QualityDatasetSummary[] }>("/admin/quality/datasets", { signal }),
+  qualityDataset: (id: string, signal?: AbortSignal) =>
+    request<QualityDatasetDetail>(`/admin/quality/datasets/${seg(id)}`, { signal }),
+  createQualityDataset: (input: { name: string; description?: string; language?: string }) =>
+    request<{ dataset: QualityDatasetSummary }>("/admin/quality/datasets", {
+      method: "POST",
+      body: input,
+    }),
+  addQualityQueries: (id: string, queries: Array<Record<string, unknown>>) =>
+    request<{ added: number; ids: string[] }>(`/admin/quality/datasets/${seg(id)}/queries`, {
+      method: "POST",
+      body: { queries },
+    }),
+  judgeQuality: (id: string, judgments: Array<Record<string, unknown>>) =>
+    request<{ written: number }>(`/admin/quality/datasets/${seg(id)}/judgments`, {
+      method: "POST",
+      body: { judgments },
+    }),
+  freezeQualityDataset: (id: string, judgmentsComplete?: boolean) =>
+    request<{ dataset: QualityDatasetSummary }>(`/admin/quality/datasets/${seg(id)}/freeze`, {
+      method: "POST",
+      body: judgmentsComplete === undefined ? {} : { judgmentsComplete },
+    }),
+  forkQualityDataset: (id: string) =>
+    request<{ dataset: QualityDatasetSummary }>(`/admin/quality/datasets/${seg(id)}/fork`, {
+      method: "POST",
+      body: {},
+    }),
+  exportQualityDataset: (id: string) =>
+    request<Record<string, unknown>>(`/admin/quality/datasets/${seg(id)}/export`),
+  importQualityDataset: (payload: Record<string, unknown>) =>
+    request<{ dataset: QualityDatasetSummary; queries: number; judgments: number }>(
+      "/admin/quality/datasets/import",
+      { method: "POST", body: payload },
+    ),
+  qualityRuns: (params: { datasetId?: string; limit?: number } = {}, signal?: AbortSignal) =>
+    request<{ runs: QualityRunSummary[] }>("/admin/quality/runs", { query: params, signal }),
+  createQualityRun: (input: Record<string, unknown>) =>
+    request<{ run: QualityRunSummary }>("/admin/quality/runs", { method: "POST", body: input }),
+  qualityRun: (id: string, signal?: AbortSignal) =>
+    request<QualityRunDetail>(`/admin/quality/runs/${seg(id)}`, { signal }),
+  cancelQualityRun: (id: string) =>
+    request<{ cancelled: boolean }>(`/admin/quality/runs/${seg(id)}/cancel`, {
+      method: "POST",
+      body: {},
+    }),
+  compareQualityRuns: (
+    params: { baseline: string; candidate: string; metric?: string },
+    signal?: AbortSignal,
+  ) => request<QualityComparison>("/admin/quality/compare", { query: params, signal }),
+  sweepQuality: (input: Record<string, unknown>) =>
+    request<QualitySweepResult>("/admin/quality/sweep", { method: "POST", body: input }),
   exportConfig: () => request<Record<string, unknown>>("/admin/config/export"),
   /** The API wraps imports as { config } (see admin-routes importHandler). */
   importConfig: (config: Record<string, unknown>) =>

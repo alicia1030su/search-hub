@@ -814,3 +814,178 @@ export interface UpdateStatusResponse {
   checkedAt: string;
   pending: { version: string; assetName: string; stagedAt: string } | null;
 }
+
+// ---------------------------------------------------------------- quality lab
+
+export type QualityCategory =
+  | "general"
+  | "chinese"
+  | "english"
+  | "code"
+  | "academic"
+  | "news"
+  | "documentation"
+  | "factual"
+  | "multi_hop";
+
+export type QualityFusionStrategy = "single" | "base" | "rrf";
+
+export interface QualityFusion {
+  strategy: QualityFusionStrategy;
+  k?: number;
+  providerId?: string;
+  providerWeights?: Record<string, number>;
+}
+
+export interface QualityDatasetSummary {
+  id: string;
+  name: string;
+  description: string;
+  language: string;
+  version: number;
+  status: "draft" | "frozen";
+  origin: "manual" | "imported" | "synthetic_fixture";
+  judgmentsComplete: boolean;
+  createdAt: string;
+  updatedAt: string;
+  frozenAt: string | null;
+  queryCount: number;
+  judgmentCount: number;
+}
+
+export interface QualityQueryRow {
+  id: string;
+  datasetId: string;
+  query: string;
+  category: QualityCategory;
+  language: string;
+  intent: string;
+  notes: string;
+  createdAt: string;
+}
+
+export interface QualityJudgmentRow {
+  id: string;
+  datasetId: string;
+  queryId: string;
+  documentId: string;
+  relevance: 0 | 1 | 2 | 3;
+  assessor: string;
+  source: "human" | "machine_generated" | "synthetic_fixture";
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QualityDatasetDetail {
+  dataset: QualityDatasetSummary;
+  queries: QualityQueryRow[];
+  judgments: QualityJudgmentRow[];
+  coverage: { judgedDocuments: number; judgedQueries: number; queryCount: number; unjudgedQueries: number };
+}
+
+export interface QualityMetricValue {
+  value: number | null;
+  status: "ok" | "na";
+  reason?: string;
+  sampleSize: number;
+  provisionalCount: number;
+  lowSample: boolean;
+}
+
+export interface QualityQueryMetrics {
+  queryId: string;
+  judgedCount: number;
+  unjudgedCount: number;
+  returnedCount: number;
+  provisional: boolean;
+  precisionAtK: QualityMetricValue;
+  recallAtK: QualityMetricValue;
+  mrrAtK: QualityMetricValue;
+  ndcgAtK: QualityMetricValue;
+}
+
+export interface QualityRunSummary {
+  id: string;
+  datasetId: string;
+  datasetVersion: number;
+  datasetOrigin: "manual" | "imported" | "synthetic_fixture";
+  name: string;
+  mode: "offline" | "live";
+  fusion: QualityFusion;
+  status: "running" | "completed" | "failed" | "cancelled";
+  limit: number;
+  queryCount: number;
+  requestsUsed: number;
+  requestBudget: number;
+  codeCommit: string | null;
+  engineVersion: string;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+export interface QualityRunDetail {
+  run: QualityRunSummary;
+  metrics: Record<string, QualityMetricValue>;
+  latency: {
+    count: number;
+    p50: number | null;
+    p95: number | null;
+    mean: number | null;
+    min: number | null;
+    max: number | null;
+    lowSample: boolean;
+  };
+  cost: {
+    requests: number;
+    cacheHits: number;
+    knownCost: number | null;
+    estimatedCost: number | null;
+    unknownCost: boolean;
+  };
+  quality: Record<string, QualityMetricValue>;
+  perQuery: Array<{
+    queryId: string;
+    query: string;
+    status: string;
+    ranked: Array<{ documentId: string; title: string; url: string }>;
+    metrics: QualityQueryMetrics;
+    latencyMs: number | null;
+  }>;
+}
+
+export interface QualityComparisonRow {
+  queryId: string;
+  query: string;
+  category: QualityCategory;
+  baseline: number | null;
+  candidate: number | null;
+  delta: number | null;
+  verdict: "improved" | "degraded" | "unchanged" | "not_comparable";
+}
+
+export interface QualityComparison {
+  metric: "precisionAtK" | "recallAtK" | "mrrAtK" | "ndcgAtK";
+  baseline: QualityMetricValue;
+  candidate: QualityMetricValue;
+  absoluteDelta: number | null;
+  relativeDelta: number | null;
+  improved: QualityComparisonRow[];
+  degraded: QualityComparisonRow[];
+  comparableQueries: number;
+  verdict: "candidate_better" | "baseline_better" | "no_difference" | "insufficient_evidence";
+  reason?: string;
+  datasetId: string;
+  datasetVersion: number;
+}
+
+export interface QualitySweepResult {
+  split: { development: number; holdout: number };
+  candidates: Array<{ k: number; development: Record<string, QualityMetricValue>; holdout: Record<string, QualityMetricValue> }>;
+  chosen: number | null;
+  holdoutVerdict: string | null;
+  comparison: QualityComparison | null;
+  evidence: "sufficient" | "INSUFFICIENT_EVIDENCE";
+  reason?: string;
+}
