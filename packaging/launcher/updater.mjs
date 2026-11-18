@@ -250,6 +250,18 @@ function hardStop(dataDir) {
   }
 }
 
+/**
+ * Pid of every service this process started.
+ *
+ * The launcher is detached and unref'd, so nothing below tracks it. When a new
+ * build never becomes healthy, `stopService` cannot help — the launcher it
+ * would signal is the one that has just failed — and the rejected build keeps
+ * the port and the database open. The rollback then starts the previous
+ * version, which cannot bind, and the update ends at exit 4 with the instance
+ * still on the broken build.
+ */
+const startedPids = [];
+
 function startService(launcher, dataDir, port) {
   const unit = systemdUnit();
   if (unit) {
@@ -263,7 +275,39 @@ function startService(launcher, dataDir, port) {
     detached: true,
     windowsHide: true,
   });
+  if (typeof child.pid === "number") startedPids.push(child.pid);
   child.unref();
+}
+
+/**
+ * Stops the launcher we started if it is still alive.
+ *
+ * Called immediately before starting the previous version during a rollback:
+ * without it the previous version races a build that is holding the port, and
+ * the operator is left on the rejected build with no error they can act on.
+ */
+function stopStartedServices() {
+  for (const pid of startedPids.splice(0)) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      continue; // already gone
+    }
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        break; // exited
+      }
+      sleep(200);
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* exited between the check and the signal */
+    }
+  }
 }
 
 /**
@@ -343,6 +387,9 @@ function recoverPrevious({
     }
   }
 
+  // The install never swapped the program, but a start may already have failed
+  // to bind; clearing our own children keeps the retry from racing itself.
+  stopStartedServices();
   startService(launcher, dataDir, port);
   const probe = waitHealthy(port, currentVersion);
   mkdirSync(workRoot, { recursive: true });
@@ -506,6 +553,10 @@ async function main() {
     log("WARNING: program rolled back only; the database remains at the newer schema");
   }
 
+  // The failed build was started by us and may still be holding the port. The
+  // launcher cannot be asked to stop it: the launcher we would signal belongs
+  // to that build. Stop our own children first, then start the previous one.
+  stopStartedServices();
   startService(launcher, dataDir, port);
   const restoredProbe = waitHealthy(port, currentVersion);
   const restored = restoredProbe.ok;
