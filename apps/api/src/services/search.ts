@@ -105,8 +105,6 @@ function modelFingerprint(
 
 export class SearchService {
   private readonly controllers = new Map<string, AbortController>();
-  /** Providers the health gate skipped on the current request. */
-  private skippedByHealth: SearchErrorSummary[] = [];
 
   constructor(private readonly deps: SearchServiceDeps) {}
 
@@ -164,7 +162,11 @@ export class SearchService {
     // exhausted, credential rejected) is skipped until its cooldown expires.
     // Transient failures are NOT considered here — the scheduler's circuit
     // breaker already handles those, and one timeout must never remove a source.
+    // Per-request, never instance state: two overlapping searches used to
+    // overwrite each other's skip list, so one could report the other's parked
+    // sources — or none at all. It is threaded explicitly from here.
     const blocked = this.deps.health.blockedProviders();
+    let skippedByHealth: SearchErrorSummary[] = [];
     if (blocked.size > 0) {
       const skipped: SearchErrorSummary[] = [];
       runtimes = runtimes.filter((runtime) => {
@@ -178,14 +180,22 @@ export class SearchService {
         });
         return false;
       });
+      skippedByHealth = skipped;
       if (runtimes.length === 0) {
-        // Structured failure, never an empty "success".
-        return this.failedResponse(request, mode, taskId, skipped, "Every selected source is parked by the health gate");
+        // Structured failure, never an empty "success". It is persisted first:
+        // the caller is holding a taskId, so `getTask` must be able to find it.
+        const response = this.failedResponse(
+          request,
+          mode,
+          taskId,
+          skipped,
+          "Every selected source is parked by the health gate",
+        );
+        if (options.evaluate !== true) {
+          this.persistTaskRow(taskId, request, mode, runtimes, response, options.actor);
+        }
+        return response;
       }
-      // Remember the skipped ones so the response explains the smaller fan-out.
-      this.skippedByHealth = skipped;
-    } else {
-      this.skippedByHealth = [];
     }
 
 
@@ -299,10 +309,10 @@ export class SearchService {
         // The cache is a snapshot of provider results, not of provider health.
         // Re-apply the current gate so a parked source is still reported as
         // skipped instead of silently looking healthy because it once worked.
-        if (this.skippedByHealth.length > 0) {
-          cached.errors.push(...this.skippedByHealth);
+        if (skippedByHealth.length > 0) {
+          cached.errors.push(...skippedByHealth);
           const known = new Set(cached.failedSources.map((item) => item.id));
-          for (const skipped of this.skippedByHealth) {
+          for (const skipped of skippedByHealth) {
             if (!known.has(skipped.providerId)) {
               cached.failedSources.push({ id: skipped.providerId, code: skipped.code });
             }
@@ -359,8 +369,8 @@ export class SearchService {
     try {
       let response =
         mode === "deep"
-          ? await this.runDeep(request, runtimes, controller.signal, taskId)
-          : await this.runStandard(request, runtimes, controller.signal, taskId);
+          ? await this.runDeep(request, runtimes, controller.signal, taskId, skippedByHealth)
+          : await this.runStandard(request, runtimes, controller.signal, taskId, skippedByHealth);
 
       if (wantsEmbedding && mode !== "deep") {
         response = await this.applyEmbedding(response, request, controller.signal);
@@ -579,29 +589,38 @@ export class SearchService {
     };
   }
 
+  /**
+   * Adds the sources the health gate parked to a response.
+   *
+   * Without this the caller sees a smaller fan-out and no reason for it —
+   * indistinguishable from a source that simply returned nothing. The list is a
+   * parameter: it belongs to one request, not to the service.
+   */
+  private applyHealthSkips(response: SearchResponse, skipped: readonly SearchErrorSummary[]): void {
+    if (skipped.length === 0) return;
+    const alreadyReported = new Set(response.errors.map((item) => item.providerId));
+    for (const item of skipped) {
+      if (!alreadyReported.has(item.providerId)) response.errors.push(item);
+    }
+    const known = new Set(response.failedSources.map((item) => item.id));
+    for (const item of skipped) {
+      if (!known.has(item.providerId)) response.failedSources.push({ id: item.providerId, code: item.code });
+    }
+    response.stats.partial = true;
+    if (response.status === "completed") response.status = "partial";
+  }
+
   private async runStandard(
     request: SearchRequest,
     runtimes: ProviderRuntime[],
     signal: AbortSignal,
     taskId: string,
+    skippedByHealth: readonly SearchErrorSummary[] = [],
   ): Promise<SearchResponse> {
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
     const response = await executeSearch(deps, request, { signal, taskId });
-    // Report the sources the health gate skipped. Without this the caller sees a
-    // smaller fan-out and no reason for it — indistinguishable from a source that
-    // simply returned nothing.
-    if (this.skippedByHealth.length > 0) {
-      response.errors.push(...this.skippedByHealth);
-      const existing = new Set(response.failedSources.map((item) => item.id));
-      for (const skipped of this.skippedByHealth) {
-        if (!existing.has(skipped.providerId)) {
-          response.failedSources.push({ id: skipped.providerId, code: skipped.code });
-        }
-      }
-      response.stats.partial = true;
-      if (response.status === "completed") response.status = "partial";
-    }
+    this.applyHealthSkips(response, skippedByHealth);
     if (signal.aborted) {
       response.status = "failed";
       response.errors.push({
@@ -623,6 +642,7 @@ export class SearchService {
     runtimes: ProviderRuntime[],
     signal: AbortSignal,
     taskId: string,
+    skippedByHealth: readonly SearchErrorSummary[] = [],
   ): Promise<SearchResponse> {
     const chat = this.deps.models.chatModel(request.chatModelId);
     const rewritten = await rewriteQuery(chat, request.query, 3, signal);
@@ -680,7 +700,9 @@ export class SearchService {
       // Return a *failed* response instead of throwing: the caller then gets the
       // per-query failure list, REST answers 503, and the task row records
       // `failed` with the same errors. Throwing would lose that structure.
-      const failures = queryFailures();
+      // A parked source is a reason the rewrites failed, and the caller is
+      // entitled to see it here rather than only in REST's generic error.
+      const failures = [...queryFailures(), ...skippedByHealth];
       return {
         taskId,
         query: request.query,
@@ -753,7 +775,16 @@ export class SearchService {
     // Errors from every rewrite, plus one entry per rewrite that failed
     // outright. Without the second group a deep search over 3 queries where 1
     // failed would look like a clean `completed`.
-    const errors: SearchErrorSummary[] = [...valid.flatMap((response) => response.errors), ...queryFailures()];
+    const seenErrors = new Set<string>();
+    const errors: SearchErrorSummary[] = [];
+    for (const item of [...valid.flatMap((response) => response.errors), ...queryFailures(), ...skippedByHealth]) {
+      // Deep merges up to three rewrites; the same parked source is reported by
+      // each of them, and the caller needs it once.
+      const key = `${item.providerId}|${item.code}|${item.message}`;
+      if (seenErrors.has(key)) continue;
+      seenErrors.add(key);
+      errors.push(item);
+    }
     const anyFailure = failed.length > 0 || valid.some((response) => response.status === "partial");
     return {
       ...base,
@@ -907,6 +938,57 @@ export class SearchService {
       },
       errors: [...response.errors, warning],
     };
+  }
+
+  /**
+   * Writes a whole `search_tasks` row for a request that never reached the
+   * normal insert.
+   *
+   * The health gate can reject a search before the task row exists; the caller
+   * still receives a taskId, so `getTask` has to be able to find it and the
+   * failure has to appear in history. Written once, already finished.
+   */
+  private persistTaskRow(
+    taskId: string,
+    request: SearchRequest,
+    mode: string,
+    runtimes: readonly ProviderRuntime[],
+    response: SearchResponse,
+    actor: string | undefined,
+  ): void {
+    const now = new Date().toISOString();
+    let serialized = JSON.stringify(response);
+    if (Buffer.byteLength(serialized, "utf8") > MAX_STORED_RESPONSE_BYTES) {
+      serialized = JSON.stringify({
+        ...response,
+        results: response.results.map(({ metadata: _metadata, ...rest }) => rest),
+        debug: { ...response.debug, perProviderResults: undefined },
+      });
+    }
+    try {
+      this.deps.db
+        .insert(searchTasks)
+        .values({
+          id: taskId,
+          query: request.query,
+          mode,
+          // Never "completed": this row exists only because the request failed.
+          status: response.status,
+          providersJson: JSON.stringify(runtimes.map((runtime) => runtime.config.id)),
+          resultCount: response.results.length,
+          rawCount: response.stats.rawCount,
+          durationMs: response.stats.timing.totalMs,
+          requestJson: JSON.stringify(request),
+          responseJson: serialized,
+          actor: actor ?? null,
+          createdAt: now,
+          finishedAt: now,
+        })
+        .run();
+    } catch (error) {
+      // A history write must not turn a structured failure into a 500.
+      this.deps.logger.warn({ err: error, taskId }, "could not record a pre-fan-out failure");
+    }
   }
 
   private persistTask(taskId: string, response: SearchResponse, forcedStatus: string | null): void {
