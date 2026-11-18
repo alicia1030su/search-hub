@@ -4,6 +4,68 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.9 (2026-11-18)
+
+Correctness patch. Every item below was reproduced before it was fixed, and each
+has a regression test that fails against v0.1.8.
+
+### Fixed
+
+- **A request budget counted intentions, not requests.** One `adapter.search()`
+  can issue several HTTP requests — a paginated adapter fetches page after page,
+  a redirect adds a hop, and a retry repeats the lot — but the evaluation lab
+  estimated `1 + maxRetries` per provider. A Brave-shaped adapter targeting 50
+  rows spent 3 requests while the ledger had been charged 1, so a run could
+  exceed its stated budget by a factor of the page count. Metering now happens
+  inside safe-fetch, immediately before each physical request and after the
+  outbound policy has approved the hop, so pagination, retries and redirects are
+  counted and an SSRF-refused hop is not. The same hook enforces the run's
+  ceiling: when the budget is reached the request is refused before it leaves,
+  which stops the run instead of overspending it.
+- **The three counters are now distinct.** `logicalSearches` (what the caller
+  asked for), `adapterAttempts` (what the key scheduler meters) and
+  `httpRequests` (what the vendor sees). `billableUnits` is `null`: no vendor's
+  billing rule is derivable from a request count, and reporting the request
+  count as money would be a guess presented as a number.
+- **Concurrent searches shared their health-gate skip list.**
+  `SearchService.skippedByHealth` was an instance field written at the start of
+  a request and read after the awaited fan-out, so two overlapping searches
+  overwrote each other: a request that legitimately skipped a parked source
+  could report nothing, or report another request's sources. Reproduced with a
+  slow provider holding request A inside the fan-out while request B completed.
+  The list is now a per-request value threaded through the standard path, the
+  deep path, the cache-hit path and the failure path.
+- **Deep Search never reported parked sources.** It had no reference to the skip
+  list, so a source the health gate had parked vanished from a deep answer: fewer
+  sources, no reason, status `completed`. It now merges them (de-duplicated —
+  up to three rewrites report the same source) and treats a parked source as a
+  failure of the search even when every rewrite succeeded.
+- **A search rejected before the fan-out left no trace.** When every selected
+  source was parked, the service returned a structured `failed` response before
+  the task insert, so the caller received a taskId that `getTask` answered 404
+  for and the failure never reached the dashboard.
+- **A total provider outage was recorded as a successful query.** The evaluation
+  run stored an empty snapshot for audit and then wrote the row as `ok`, because
+  the status was derived from "is there a snapshot" rather than from the search
+  verdict. `failedQueryRate` read 0% while every request had failed. Row status
+  now follows the verdict, and `succeededQueryRate` reports availability next to
+  the relevance metrics instead of inside them.
+- **Every query row received the last measured latency.** `latencies[length - 1]`
+  was read at persist time, so the mapping depended on loop order rather than on
+  the query. Latency is now keyed by query id, and an offline re-rank reports no
+  latency at all instead of inventing one.
+- **The budget error message lied.** It said "× 2 attempts" while the real
+  estimate was the configured retry allowance; it now states the estimate it
+  used.
+
+### Compatibility
+
+- `ProviderAttemptStat.httpRequests` and the extra `cost` fields are additive.
+  `cost.requests` keeps its name and now reports physical HTTP requests, which is
+  what its documentation always claimed; v0.1.8 rows stored the attempt count,
+  and the run detail keeps those rows readable.
+- No migration. The schema is unchanged from v0.1.8.
+
 ## v0.1.8 (2026-11-18)
 
 The first **stable** release of Search Hub. v0.1.8-beta.1 carried the same feature set; this

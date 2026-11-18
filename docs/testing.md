@@ -18,7 +18,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (846 tests, 56 files)
+## What is covered (876 tests, 60 files)
 
 **Malformed request mapping** — `tests/integration/http-error-mapping.test.ts` (5 cases)
 
@@ -65,6 +65,30 @@ switch test in `tests/e2e/admin.spec.ts`: full key coverage, zero CJK in the
 English values, identical `{{placeholders}}`, no empty strings, no hardcoded
 zh-CN formatter, and a real switch → reload → switch-back cycle that asserts no
 Chinese remains in `<main>`.
+
+**Request budget and request isolation** — `tests/integration/upstream-request-budget.test.ts` (10),
+`tests/integration/search-request-isolation.test.ts` (7),
+`tests/integration/search-task-persistence.test.ts` (4),
+`tests/integration/quality-accounting.test.ts` (9)
+
+These are the ones where a stubbed fetch would have proved nothing, so each assertion
+is against a real HTTP server on 127.0.0.1 that counts what it served:
+
+- One page is one request; three pages are three; one logical call that paginates is
+  one adapter attempt and three requests. A redirect costs two. A hop refused by the
+  outbound policy costs zero. A request already on the wire is not refunded when the
+  caller aborts. Twenty concurrent pages under a ceiling of five leave the stub having
+  served exactly five.
+- Health-gate isolation is reproduced with a slow provider holding one request inside
+  the fan-out while a second completes, not with random sleeping: a request keeps its
+  own skip list, a clean request is not given another's, two requests skipping different
+  sources do not swap, 100 interleaved requests stay separate, a cache hit re-applies
+  only the current gate, and Deep Search reports the parked source once.
+- A search rejected by the gate now leaves a queryable `failed` task; another actor
+  gets 404; evaluation traffic writes no task; a partial search is stored as partial.
+- Run accounting: a paginated provider's spend is the wire count, the ceiling stops a
+  redirect-driven overspend, failure is not success, latency is bound to its query, and
+  an offline re-rank reports no latency at all.
 
 **Release channel** — `tests/unit/release-channel.test.ts` (8 cases)
 

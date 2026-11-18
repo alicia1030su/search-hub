@@ -1,14 +1,14 @@
 # 发布就绪报告
 
-## v0.1.8 Stable（2026-11-18）
+## v0.1.9 Stable（2026-11-18）
 
 本节是当前版本的就绪判断；其后的章节是历史记录（v0.1.2 RC / v0.1.3 增量），保留以便对照，
 数字与结论都只对当时的版本成立。
 
 | 项 | 结果 |
 |---|---|
-| 目标版本 | **v0.1.8（Stable）**，前序为 v0.1.8-beta.1（同一功能集） |
-| 自动化测试 | **846 passed / 56 files**（`corepack pnpm test`） |
+| 目标版本 | **v0.1.9（Stable）**，前序为 v0.1.8 |
+| 自动化测试 | **876 passed / 60 files**（`corepack pnpm test`） |
 | 浏览器 E2E | **19 passed**（`corepack pnpm test:e2e`） |
 | 类型 / Lint | 0 error / 0 warning |
 | 质量门禁 | `pnpm quality:eval` PASS，11 项手算自检全过 |
