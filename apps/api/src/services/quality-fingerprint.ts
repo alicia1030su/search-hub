@@ -84,17 +84,36 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
 }
 
-/** Drops any secret-looking key at any depth, so a spread cannot leak one. */
+/**
+ * Drops any secret-looking key at any depth, so a spread cannot leak one.
+ *
+ * A container left empty by the removal is dropped as well. Without that, a
+ * configuration that carries `{ auth: { token } }` would fingerprint as
+ * `{ auth: {} }` — different from `{}` even though the only difference between
+ * them was a credential, which is precisely the signal this digest must not
+ * have.
+ */
 function stripSecrets(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripSecrets);
+  if (Array.isArray(value)) {
+    return value.map(stripSecrets).filter((item) => !isEmptyContainer(item));
+  }
   if (value === null || typeof value !== "object") return value;
   const record = value as Record<string, unknown>;
   const output: Record<string, unknown> = {};
   for (const key of Object.keys(record)) {
     if (SECRET_KEY_PATTERN.test(key)) continue;
-    output[key] = stripSecrets(record[key]);
+    const stripped = stripSecrets(record[key]);
+    if (isEmptyContainer(stripped)) continue;
+    output[key] = stripped;
   }
   return output;
+}
+
+/** True for an object or array that carries no values of its own. */
+function isEmptyContainer(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length === 0;
+  if (value === null || typeof value !== "object") return false;
+  return Object.keys(value as Record<string, unknown>).length === 0;
 }
 
 /**
