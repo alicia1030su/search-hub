@@ -4,7 +4,7 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.10-beta.1 · Beta (preview channel). The stable release is still v0.1.9.**
+> **Status: v0.1.10-beta.2 · Beta (preview channel). The stable release is still v0.1.9.**
 >
 > Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache, the provider health centre and the search quality lab are implemented and covered by **876 automated tests across 60 files**. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
 >
@@ -99,19 +99,19 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.10-beta.1)
+## Download (v0.1.10-beta.2)
 
 Three shapes, one search core, one database model, one admin UI.
 
 | Platform | Download | Requirements |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.10-beta.1-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/search-hub-v0.1.10-beta.1-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
-| Linux x64 | [`search-hub-v0.1.10-beta.1-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/search-hub-v0.1.10-beta.1-linux-x64.tar.gz) | **None** (Node runtime bundled) |
-| Linux arm64 | [`search-hub-v0.1.10-beta.1-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/search-hub-v0.1.10-beta.1-linux-arm64.tar.gz) | **None** |
+| Windows x64 | [`search-hub-v0.1.10-beta.2-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.2/search-hub-v0.1.10-beta.2-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
+| Linux x64 | [`search-hub-v0.1.10-beta.2-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.2/search-hub-v0.1.10-beta.2-linux-x64.tar.gz) | **None** (Node runtime bundled) |
+| Linux arm64 | [`search-hub-v0.1.10-beta.2-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.2/search-hub-v0.1.10-beta.2-linux-arm64.tar.gz) | **None** |
 
-Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.1/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
+Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.10-beta.2/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
 
-> **v0.1.10-beta.1 makes an evaluation score attributable.** Every run records the
+> **v0.1.10-beta.2 makes an evaluation score attributable.** Every run records the
 > sources that actually took part, a credential-free fingerprint of their ranking
 > settings, the qrel-set fingerprint and the model fingerprint — rotating an API key
 > does not move any of them, because a key rotation is not a configuration change.
@@ -185,7 +185,7 @@ Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/relea
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.10-beta.1-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.10-beta.2-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
