@@ -1100,9 +1100,13 @@ export class QualityService {
               beforeRequest: (_providerId, _url) => {
                 if (requestsUsed >= budget) {
                   budgetRefused = true;
+                  // `blocked`, not `quota_exceeded`: this is our own ceiling, not
+                  // the vendor's. Reusing the quota code would make the key
+                  // scheduler cool the operator's key until UTC midnight for a
+                  // decision that had nothing to do with the vendor.
                   throw new SearchHubError(
-                    "quota_exceeded",
-                    `Request budget of ${budget} upstream calls is exhausted; refusing further traffic.`,
+                    "blocked",
+                    `Request budget of ${budget} upstream requests is exhausted; refusing further traffic.`,
                   );
                 }
                 requestsUsed += 1;

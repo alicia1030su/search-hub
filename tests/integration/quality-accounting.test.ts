@@ -303,6 +303,20 @@ describe("quality run accounting", () => {
     expect(run.run.requestsUsed).toBeLessThanOrEqual(3);
     // And the run did not pretend to be a clean success.
     expect(run.perQuery.some((item) => item.status === "failed")).toBe(true);
+
+    // A budget we imposed is not a vendor quota. Charging it as one would cool
+    // the operator's key until UTC midnight and take the source offline for a
+    // decision the vendor never saw.
+    const keys = await h.app.inject({
+      method: "GET",
+      url: `/api/admin/providers/${providerId}/keys`,
+      cookies: { sh_session: h.cookie },
+    });
+    expect(keys.statusCode, keys.body).toBe(200);
+    // The route returns the array directly (ctx.providers.listKeys).
+    const rows = keys.json() as Array<{ status: string; cooldownUntil: string | null }>;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((key) => key.status !== "cooldown")).toBe(true);
   }, 60_000);
 
   it("Q01/Q03/Q05: success, partial and failure are counted separately", async () => {

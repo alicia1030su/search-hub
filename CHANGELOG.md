@@ -58,6 +58,12 @@ has a regression test that fails against v0.1.8.
   estimate was the configured retry allowance; it now states the estimate it
   used.
 
+- **A refused request would have cooled the operator's key.** The budget gate
+  first threw `quota_exceeded`, which the key scheduler reads as the vendor's own
+  quota and reacts to by cooling the key until UTC midnight — turning our own
+  ceiling into a day-long outage of a healthy source. It throws `blocked` now:
+  refused locally, no key penalty.
+
 ### Compatibility
 
 - `ProviderAttemptStat.httpRequests` and the extra `cost` fields are additive.
