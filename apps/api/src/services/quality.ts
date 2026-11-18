@@ -1001,33 +1001,13 @@ export class QualityService {
       controller,
     }).finally(() => this.controllers.delete(id));
 
-    return toRunSummary({
-      id,
-      datasetId: input.datasetId,
-      datasetVersion: datasetRow.version,
-      datasetOrigin: datasetRow.origin,
-      name: input.name ?? "",
-      notes: input.notes ?? "",
-      mode: input.mode,
-      fusionStrategy: input.fusion.strategy,
-      fusionJson: JSON.stringify(input.fusion),
-      limitValue: limit,
-      cutoffValue: cutoff,
-      snapshotRunId: input.snapshotRunId ?? null,
-      codeCommit: this.deps.codeCommit ?? null,
-      engineVersion: this.deps.engineVersion,
-      status: "running",
-      requestBudget: input.mode === "live" ? Math.round(input.requestBudget ?? 0) : 0,
-      requestsUsed: 0,
-      cacheHits: 0,
-      queryCount: selected.length,
-      errorJson: null,
-      metricsJson: null,
-      actor,
-      startedAt: now,
-      finishedAt: null,
-      createdAt: now,
-    });
+    // Read the row back instead of rebuilding it here: a hand-written copy of
+    // the insert payload silently drifts from the table whenever a column is
+    // added, and the response would then claim values the database does not
+    // hold.
+    const stored = this.deps.db.select().from(qualityRuns).where(eq(qualityRuns.id, id)).get();
+    if (!stored) throw new SearchHubError("internal_error", "The run row could not be read back after insert");
+    return toRunSummary(stored);
   }
 
   private async execute(args: {
