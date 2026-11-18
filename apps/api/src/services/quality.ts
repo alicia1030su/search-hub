@@ -574,8 +574,11 @@ export class QualityService {
   }
 
   /**
-   * One page of datasets, with the total so the caller can tell "there are 12"
-   * from "there are 12 000 and you are looking at the first page".
+   * One page of datasets, plus the total.
+   *
+   * Without the total a caller cannot distinguish twelve datasets from twelve
+   * thousand with a first page in front of it, and "load more" would be a guess
+   * rather than a decision.
    *
    * The counts are computed for the page only. Aggregating over every dataset
    * would make listing cost grow with history, and the numbers a caller needs

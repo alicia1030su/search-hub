@@ -34,7 +34,14 @@ for (const file of BUNDLES) {
   const source = readFileSync(absolute, "utf8");
   const specifiers = new Set();
   for (const match of source.matchAll(SPECIFIER)) {
-    specifiers.add(match[1] ?? match[2] ?? match[3]);
+    const specifier = match[1] ?? match[2] ?? match[3];
+    // A module specifier never contains whitespace. Prose in a comment can
+    // still read like an import — `tell "A" from "B"` matches this pattern —
+    // and reporting that as a missing package would fail a green build for a
+    // sentence. Nothing installable is excluded by this rule: npm names cannot
+    // contain spaces.
+    if (/\s/.test(specifier)) continue;
+    specifiers.add(specifier);
   }
 
   const external = [...specifiers].filter(
