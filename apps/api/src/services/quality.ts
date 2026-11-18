@@ -1570,7 +1570,7 @@ export class QualityService {
       .all();
     const qrelsDigest = qrelsFingerprint(judgeRows, datasetRow.judgmentsComplete);
     const usedProviderIds = this.resolveProviderIds(input, datasetRow);
-    const providerDigest = this.providerFingerprintFor(usedProviderIds);
+    const providerDigest = this.providerFingerprintFor(usedProviderIds, datasetRow);
     // This version's evaluation path never invokes a model, so the honest value
     // is `null`. It is not "unknown": a run that used a model would report one.
     const modelDigest = modelFingerprint([]);
@@ -2078,8 +2078,35 @@ export class QualityService {
    * not change the fingerprint of a run that never used it, but changing a
    * participating source's weight must.
    */
-  private providerFingerprintFor(providerIds: readonly string[]): string | null {
+  private providerFingerprintFor(
+    providerIds: readonly string[],
+    datasetRow: typeof qualityDatasets.$inferSelect,
+  ): string | null {
     if (providerIds.length === 0) return null;
+
+    // A synthetic fixture's sources do not exist in the provider registry, so
+    // looking them up would find nothing. They are still describable: the
+    // fixture defines them, and their settings are fixed by the fixture's own
+    // version. Recording that (rather than `null`) keeps a fixture run's
+    // provenance complete while making the synthetic origin visible in the
+    // digest itself.
+    if (datasetRow.origin === "synthetic_fixture") {
+      return providerFingerprint(
+        providerIds.map((id) => ({
+          id,
+          type: "synthetic_fixture",
+          baseUrl: null,
+          weight: 1,
+          timeoutMs: null,
+          maxConcurrency: null,
+          resultsPerPage: null,
+          rpmLimit: null,
+          maxRetries: null,
+          searchConfig: { datasetVersion: datasetRow.version },
+        })),
+      );
+    }
+
     const snapshot = this.deps.providerSnapshot?.() ?? [];
     const wanted = new Set(providerIds);
     const rows = snapshot.filter((row) => wanted.has(row.id));

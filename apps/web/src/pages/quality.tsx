@@ -20,6 +20,8 @@ import {
 import { useAsyncData, useDocumentTitle } from "../lib/hooks";
 import { t } from "../lib/i18n";
 import type {
+  QualityCategory,
+  QualityCategoryBreakdown,
   QualityComparison,
   QualityDatasetDetail,
   QualityDatasetSummary,
@@ -56,6 +58,25 @@ import {
 type Tab = "datasets" | "runs" | "compare" | "history";
 
 const strategies: QualityFusionStrategy[] = ["rrf", "base", "single"];
+
+/**
+ * The labels the API accepts, in the order the picker offers them.
+ *
+ * Hard-coded rather than fetched: the set is a contract with the metric engine,
+ * and a picker that offered a label the server rejects would be worse than one
+ * that offers fewer.
+ */
+const QUERY_CATEGORY_OPTIONS: QualityCategory[] = [
+  "general",
+  "chinese",
+  "english",
+  "code",
+  "academic",
+  "news",
+  "documentation",
+  "factual",
+  "multi_hop",
+];
 
 /** Renders a metric, and says why it is N/A rather than printing 0. */
 function MetricText({ metric, digits = 4 }: { metric: QualityMetricValue | undefined; digits?: number }) {
@@ -125,7 +146,7 @@ export function QualityPage() {
   const [tab, setTab] = useState<Tab>("datasets");
   const toast = useToast();
 
-  const datasets = useAsyncData((signal) => api.qualityDatasets(signal), []);
+  const datasets = useAsyncData((signal) => api.qualityDatasets({}, signal), []);
   const runs = useAsyncData((signal) => api.qualityRuns({ limit: 100 }, signal), []);
 
   const reloadAll = () => {
@@ -349,10 +370,11 @@ function DatasetsTab({
 }
 
 function DatasetDetail({ datasetId, onChanged }: { datasetId: string; onChanged: () => void }) {
-  const detail = useAsyncData((signal) => api.qualityDataset(datasetId, signal), [datasetId]);
+  const detail = useAsyncData((signal) => api.qualityDataset(datasetId, {}, signal), [datasetId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [queryText, setQueryText] = useState("");
+  const [queryCategories, setQueryCategories] = useState<QualityCategory[]>(["general"]);
   const [bulk, setBulk] = useState("");
   const [judgeQuery, setJudgeQuery] = useState("");
   const [judgeUrl, setJudgeUrl] = useState("");
@@ -443,6 +465,17 @@ function DatasetDetail({ datasetId, onChanged }: { datasetId: string; onChanged:
                 {t("quality.dataset.unjudgedQueries", { count: data.coverage.unjudgedQueries })}
               </p>
             ) : null}
+            {/* The count alone invites reading "unjudged" as "irrelevant". The
+                list behind it says which queries are actually unmeasured. */}
+            <UnjudgedPanel datasetId={data.dataset.id} total={data.coverage.unjudgedQueries} />
+            {data.queriesPage.hasMore ? (
+              <p className="text-[10px] text-muted-foreground">
+                {t("quality.page.showing", {
+                  shown: String(data.queries.length),
+                  total: String(data.queriesPage.total),
+                })}
+              </p>
+            ) : null}
           </div>
         </CardContent>
       </Card>
@@ -461,12 +494,48 @@ function DatasetDetail({ datasetId, onChanged }: { datasetId: string; onChanged:
                 onChange={(event) => setQueryText(event.target.value)}
                 placeholder="typescript satisfies operator"
               />
+              <div className="flex flex-wrap gap-1">
+                {QUERY_CATEGORY_OPTIONS.map((category) => {
+                  const selected = queryCategories.includes(category);
+                  return (
+                    <label
+                      key={category}
+                      className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px]"
+                      title={t("quality.queries.categoriesHint")}
+                    >
+                      <Checkbox
+                        checked={selected}
+                        onChange={(event) =>
+                          setQueryCategories((current) => {
+                            const next = event.target.checked
+                              ? [...current, category]
+                              : current.filter((item) => item !== category);
+                            // The first label is the primary one; an empty set
+                            // would leave the query uncategorised, so it falls
+                            // back to `general` rather than becoming invalid.
+                            return next.length === 0 ? ["general"] : next.slice(0, 3);
+                          })
+                        }
+                      />
+                      {category}
+                    </label>
+                  );
+                })}
+              </div>
               <Button
                 size="sm"
                 disabled={!queryText.trim() || busy}
                 onClick={() =>
                   void act(async () => {
-                    await api.addQualityQueries(datasetId, [{ query: queryText.trim() }]);
+                    await api.addQualityQueries(datasetId, [
+                      {
+                        query: queryText.trim(),
+                        category: queryCategories[0] ?? "general",
+                        ...(queryCategories.length > 1
+                          ? { extraCategories: queryCategories.slice(1) }
+                          : {}),
+                      },
+                    ]);
                     setQueryText("");
                   })
                 }
@@ -557,7 +626,11 @@ function DatasetDetail({ datasetId, onChanged }: { datasetId: string; onChanged:
                     return (
                       <TR key={query.id}>
                         <TD className="max-w-96 truncate">{query.query}</TD>
-                        <TD className="text-xs text-muted-foreground">{query.category}</TD>
+                        <TD className="text-xs text-muted-foreground">
+                          {/* Every label is shown: a query counted in two
+                              categories must be visibly two categories. */}
+                          {(query.categories ?? [query.category]).join(" · ")}
+                        </TD>
                         <TD className="text-right font-mono text-xs">
                           {count === 0 ? (
                             <span className="text-amber-600 dark:text-amber-500">0</span>
@@ -593,7 +666,7 @@ function RunsTab({
   onChanged: () => void;
   notify: (message: string) => void;
 }) {
-  const datasets = useAsyncData((signal) => api.qualityDatasets(signal), []);
+  const datasets = useAsyncData((signal) => api.qualityDatasets({}, signal), []);
   const providers = useAsyncData((signal) => api.providers(signal), []);
   const [datasetId, setDatasetId] = useState("");
   const [mode, setMode] = useState<"offline" | "live">("offline");
@@ -603,6 +676,8 @@ function RunsTab({
   const [limit, setLimit] = useState("10");
   const [cutoff, setCutoff] = useState("10");
   const [budget, setBudget] = useState("100");
+  const [perProviderLimit, setPerProviderLimit] = useState("");
+  const [timeoutMs, setTimeoutMs] = useState("");
   const [confirmPaid, setConfirmPaid] = useState(false);
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [snapshotRunId, setSnapshotRunId] = useState("");
@@ -632,6 +707,8 @@ function RunsTab({
         },
         limit: Number(limit) || 10,
         cutoff: Number(cutoff) || 10,
+        ...(perProviderLimit.trim() === "" ? {} : { perProviderLimit: Number(perProviderLimit) }),
+        ...(timeoutMs.trim() === "" ? {} : { timeoutMs: Number(timeoutMs) }),
         ...(mode === "live"
           ? {
               providerIds: selectedProviders,
@@ -719,6 +796,34 @@ function RunsTab({
               <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="rrf-k60-baseline" />
             </Field>
           </div>
+
+          <details className="rounded-md border p-3">
+            <summary className="cursor-pointer text-xs font-medium">{t("quality.run.advanced")}</summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label={t("quality.run.perProviderLimit")} hint={t("quality.run.perProviderLimitHint")}>
+                <Input
+                  value={perProviderLimit}
+                  onChange={(event) => setPerProviderLimit(event.target.value)}
+                  inputMode="numeric"
+                  placeholder={limit}
+                />
+              </Field>
+              <Field label={t("quality.run.timeoutMs")} hint={t("quality.run.timeoutMsHint")}>
+                <Input
+                  value={timeoutMs}
+                  onChange={(event) => setTimeoutMs(event.target.value)}
+                  inputMode="numeric"
+                  placeholder={t("quality.run.timeoutDefault")}
+                />
+              </Field>
+              <Field label={t("quality.run.concurrency")} hint={t("quality.run.concurrencyHint")}>
+                <Input value="1" disabled readOnly />
+              </Field>
+              <Field label={t("quality.run.cachePolicy")} hint={t("quality.run.cachePolicyHint")}>
+                <Input value="bypass" disabled readOnly />
+              </Field>
+            </div>
+          </details>
 
           {mode === "offline" ? (
             <Field label={t("quality.run.snapshotRun")} hint={t("quality.run.snapshotRunHint")}>
@@ -841,6 +946,232 @@ function RunsTab({
   );
 }
 
+/**
+ * What produced this score, in the form an operator can quote later.
+ *
+ * `modelFingerprint === null` reads as "no model was involved" rather than as a
+ * missing value: those are different facts, and conflating them would suggest a
+ * model ran when none did.
+ */
+function ProvenanceRow({ run }: { run: QualityRunSummary }) {
+  const short = (value: string | null) => (value ? value.slice(0, 8) : "—");
+  return (
+    <div className="rounded-md border p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {t("quality.run.provenance")}
+        </p>
+        {run.provenanceComplete ? null : (
+          <Badge tone="muted">{t("quality.run.provenanceMissing")}</Badge>
+        )}
+        {run.partial ? (
+          <Badge tone="warning">{t("quality.run.partial", { count: String(run.persistedQueryCount) })}</Badge>
+        ) : null}
+      </div>
+      <dl className="mt-1 grid gap-1 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
+        <div className="flex gap-1">
+          <dt className="text-muted-foreground">{t("quality.run.providersUsed")}</dt>
+          <dd className="font-mono">{run.providerIds.length > 0 ? run.providerIds.join(", ") : "—"}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-muted-foreground">{t("quality.run.providerFingerprint")}</dt>
+          <dd className="font-mono" title={run.providerFingerprint ?? ""}>{short(run.providerFingerprint)}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-muted-foreground">{t("quality.run.qrelsFingerprint")}</dt>
+          <dd className="font-mono" title={run.qrelsFingerprint ?? ""}>{short(run.qrelsFingerprint)}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-muted-foreground">{t("quality.run.modelFingerprint")}</dt>
+          <dd className="font-mono" title={run.modelFingerprint ?? ""}>
+            {run.modelFingerprint ? short(run.modelFingerprint) : t("quality.run.noModel")}
+          </dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-muted-foreground">{t("quality.run.perProviderLimit")}</dt>
+          <dd className="font-mono">{run.perProviderLimit ?? "—"}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-muted-foreground">{t("quality.run.timeoutMs")}</dt>
+          <dd className="font-mono">{run.timeoutMs ?? t("quality.run.timeoutDefault")}</dd>
+        </div>
+      </dl>
+      {run.failureReason ? (
+        <p className="mt-1 text-[11px] text-warning">
+          {t(`quality.run.failure.${run.failureReason}` as never)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Per-category means.
+ *
+ * The footnote is not decoration: the group counts overlap whenever a query
+ * carries two labels, and a reader who adds them up would otherwise conclude
+ * the dataset is larger than it is.
+ */
+function CategoryTable({ breakdown }: { breakdown: QualityCategoryBreakdown }) {
+  if (!breakdown || breakdown.groups.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      <SectionHeader title={t("quality.category.title")} />
+      <div className="overflow-auto rounded-md border">
+        <Table>
+          <THead>
+            <TR>
+              <TH>{t("quality.dataset.name")}</TH>
+              <TH>{t("quality.category.queries")}</TH>
+              <TH>{t("quality.metric.ndcg", { k: 10 })}</TH>
+              <TH>{t("quality.metric.mrr", { k: 10 })}</TH>
+            </TR>
+          </THead>
+          <TBody>
+            {breakdown.groups.map((group) => (
+              <TR key={group.category}>
+                <TD className="text-xs">{group.category}</TD>
+                <TD className="font-mono text-xs">
+                  {group.queryCount}
+                  {group.lowSample ? (
+                    <span className="ml-1 text-[10px] text-warning">{t("quality.category.lowSample")}</span>
+                  ) : null}
+                </TD>
+                <TD className="font-mono text-xs">
+                  {group.ndcgAtK.status === "ok" ? (group.ndcgAtK.value ?? 0).toFixed(3) : t("quality.metric.na")}
+                </TD>
+                <TD className="font-mono text-xs">
+                  {group.mrrAtK.status === "ok" ? (group.mrrAtK.value ?? 0).toFixed(3) : t("quality.metric.na")}
+                </TD>
+              </TR>
+            ))}
+          </TBody>
+        </Table>
+      </div>
+      {breakdown.overlappingGroups ? (
+        <p className="text-[10px] text-muted-foreground">{t("quality.category.overlap")}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Per-query document movements.
+ *
+ * The hidden-unjudged footnote is the point of the feature: a document nobody
+ * graded cannot be said to have got better or worse, only moved. Showing the
+ * count keeps that distinction visible instead of quietly dropping rows.
+ */
+function MovementList({ movements }: { movements: QualityComparison["movements"] }) {
+  const [open, setOpen] = useState<string | null>(null);
+  if (!movements || movements.queries.length === 0) return null;
+  const withRows = movements.queries.filter((query) => query.rows.length > 0);
+  return (
+    <div className="space-y-1">
+      <SectionHeader title={t("quality.movements.title")} />
+      {withRows.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">{t("quality.movements.empty")}</p>
+      ) : (
+        <div className="max-h-72 space-y-1 overflow-auto">
+          {withRows.map((query) => (
+            <div key={query.queryId} className="rounded-md border">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-2 p-2 text-left text-xs"
+                onClick={() => setOpen((current) => (current === query.queryId ? null : query.queryId))}
+              >
+                <span className="truncate font-mono">{query.queryId}</span>
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {query.changedCount}
+                  {query.truncatedCount > 0
+                    ? ` · ${t("quality.movements.truncated", { count: String(query.truncatedCount) })}`
+                    : ""}
+                </span>
+              </button>
+              {open === query.queryId ? (
+                <ul className="space-y-0.5 border-t p-2 text-[11px]">
+                  {query.rows.map((row) => (
+                    <li key={row.documentId} className="flex items-center gap-2">
+                      <Badge tone={row.movement === "up" ? "success" : row.movement === "down" ? "destructive" : "muted"}>
+                        {t(`quality.movements.${row.movement}` as never)}
+                      </Badge>
+                      <span className="w-8 shrink-0 text-center font-mono text-muted-foreground">
+                        {row.relevance === null ? "—" : row.relevance}
+                      </span>
+                      <span className="truncate" title={row.url}>
+                        {row.title || row.url}
+                      </span>
+                      <span className="ml-auto shrink-0 font-mono text-muted-foreground">
+                        {row.baselineRank ?? "—"} → {row.candidateRank ?? "—"}
+                        {row.deltaPositions === null ? "" : ` (${row.deltaPositions > 0 ? "+" : ""}${row.deltaPositions})`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+      {movements.hiddenUnjudgedMovements > 0 ? (
+        <p className="text-[10px] text-muted-foreground">
+          {t("quality.movements.hidden", { count: String(movements.hiddenUnjudgedMovements) })}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The queries behind the "unjudged" number.
+ *
+ * Collapsed by default because it is an explanation, not a headline. The empty
+ * state distinguishes "everything is judged" from "this query was never run",
+ * which are different reasons to see nothing here.
+ */
+function UnjudgedPanel({ datasetId, total }: { datasetId: string; total: number }) {
+  const [open, setOpen] = useState(false);
+  const page = useAsyncData(
+    (signal) => (open ? api.qualityUnjudged(datasetId, { limit: 50 }, signal) : Promise.resolve(null)),
+    [open, datasetId],
+  );
+  if (total === 0) return null;
+  return (
+    <div className="mt-1">
+      <button type="button" className="text-[11px] underline" onClick={() => setOpen((current) => !current)}>
+        {t("quality.unjudged.open")}
+      </button>
+      {open ? (
+        <div className="mt-1 rounded-md border p-2">
+          <p className="text-[10px] text-muted-foreground">{t("quality.unjudged.hint")}</p>
+          {page.error ? <Alert tone="error">{page.error.message}</Alert> : null}
+          {page.data && page.data.queries.length === 0 ? (
+            <p className="text-[11px]">{t("quality.unjudged.none")}</p>
+          ) : null}
+          <ul className="mt-1 space-y-0.5 text-[11px]">
+            {(page.data?.queries ?? []).map((query) => (
+              <li key={query.queryId} className="flex items-center justify-between gap-2">
+                <span className="truncate">{query.query}</span>
+                <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                  {(query.categories ?? []).join(" · ")}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {page.data?.hasMore ? (
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              {t("quality.page.showing", {
+                shown: String(page.data.queries.length),
+                total: String(page.data.total),
+              })}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RunDetailPanel({ runId }: { runId: string }) {
   const detail = useAsyncData((signal) => api.qualityRun(runId, signal), [runId]);
   const [openQuery, setOpenQuery] = useState<string | null>(null);
@@ -899,6 +1230,10 @@ function RunDetailPanel({ runId }: { runId: string }) {
         </p>
         {data.cost.unknownCost ? <p className="mt-0.5 text-[10px] text-muted-foreground">{t("quality.cost.unknownHint")}</p> : null}
       </div>
+
+      <ProvenanceRow run={data.run} />
+
+      <CategoryTable breakdown={data.byCategory} />
 
       <div className="space-y-1">
         <SectionHeader title={t("quality.run.perQuery")} />
@@ -1063,6 +1398,8 @@ function CompareTab({ runs }: { runs: QualityRunSummary[] }) {
                 <QueryDeltaList title={t("quality.compare.improved")} rows={result.improved} tone="success" />
                 <QueryDeltaList title={t("quality.compare.degraded")} rows={result.degraded} tone="destructive" />
               </div>
+              <CategoryTable breakdown={result.byCategory} />
+              <MovementList movements={result.movements} />
             </div>
           ) : null}
         </CardContent>

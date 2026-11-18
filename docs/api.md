@@ -297,21 +297,27 @@ All routes require an `admin` session; mutations also require `x-csrf-token`.
 A `search`-scope bearer token receives `403`.
 
 ```jsonc
-GET  /api/admin/quality/datasets                 → { datasets: QualityDatasetSummary[] }
+GET  /api/admin/quality/datasets?limit=&offset=  → { datasets, total, hasMore, limit, offset }
 POST /api/admin/quality/datasets                 { name, description?, language? }
-GET  /api/admin/quality/datasets/:id             → { dataset, queries, judgments, coverage }
-POST /api/admin/quality/datasets/:id/queries     { queries: [{ query, category?, intent? }] }
+GET  /api/admin/quality/datasets/:id?queriesLimit=&queriesOffset=&judgmentsLimit=&judgmentsOffset=
+                                                 → { dataset, queries, judgments, coverage,
+                                                     queriesPage, judgmentsPage }
+POST /api/admin/quality/datasets/:id/queries     { queries: [{ query, category?, extraCategories?, intent? }] }
 POST /api/admin/quality/datasets/:id/judgments   { judgments: [{ queryId, url|documentId, relevance }] }
 POST /api/admin/quality/datasets/:id/freeze      { judgmentsComplete? }
 POST /api/admin/quality/datasets/:id/fork
 GET  /api/admin/quality/datasets/:id/export      → search-hub.quality.dataset/1
 POST /api/admin/quality/datasets/import
+GET  /api/admin/quality/datasets/:id/unjudged?limit=&offset=&includeDocuments=
+                                                 → { total, limit, offset, hasMore, queries }
 
-GET  /api/admin/quality/runs?datasetId=&limit=   → { runs }
+GET  /api/admin/quality/runs?datasetId=&limit=&offset=  → { runs, total, hasMore }
 POST /api/admin/quality/runs                     { datasetId, mode, fusion, limit?, cutoff?,
                                                    snapshotRunId?, providerIds?, requestBudget?,
-                                                   confirmPaid?, queryIds?, unitCosts? }
-GET  /api/admin/quality/runs/:id                 → { run, metrics, latency, cost, quality, perQuery }
+                                                   confirmPaid?, queryIds?, unitCosts?,
+                                                   perProviderLimit?, timeoutMs?,
+                                                   cachePolicy?: "bypass", maxConcurrency?: 1 }
+GET  /api/admin/quality/runs/:id                 → { run, metrics, latency, cost, quality, byCategory, perQuery }
 POST /api/admin/quality/runs/:id/cancel
 GET  /api/admin/quality/compare?baseline=&candidate=&metric=
 POST /api/admin/quality/sweep                    { datasetId, kValues?, metric?, developmentShare? }
@@ -425,3 +431,40 @@ The migration endpoint accepts the provider list of an older Search Hub deployme
 - Tokens: `rateLimitPerMin` per token, enforced in-process.
 
 Rate limiting is per process; replica-level coordination is not implemented.
+
+### Provenance and paging (v0.1.10)
+
+`GET /runs/:id` returns these fields on `run` in addition to the pre-v0.1.10 set:
+
+| Field | Meaning |
+|---|---|
+| `providerIds` | sources that actually took part; `[]` when not recorded |
+| `providerFingerprint` | sha256 (32 hex) over credential-free source settings |
+| `qrelsFingerprint` | sha256 over the qrel set, including its completeness flag |
+| `modelFingerprint` | `null` means **no model took part** — a fact, not a gap |
+| `provenanceComplete` | false when any of the three above is absent |
+| `provenanceMissing` | which of them is absent, so the gap is nameable |
+| `perProviderLimit` / `timeoutMs` | what the run actually used; `null` on older runs |
+| `partial` / `persistedQueryCount` | how much of the run was written before it stopped |
+| `failureReason` | `persistence_failed` · `cancelled` · `internal_error` |
+
+`GET /datasets/:id` keeps `queries`, `judgments` and `coverage` at their original
+meaning with one change: when a dataset holds more than 200 queries or judgments,
+those arrays hold the first page and `queriesPage` / `judgmentsPage` carry
+`{ total, offset, limit, hasMore }`. **`coverage` is always computed over the whole
+dataset**, so it does not move when a reader pages.
+
+`GET /compare` adds `byCategory` (groups overlap when a query carries two labels)
+and `movements` (document-level rank changes; `entered` / `exited` rows carry
+`deltaPositions: null`, never 0).
+
+### Errors added by v0.1.10
+
+| Case | Status | Code |
+|---|---|---|
+| `cachePolicy` other than `bypass`, `maxConcurrency` above 1 | 400 | `validation_error` + `details.unsupportedOption` |
+| duplicate or >3 category labels | 400 | `validation_error` + `details.queries[i]` |
+| unsafe import key / depth / URL scheme | 400 | `validation_error` + `details.path` |
+| body over the limit | 413 | `bad_request` |
+| result write failed, volume full | **507** | `internal_error` (+ `details.runId`) |
+| result write failed, other cause | 500 | `internal_error` (+ `details.runId`) |

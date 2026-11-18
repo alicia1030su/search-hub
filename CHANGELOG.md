@@ -4,6 +4,77 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.10 (2026-11-18)
+
+The evaluation lab could already produce a score. This release makes the score
+*attributable*: a run now records which sources produced it, under what
+configuration, against which judgment set — and refuses to pretend it did
+anything it did not.
+
+### Added
+
+- **Provenance on every run** (migration `0007`): `provider_ids_json`,
+  `provider_fingerprint`, `model_fingerprint`, `qrels_fingerprint`,
+  `per_provider_limit`, `request_timeout_ms`, `persisted_query_count`,
+  `failure_reason`, `partial`. The fingerprints are sha256 over a
+  credential-free projection, so rotating an API key does not change them —
+  a digest that moved on a key rotation would turn every comparison into
+  "different configuration".
+- **Multi-label queries**: a query keeps one primary `category` and may carry up
+  to two more in `extra_categories`. Reports aggregate per label and state that
+  the groups overlap (a query in two categories is counted twice), because a
+  reader who adds the columns up would otherwise think the dataset is larger
+  than it is. Labels must be distinct; duplicates are rejected rather than
+  de-duplicated.
+- **`perProviderLimit` and `timeoutMs` on a run**, recorded and echoed back.
+  `perProviderLimit` participates in the worst-case request estimate: asking a
+  paginated source for 50 rows costs more than one HTTP request per attempt, and
+  a budget that ignored the row count authorised a third of the vendor traffic.
+- **Per-category results** in both the run detail and the comparison report.
+- **Document-level rank movements** in the comparison report. A document that
+  appears on one side only is `entered`/`exited` with `deltaPositions: null` —
+  not `0`, which reads as "did not move", and not `Infinity`, which would poison
+  every average downstream. Unjudged movements are counted and withheld.
+- **Unjudged visibility**: `GET /datasets/:id/unjudged` lists the queries nobody
+  graded, optionally with the documents they returned but never had judged.
+
+### Changed
+
+- **Pagination** on `GET /datasets`, `GET /runs` and both dataset-detail
+  collections. `coverage` is computed over the whole dataset, so paging cannot
+  change the reported coverage. Export reads the full set through a separate
+  path: a partial export would quietly become a smaller dataset.
+- **Import hardening**: prototype-polluting keys at any depth, nesting beyond 8
+  levels, control characters and non-http(s) document URLs are rejected with the
+  offending path. Download filenames are reduced to `[A-Za-z0-9._-]`.
+
+### Fixed
+
+- **A failed write left a run stuck at `running`.** A full disk during result
+  persistence threw out of a detached promise: the run never got a terminal
+  state, and an unhandled rejection could take the process down with it — taking
+  every other in-flight run. The run is now marked `failed` with
+  `failure_reason=persistence_failed` and the number of rows actually written
+  before the failure; a full volume returns 507.
+- **A provider weight could not be trusted because it was never tested.**
+  `fuseWithRrf` supported `providerWeights` with no assertion anywhere. Three
+  tests now pin the behaviour: a weight changes the order, weight 0 sinks a
+  source without dropping its documents, and all-ones is byte-identical to
+  passing no weights at all (so the offline lab ranks like the engine).
+- **Stripping a nested secret left an empty container**, so a configuration with
+  `{ auth: { token } }` fingerprinted differently from `{}` — a credential
+  changing the experimental identity. Empty containers are now dropped.
+
+### Known limitations
+
+- `cachePolicy` accepts only `bypass`, and `maxConcurrency` only `1`. Both are
+  rejected otherwise rather than stored: parallel runs need a reservation-based
+  budget that does not exist yet, and a run record claiming a policy the engine
+  never applied is worse than a refusal.
+- The evaluation path invokes no model, so `modelFingerprint` is `null` on every
+  run this version produces. That is a fact about the run, not a missing value.
+- Synthetic fixture scores still measure the machinery, never a vendor.
+
 ## v0.1.9 (2026-11-18)
 
 Correctness patch. Every item below was reproduced before it was fixed, and each

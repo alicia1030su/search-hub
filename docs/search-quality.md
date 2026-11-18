@@ -235,3 +235,82 @@ pnpm quality:eval --baseline tests/fixtures/quality-baseline.json --max-drop 0.0
 
 更新基线是显式动作：改了算法并确认结果合理后，重新生成 `tests/fixtures/quality-baseline.json`
 并在 PR 里说明原因。CI 不会自动更新它。
+
+---
+
+## 十五、多分类标签（v0.1.10）
+
+一个问题可以挂多个类别：主分类存在 `category`，副分类存在 `extra_categories`（JSON 数组，最多 2 个）。
+读模型统一暴露 `categories = [主分类, ...副分类]`，永远不会为空。
+
+**统计口径**：多标签查询在其每个类别里各计一次。因此按类别分组的查询数**之和大于**查询总数，
+接口用 `overlappingGroups: true` 明说这件事，UI 在表格下方用一行灰字重复一次。
+需要不重叠的分组时传 `primaryOnly`，此时各组严格划分全域。
+
+为什么限制 3 个：类别之间要互相比较，挂 5 个标签的查询会在同一张对比表里出现 5 次，
+让每个组看起来都比实际大。重复标签直接 400，不静默去重——发送方描述的问题和存下的问题不是同一个。
+
+## 十六、实验溯源（v0.1.10）
+
+每个 run 记录四个可追溯字段（迁移 `0007`）：
+
+| 字段 | 内容 | 何时为 null |
+|---|---|---|
+| `providerIds` | 本次实际参与的来源 | 无从推导时 |
+| `providerFingerprint` | 来源非密配置（weights/timeout/页大小/搜索参数）的 sha256 前 32 位 | 参与的来源已不存在 |
+| `qrelsFingerprint` | 标注集 `(queryId, documentId, relevance)` 的 sha256，含完整性标志 | 标注集为空且未声明完整 |
+| `modelFingerprint` | 参与模型的 sha256 | **没有模型参与**（这是事实，不是缺失） |
+
+密钥不进指纹：轮换 Key 不是配置变更，若它会改变指纹，指纹就变成了密钥的旁路。
+v0.1.10 之前的 run 这四列为空，读取时 `provenanceComplete=false` 且 `provenanceMissing` 列出缺项，
+**绝不用当前配置回填**——那会描述一次从未发生过的实验。
+
+合成基准的来源不在注册表里，其指纹按 fixture 定义计算（`type: synthetic_fixture`），
+因此 fixture run 的溯源同样完整，同时把「这是合成的」写进了指纹本身。
+
+## 十七、运行配置（v0.1.10）
+
+`perProviderLimit` 与 `limit` 是两件事：前者是向每个源索取的条数，后者是展示条数。
+分页正是从这里产生的——向 Brave 形态的源要 50 条、每页 20 条，就是一次适配器调用里的 3 次 HTTP 请求，
+预算预估必须按条数折算，否则会授权出三倍的流量。
+
+`timeoutMs` 只作用于本次实验，不写回来源配置。越界返回 400 而不是截断：截断后的值会被当成
+调用方要求的记录下来。
+
+`cachePolicy` 只支持 `bypass`（实验永不读写用户缓存），`maxConcurrency` 只支持 `1`（串行）。
+其他取值返回 400 并带 `unsupportedOption`。**不支持比说谎好**：把没生效的配置存进库里，
+报告描述的就不再是跑过的实验。
+
+## 十八、对比报告结构（v0.1.10）
+
+除原有的分数差之外，`GET /query/compare` 现在返回：
+
+- `byCategory`：每个类别的四项指标 + 查询数 + 可比数 + `lowSample`；
+- `movements`：每个查询的文档级位置变化。`entered` / `exited` 的 `deltaPositions` 是 `null`，
+  不是 0（会被读成「没动」）也不是 Infinity（会毁掉任何平均）；
+- `hiddenUnjudgedMovements`：被隐藏的未标注位移数。未标注文档移了位置，是排序的事实，
+  不是质量的事实，默认不展示但如实计数。
+
+排序变化按 |Δ| 降序、再按 url 升序，每查询上限 20 条，超出计入 `truncatedCount`。
+
+## 十九、运维边界（v0.1.10）
+
+- **写失败**：结果写入失败时 run 立刻落 `failed` + `failureReason=persistence_failed` +
+  `persistedQueryCount`（已写入的真实条数）+ `partial=true`。磁盘满（`SQLITE_FULL` / ENOSPC）返回 **507**，
+  其余 500。失败记录本身再失败也只记日志，不抛第二次——否则一次磁盘故障会带走整个进程。
+- **分页**：`GET /datasets` 默认 50 / 上限 200，返回 `total` 与 `hasMore`；
+  数据集详情 `queries` / `judgments` 默认 200 / 上限 500，配 `queriesPage` / `judgmentsPage`。
+  **`coverage` 永远按全量计算**，否则覆盖率会随阅读翻页而变化。
+  导出走独立的 `exportDataset`，读全量：导出少一条就成了另一个数据集。
+- **导入**：只接受 JSON body（Fastify bodyLimit 2 MB → 413），拒绝任意深度的
+  `__proto__` / `constructor` / `prototype`、嵌套超过 8 层、控制字符、非 http(s) 文档 URL。
+  错误带 `details.path` 指到具体是第几条查询的哪个字段。
+- **下载文件名**：`Content-Disposition` 只保留 `[A-Za-z0-9._-]`，其余降级为 `quality-dataset-<id>.json`。
+
+## 二十、未标注可见性
+
+`GET /datasets/:id/unjudged` 列出零标注的查询（默认 50 / 上限 200），
+`includeDocuments=true` 时附带这些查询在历史 run 结果里出现过但从未被标注的文档
+（`bestRank` / `providers` / `seenInRuns`，每查询上限 50）。
+从未跑过实验的查询返回 `documents: []` + `reason: no_run_results`，
+不能让它看起来像「全部都已标注」。
