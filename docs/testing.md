@@ -63,10 +63,16 @@ real SQLite database. **No real vendor is contacted.**
 | T32 | same | `T32 刷新后提示条出现并能打开上次检测结果` | a real run → reload → the notice describes the server's status → opening it shows the result table from the *same* job id |
 | T33 | same | `T33 任务不存在时静默清除，不显示提示条也不报错` | a pointer to a job the server does not have produces no notice, no error alert, and is dropped from `localStorage` |
 | T34 | same | `T34 结果表 8 列，1600×1000 下操作列完整可见且无横向溢出` | exactly eight `<th>`; no `batch-requests-*` cell; `scrollWidth <= clientWidth`; both row actions inside the dialog box; a row retest opens the single-source dialog and leaves the batch row untouched |
-| T35 | `tests/e2e/provider-single-test.spec.ts` | `T34 单源测试通过：结论、结果数、测试时间与脱敏 Key，页面无 Key 明文` | pass path through the row button: `返回结果=3`, `requests=—` for a mock, `checkedAt` present, no plaintext key, health overview `healthy` after reload |
-| T36 | same | `T35 单源测试的上游请求数是真实测量，并写回健康概览` | a loopback HN stub: `requests` equals what the stub's socket counted, results = stub's rows, health flips to `healthy` |
-| T37 | same | `T36 单源测试失败：显示鉴权分类与建议，而不是笼统失败` | a real 401 from a loopback stub → "测试失败" + `Key 无效或已过期` + advice; health shows `invalid_credentials` |
-| T38 | `tests/e2e/provider-batch.spec.ts` | `T34`（同上） | the retest dialog is the **same** surface as the row's test button, so a retest reads identically wherever it starts |
+| T35 | `tests/e2e/provider-single-test.spec.ts` | `T35 单源测试通过：结论、结果数、测试时间与脱敏 Key，页面无 Key 明文` | pass path through the row button: `返回结果=3`, `requests=—` for a mock, `checkedAt` present, no plaintext key, health overview `healthy` after reload |
+| T36 | same | `T36 单源测试的上游请求数是真实测量，并写回健康概览` | a loopback HN stub: `requests` equals what the stub's socket counted, results = stub's rows, health flips to `healthy` |
+| T37 | same | `T37 单源测试失败：显示鉴权分类与建议，而不是笼统失败` | a real 401 from a loopback stub → "测试失败" + `Key 无效或已过期` + advice; health shows `invalid_credentials` |
+| T39 | `tests/e2e/provider-batch-regression.spec.ts` | `T39 连点「开始检测」只创建一个任务，请求飞行中按钮禁用` | one POST while the button is disabled; one job id polled; rows = scope size exactly once; counts describe three successes, not six |
+| T40 | same | `T40 混合五类来源：八列表格分组与计数一致、分类只在抽屉` | five groups present, `counts.failed` includes the restricted row, skips counted in neither, classification only in the drawer |
+| T41 | same | `T41 无 Key 来源：预检可见、开始仍可点，结果记为跳过而不是失败` | `count-nokey > 0`, the start button still enabled while other sources are testable, those rows end `skipped` |
+| T42 | same | `T42 免 Key 开关：关闭后免 Key 来源跳过而不是失败，请求数只在抽屉` | with the toggle off, keyless rows are `skipped`; the table has no `batch-requests-*` cell |
+| T43 | same | `T43 取消后「只重测失败项」不包含被取消的来源` | the retry body excludes cancelled ids (it is the `failedIds` set) |
+| T44 | same | `T44 刷新恢复遇他人任务（403）：不显示提示条、不报错、指针被清除` | a 403 for the remembered job yields no notice, no alert, no dialog, and clears the pointer; cross-account 403 itself is covered by `provider-batch-owner.test.ts` |
+| T45 | `tests/integration/provider-batch-preview.test.ts` | `T45 a keyless source is skipped by policy when includeUnverified is off, and probed when it is on` | the policy is read by preview **and** runner; counters still partition `total`; a policy skip writes no health row |
 
 The E2E suite seeds only the built-in `mock` adapter and one `http.createServer`
 Brave-shaped stub on 127.0.0.1; `paidProbesEnabled` is switched on for the

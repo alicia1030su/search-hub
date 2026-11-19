@@ -367,7 +367,7 @@ describe("batch test preview", () => {
   });
 
   /**
-   * T43 — "include keyless sources" is a policy the preview *and* the runner read.
+   * T45 — "include keyless sources" is a policy the preview *and* the runner read.
    *
    * The pre-flight toggle writes `includeUnverified`; if either side hardcoded
    * "keyless sources participate", the dialog and the run would disagree. The
@@ -375,7 +375,7 @@ describe("batch test preview", () => {
    * run's item list (what actually happened), including that a policy skip
    * writes no health row at all.
    */
-  it("T43 a keyless source is skipped by policy when includeUnverified is off, and probed when it is on", async () => {
+  it("T45 a keyless source is skipped by policy when includeUnverified is off, and probed when it is on", async () => {
     const harness = track(await startBatchHarness());
     await allowLocal(harness);
     const keyless = await addKeyless(harness, "policy-keyless");
