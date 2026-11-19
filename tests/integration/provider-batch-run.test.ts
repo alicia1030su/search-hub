@@ -351,6 +351,13 @@ describe("batch run concurrency and budget", () => {
     // have shown a peak of twelve.
     expect(stub.peak()).toBeLessThanOrEqual(2);
     expect(stub.hits()).toBe(12);
+
+    // …and the ceiling of 4 is honoured too, not just the default of 2.
+    const four = await startJob(harness, { kind: "connect", providerIds, concurrency: 4 });
+    const fourId = four.body["jobId"] as string;
+    await waitForJob(harness, fourId, (view) => view.status === "completed", "the 4-worker run", 20_000);
+    expect(stub.peak()).toBeLessThanOrEqual(4);
+    expect(stub.hits()).toBe(24);
   });
 
   /** T17 — the concurrency ceiling is enforced at the edge and clamped in the runner. */
