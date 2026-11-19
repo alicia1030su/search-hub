@@ -53,6 +53,76 @@ export function useAsyncData<T>(
   return { data: state.data, error: state.error, loading: state.loading, reload };
 }
 
+/**
+ * Polls a resource on a fixed interval, stopping when the caller says so.
+ *
+ * `intervalMs === null` means "this resource is terminal" — it is fetched once
+ * and never again. That is the important half of the contract: a bulk test that
+ * has already finished must not keep the browser polling the server forever,
+ * and the caller (not this hook) decides when a run is over, because only the
+ * caller knows what `status` means.
+ *
+ * Each fetch gets its own `AbortController`, aborted when the interval fires
+ * again, when the dependencies change, or on unmount; a slow response therefore
+ * cannot land after a newer one and overwrite it.
+ */
+export function usePolling<T>(
+  load: (signal: AbortSignal) => Promise<T>,
+  intervalMs: number | null,
+  deps: readonly unknown[],
+): { data: T | null; error: ApiError | null; refresh: () => void } {
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  const [tick, setTick] = useState(0);
+  const [state, setState] = useState<{ data: T | null; error: ApiError | null }>({ data: null, error: null });
+
+  useEffect(() => {
+    let timer: number | null = null;
+    let controller: AbortController | null = null;
+    let stopped = false;
+
+    const run = async (): Promise<void> => {
+      if (stopped) return;
+      // Abort the previous request: a slow response must never overwrite a newer
+      // one, which is exactly what happens when a poll interval is shorter than
+      // a slow endpoint's latency.
+      controller?.abort();
+      const current = new AbortController();
+      controller = current;
+      try {
+        const data = await loadRef.current(current.signal);
+        if (stopped || current.signal.aborted) return;
+        setState({ data, error: null });
+      } catch (error) {
+        if (stopped || current.signal.aborted || isAbortError(error)) return;
+        setState((previous) => ({ data: previous.data, error: toApiError(error) }));
+      }
+      if (stopped || intervalMs === null) return;
+      timer = window.setTimeout(() => {
+        void run();
+      }, intervalMs);
+    };
+
+    void run();
+
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+      controller?.abort();
+    };
+    // The caller owns the dependency list; `intervalMs` and `tick` are the
+    // scheduling knobs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, intervalMs, tick]);
+
+  const refresh = useCallback(() => {
+    setTick((value) => value + 1);
+  }, []);
+
+  return { data: state.data, error: state.error, refresh };
+}
+
 export function useElapsed(startedAt: number | null): number {
   const [elapsed, setElapsed] = useState(0);
 

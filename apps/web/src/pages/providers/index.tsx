@@ -35,6 +35,7 @@ import { ConfirmDialog, Dialog, Sheet } from "../../components/overlay";
 import { Table, TBody, TD, TH, THead, TR } from "../../components/table";
 import { useToast } from "../../components/toast";
 import { ProviderHealthPanel } from "../../components/provider-health-panel";
+import { ProviderBatchTestFlow } from "../../components/provider-batch-test-flow";
 import {
   Alert,
   Badge,
@@ -92,31 +93,18 @@ export function ProvidersPage() {
   // force a provider-list refetch every time it reloads.
   const health = useAsyncData((signal) => api.healthOverview(signal), []);
 
-  const runHealthCheck = useCallback(
-    async (kind: "connect" | "search") => {
-      setBusy(true);
-      try {
-        const run = await api.healthCheck({ kind });
-        const failed = run.results.filter((item) => item.status === "unhealthy").length;
-        toast.success({
-          title: t("providers.health.checked", {
-            count: run.results.length,
-            failed,
-          }),
-          description:
-            run.skipped.length > 0
-              ? t("providers.health.skipped", { count: run.skipped.length })
-              : undefined,
-        });
-        health.reload();
-      } catch (error) {
-        toast.error({ title: toApiError(error).message });
-      } finally {
-        setBusy(false);
-      }
-    },
-    [health, t, toast],
-  );
+  /**
+   * "Test all" is no longer a direct action.
+   *
+   * It opens the pre-flight dialog instead, which is where the operator learns
+   * what will be probed, what will be skipped and whether it costs money. The
+   * old buttons fired immediately — the only way to find out was the bill.
+   */
+  const [batchKind, setBatchKind] = useState<"connect" | "search" | null>(null);
+
+  const openBatch = useCallback((kind: "connect" | "search") => {
+    setBatchKind(kind);
+  }, []);
 
   const runHealthCheckOne = useCallback(
     async (providerId: string, kind: "connect" | "search") => {
@@ -436,7 +424,7 @@ export function ProvidersPage() {
               overview={health.data}
               loading={health.loading}
               error={health.error?.message ?? null}
-              onCheckAll={runHealthCheck}
+              onCheckAll={openBatch}
               onCheckOne={runHealthCheckOne}
               onReload={health.reload}
               busy={busy}
@@ -1096,6 +1084,14 @@ export function ProvidersPage() {
           }}
         />
       ) : null}
+
+      {/* One dialog for the whole flow: preview → progress → results. */}
+      <ProviderBatchTestFlow
+        open={batchKind !== null}
+        initialKind={batchKind ?? "connect"}
+        onClose={() => setBatchKind(null)}
+        onFinished={() => health.reload()}
+      />
     </div>
   );
 }

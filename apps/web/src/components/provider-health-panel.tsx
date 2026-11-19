@@ -71,24 +71,32 @@ export function ProviderHealthPanel({
           <p className="text-xs text-muted-foreground">{t("providers.health.desc")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => onCheckAll("connect")}>
-            {t("providers.health.checkConnect")}
+          {/*
+            Two entry points into the *same* flow, differing only in `kind`.
+            Both open the pre-flight dialog: testing every source is an action
+            with a cost and a scope, and neither is knowable without asking
+            first. Names differ so the operator is never surprised by which one
+            spends quota.
+          */}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => onCheckAll("connect")}
+            data-testid="health-test-all-connect"
+            title={t("providers.batch.entryHint")}
+          >
+            {t("providers.batch.entryConnect")}
           </Button>
           <Button
             size="sm"
-            variant="ghost"
-            disabled={busy || !budget.paidProbesEnabled || budget.remainingToday <= 0}
+            variant="default"
+            disabled={busy}
             onClick={() => onCheckAll("search")}
-            title={
-              budget.paidProbesEnabled
-                ? t("providers.health.paidHint", {
-                    used: budget.usedToday,
-                    max: budget.maxPerDay,
-                  })
-                : t("providers.health.paidDisabled")
-            }
+            data-testid="health-test-all"
+            title={t("providers.batch.entryHint")}
           >
-            {t("providers.health.checkSearch")}
+            {t("providers.batch.entry")}
           </Button>
         </div>
       </div>
