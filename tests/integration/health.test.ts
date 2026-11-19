@@ -454,3 +454,155 @@ describe("health probes", () => {
     expect(typeof provider.p50LatencyMs).toBe("number");
   });
 });
+
+/**
+ * Request counts and cancellation, on the probe path itself.
+ *
+ * Both are properties of *what actually reached the wire*, so they are asserted
+ * through a real HTTP stub rather than a fake fetch: a count taken anywhere but
+ * the fetch boundary cannot tell a page from a redirect from an attempt.
+ */
+describe("probe request accounting", () => {
+  it("counts every physical request a paginated probe issues", async () => {
+    const harness = await createHarness();
+    await allowLocalhost(harness.app, {
+      cookies: { sh_session: harness.cookie },
+      headers: { "x-csrf-token": harness.csrf },
+    });
+    // A Brave-shaped stub that always returns a full page: the adapter keeps
+    // paging towards `targetResults` and each page is one physical request.
+    const stub = await startBraveStub({ results: 20 });
+    const providerId = await createProvider(
+      harness.app,
+      { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } },
+      {
+        name: "paged-accounting",
+        type: "brave",
+        baseUrl: stub.base,
+        resultsPerPage: 20,
+        searchConfig: { targetResults: 50, maxPages: 3 },
+      },
+    );
+    await addKey(
+      harness.app,
+      { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } },
+      providerId,
+      "sk-HEALTH-ACCOUNTING-000000000",
+    );
+    await harness.app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      ...adminHeaders(harness),
+      payload: { health: { paidProbesEnabled: true, maxRequestsPerRun: 5, maxRequestsPerDay: 20 } },
+    });
+
+    const result = await harness.ctx.health.checkOne(providerId, { kind: "search", trigger: "manual" });
+    expect(result.cause).toBe("ok");
+    expect(result.requests).toBeGreaterThanOrEqual(2);
+
+    // The count is a stored fact, not a view-time calculation: it must be in
+    // `detail_json` so it survives a restart and is readable from history.
+    const row = harness.ctx.sqlite
+      .prepare("SELECT detail_json FROM provider_health_checks WHERE id = ?")
+      .get(result.id) as { detail_json: string };
+    const detail = JSON.parse(row.detail_json) as { requests?: number | null };
+    expect(detail.requests).toBe(result.requests);
+  });
+
+  it("reports `null` rather than `0` when no request was ever sent", async () => {
+    const harness = await createHarness();
+    // A credentialed provider with no credential: nothing can be sent.
+    const providerId = await createProvider(
+      harness.app,
+      { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } },
+      { name: "no-credential-probe", type: "brave", baseUrl: "http://127.0.0.1:9" },
+    );
+    const result = await harness.ctx.health.checkOne(providerId, { kind: "connect", trigger: "manual" });
+    expect(result.cause).toBe("no_credential");
+    // `0` would claim we know the wire was untouched; `null` says "not measured".
+    expect(result.requests).toBeNull();
+  });
+
+  it("stops before the first request when the job is already cancelled", async () => {
+    const harness = await createHarness();
+    await allowLocalhost(harness.app, {
+      cookies: { sh_session: harness.cookie },
+      headers: { "x-csrf-token": harness.csrf },
+    });
+    const stub = await startBraveStub({ results: 2 });
+    const providerId = await createProvider(
+      harness.app,
+      { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } },
+      { name: "cancelled-before-start", type: "brave", baseUrl: stub.base },
+    );
+    await addKey(
+      harness.app,
+      { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } },
+      providerId,
+      "sk-HEALTH-CANCEL-0000000000000",
+    );
+    const controller = new AbortController();
+    controller.abort(Object.assign(new Error("cancelled"), { code: "cancelled" }));
+
+    const run = await harness.ctx.health.checkMany([providerId], {
+      kind: "connect",
+      trigger: "manual",
+      gapMs: 0,
+      signal: controller.signal,
+    });
+    // A cancellation is a skip with its own code, not a health verdict…
+    expect(run.results).toHaveLength(0);
+    expect(run.skipped).toHaveLength(1);
+    expect(run.skipped[0]!.code).toBe("SKIPPED_CANCELLED");
+    // …and it provably never reached the vendor.
+    expect(stub.hits()).toBe(0);
+    const rows = harness.ctx.sqlite
+      .prepare("SELECT COUNT(*) AS n FROM provider_health_checks WHERE provider_id = ?")
+      .get(providerId) as { n: number };
+    expect(rows.n).toBe(0);
+  });
+
+  it("reports an in-flight cancellation as a timeout-free skip", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "slow-cancel", { resultCount: 2, latencyMs: 400 });
+    const controller = new AbortController();
+    const runPromise = harness.ctx.health.checkMany([providerId], {
+      kind: "connect",
+      trigger: "manual",
+      gapMs: 0,
+      signal: controller.signal,
+    });
+    // Cancel while the probe is in flight: the abort reason carries
+    // `code: "cancelled"`, which is what keeps `classifyError`'s `/aborted/i`
+    // fallback from recording a timeout against a healthy source.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    controller.abort(Object.assign(new Error("cancelled"), { code: "cancelled" }));
+    const run = await runPromise;
+
+    expect(run.results).toHaveLength(0);
+    expect(run.skipped).toHaveLength(1);
+    expect(run.skipped[0]!.code).toBe("SKIPPED_CANCELLED");
+    // Nothing was recorded: a cancellation is not evidence about the source.
+    const rows = harness.ctx.sqlite
+      .prepare("SELECT COUNT(*) AS n FROM provider_health_checks WHERE provider_id = ?")
+      .get(providerId) as { n: number };
+    expect(rows.n).toBe(0);
+  });
+
+  it("de-duplicates a concurrent probe of the same source", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "double-probe", { resultCount: 2, latencyMs: 250 });
+
+    const first = harness.ctx.health.checkMany([providerId], { kind: "connect", gapMs: 0 });
+    // Let the first probe acquire its slot before the second asks for it.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const second = await harness.ctx.health.checkMany([providerId], { kind: "connect", gapMs: 0 });
+    await first;
+
+    // The second pass must not hit the same source while the first still holds
+    // the lock: for a paid probe that would be paying twice for one answer.
+    expect(second.results).toHaveLength(0);
+    expect(second.skipped).toHaveLength(1);
+    expect(second.skipped[0]!.code).toBe("already_running");
+  });
+});
