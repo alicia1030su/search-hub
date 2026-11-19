@@ -320,10 +320,17 @@ export const providerHealthChecks = sqliteTable(
     /** "manual" | "schedule" | "recovery" | "search". */
     trigger: text("trigger").notNull(),
     checkedAt: text("checked_at").notNull(),
+    /**
+     * Run that produced this row (migration `0008`), or `null` for a probe that
+     * was not part of a bulk test. A pointer only: the conclusion stays here, so
+     * deleting a batch ledger row never rewrites health history.
+     */
+    batchId: text("batch_id"),
   },
   (table) => [
     index("idx_health_provider_time").on(table.providerId, table.checkedAt),
     index("idx_health_checked_at").on(table.checkedAt),
+    index("idx_health_batch").on(table.batchId),
   ],
 );
 
@@ -377,6 +384,62 @@ export const healthProbeBudget = sqliteTable(
 );
 
 export type ProviderProbeStateRow = typeof providerProbeState.$inferSelect;
+
+/**
+ * One bulk provider-test run (migration `0008`).
+ *
+ * This is a **run ledger**, not a second health table: the per-source
+ * conclusion stays in `provider_health_checks` (reachable via its `batch_id`).
+ * This row only answers "how far did this run get", which is what a progress
+ * poller reads.
+ *
+ * Progress is persisted on every completed item rather than held in memory, so
+ * a `GET` after a restart still describes the last written state — and a
+ * restart rewrites any leftover `running` row to `interrupted`, which is why a
+ * crash can never be reported as `completed`.
+ *
+ * `done` counts *finished probes* (`ok_count + failed_count + pending_count`);
+ * `total` is the whole requested scope, including the skipped sources, because
+ * the UI has to be able to say "20 sources, 8 skipped" rather than silently
+ * showing 12.
+ */
+export const providerTestBatches = sqliteTable(
+  "provider_test_batches",
+  {
+    id: text("id").primaryKey(),
+    /** "connect" | "search". `connect` probes never spend paid quota. */
+    kind: text("kind").notNull().default("search"),
+    /** "running" | "completed" | "partial" | "cancelled" | "interrupted". */
+    status: text("status").notNull().default("running"),
+    total: integer("total").notNull().default(0),
+    /** Finished probes: `okCount + failedCount + pendingCount`. */
+    done: integer("done").notNull().default(0),
+    okCount: integer("ok_count").notNull().default(0),
+    failedCount: integer("failed_count").notNull().default(0),
+    /** `empty_results`: answered, but nothing came back — "pending review". */
+    pendingCount: integer("pending_count").notNull().default(0),
+    /** Sources that were never sent a request (disabled / no key / cooling). */
+    skippedCount: integer("skipped_count").notNull().default(0),
+    concurrency: integer("concurrency").notNull().default(2),
+    /** `{providerIds, includeKeyless}` — what was actually asked for. */
+    optionsJson: text("options_json").notNull().default("{}"),
+    /**
+     * `BatchItem[]`: per-source state, accumulated as the run progresses. Every
+     * source in scope is present from the first write, so a reader can tell
+     * "not started yet" (`unknown`) from "skipped".
+     */
+    itemsJson: text("items_json").notNull().default("[]"),
+    /** Budget snapshot taken when the run started; never re-read later. */
+    budgetJson: text("budget_json").notNull().default("{}"),
+    createdBy: text("created_by"),
+    createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    finishedAt: text("finished_at"),
+  },
+  (table) => [index("idx_test_batches_status").on(table.status, table.createdAt)],
+);
+
+export type ProviderTestBatchRow = typeof providerTestBatches.$inferSelect;
 
 /**
  * A versioned qrel set: a dataset of queries and the grades assessors gave to

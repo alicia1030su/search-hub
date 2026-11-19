@@ -402,6 +402,34 @@ export interface ProviderTestResult {
   resultCount?: number;
   message: string;
   sample?: Array<{ title: string; url: string }>;
+  /**
+   * Operator-facing conclusion of the same probe.
+   *
+   * Added alongside the five legacy fields, never instead of them: an existing
+   * client that only reads `ok`/`latencyMs`/`resultCount`/`message`/`sample`
+   * keeps working, and the UI gains the error classification without parsing
+   * the message string.
+   *
+   * `status` is the stored four-value health status; `cause` is the
+   * classification (`ok`, `auth_invalid`, `empty_results`, …); `errorCode` is
+   * the provider-error vocabulary, or `null` when the probe succeeded.
+   */
+  status?: "healthy" | "degraded" | "unhealthy" | "unverified";
+  cause?: string;
+  errorCode?: string | null;
+  /**
+   * Physical upstream requests this probe issued, redirects and pages included.
+   *
+   * `null` means "no request was sent" (missing credential, refused before the
+   * call) — never `0`, and never an estimate from the planned page count. The
+   * UI renders `null` as an em dash rather than inventing a number.
+   */
+  requests?: number | null;
+  /** Which probe produced the conclusion: a cheap `connect` or a real `search`. */
+  kind?: string;
+  /** Key the probe used, so the UI can label it (never the key material). */
+  keyId?: string | null;
+  checkedAt?: string;
 }
 
 export interface SafeFetchResponse<T = unknown> {
