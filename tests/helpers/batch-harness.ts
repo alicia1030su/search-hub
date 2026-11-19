@@ -37,6 +37,30 @@ export interface BatchHarness {
   dispose(): Promise<void>;
 }
 
+/**
+ * Removes a temporary directory, tolerating Windows' delayed file lock.
+ *
+ * A just-closed SQLite handle can keep the `.db` file locked for a few
+ * milliseconds; an `rmSync` racing that window throws `EBUSY` and fails a suite
+ * that has in fact passed. Retrying briefly is the correct fix — the alternative
+ * (ignoring the error) leaks temporary databases on every run.
+ */
+function removeDir(dir: string): void {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if ((error as { code?: string }).code !== "EBUSY" || attempt === 4) throw error;
+      // A short, blocking pause: the lock is released by the OS, not by JS.
+      const until = Date.now() + 50;
+      while (Date.now() < until) {
+        /* spin */
+      }
+    }
+  }
+}
+
 function testConfig(dir: string, dbPath: string): AppConfig {
   return {
     ...loadConfig(),
@@ -99,7 +123,7 @@ export async function startBatchHarness(options: { dir?: string } = {}): Promise
       } catch {
         /* already closed */
       }
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     },
   };
 }
