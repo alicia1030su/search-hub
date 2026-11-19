@@ -225,6 +225,10 @@ GET  /api/admin/provider-health/history?providerId=&limit=
 POST /api/admin/provider-health/:id/probe  {kind:"connect"|"search"}
 POST /api/admin/provider-health/:id/auto-probe  {enabled:boolean}
 POST /api/admin/provider-health/:id/reset
+GET  /api/admin/provider-health/batch-test/preview?kind=&providerIds=
+POST /api/admin/provider-health/batch-test         {kind?,providerIds?,concurrency?}
+GET  /api/admin/provider-health/batch-test/:jobId
+POST /api/admin/provider-health/batch-test/:jobId/cancel
 ```
 
 ```jsonc
@@ -263,6 +267,110 @@ POST /api/admin/provider-health/:id/reset
   without the ledger noticing.
 - `reset` writes a marker; probes older than it stop deciding the status. History
   is kept and credentials are untouched.
+
+### Single-source test (v0.1.10)
+
+```http
+POST /api/admin/providers/:id/test   {kind?,keyId?,trigger?}
+POST /api/admin/keys/:keyId/test     # always kind:"connect"
+```
+
+```jsonc
+{
+  "ok": true, "latencyMs": 412, "resultCount": 3,
+  "message": "3 result(s) in 412ms",
+  "sample": [{ "title": "…", "url": "…" }],
+  // additive — the five fields above keep their names and types
+  "status": "healthy",           // stored four-value status
+  "cause": "ok",                 // classification (`empty_results`, `auth_invalid`, …)
+  "errorCode": null,             // provider-error vocabulary, or null
+  "requests": 2,                 // physical upstream requests; null = none sent
+  "kind": "search",
+  "keyId": "key_…",              // identifier only, never the secret
+  "checkedAt": "2026-11-19T…Z"
+}
+```
+
+- `ok` is `cause === "ok"` and nothing else: an HTTP 200 with zero results is
+  `empty_results`, which is "answered, but nothing came back".
+- `:id/test` defaults to `kind:"search"` and therefore obeys the paid-probe
+  switch: paid probing disabled → `400 validation_error`, budget exhausted →
+  `429 quota_exceeded`. `/keys/:keyId/test` stays `kind:"connect"` (free).
+- `requests` is counted at the fetch boundary (every physical request, redirects
+  and pages included). `null` means no request was sent; it is never derived from
+  the planned page count.
+- No key material appears in the response: `keyId` is an identifier and `sample`
+  holds only title/url.
+
+### Bulk provider test (v0.1.10)
+
+```jsonc
+// GET /api/admin/provider-health/batch-test/preview?kind=search
+{
+  "kind": "search", "total": 20,
+  "counts": { "eligible": 12, "noKey": 3, "noEnabledKey": 2, "configError": 0,
+              "disabled": 3, "keylessSkipped": 0, "coolingSkipped": 0 },
+  "budget": { "paidProbesEnabled": true, "remainingToday": 8, "remainingRun": 10,
+              "maxPerDay": 100, "maxPerRun": 10, "day": "2026-11-19", … },
+  "paidRisk": true, "estimatedPaidProbes": 12
+}
+```
+
+- The seven counters always sum to `total`; cooling and exhausted budget share
+  `coolingSkipped` so the identity holds. Per-item `code` still distinguishes them.
+- `paidRisk` is `kind === "search" && eligible > 0 && budget.paidProbesEnabled`;
+  `estimatedPaidProbes` is `0` when nothing can be billed.
+- The preview is a **read**: it writes no health rows and no job rows.
+
+```jsonc
+// POST /api/admin/provider-health/batch-test  → 201
+{ "jobId": "bt_…", "status": "running", "total": 20, "concurrency": 2 }
+```
+
+- `kind` defaults to `search`; `providerIds` omitted means **every configured
+  source** (the same scope the preview described), `[]` is `400` ("nothing to
+  test"), `concurrency` is `1..4` (`5` → `400`).
+- Pre-flight refusals happen **before** the row is written: paid probing disabled
+  or daily budget exhausted → `409 validation_error` with the setting named.
+  Nothing is probed and nothing is left behind.
+
+```jsonc
+// GET /api/admin/provider-health/batch-test/:jobId
+{
+  "jobId": "bt_…",
+  "status": "running" | "completed" | "partial" | "cancelled" | "interrupted",
+  "kind": "search",
+  "counts": { "total": 20, "done": 7, "ok": 5, "failed": 1, "pending": 1,
+              "skipped": 8, "remaining": 5 },
+  "items": [
+    { "providerId": "prv_…", "providerName": "Brave", "state": "ok" | "failed" | "pending" | "skipped" | "unknown",
+      "code": "ok" | "auth_invalid" | "SKIPPED_NO_KEY" | …, "latencyMs": 412,
+      "resultCount": 3, "requests": 2, "checkId": "hc_…", "reason": null }
+  ],
+  "budget": { … }, "concurrency": 2,
+  "startedAt": "…", "finishedAt": null,
+  "nextPollAfterMs": 1000            // null once the run stopped
+}
+```
+
+- Invariants: `done + skipped + remaining === total` and
+  `ok + failed + pending === done`.
+- `state: "unknown"` means "not started yet"; it is what makes a partial run
+  describable as `部分完成 (done+skipped/total)` and never as "all done".
+- `requests: null` renders as `—`. `checkId: null` means no health conclusion was
+  written for this item (skipped, cancelled, or refused before the call).
+- After a restart a run that was still going reads `interrupted` and **never**
+  `completed`.
+
+```jsonc
+// POST /api/admin/provider-health/batch-test/:jobId/cancel
+{ "jobId": "bt_…", "status": "cancelled", "skippedRemaining": 5 }
+```
+
+- Cancel sets the status and aborts the job; it does **not** wait for the runner.
+  Finished items keep their conclusion (`checkId` stays valid); the untested
+  remainder becomes `SKIPPED_CANCELLED`. Cancelling a job that already stopped is
+  `409 conflict`.
 - All routes need `admin` scope; writes need CSRF. A `search`-scope token gets 403.
 
 ### Cache

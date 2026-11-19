@@ -58,6 +58,23 @@ Search Hub packages that as a deployable service:
 - **Off by default.** Scheduled probing only runs once you enable it, within the interval and the budget.
 - **A source with no API key never reports healthy** — it reports `unverified`.
 
+#### Bulk test in one pass
+
+A single source can be probed; every source can be tested in one run. The flow has three steps, and each one is readable before you commit:| Step | What you see |
+|---|---|
+| **Preview** | Six counts (testable / no key / config error / disabled / keyless skipped / cooling & budget) + today's remaining budget + whether third-party quota is at stake. The seven figures add up to the scope total, so no source disappears silently |
+| **Run** | Live progress (`done/to test`), the current source, four counters (ok / failed / pending / skipped), and a cancel button |
+| **Results** | Sorted by severity (failed → restricted → pending → ok → skipped), filterable, with "retry failures only"; each row opens a drawer with classification, latency, result count, upstream requests and up to three samples |
+
+- **Only sources with a configured key are tested by default.** Sources without a credential are skipped as "no key", never counted as failures, and never enter the success-rate denominator.
+- **Keyless sources are skipped by default.** The preview can include them for this run; they are real searches and do make a third-party request.
+- **Skipped is not failed.** A skipped source gets no health conclusion and never appears in "retry failures".
+- **Cost is stated before it is incurred.** When a search run may spend vendor quota, the preview shows the estimated probe count; when paid probing is off, the start button is disabled with the reason — you never have to click to find out.
+- **Cancel is readable afterwards.** Finished conclusions stay readable; the untested remainder is marked "cancelled".
+- **A restart does not lie.** If the process dies mid-run, the job is `interrupted` (partially complete) and never reported as "all done".
+
+[![Bulk test results](docs/screenshots/v0110/provider-batch-test.png)](docs/screenshots/v0110/provider-batch-test.png)
+
 Details: [docs/provider-health.md](./docs/provider-health.md).
 
 ## Search quality evaluation

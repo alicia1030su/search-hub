@@ -137,11 +137,103 @@ runtime                     = healthy        # 上一次探测确实成功了
 | POST | `/api/admin/provider-health/:id/probe` | 手动探测（`{"kind":"connect"\|"search"}`） |
 | POST | `/api/admin/provider-health/:id/auto-probe` | 开关单个源的自动探测 |
 | POST | `/api/admin/provider-health/:id/reset` | 重置健康状态 |
+| GET | `/api/admin/provider-health/batch-test/preview?kind=&providerIds=` | 批量检测预检（只读） |
+| POST | `/api/admin/provider-health/batch-test` | 创建批量检测任务 |
+| GET | `/api/admin/provider-health/batch-test/:jobId` | 读取进度与逐源结果（只读） |
+| POST | `/api/admin/provider-health/batch-test/:jobId/cancel` | 取消任务 |
 
 全部要求 `admin` scope；写操作额外要求 CSRF。`search` scope 的 Token 一律 403——健康
 页会暴露"你配了哪些厂商、它们的 Key 还有效吗"。
 
 `/api/admin/health*` 保留为兼容接口，行为不变。
+
+## 六之二、批量检测
+
+管理员点一次「全部测试」得到的东西有三步，每一步都能看清再决定。
+
+### 资格判定矩阵
+
+判定自上而下，**命中即停**。顺序本身是优先级：从最绝对、最便宜、最不可协商的事实判到
+最可配置的偏好，这样一次冷却永远不会被报成"缺 Key"。
+
+| 序 | 条件 | 代码 | 入队 | 计入成功率分母 |
+|---|---|---|---|---|
+| 1 | `enabled=false` | `SKIPPED_DISABLED` | 否 | 否 |
+| 2 | `getAdapter(type)` 为空 | `CONFIG_ERROR` | 否 | **是（算失败）** |
+| 3 | 冷却未到期 / 计数器已耗尽（`remainingToday<=0`、`maxPerRun<=0`） | `SKIPPED_COOLDOWN` / `SKIPPED_BUDGET` | 否 | 否 |
+| 4 | `requiresKey` 且首条启用 Key 解密失败 | `CONFIG_ERROR` | 否 | **是（算失败）** |
+| 5 | `requiresKey` 且一条 Key 都没填 | `SKIPPED_NO_KEY` | 否 | 否 |
+| 6 | `requiresKey` 且 Key 全部被禁用 | `SKIPPED_NO_ENABLED_KEY` | 否 | 否 |
+| 7 | `!requiresKey` 且未开启「包含免 Key 来源」 | `SKIPPED_KEYLESS_BY_POLICY` | 否 | 否 |
+| 8 | 以上都不命中 | `ELIGIBLE` | 是 | 是 |
+
+两点必须说清楚：
+
+- **付费开关不是资格规则。** `paidProbesEnabled=false` 时，服务端拒绝整个**付费运行**
+  （`POST …/batch-test` 返回 409 `validation_error`，文案指明去哪个设置页开启），而不是
+  把 12 个完全健康的源逐个标成"预算耗尽"——那会让人去查错的设置项。§表第 3 条只处理
+  **计数器**（`remainingToday<=0`、`maxPerRun<=0`）。
+- **预算只拦"有可用凭据"的源。** 一条 Key 都没有的源一分钱也花不了，它应该报
+  `SKIPPED_NO_KEY`（具体原因），而不是 `SKIPPED_BUDGET`（笼统原因）。
+- `kind=connect` 时只看冷却，不看付费额度；免 Key 来源在任何 Key 状态下都不因 Key 被拦。
+
+### 统计口径
+
+- `total` = 范围内来源总数，**包含**被跳过的源（否则 UI 无法显示"跳过 8"）。
+- `skipped` = 命中第 1/3/5/6/7 条的来源，**不进分母、不计失败**。
+- `testable` = `total - skipped`，**含** `CONFIG_ERROR`（它在预检阶段即判失败，但确实被检测过）。
+- `done` = `ok + failed + pending`；`pending` 就是 `empty_results`。
+- 成功率 = `ok / testable`。
+- 恒等式（进测试）：`done + skipped + remaining === total` 且 `ok + failed + pending === done`。
+- 预检的 7 个计数之和 **等于** `total`：冷却与预算耗尽共用 `coolingSkipped` 一列，
+  逐条 `code` 仍然区分两者。
+
+### 错误分类（对外 12 个规范名）
+
+存储层沿用既有 `HealthCause`，对外经一张固定映射表转换，**不新增枚举值**：
+
+| 对外 | 存储 `cause` | 算失败 |
+|---|---|---|
+| `auth_invalid` | 同名 | 是 |
+| `forbidden` | 同名 | 是 |
+| `rate_limited` | 同名 | 是 |
+| `quota_exceeded` | 同名 | 是 |
+| `timeout` | 同名 | 是 |
+| `dns_error` | `dns` | 是 |
+| `tls_error` | `tls` | 是 |
+| `network_error` | `network` | 是 |
+| `invalid_response` | `bad_response` | 是 |
+| `empty_results` | 同名 | 待确认（计入已完成，不进分子） |
+| `configuration_error` | `config_incomplete` | 是 |
+| `server_error` | 同名 | 是 |
+| `cancelled` | 同名 | 否（不写健康行） |
+| `no_credential` | 同名 | 否（`unverified`） |
+
+`forbidden | rate_limited | quota_exceeded` 在 UI 里归为「**受限**」一组：它们都"没成功"，
+但重试不会变好（限流重试只会再失败一次并再花一次请求）。「只重测失败项」**不含**受限，
+也不含待确认（`empty_results` 已有独立按钮）。
+
+### 取消与 `interrupted` 的语义
+
+- **取消**只写 `status='cancelled'` 并 abort 任务级 `AbortSignal`，**不等待 runner 收尾**。
+  已完成的条目保持不可变（结论仍可读）；未开始的条目由 worker 在出队前记
+  `SKIPPED_CANCELLED`；在途条目被 abort 后同样记 `SKIPPED_CANCELLED`，**不写健康行、
+  不退款**（取消可能发生在请求已经发出之后，这一点无法区分）。
+- **取消的 abort reason 带 `code:"cancelled"`**，否则 `classifyError` 的 `/aborted/i`
+  兜底会把它判成 `timeout` 并给源写一条降级记录——这是最容易踩的坑，runner 侧另有一道
+  `detached.cancelled()` 兜底。
+- **`interrupted`**：进程被 kill 时，行仍是 `running`。**下次启动**由
+  `ProviderBatchService` 构造函数执行一条幂等 `UPDATE … WHERE status='running'`，把它改成
+  `interrupted` 并补写 `finished_at`。第二次执行匹配 0 行。因此重启后**永远不会**读成
+  `completed`。
+- 只有 `remaining>0` 的异常收尾才写 `partial`，UI 不依赖它表达"部分完成"——部分完成由
+  `done + skipped < total` 判定。
+
+### 上游请求数从哪来
+
+`checkOne` 在探测前包一层 `countedFetch`，从 `SafeFetchInit.onRequest`（**每个物理请求
+含重定向**都会触发）累加计数，写进 `detail_json.requests` 与返回体。没发请求（无凭据、
+提前失败）时为 `null`，UI 显示 `—`；**禁止**用 `ceil(limit/pageSize)` 或计划页数推算。
 
 ## 七、重置的语义
 
@@ -182,10 +274,19 @@ runtime                     = healthy        # 上一次探测确实成功了
 
 | 表 | 用途 | 迁移 |
 |---|---|---|
-| `provider_health_checks` | 追加式探测日志（历史） | 0003 |
+| `provider_health_checks` | 追加式探测日志（历史）；`batch_id` 指向产生它的批量任务 | 0003 / 0008 |
 | `provider_probe_state` | 每源排期：自动开关、连续失败、退避级别、下次探测时间、重置标记 | 0005 |
 | `health_probe_budget` | 每日每类探测的持久计数 | 0005 |
+| `provider_test_batches` | 批量检测**任务台账**：进度、逐源状态、起始预算快照 | 0008 |
 
-迁移 `0005` **只建新表**，不改任何既有表与数据。升级兼容性由
-`tests/unit/cache-migration.test.ts` 用真实 SQLite 文件验证：先按旧迁移集建库并写入
+**`provider_test_batches` 不是第二套健康表。** 健康事实只有 `provider_health_checks`
+一个来源；任务台账只回答"这次跑到哪了"。删除一条台账不会改写任何健康历史。
+
+`requests` 存放在 `provider_health_checks.detail_json`（`{"requests": n}`），
+没有新增主表列——避免为了一个观测字段再动一次主表。
+
+迁移 `0005` **只建新表**，不改任何既有表与数据。迁移 `0008` 只做两件事：给
+`provider_health_checks` 加可空 `batch_id`（历史行为 `NULL`，无需回填）并新建台账表。
+升级兼容性由 `tests/unit/cache-migration.test.ts`、`tests/unit/quality-migration.test.ts`
+与 `tests/unit/batch-migration.test.ts` 用真实 SQLite 文件验证：先按旧迁移集建库并写入
 管理员、Provider、Key、探测记录与设置，再跑完整迁移，断言逐项不变。

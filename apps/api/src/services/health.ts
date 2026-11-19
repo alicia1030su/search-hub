@@ -1055,6 +1055,10 @@ export class HealthService {
         // Rows written before migration 0008 have no count: `null` ("not measured"),
         // never `0`.
         requests: toRequestCount((detail as { requests?: unknown }).requests),
+        // The captured sample, capped at three. It is displayed as plain text and
+        // is the only place a result title reaches the UI, so the cap is applied
+        // here rather than trusting the reader.
+        sample: toSamples((detail as { sample?: unknown }).sample),
       };
     });
   }
@@ -1376,6 +1380,28 @@ function composeAbort(
  */
 function toRequestCount(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Reads the stored sample, filtered and capped at three.
+ *
+ * The UI renders these as plain text, so this is the last place that can hand a
+ * malformed row to it: a non-string title, a missing URL or a `javascript:` URL
+ * must never reach the browser as if a vendor had supplied something valid.
+ */
+function toSamples(value: unknown): Array<{ title: string; url: string }> {
+  if (!Array.isArray(value)) return [];
+  const out: Array<{ title: string; url: string }> = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const title = (entry as { title?: unknown }).title;
+    const url = (entry as { url?: unknown }).url;
+    if (typeof title !== "string" || typeof url !== "string") continue;
+    if (!/^https?:\/\//i.test(url)) continue;
+    out.push({ title: title.slice(0, 300), url: url.slice(0, 800) });
+    if (out.length === 3) break;
+  }
+  return out;
 }
 
 function safeJson(value: string | null): Record<string, unknown> {
