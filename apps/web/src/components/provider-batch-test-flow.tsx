@@ -7,7 +7,8 @@ import { Alert, Button } from "./ui";
 import { Dialog, Sheet } from "./overlay";
 import { ProviderBatchTestDialog as BatchPreviewStep } from "./provider-batch-test-dialog";
 import { ProviderBatchTestProgress } from "./provider-batch-test-progress";
-import { ProviderBatchTestResults, failedIds, pendingIds } from "./provider-batch-test-results";
+import { ProviderBatchTestResults } from "./provider-batch-test-results";
+import { failedIds, pendingIds } from "../lib/batch-classify";
 import { ProviderBatchTestDetail } from "./provider-batch-test-detail";
 
 type Step = "preview" | "progress" | "results";

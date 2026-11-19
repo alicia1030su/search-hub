@@ -1,119 +1,28 @@
 import { useMemo, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { t } from "../lib/i18n";
-import type { BatchItem, BatchJobView, BatchState } from "../lib/types";
+import {
+  failedIds,
+  groupOf,
+  pendingIds,
+  requestsLabel,
+  sortItems,
+  type BatchFilter,
+} from "../lib/batch-classify";
+import { codeLabel, STATE_TONE, stateLabel } from "../lib/batch-labels";
+import type { BatchItem, BatchJobView } from "../lib/types";
 import { Badge, Button, EmptyState } from "../components/ui";
 import { Table, TBody, TD, TH, THead, TR } from "../components/table";
 
 /**
- * Grouping, and the one place it is defined.
+ * The result table.
  *
- * `restricted` is a *subset* of "did not work", but it is not a failure the
- * operator can act on by retrying: the vendor is throttling or refusing. Keeping
- * it in its own group is what makes "retry the failures" a useful button instead
- * of a loop that fails again immediately.
- *
- *   failed     = state "failed" and code not in RESTRICTED_CODES
- *   restricted = state "failed" and code in RESTRICTED_CODES
- *   pending    = state "pending"  (200 OK, zero rows)
- *   ok         = state "ok"
- *   skipped    = state "skipped"
- *   unknown    = state "unknown"  (only while running, or after an interruption)
+ * Columns are the six facts an operator actually uses to decide what to fix:
+ * which source, what happened, which classification, how slow, how many rows,
+ * how many requests. Sorting and grouping come from `lib/batch-classify`, so the
+ * table, the drawer and the retry buttons cannot disagree about what "failed"
+ * means.
  */
-const RESTRICTED_CODES = new Set(["forbidden", "rate_limited", "quota_exceeded"]);
-
-export type BatchGroup = "failed" | "restricted" | "pending" | "ok" | "skipped" | "unknown";
-export type BatchFilter = "all" | BatchGroup;
-
-/** Severity order of the table. Lower sorts first. */
-const GROUP_ORDER: Record<BatchGroup, number> = {
-  failed: 0,
-  restricted: 1,
-  pending: 2,
-  ok: 3,
-  skipped: 4,
-  unknown: 5,
-};
-
-export function groupOf(item: BatchItem): BatchGroup {
-  switch (item.state) {
-    case "failed":
-      return RESTRICTED_CODES.has(item.code) ? "restricted" : "failed";
-    case "pending":
-      return "pending";
-    case "ok":
-      return "ok";
-    case "skipped":
-      return "skipped";
-    case "unknown":
-      return "unknown";
-  }
-}
-
-/** Items that the "retry failures" button submits: failures only, not restrictions. */
-export function failedIds(job: BatchJobView): string[] {
-  return job.items.filter((item) => groupOf(item) === "failed").map((item) => item.providerId);
-}
-
-/** Items that the "retry pending" button submits. */
-export function pendingIds(job: BatchJobView): string[] {
-  return job.items.filter((item) => groupOf(item) === "pending").map((item) => item.providerId);
-}
-
-/**
- * Sorts by severity, then slowest first inside a group.
- *
- * The severity order is fixed rather than derived from the filter: the table
- * must not reorder itself when the operator narrows the view, because a row's
- * position is part of what makes the list scannable.
- */
-export function sortItems(items: BatchItem[]): BatchItem[] {
-  return [...items].sort((left, right) => {
-    const byGroup = GROUP_ORDER[groupOf(left)] - GROUP_ORDER[groupOf(right)];
-    if (byGroup !== 0) return byGroup;
-    // Slowest first; a missing latency (never measured) sorts last, never as 0.
-    const leftLatency = left.latencyMs ?? Number.NEGATIVE_INFINITY;
-    const rightLatency = right.latencyMs ?? Number.NEGATIVE_INFINITY;
-    if (leftLatency !== rightLatency) return rightLatency - leftLatency;
-    return left.providerName.localeCompare(right.providerName);
-  });
-}
-
-const stateTone: Record<BatchState, "success" | "destructive" | "warning" | "muted" | "info"> = {
-  ok: "success",
-  failed: "destructive",
-  pending: "warning",
-  skipped: "muted",
-  unknown: "info",
-};
-
-export function stateLabel(item: BatchItem): string {
-  const group = groupOf(item);
-  if (group === "restricted") return t("providers.batch.state.restricted");
-  return t(`providers.batch.state.${item.state}` as never);
-}
-
-/** Human label for an item's code, falling back to the raw code. */
-export function codeLabel(code: string): string {
-  const key = `providers.batch.code.${code}`;
-  const label = t(key as never);
-  // `t()` returns the key itself when it is missing, which would print
-  // "providers.batch.code.…" into the table.
-  return label === key ? code : label;
-}
-
-/** The actionable sentence for a classification, or an empty string. */
-export function codeAdvice(code: string): string {
-  const key = `providers.batch.code.${code}.advice`;
-  const advice = t(key as never);
-  return advice === key ? "" : advice;
-}
-
-/** `—` when the probe never issued a request. Never an estimate. */
-export function requestsLabel(requests: number | null): string {
-  return requests === null ? "—" : String(requests);
-}
-
 export function ProviderBatchTestResults({
   job,
   onOpenDetail,
@@ -136,7 +45,6 @@ export function ProviderBatchTestResults({
   );
   const failures = failedIds(job);
   const pending = pendingIds(job);
-
   const filters: BatchFilter[] = ["all", "failed", "restricted", "pending", "ok", "skipped", "unknown"];
 
   return (
@@ -151,7 +59,7 @@ export function ProviderBatchTestResults({
               data-testid={`batch-filter-${option}`}
               onClick={() => setFilter(option)}
             >
-              {t(`providers.batch.filter.${option}` as never)}
+              {t(`providers.batch.filter.${option}` as const)}
             </Button>
           ))}
         </div>
@@ -210,7 +118,7 @@ export function ProviderBatchTestResults({
                   <TD>
                     <button
                       type="button"
-                      className="truncate text-left font-medium underline-offset-2 hover:underline"
+                      className="max-w-[16rem] truncate text-left font-medium underline-offset-2 hover:underline"
                       onClick={() => onOpenDetail(item)}
                       data-testid={`batch-detail-${item.providerId}`}
                     >
@@ -219,7 +127,7 @@ export function ProviderBatchTestResults({
                   </TD>
                   <TD>
                     <span data-testid={`batch-state-${item.providerId}`}>
-                      <Badge tone={stateTone[item.state]}>{stateLabel(item)}</Badge>
+                      <Badge tone={STATE_TONE[item.state]}>{stateLabel(item)}</Badge>
                     </span>
                   </TD>
                   <TD className="text-xs text-muted-foreground">{codeLabel(item.code)}</TD>
@@ -229,13 +137,16 @@ export function ProviderBatchTestResults({
                   <TD className="text-right text-xs tabular-nums">
                     {item.resultCount === null ? "—" : item.resultCount}
                   </TD>
-                  <TD className="text-right text-xs tabular-nums" title={item.requests === null ? t("providers.batch.requestsUnknownHint") : undefined}>
+                  <TD
+                    className="text-right text-xs tabular-nums"
+                    title={item.requests === null ? t("providers.batch.requestsUnknownHint") : undefined}
+                  >
                     <span data-testid={`batch-requests-${item.providerId}`}>{requestsLabel(item.requests)}</span>
                   </TD>
                   <TD className="text-right">
                     <button
                       type="button"
-                      className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      className="whitespace-nowrap text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                       onClick={() => onOpenDetail(item)}
                     >
                       {t("providers.batch.detail.title")}

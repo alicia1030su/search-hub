@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { api, toApiError } from "../lib/api";
 import { t } from "../lib/i18n";
 import { formatDateTime } from "../lib/format";
+import { groupOf, redactKeyId, requestsLabel } from "../lib/batch-classify";
+import { codeAdvice, codeLabel, stateLabel } from "../lib/batch-labels";
 import type { BatchItem, HealthCheckResult } from "../lib/types";
 import { Badge, Button, DataRow, Skeleton } from "../components/ui";
-import { codeAdvice, codeLabel, groupOf, requestsLabel, stateLabel } from "./provider-batch-test-results";
 
 /**
  * The per-source detail drawer.
@@ -187,18 +188,4 @@ export function ProviderBatchTestDetail({
       </div>
     </div>
   );
-}
-
-/**
- * Renders `key_ab…9f` from a key **identifier**.
- *
- * The full id is not a secret, but a hint in the UI is only useful as a
- * disambiguator, so the middle is elided. Nothing here can reach the key
- * material: the server never sends it.
- */
-export function redactKeyId(keyId: string | null): string {
-  if (!keyId) return "—";
-  const trimmed = keyId.trim();
-  if (trimmed.length <= 8) return trimmed;
-  return `${trimmed.slice(0, 6)}…${trimmed.slice(-2)}`;
 }
