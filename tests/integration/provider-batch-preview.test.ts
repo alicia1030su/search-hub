@@ -391,6 +391,19 @@ describe("batch test preview", () => {
     });
     // A trailing comma must not become an empty provider id.
     expect(both.json().total).toBe(1);
+
+    // An explicit empty selection is a defect, not "all of them": starting a run
+    // on a scope the operator did not choose would spend their quota.
+    const empty = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/provider-health/batch-test",
+      ...harness.write(),
+      payload: { kind: "connect", providerIds: [] },
+    });
+    expect(empty.statusCode, empty.body).toBe(400);
+    expect(empty.json().error.code).toBe("validation_error");
+    expect(empty.json().error.message).toContain("nothing to test");
+    expect(rowCount(harness.ctx, "provider_test_batches")).toBe(0);
   });
 
   /** The preview is admin-only: source inventory is not search-scope data. */

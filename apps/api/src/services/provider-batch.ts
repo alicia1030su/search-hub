@@ -300,16 +300,20 @@ export class ProviderBatchService {
   /**
    * The provider ids a request covers.
    *
-   * Omitting `providerIds` means **every configured source**, including disabled
+   * `null`/`undefined` means **every configured source**, including disabled
    * ones, because that is the set the preview just described: the UI shows
    * "20 sources, 3 disabled, 8 skipped" and then starts a run whose `total` must
    * be the same 20. Scoping the run to enabled sources would make the numbers the
    * operator confirmed silently wrong.
+   *
+   * An explicit array — even an empty one — is taken literally. "Nothing
+   * selected" must not quietly become "all of them": that reading would spend
+   * the operator's quota on a scope they did not choose.
    */
   private resolveScope(providerIds: string[] | null | undefined): string[] {
-    if (providerIds && providerIds.length > 0) {
-      // Deduplicate: the same id twice would probe one source twice and count it
-      // twice in the totals.
+    if (providerIds) {
+      // Deduplicate: the same id twice would report one source twice in the
+      // totals and make the progress identities unreachable.
       return [...new Set(providerIds)];
     }
     return this.db
@@ -398,6 +402,16 @@ export class ProviderBatchService {
   }): Promise<BatchJobView> {
     const kind = input.kind ?? "search";
     const ids = this.resolveScope(input.providerIds);
+    if (ids.length === 0) {
+      // An empty selection is a request defect, not an empty run: a job with
+      // nothing in it would poll "0/0" forever and mean nothing.
+      throw new SearchHubError(
+        "validation_error",
+        input.providerIds
+          ? "No providers were selected, so there is nothing to test."
+          : "No providers are configured, so there is nothing to test.",
+      );
+    }
     const policy = this.healthPolicy();
     const budget = this.ctx.health.budget();
     const facts = loadEligibilityFacts(this.db, this.ctx.providers, ids);
