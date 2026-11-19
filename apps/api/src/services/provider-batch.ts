@@ -35,6 +35,21 @@ import {
   type PreviewCounts,
 } from "./provider-eligibility.js";
 
+/**
+ * Refuses a read or cancel on a job that belongs to a different account.
+ *
+ * Same rule the evaluation lab applies to `cancelRun` (quality.ts:1375): one
+ * actor cannot stop, or inspect, another actor's work. A job with no recorded
+ * owner predates this rule and is left readable rather than becoming
+ * unreachable — refusing it would strand a run nobody could ever finish.
+ */
+function assertOwnedBy(row: { createdBy: string | null }, actor: string | undefined): void {
+  if (actor === undefined) return;
+  if (row.createdBy === null) return;
+  if (row.createdBy === actor) return;
+  throw new SearchHubError("forbidden", "This test job belongs to another account");
+}
+
 export type BatchState = "ok" | "failed" | "pending" | "skipped" | "unknown";
 export type BatchStatus = "running" | "completed" | "partial" | "cancelled" | "interrupted";
 
@@ -526,14 +541,22 @@ export class ProviderBatchService {
     return this.getJob(jobId);
   }
 
-  /** Reads one run. Never consults memory, so a restart cannot change the answer. */
-  getJob(jobId: string): BatchJobView {
+  /**
+   * Reads one run. Never consults memory, so a restart cannot change the answer.
+   *
+   * `actor` is optional for internal callers (the runner reads its own row by
+   * id). The HTTP layer always passes it: a job spends vendor quota on behalf of
+   * the account that started it, so reading another account's job would expose
+   * which vendors they configured and what those vendors answered.
+   */
+  getJob(jobId: string, actor?: string): BatchJobView {
     const row = this.db
       .select()
       .from(providerTestBatches)
       .where(eq(providerTestBatches.id, jobId))
       .get();
     if (!row) throw new SearchHubError("not_found", "Provider test job not found");
+    assertOwnedBy(row, actor);
 
     const items = parseItems(row.itemsJson);
     const counts = countItems(items);
@@ -562,13 +585,14 @@ export class ProviderBatchService {
    * what the runner will account for as `SKIPPED_CANCELLED`; finished items are
    * never touched, so their conclusions stay readable (T13).
    */
-  cancelBatch(jobId: string): { jobId: string; status: "cancelled"; skippedRemaining: number } {
+  cancelBatch(jobId: string, actor?: string): { jobId: string; status: "cancelled"; skippedRemaining: number } {
     const row = this.db
       .select()
       .from(providerTestBatches)
       .where(eq(providerTestBatches.id, jobId))
       .get();
     if (!row) throw new SearchHubError("not_found", "Provider test job not found");
+    assertOwnedBy(row, actor);
     if (row.status !== "running") {
       throw new SearchHubError(
         "conflict",

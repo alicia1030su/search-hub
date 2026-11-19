@@ -304,8 +304,9 @@ export function registerProviderHealthRoutes(app: FastifyInstance, ctx: AppConte
     "/api/admin/provider-health/batch-test/:jobId",
     jsonFor(app, async (request) => {
       adminOf(ctx, request);
+      const actor = adminOf(ctx, request);
       const { jobId } = request.params as { jobId: string };
-      return ctx.batch.getJob(jobId);
+      return ctx.batch.getJob(jobId, actorLabel(actor));
     }),
   );
 
@@ -321,7 +322,7 @@ export function registerProviderHealthRoutes(app: FastifyInstance, ctx: AppConte
     jsonFor(app, async (request) => {
       const actor = adminOf(ctx, request, true);
       const { jobId } = request.params as { jobId: string };
-      const result = ctx.batch.cancelBatch(jobId);
+      const result = ctx.batch.cancelBatch(jobId, actorLabel(actor));
       audit(ctx, actor, "provider_health.batch_cancel", jobId, result, request.ip);
       return result;
     }),
