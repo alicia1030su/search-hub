@@ -196,10 +196,45 @@ export function ProviderBatchTestFlow({
           </div>
         ) : view ? (
           <div className="space-y-3">
+            {/*
+              The run's own verdict, above the table. A cancelled or interrupted
+              run must be described as *partially* complete here: the table alone
+              cannot say whether the rows are everything that was asked for.
+            */}
+            <div className="flex flex-wrap items-center gap-2" data-testid="batch-result-status">
+              <p className="text-sm font-medium">
+                {view.status === "completed"
+                  ? t("providers.batch.progress.completed")
+                  : view.status === "running"
+                    ? t("providers.batch.progress.running")
+                    : t("providers.batch.progress.partial", {
+                        done: view.counts.done + view.counts.skipped,
+                        total: view.counts.total,
+                      })}
+              </p>
+              <p className="text-xs text-muted-foreground" data-testid="batch-result-counts">
+                {t("providers.batch.progress.counts", {
+                  ok: view.counts.ok,
+                  failed: view.counts.failed,
+                  pending: view.counts.pending,
+                  skipped: view.counts.skipped,
+                })}
+              </p>
+            </div>
             {view.status === "interrupted" ? (
               <Alert tone="warning" title={t("providers.batch.progress.interrupted")} />
             ) : null}
-            {error ? <Alert tone="error" title={t("providers.batch.runFailed")}>{error}</Alert> : null}
+            {view.status === "cancelled" ? (
+              <Alert
+                tone="warning"
+                title={t("providers.batch.progress.cancelled", { count: view.counts.remaining })}
+              />
+            ) : null}
+            {error ? (
+              <Alert tone="error" title={t("providers.batch.runFailed")}>
+                {error}
+              </Alert>
+            ) : null}
             <ProviderBatchTestResults
               job={view}
               retrying={retrying}

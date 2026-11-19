@@ -366,6 +366,10 @@ export function ProvidersPage() {
             key={key}
             type="button"
             onClick={() => setTab(key)}
+            // A stable handle for tests and for anything that needs to target a
+            // tab: the visible label carries a count suffix, so the accessible
+            // name is not constant.
+            data-testid={`providers-tab-${key}`}
             className={
               "rounded-md px-3 py-1.5 text-sm transition-colors " +
               (tab === key
