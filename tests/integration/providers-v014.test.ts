@@ -166,6 +166,17 @@ describe("v0.1.4 provider catalog is actually creatable", () => {
   });
 
   it("a failed test does not store the credential plaintext in the response", async () => {
+    // v0.1.10 tightened this endpoint: it now runs the *search* probe (the
+    // production path) instead of a hand-built single request, so it is subject
+    // to the paid-probe switch. Enable it, otherwise the endpoint refuses
+    // before reaching the vendor and this case would assert nothing.
+    await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload: { health: { paidProbesEnabled: true, maxRequestsPerRun: 5, maxRequestsPerDay: 20 } },
+    });
     const list = await app.inject({
       method: "GET",
       url: "/api/admin/providers",

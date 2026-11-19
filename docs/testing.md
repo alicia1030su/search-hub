@@ -18,9 +18,82 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (876 tests, 60 files)
+## What is covered (1018 tests, 75 files)
 
-**Malformed request mapping** — `tests/integration/http-error-mapping.test.ts` (5 cases)
+### v0.1.10 bulk provider test (T01–T30)
+
+Every one of the 30 acceptance cases maps to one file and one executable
+assertion. Nothing is stubbed at the HTTP layer: a "probe" either reaches a
+`http.createServer` on 127.0.0.1 or is injected through `app.inject` against a
+real SQLite database. **No real vendor is contacted.**
+
+| T | File | Case name | Key assertion |
+|---|---|---|---|
+| T01 | `tests/integration/provider-single-test.test.ts` | `T01 only HealthService.checkOne builds a probe config` | exactly one `provider_health_checks` row after `:id/test`; `rg "adapter.search\(" apps/api/src/routes` = 0 hits (scanned in the test) |
+| T02 | same | `T02 a paginated source test issues more than one upstream request` | Brave stub + `searchConfig{targetResults:50,maxPages:3}`: `stub.hits() >= 2`, `body.requests >= 2`, `detail_json.requests >= 2` |
+| T03 | same | `T03 single test equals checkOne for the same source` | `:id/test` and `checkOne` agree on `resultCount`, `cause` and request count |
+| T04 | same | `T04 keeps the legacy fields, adds the conclusion fields and leaks no key` | 5 legacy fields keep their types; 7 new fields present; no plaintext, no ciphertext in the body |
+| T05 | `tests/integration/provider-batch-preview.test.ts` | `T05 reports 12 testable / 5 without key / 3 disabled for 20 sources` | `eligible=12`, `noKey=3`, `noEnabledKey=2`, `disabled=3`; `paidRisk` flips with the switch |
+| T06 | same | `T06 connect preview ignores the paid budget and never claims paid risk` | `kind=connect` → `paidRisk=false`, `estimatedPaidProbes=0`, `coolingSkipped=0` |
+| T07 | same | `T07 paid probes disabled blocks a search run with 409` / `T07 an exhausted daily budget blocks a paid run before anything is spent` | 409 `validation_error`; no job row, no health row written |
+| T08 | same | `T08 a preview writes neither health rows nor job rows` | row counts identical before/after both kinds |
+| T09 | same + `tests/unit/provider-eligibility.test.ts` | `T09 the seven counters sum to total for a mixed scope` / `counts sum to total, whatever the mix of reasons` | 7 buckets sum to `total`, including cooldown + keyless-policy |
+| T10 | `tests/integration/provider-batch-run.test.ts` | `T10 create returns a jobId, running status and the concurrency in use` | 201, `status=running`, DB row matches, `nextPollAfterMs=1000` |
+| T11 | same | `T11 finished items are readable while the run is still running` | `status=running` **and** a row with `state=ok` + `checkId`, whose health row has `batch_id` |
+| T12 | same | `T12 counts are monotonic and never exceed the total` | 5 polls: `done` never decreases, `done+skipped<=total` |
+| T13 | same | `T13 cancel keeps finished items readable and marks the rest cancelled` | `status=cancelled`; finished rows keep the same `checkId`; remainder `SKIPPED_CANCELLED` with `checkId=null` |
+| T14 | same | `T14 a restart marks the run interrupted and never completed` | second `createContext` on the same `dbPath` → `interrupted`, `!== completed`, `remaining>0` |
+| T15 | same | `T15 the startup sweep is idempotent` | first sweep returns 1, second returns **0**, `finished_at` unchanged |
+| T16 | same | `T16 in-flight probes never exceed the configured concurrency` | stub concurrency peak ≤ 2 at `concurrency=2`, ≤ 4 at `concurrency=4` |
+| T17 | same | `T17 rejects concurrency above 4 and accepts exactly 4` | `5` → 400 `validation_error` and no row; `4` → 201 |
+| T18 | same | `T18 a second job records the shared source as already_running` | second job's item `already_running`, `checkId=null`, stub hits unchanged, total hits = 1 |
+| T19 | same | `T19 budget exhaustion skips the remainder with budget_exhausted` | remainder `SKIPPED_BUDGET` with `budget_exhausted` in `reason`; ledger not overspent |
+| T20 | same + unit | `T20 the denominator is the testable count, not the scope` / `success-rate denominator` | `testable = total - skipped`; a `CONFIG_ERROR` counts, a skip does not |
+| T21 | `tests/integration/provider-batch-run.test.ts` | `T21 a 200 with zero results becomes pending, not ok and not failed` | `state=pending`, `code=empty_results`, `ok`/`failed` unchanged, `done` +1, stored status still `degraded` |
+| T22 | same | `T22 an undecryptable credential fails as configuration_error without leaking` | `failed` +1, `code=configuration_error`, `checkId=null`, stub hits 0, no ciphertext/plaintext/iv in the response or `items_json` |
+| T23 | same | `T23 an invalid response body is a failed item, not an empty one` | 200 + `{"unexpected":true}` → `state=failed`, `code=invalid_response`, stored `cause=bad_response` |
+| T24 | same | `T24 a running job satisfies the progress identities and is not completed` | `done+skipped+remaining===total`, `ok+failed+pending===done`, `status!=="completed"` |
+| T25 | `tests/e2e/provider-batch.spec.ts` | `T25 预检框显示 6 行计数与预算，付费提示按 kind 出现` | six count rows + budget visible; `paidRisk` absent for `connect`, present for `search` once the switch is on |
+| T26 | same | `T26 确认→进度可见→取消→结果表仍保留已完成行` | progress visible → cancel → results table keeps `data-state="ok"` rows; label is "partially complete" |
+| T27 | same | `T27 结果表按失败→受限→待确认→成功→跳过排序` | five distinct `data-state` values in non-decreasing severity order |
+| T28 | same | `T28 只重测失败项时请求体恰好是失败集合` | intercepted POST body `providerIds` equals the failure set exactly — no throttled, no ok |
+| T29 | same | `T29 抽屉显示脱敏 Key 标签、样例不超过 3 条、requests 缺失显示 —` | `key_ab…9f` shape, ≤ 3 samples, `requests` renders `—`, no key material anywhere |
+| T30 | same + `tests/unit/i18n-parity.test.ts` + `tests/unit/provider-batch-view.test.ts` | `T30 英文界面下批量体检文案无硬编码中文` / parity / message coverage | `zh`/`en` key sets equal, no CJK in the dialog in English, every classification has a label and an advice sentence in both locales |
+| T31 | `tests/e2e/provider-batch.spec.ts` | `T31 页面顶部「全部测试」打开同一个预检框` | the page-header entry opens the **same** pre-flight dialog (same count rows, same scope line); closing it leaves no dialog behind |
+| T32 | same | `T32 刷新后提示条出现并能打开上次检测结果` | a real run → reload → the notice describes the server's status → opening it shows the result table from the *same* job id |
+| T33 | same | `T33 任务不存在时静默清除，不显示提示条也不报错` | a pointer to a job the server does not have produces no notice, no error alert, and is dropped from `localStorage` |
+| T34 | same | `T34 结果表 8 列，1600×1000 下操作列完整可见且无横向溢出` | exactly eight `<th>`; no `batch-requests-*` cell; `scrollWidth <= clientWidth`; both row actions inside the dialog box; a row retest opens the single-source dialog and leaves the batch row untouched |
+| T35 | `tests/e2e/provider-single-test.spec.ts` | `T35 单源测试通过：结论、结果数、测试时间与脱敏 Key，页面无 Key 明文` | pass path through the row button: `返回结果=3`, `requests=—` for a mock, `checkedAt` present, no plaintext key, health overview `healthy` after reload |
+| T36 | same | `T36 单源测试的上游请求数是真实测量，并写回健康概览` | a loopback HN stub: `requests` equals what the stub's socket counted, results = stub's rows, health flips to `healthy` |
+| T37 | same | `T37 单源测试失败：显示鉴权分类与建议，而不是笼统失败` | a real 401 from a loopback stub → "测试失败" + `Key 无效或已过期` + advice; health shows `invalid_credentials` |
+| T39 | `tests/e2e/provider-batch-regression.spec.ts` | `T39 连点「开始检测」只创建一个任务，请求飞行中按钮禁用` | one POST while the button is disabled; one job id polled; rows = scope size exactly once; counts describe three successes, not six |
+| T40 | same | `T40 混合五类来源：八列表格分组与计数一致、分类只在抽屉` | five groups present, `counts.failed` includes the restricted row, skips counted in neither, classification only in the drawer |
+| T41 | same | `T41 无 Key 来源：预检可见、开始仍可点，结果记为跳过而不是失败` | `count-nokey > 0`, the start button still enabled while other sources are testable, those rows end `skipped` |
+| T42 | same | `T42 免 Key 开关：关闭后免 Key 来源跳过而不是失败，请求数只在抽屉` | with the toggle off, keyless rows are `skipped`; the table has no `batch-requests-*` cell |
+| T43 | same | `T43 取消后「只重测失败项」不包含被取消的来源` | the retry body excludes cancelled ids (it is the `failedIds` set) |
+| T44 | same | `T44 刷新恢复遇他人任务（403）：不显示提示条、不报错、指针被清除` | a 403 for the remembered job yields no notice, no alert, no dialog, and clears the pointer; cross-account 403 itself is covered by `provider-batch-owner.test.ts` |
+| T45 | `tests/integration/provider-batch-preview.test.ts` | `T45 a keyless source is skipped by policy when includeUnverified is off, and probed when it is on` | the policy is read by preview **and** runner; counters still partition `total`; a policy skip writes no health row |
+
+The E2E suite seeds only the built-in `mock` adapter and one `http.createServer`
+Brave-shaped stub on 127.0.0.1; `paidProbesEnabled` is switched on for the
+`paidRisk` case, which is safe precisely because no vendor is reachable.
+
+**Bulk test data path** — `tests/unit/batch-migration.test.ts` (4 cases):
+migration `0008` keeps v0.1.9 health rows with `batch_id NULL`, creates the
+ledger with the defaults the runner relies on, adds both indexes, and applies
+twice without error.
+
+**Eligibility decisions** — `tests/unit/provider-eligibility.test.ts` (11 cases):
+the 20/12/5/3 scenario against real rows, the counter partition, decision order
+(disabled outranks a missing adapter), a decrypt failure that counts without
+leaking, and the paid budget not applying to a keyless source.
+
+**Result-table classification** — `tests/unit/provider-batch-view.test.ts`
+(9 cases): restricted vs failed, severity ordering with `null` latency last, the
+retry-failure and retry-pending sets, `—` for a missing request count, key-id
+redaction, and message coverage for every code in both locales.
+
+## Malformed request mapping — `tests/integration/http-error-mapping.test.ts` (5 cases)
 
 Fastify rejects some requests before a handler runs. Those errors carry a 4xx
 `statusCode`, and the global handler used to fold everything that was not a

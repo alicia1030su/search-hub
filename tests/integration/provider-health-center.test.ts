@@ -772,7 +772,14 @@ describe("provider health centre", () => {
     await setHealthPolicy(harness, { scheduledEnabled: true, intervalMinutes: 5 });
 
     harness.ctx.health.startScheduler(10);
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Wait for the first pass to *produce evidence* rather than for a fixed 60
+    // ms. On a loaded CI runner the first tick can land after that window, and
+    // the assertion below would then fail for a scheduling delay that is not a
+    // defect. The deadline is the only timing assumption here.
+    const firstPassDeadline = Date.now() + 5_000;
+    while (probeRows(harness).length === 0 && Date.now() < firstPassDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     harness.ctx.health.stopScheduler();
     const afterStop = probeRows(harness).length;
     expect(afterStop).toBeGreaterThan(0);

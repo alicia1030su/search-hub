@@ -31,6 +31,9 @@ import type {
   HealthOverview,
   HealthCheckResult,
   ProviderHealthPolicy,
+  BatchJobView,
+  BatchPreview,
+  BatchStartResponse,
   McpStatus,
   McpUpdateCheck,
   SkillSummary,
@@ -336,6 +339,33 @@ export const api = {
   resetProviderHealth: (providerId: string) =>
     request<{ providerId: string; resetAt: string }>(
       `/admin/provider-health/${seg(providerId)}/reset`,
+      { method: "POST", body: {} },
+    ),
+
+  // ---- bulk provider test (v0.1.10) ----
+  /**
+   * Pre-flight: what a run would do, without spending anything.
+   *
+   * A GET on purpose — opening and dismissing the confirmation dialog must never
+   * have a side effect, and it can be opened any number of times before the
+   * operator decides.
+   */
+  batchTestPreview: (params: { kind: "connect" | "search"; providerIds?: string[] }, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ kind: params.kind });
+    if (params.providerIds && params.providerIds.length > 0) {
+      // Comma-separated, matching the query schema; a repeated parameter would be
+      // read as a single string by the server.
+      query.set("providerIds", params.providerIds.join(","));
+    }
+    return request<BatchPreview>(`/admin/provider-health/batch-test/preview?${query.toString()}`, { signal });
+  },
+  startBatchTest: (body: { kind: "connect" | "search"; providerIds?: string[]; concurrency?: number }) =>
+    request<BatchStartResponse>("/admin/provider-health/batch-test", { method: "POST", body }),
+  batchTestJob: (jobId: string, signal?: AbortSignal) =>
+    request<BatchJobView>(`/admin/provider-health/batch-test/${seg(jobId)}`, { signal }),
+  cancelBatchTest: (jobId: string) =>
+    request<{ jobId: string; status: "cancelled"; skippedRemaining: number }>(
+      `/admin/provider-health/batch-test/${seg(jobId)}/cancel`,
       { method: "POST", body: {} },
     ),
 

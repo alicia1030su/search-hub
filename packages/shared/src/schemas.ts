@@ -269,6 +269,40 @@ export const healthSettingsPatchSchema = z.object({
   concurrency: z.number().int().min(1).max(4).optional(),
 });
 
+/**
+ * Bulk provider test: "test every source once".
+ *
+ * `concurrency` is capped at 4 for the same reason `health.concurrency` is: a
+ * bulk probe that fires at every vendor at once is a scan, not a health check.
+ * Omitting `providerIds` means "the whole scope" (the server decides whether
+ * that is all sources or only the enabled ones).
+ */
+export const batchTestCreateSchema = z.object({
+  kind: z.enum(["connect", "search"]).default("search"),
+  providerIds: z.array(z.string().min(1)).max(500).nullish(),
+  concurrency: z.number().int().min(1).max(4).optional(),
+});
+
+/**
+ * Query string form of a bulk-test preview.
+ *
+ * The browser sends `?providerIds=a,b` rather than a JSON body, so the list
+ * arrives as one comma-separated string and is split here. Empty segments are
+ * dropped: a trailing comma must not become a provider id of `""`.
+ */
+export const batchTestPreviewQuerySchema = z.object({
+  kind: z.enum(["connect", "search"]).default("search"),
+  providerIds: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .transform((value) => {
+      if (value === undefined) return undefined;
+      const parts = Array.isArray(value) ? value : value.split(",");
+      const ids = parts.map((item) => item.trim()).filter((item) => item.length > 0);
+      return ids.length > 0 ? ids : undefined;
+    }),
+});
+
 export const settingsUpdateSchema = z.object({
   defaults: z
     .object({

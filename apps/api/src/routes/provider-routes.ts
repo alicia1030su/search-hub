@@ -477,8 +477,11 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
     jsonFor(app, async (request) => {
       requireAdmin(actorOf(request, ctx, true));
       const { id } = request.params as { id: string };
-      const body = (request.body ?? {}) as { keyId?: string };
-      return testProvider(ctx, id, body.keyId);
+      const body = (request.body ?? {}) as { keyId?: string; kind?: string; trigger?: string };
+      return testProvider(ctx, id, {
+        ...(body.keyId === undefined ? {} : { keyId: body.keyId }),
+        ...(body.kind === "connect" || body.kind === "search" ? { kind: body.kind } : {}),
+      });
     }),
   );
 
@@ -585,7 +588,10 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
       const { keyId } = request.params as { keyId: string };
       const found = ctx.providers.findKeyById(keyId);
       if (!found) throw new SearchHubError("not_found", "API key not found");
-      const result = await testProvider(ctx, found.providerId, keyId);
+      // `kind: "connect"`: this button asks "is this credential accepted", which
+      // is a free question. Probing the paid search path here would bill the
+      // operator for a key-status check.
+      const result = await testProvider(ctx, found.providerId, { keyId, kind: "connect" });
       if (result.ok) {
         ctx.providers.markKeyHealthy(found.providerId, keyId);
         ctx.db
@@ -688,90 +694,63 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
   );
 }
 
+/**
+ * Tests one source by running the **same** probe the health system runs.
+ *
+ * There used to be a second implementation here that built its own
+ * `ProviderConfig` and invoked the adapter directly. It forgot to pass
+ * `search: resolveSearchConfig(...)`, so every paginated adapter took its
+ * `if (!search)` single-page fallback: the "test" issued one request, returned
+ * three rows, and disagreed with the scheduled probe about the same source.
+ * Two implementations of one question will always drift, so there is now one.
+ *
+ * The five legacy fields keep their names and types (`ok`, `latencyMs`,
+ * `resultCount`, `message`, `sample`); the conclusion fields are additive.
+ *
+ * `ok` is `cause === "ok"` and nothing else: an HTTP 200 with zero results is
+ * `empty_results`, which means "answered, but nothing came back" — calling that
+ * a success is how an empty index gets reported as a working source.
+ */
 async function testProvider(
   ctx: AppContext,
   providerId: string,
-  keyId?: string,
-): Promise<{ ok: boolean; latencyMs: number; resultCount?: number; message: string; sample?: Array<{ title: string; url: string }> }> {
-  const row = ctx.providers.getRow(providerId);
-  if (!row) throw new SearchHubError("not_found", "Provider not found");
-  const adapter = getAdapter(row.type);
-  if (!adapter) throw new SearchHubError("unsupported", `Provider type "${row.type}" is not implemented`);
+  options: { keyId?: string; kind?: "connect" | "search" } = {},
+): Promise<{
+  ok: boolean;
+  latencyMs: number;
+  resultCount?: number;
+  message: string;
+  sample?: Array<{ title: string; url: string }>;
+  status: string;
+  cause: string;
+  errorCode: string | null;
+  requests: number | null;
+  kind: string;
+  keyId: string | null;
+  checkedAt: string;
+}> {
+  const result = await ctx.health.checkOne(providerId, {
+    // A search probe is the production path; `kind` stays overridable so the
+    // key-test button can ask the cheaper "is this credential accepted" question.
+    kind: options.kind ?? "search",
+    trigger: "manual",
+    ...(options.keyId === undefined ? {} : { keyId: options.keyId }),
+  });
 
-  let apiKey: string | undefined;
-  if (keyId) {
-    const found = ctx.providers.findKeyById(keyId);
-    if (!found || found.providerId !== providerId) {
-      throw new SearchHubError("not_found", "API key does not belong to this provider");
-    }
-    apiKey = ctx.providers.resolveKey(keyId);
-    if (!apiKey) {
-      return { ok: false, latencyMs: 0, message: "API key could not be decrypted (master key changed?)" };
-    }
-  } else {
-    const keys = ctx.providers.listKeys(providerId).filter((key) => key.enabled);
-    if (keys.length > 0) {
-      apiKey = ctx.providers.resolveKey(keys[0]!.id);
-    }
-  }
-  if (adapter.requiresKey && !apiKey) {
-    return { ok: false, latencyMs: 0, message: "No API key available for this provider" };
-  }
-
-  const started = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("timeout")), Math.min(row.timeoutMs, 20_000));
-  try {
-    const result = await adapter.search(
-      { query: providerTestQuery(row.type), limit: 3, signal: controller.signal },
-      {
-        fetch: ctx.fetch,
-        ...(apiKey === undefined ? {} : { apiKey }),
-        config: {
-          id: row.id,
-          name: row.name,
-          type: row.type,
-          baseUrl: row.baseUrl,
-          timeoutMs: row.timeoutMs,
-          maxResults: row.resultsPerPage,
-          language: row.language,
-          freshness: row.freshness as never,
-          model: null,
-          maxRetries: row.maxRetries,
-          breakerThreshold: row.breakerThreshold,
-          breakerCooldownMs: row.breakerCooldownMs,
-          config: safeObject(row.configJson),
-        },
-        signal: controller.signal,
-        logger: ctx.appLogger,
-      },
-    );
-    const latencyMs = Date.now() - started;
-    const count = result.results.length;
-    return {
-      ok: count > 0,
-      latencyMs,
-      resultCount: count,
-      message:
-        count > 0
-          ? `Provider responded with ${count} result(s) in ${latencyMs}ms`
-          : "Provider responded but returned no results. Check the query or provider configuration.",
-      sample: result.results.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      latencyMs: Date.now() - started,
-      message: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function providerTestQuery(type: string): string {
-  if (type === "searxng") return "searxng";
-  return "search engine";
+  return {
+    ok: result.cause === "ok",
+    latencyMs: result.latencyMs ?? 0,
+    ...(result.resultCount === null ? {} : { resultCount: result.resultCount }),
+    message: result.message,
+    ...(result.sample ? { sample: result.sample.slice(0, 3) } : {}),
+    status: result.status,
+    cause: result.cause,
+    errorCode: result.errorCode,
+    requests: result.requests,
+    kind: result.kind,
+    keyId: result.keyId,
+    checkedAt: result.checkedAt,
+  };
 }
 
 function safeArray(json: string): string[] {
@@ -780,15 +759,6 @@ function safeArray(json: string): string[] {
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
   } catch {
     return [];
-  }
-}
-
-function safeObject(json: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
   }
 }
 

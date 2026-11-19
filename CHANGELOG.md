@@ -4,15 +4,64 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.10 (2026-11-18)
+## v0.1.10 (2026-11-19)
 
-The evaluation lab could already produce a score. This release makes the score
-*attributable*: a run now records which sources produced it, under what
-configuration, against which judgment set — and refuses to pretend it did
-anything it did not.
+Two strands of work. The evaluation lab could already produce a score; it now
+makes the score *attributable* — a run records which sources produced it, under
+what configuration, against which judgment set, and refuses to pretend it did
+anything it did not. And the provider health page could already test one source
+at a time; it now tests them all in one explained pass, and the single-source
+button finally runs the **same** probe the scheduler does.
 
 ### Added
 
+- **A bulk run survives a page reload.** Starting a run writes a pointer (job
+  id, kind, start time) to `localStorage`; on load the page asks the server what
+  that job actually is and shows a one-line notice above the tabs — "still
+  running (3 of 12)" or "finished (partially complete)" — with a button that
+  reopens the run at the step its status implies. The pointer is a pointer, not
+  a cache: a stale one cannot render a table, and a job that returns 404 or
+  belongs to another account clears it silently rather than raising an error on
+  page load.
+- **One entry point on the page an operator actually opens.** The 搜索源 page
+  header now carries 「全部测试」 next to 刷新/新增. It opens the *same*
+  pre-flight dialog the health tab uses, so there is one flow and one set of
+  rules, not two.
+- **The result table states the facts the spec asks for**: source *and* adapter
+  type, state, configured-key count, latency, result count, readable error
+  reason, last-checked time, and per-row 详情 / 重测 actions. Classification and
+  upstream-request count stay in the detail drawer where there is room to read
+  them. `null` renders as an em dash — "not measured" is never printed as `0`.
+- **The batch ledger records what the table shows.** `providerType`, `keyCount`
+  and `checkedAt` are copied into each item when the run is created or the probe
+  finishes, so a row still describes the run that happened after a source is
+  deleted or re-typed. A count of credentials, never a key or a key id. Rows
+  written by an earlier build normalise to `null` on read.
+- **The single-source dialog shows when the probe ran** (`checkedAt`), alongside
+  latency, result count, upstream requests and the redacted key label.
+
+- **Bulk provider test** (migration `0008`): `provider_test_batches` (a run
+  ledger) plus `provider_health_checks.batch_id`. Health facts stay in
+  `provider_health_checks`; the new table only answers "how far did this run
+  get". Four endpoints: `GET …/batch-test/preview`, `POST …/batch-test`,
+  `GET …/batch-test/:jobId`, `POST …/batch-test/:jobId/cancel`.
+- **Pre-flight eligibility** (`provider-eligibility.ts`): one pure decision
+  function used by the preview, the job creator and the runner, in a fixed
+  order — disabled → no adapter → cooldown/exhausted budget → undecryptable key
+  → no key → all keys disabled → keyless policy → eligible. Three queries
+  regardless of scope size. The seven preview counters always sum to the scope
+  total, so no source can be silently missing from the confirmation dialog.
+- **Request-accurate probes**: each probe counts physical upstream requests at
+  the fetch boundary (`onRequest`, so redirects and pages are included) and
+  stores the number in `detail_json.requests`. `null` means "no request was
+  sent", never `0` and never an estimate from the planned page count.
+- **`GET /providers/:id/test` is now a thin wrapper over `HealthService.checkOne`**
+  and returns `status`/`cause`/`errorCode`/`requests`/`kind`/`keyId`/`checkedAt`
+  in addition to the five legacy fields. The hand-built probe config is gone.
+- **Restart honesty**: a run left `running` by a crash is rewritten to
+  `interrupted` at the next boot (idempotent single UPDATE, run from the service
+  constructor), and a runner only finalises a row that is still `running` — a
+  restart can never report a half-finished run as `completed`.
 - **Provenance on every run** (migration `0007`): `provider_ids_json`,
   `provider_fingerprint`, `model_fingerprint`, `qrels_fingerprint`,
   `per_provider_limit`, `request_timeout_ms`, `persisted_query_count`,
@@ -40,6 +89,29 @@ anything it did not.
 
 ### Changed
 
+- **The docs screenshot script generates its throwaway password at run time**
+  instead of carrying a fixed literal. A hard-coded `PASSWORD = "…"` in a
+  script is indistinguishable from a leaked credential to a scanner, and the
+  only honest fix is to stop shipping the shape it looks for — not to widen the
+  scanner's allowlist.
+
+- **One probe path.** `POST /providers/:id/test` used to build its own
+  `ProviderConfig` and invoke the adapter directly, without
+  `search: resolveSearchConfig(...)`. Every paginated adapter therefore took its
+  `if (!search)` single-page fallback: the button reported "3 results" from one
+  request while the scheduler called the same source degraded. It now delegates
+  to `HealthService.checkOne`, and a source scan asserts that no route module
+  calls `adapter.search(` any more. `POST /keys/:keyId/test` stays a
+  *connectivity* probe (`kind: "connect"`) — its question is "is this credential
+  accepted", which is free.
+- **`GET /providers/:id/test` now respects the paid-probe switch.** It defaults
+  to `kind=search`, so on an instance with paid probing disabled it returns the
+  probe's own `validation_error` instead of quietly spending. This is a
+  deliberate tightening: see Known limitations.
+- **`checkMany` de-duplicates unconditionally.** The old `respectInFlight` flag
+  let a manual "check all" and a scheduled pass probe the same source at the same
+  time; both now acquire the same lock (`probeWithLock`) and the second reports
+  `already_running`.
 - **Pagination** on `GET /datasets`, `GET /runs` and both dataset-detail
   collections. `coverage` is computed over the whole dataset, so paging cannot
   change the reported coverage. Export reads the full set through a separate
@@ -75,6 +147,32 @@ anything it did not.
 
 ### Known limitations
 
+- **Bulk runs are single-process only.** There is no cross-instance queue or
+  coordinator: progress lives in the database so a reader sees the truth, but two
+  instances would run two independent jobs. Concurrent probing of one source is
+  prevented inside one process (`probeWithLock`), not across processes.
+- **No history chart for bulk runs.** The batch ledger keeps the latest runs but
+  the UI shows one run at a time; the existing per-source health panel is the
+  only trend surface, and it is unchanged.
+- **The reload notice is per browser, not per account.** It is a `localStorage`
+  pointer, so opening the same instance in another browser shows no notice until
+  a run is started there. The job itself is still readable through the API by the
+  account that owns it; only the shortcut is browser-local.
+- **A finished run's notice is read once.** A run that is still `running` refreshes
+  its banner every two seconds, but a run that already ended does not re-read —
+  a page left open overnight does not keep asking about a run that stopped hours
+  ago, at the cost of not noticing a status change that happened after the last
+  read.
+- **`requests` is `null` when it cannot be measured.** A probe that never issued
+  a request (missing credential, refused before the call) reports `null` and the
+  UI renders `—`. It is never derived from the planned page count — that
+  estimate is exactly the defect this release removes.
+- **A `GET …/:jobId` during a run shows the last persisted write.** Progress is
+  written per item, so the view can lag by one item; it never runs ahead.
+- **The single-source test is now a paid search probe by default**, so on an
+  instance with paid probing disabled it returns 409 instead of spending. That is
+  intentional (the point was that it must not bypass the budget), but it is a
+  behaviour change for anyone scripting it.
 - `cachePolicy` accepts only `bypass`, and `maxConcurrency` only `1`. Both are
   rejected otherwise rather than stored: parallel runs need a reservation-based
   budget that does not exist yet, and a run record claiming a policy the engine

@@ -1,6 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { auditLogs } from "@search-hub/db";
-import { SearchHubError, healthSettingsPatchSchema } from "@search-hub/shared";
+import {
+  SearchHubError,
+  batchTestCreateSchema,
+  batchTestPreviewQuerySchema,
+  healthSettingsPatchSchema,
+} from "@search-hub/shared";
 import { z } from "zod";
 import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, type Actor } from "../auth.js";
@@ -231,6 +236,94 @@ export function registerProviderHealthRoutes(app: FastifyInstance, ctx: AppConte
       const { id } = request.params as { id: string };
       const result = ctx.health.resetProvider(id);
       audit(ctx, actor, "provider_health.reset", id, result, request.ip);
+      return result;
+    }),
+  );
+
+  // ---- bulk provider test ----
+  //
+  // Four endpoints, one job model. Reading a preview or a job is an `admin`
+  // read; starting and cancelling spend money and therefore need CSRF, exactly
+  // like `/api/admin/health/check`.
+
+  /**
+   * What a run over this scope would do, without writing or spending anything.
+   *
+   * Deliberately a GET: the confirmation dialog may be opened and dismissed any
+   * number of times, and opening it must never have a side effect (T08).
+   */
+  app.get(
+    "/api/admin/provider-health/batch-test/preview",
+    jsonFor(app, async (request) => {
+      adminOf(ctx, request);
+      const query = parseInput(batchTestPreviewQuerySchema, request.query ?? {});
+      return ctx.batch.preview(query.kind, query.providerIds ?? null);
+    }),
+  );
+
+  /**
+   * Starts a bulk run.
+   *
+   * The response is the job as it exists *now* (`status: "running"`); the caller
+   * polls `GET …/:jobId` on `nextPollAfterMs`. Refusals happen before a row is
+   * written, so a rejected request leaves nothing to poll.
+   */
+  app.post(
+    "/api/admin/provider-health/batch-test",
+    jsonFor(app, async (request, reply) => {
+      const actor = adminOf(ctx, request, true);
+      const input = parseInput(batchTestCreateSchema, request.body ?? {});
+      const job = await ctx.batch.startBatch({
+        kind: input.kind,
+        providerIds: input.providerIds ?? null,
+        ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
+        actor: actorLabel(actor),
+      });
+      audit(
+        ctx,
+        actor,
+        "provider_health.batch_test",
+        job.jobId,
+        { kind: job.kind, total: job.counts.total, concurrency: job.concurrency },
+        request.ip,
+      );
+      // 201: a run resource was created. A client that only accepts 200 can read
+      // the same body from `GET …/:jobId`.
+      void reply.status(201);
+      return {
+        jobId: job.jobId,
+        status: job.status,
+        total: job.counts.total,
+        concurrency: job.concurrency,
+      };
+    }),
+  );
+
+  /** Progress, read from the database only: a restart cannot change the answer. */
+  app.get(
+    "/api/admin/provider-health/batch-test/:jobId",
+    jsonFor(app, async (request) => {
+      adminOf(ctx, request);
+      const actor = adminOf(ctx, request);
+      const { jobId } = request.params as { jobId: string };
+      return ctx.batch.getJob(jobId, actorLabel(actor));
+    }),
+  );
+
+  /**
+   * Stops a run.
+   *
+   * Returns `skippedRemaining` so the UI can say how many sources were not
+   * probed. Finished items are untouched: a cancel ends the run, it does not
+   * erase what the run already learned.
+   */
+  app.post(
+    "/api/admin/provider-health/batch-test/:jobId/cancel",
+    jsonFor(app, async (request) => {
+      const actor = adminOf(ctx, request, true);
+      const { jobId } = request.params as { jobId: string };
+      const result = ctx.batch.cancelBatch(jobId, actorLabel(actor));
+      audit(ctx, actor, "provider_health.batch_cancel", jobId, result, request.ip);
       return result;
     }),
   );

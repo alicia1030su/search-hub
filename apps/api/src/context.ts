@@ -18,6 +18,7 @@ import { SettingsService } from "./services/settings.js";
 import { ProviderService } from "./services/providers.js";
 import { ModelService } from "./services/models.js";
 import { HealthService } from "./services/health.js";
+import { ProviderBatchService } from "./services/provider-batch.js";
 import { SearchService } from "./services/search.js";
 import { CacheService } from "./services/cache.js";
 import { QualityService } from "./services/quality.js";
@@ -123,6 +124,13 @@ export interface AppContext {
   cache: CacheService;
   /** Provider health probes and the aggregated dashboard view. */
   health: HealthService;
+  /**
+   * Bulk provider test jobs (v0.1.10).
+   *
+   * Owns the run ledger, not the health facts: each probe it triggers is written
+   * to `provider_health_checks` exactly like a single-source probe.
+   */
+  batch: ProviderBatchService;
   /** Search quality evaluation: datasets, judgments, runs and comparisons. */
   quality: QualityService;
   logger: PinoLogger;
@@ -262,6 +270,22 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     options.random,
   );
 
+  /**
+   * Bulk test jobs.
+   *
+   * Constructed here — before the routes exist — because its constructor sweeps
+   * leftover `running` rows to `interrupted`. Doing that in `index.ts` instead
+   * would leave any context built by a test (or by an embedding host) with rows
+   * that falsely claim to be in progress.
+   */
+  const batch = new ProviderBatchService({
+    db: handle.db,
+    settings,
+    providers,
+    health,
+    appLogger,
+  });
+
   // The cache lives in the same SQLite file as everything else, so it inherits
   // the existing backup, upgrade and volume behaviour for free.
   const cache = new CacheService({
@@ -388,6 +412,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     search,
     cache,
     health,
+    batch,
     quality,
     logger,
     appLogger,

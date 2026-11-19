@@ -21,6 +21,14 @@ export interface VendorStub {
   hits(): number;
   /** Last request's headers, for asserting what the adapter sent. */
   lastHeaders(): Record<string, string | string[] | undefined>;
+  /**
+   * Highest number of requests the stub was serving at the same moment.
+   *
+   * This is the only honest way to measure a concurrency cap: counting *started*
+   * requests measures throughput, not simultaneity, and a run that fires twenty
+   * requests one after another would look identical.
+   */
+  peak(): number;
   close(): Promise<void>;
 }
 
@@ -47,38 +55,59 @@ export async function closeStubs(): Promise<void> {
  * Keyless, which is exactly why it is useful: it lets a test exercise a real
  * search probe without inventing a credential.
  */
-export async function startHnStub(options: { hits?: number } = {}): Promise<VendorStub> {
+export async function startHnStub(
+  options: { hits?: number; delayMs?: number; invalid?: boolean } = {},
+): Promise<VendorStub> {
   const count = options.hits ?? 1;
+  const delayMs = options.delayMs ?? 0;
   let requests = 0;
+  let inFlight = 0;
+  let peak = 0;
   let headers: Record<string, string | string[] | undefined> = {};
   const server = createServer((request, response) => {
     requests += 1;
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
     headers = request.headers;
+    const finish = () => {
+      inFlight -= 1;
+    };
+    response.on("close", finish);
     if (!request.url?.startsWith("/api/v1/search")) {
       response.writeHead(404).end("not found");
       return;
     }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(
-      JSON.stringify({
-        hits: Array.from({ length: count }, (_, index) => ({
-          objectID: String(index + 1),
-          title: `Keyless probe result ${index + 1}`,
-          url: `https://example.org/keyless-${index + 1}`,
-          created_at: "2026-01-01T00:00:00.000Z",
-          points: 10,
-          author: "stub",
-          num_comments: 1,
-        })),
-        nbHits: count,
-      }),
-    );
+    const send = () => {
+      if (options.invalid === true) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ unexpected: true }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          hits: Array.from({ length: count }, (_, index) => ({
+            objectID: String(index + 1),
+            title: `Keyless probe result ${index + 1}`,
+            url: `https://example.org/keyless-${index + 1}`,
+            created_at: "2026-01-01T00:00:00.000Z",
+            points: 10,
+            author: "stub",
+            num_comments: 1,
+          })),
+          nbHits: count,
+        }),
+      );
+    };
+    if (delayMs > 0) setTimeout(send, delayMs);
+    else send();
   });
   const port = await listen(server);
   return {
     base: `http://127.0.0.1:${port}`,
     hits: () => requests,
     lastHeaders: () => headers,
+    peak: () => peak,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
@@ -90,13 +119,24 @@ export async function startHnStub(options: { hits?: number } = {}): Promise<Vend
  * tests use it because "paid probe" only means something for a provider whose
  * requests are made on the operator's account.
  */
-export async function startBraveStub(options: { results?: number } = {}): Promise<VendorStub> {
+export async function startBraveStub(
+  options: { results?: number; delayMs?: number } = {},
+): Promise<VendorStub> {
   const count = options.results ?? 2;
+  const delayMs = options.delayMs ?? 0;
   let requests = 0;
+  let inFlight = 0;
+  let peak = 0;
   let headers: Record<string, string | string[] | undefined> = {};
   const server = createServer((request, response) => {
     requests += 1;
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
     headers = request.headers;
+    const finish = () => {
+      inFlight -= 1;
+    };
+    response.on("close", finish);
     if (!request.url?.startsWith("/res/v1/web/search")) {
       response.writeHead(404).end("not found");
       return;
@@ -106,26 +146,31 @@ export async function startBraveStub(options: { results?: number } = {}): Promis
       response.end(JSON.stringify({ error: { code: "UNAUTHORIZED", message: "missing token" } }));
       return;
     }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(
-      JSON.stringify({
-        web: {
-          results: Array.from({ length: count }, (_, index) => ({
-            title: `Brave probe result ${index + 1}`,
-            url: `https://example.org/brave-${index + 1}`,
-            description: "stub description",
-            page_age: "2026-01-01T00:00:00",
-            language: "en",
-          })),
-        },
-      }),
-    );
+    const send = () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          web: {
+            results: Array.from({ length: count }, (_, index) => ({
+              title: `Brave probe result ${index + 1}`,
+              url: `https://example.org/brave-${index + 1}`,
+              description: "stub description",
+              page_age: "2026-01-01T00:00:00",
+              language: "en",
+            })),
+          },
+        }),
+      );
+    };
+    if (delayMs > 0) setTimeout(send, delayMs);
+    else send();
   });
   const port = await listen(server);
   return {
     base: `http://127.0.0.1:${port}`,
     hits: () => requests,
     lastHeaders: () => headers,
+    peak: () => peak,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }

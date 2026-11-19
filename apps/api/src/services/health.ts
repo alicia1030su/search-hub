@@ -86,6 +86,15 @@ export interface HealthCheckResult {
   cooldownUntil: string | null;
   sample?: Array<{ title: string; url: string }>;
   /**
+   * Physical upstream requests this probe issued (`null` when none was sent).
+   *
+   * Counted at the fetch boundary, so it includes every redirect hop and every
+   * page of a paginated search. It is deliberately **not** derived from the
+   * planned page count: a probe that never reached the vendor must report
+   * "unknown", not a number the UI would present as evidence.
+   */
+  requests: number | null;
+  /**
    * Whether this probe consumed a paid budget slot.
    *
    * `false` when the request never left the machine (no credential). The caller
@@ -236,10 +245,22 @@ export class HealthService {
    * `kind: "search"` is refused (not silently downgraded) when paid probes are
    * disabled or the budget is exhausted: the caller must be able to tell the
    * difference between "healthy" and "we chose not to spend a request".
+   *
+   * `signal` is the *job's* cancellation (a bulk run being cancelled). It is
+   * combined with this probe's own timeout so either can stop the request, and
+   * the abort reason keeps `code: "cancelled"` so the classifier reports a
+   * cancellation rather than a timeout.
    */
   async checkOne(
     providerId: string,
-    options: { kind?: HealthProbeKind; keyId?: string; trigger?: HealthTrigger } = {},
+    options: {
+      kind?: HealthProbeKind;
+      keyId?: string;
+      trigger?: HealthTrigger;
+      signal?: AbortSignal;
+      /** Bulk run this probe belongs to; written to `provider_health_checks`. */
+      batchId?: string | null;
+    } = {},
   ): Promise<HealthCheckResult> {
     const row = this.db.select().from(providerInstances).where(eq(providerInstances.id, providerId)).get();
     if (!row) throw new SearchHubError("not_found", "Provider not found");
@@ -250,6 +271,11 @@ export class HealthService {
     const trigger = options.trigger ?? "manual";
     const policy = this.ctx.settings.get().health;
     const catalogEntry = getCatalogEntry(row.type);
+
+    // A caller that already gave up must not start a paid request.
+    if (options.signal?.aborted) {
+      throw cancelledError();
+    }
 
     // Resolve the credential, but do not treat its absence as "unhealthy":
     // without a key we simply cannot tell, and saying so is the honest answer.
@@ -284,6 +310,8 @@ export class HealthService {
         // Nothing was requested, so nothing was spent: the caller refunds its
         // per-run allowance from this.
         spent: false,
+        requests: null,
+        batchId: options.batchId ?? null,
       });
     }
 
@@ -325,16 +353,36 @@ export class HealthService {
       );
     }
 
+    /**
+     * Physical requests issued by this probe.
+     *
+     * Incremented from the fetch boundary (`onRequest`), which fires per physical
+     * request including redirect hops — the only place a count is accurate. It
+     * stays `0` until a request is actually attempted, and is reported as `null`
+     * in that case, so "never left the machine" is distinguishable from "one
+     * request".
+     */
+    let requests = 0;
+    const countedFetch: SafeFetch = (url, init) =>
+      this.ctx.fetch(url, {
+        ...init,
+        onRequest: (target) => {
+          requests += 1;
+          init?.onRequest?.(target);
+        },
+      });
+
     const started = this.clock();
     const controller = new AbortController();
     const timeoutMs = Math.min(row.timeoutMs, kind === "connect" ? 12_000 : 20_000);
-    const timer = setTimeout(() => controller.abort(new Error("timeout")), timeoutMs);
+    const timer = setTimeout(() => controller.abort(timeoutError()), timeoutMs);
+    const detached = composeAbort(controller.signal, options.signal);
 
     try {
       const result = await adapter.search(
-        { query: probeQuery(row.type, kind), limit: kind === "connect" ? 1 : 3, signal: controller.signal },
+        { query: probeQuery(row.type, kind), limit: kind === "connect" ? 1 : 3, signal: detached.signal },
         {
-          fetch: this.ctx.fetch,
+          fetch: countedFetch,
           ...(apiKey === undefined ? {} : { apiKey }),
           config: {
             id: row.id,
@@ -361,7 +409,7 @@ export class HealthService {
               safeJson(row.searchConfigJson),
             ),
           },
-          signal: controller.signal,
+          signal: detached.signal,
           logger: this.ctx.appLogger,
         },
       );
@@ -388,6 +436,8 @@ export class HealthService {
         trigger,
         sample: result.results.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
         spent: kind === "search" && ledgerKind === "search" && reservation.ok,
+        requests: requests > 0 ? requests : null,
+        batchId: options.batchId ?? null,
       });
       this.advanceSchedule(providerId, cause);
       return recorded;
@@ -403,8 +453,13 @@ export class HealthService {
       // a client that aborts in a loop spend an unbounded number of paid requests
       // while the ledger reports zero. Only a probe that provably never left
       // (no credential, refused before the call) is refunded.
-      if (cause === "cancelled") {
-        throw new SearchHubError("cancelled", "The health probe was cancelled; nothing was recorded.");
+      //
+      // The job signal is checked as well as the classification: an adapter that
+      // wraps the abort in its own error type loses the `code`, and the `/aborted/i`
+      // fallback in `classifyError` would then read a cancellation as a timeout
+      // and park the source — the exact failure this branch exists to prevent.
+      if (cause === "cancelled" || detached.cancelled()) {
+        throw cancelledError();
       }
       const retryAfterMs = parseRetryAfterMs(
         (error as { retryAfterMs?: number } | null)?.retryAfterMs != null
@@ -428,11 +483,14 @@ export class HealthService {
         trigger,
         cooldownMs: cooldown ?? undefined,
         spent: kind === "search" && ledgerKind === "search" && reservation.ok,
+        requests: requests > 0 ? requests : null,
+        batchId: options.batchId ?? null,
       });
       this.advanceSchedule(providerId, cause);
       return recorded;
     } finally {
       clearTimeout(timer);
+      detached.dispose();
     }
   }
 
@@ -565,17 +623,83 @@ export class HealthService {
   }
 
   /**
-   * Probes several providers in order with a small gap.
+   * Probes one provider unless it is already being probed.
    *
-   * Serial on purpose: firing probes at every vendor at once is the fastest way
-   * to trip rate limits on all of them and learn nothing.
+   * This is the **only** de-duplication mechanism in the health system: both
+   * `checkMany` (scheduled pass, "check all") and the bulk-test runner acquire
+   * their slot here, so a source can never be probed twice at once on two paid
+   * paths. A second in-flight set elsewhere would drift and start paying twice
+   * for one answer.
+   *
+   * Returns `"already_running"` instead of throwing: "someone else is on it" is
+   * a normal outcome the caller records as a skip, not an error.
+   */
+  private async probeWithLock(
+    providerId: string,
+    options: {
+      kind?: HealthProbeKind;
+      trigger?: HealthTrigger;
+      keyId?: string;
+      signal?: AbortSignal;
+      batchId?: string | null;
+    },
+  ): Promise<HealthCheckResult | "already_running"> {
+    if (this.inFlight.has(providerId)) return "already_running";
+    this.inFlight.add(providerId);
+    try {
+      return await this.checkOne(providerId, options);
+    } finally {
+      this.inFlight.delete(providerId);
+    }
+  }
+
+  /** True while a probe for this provider is in flight (used by the runner). */
+  isProbing(providerId: string): boolean {
+    return this.inFlight.has(providerId);
+  }
+
+  /**
+   * Probes several providers with a bounded number of concurrent workers.
+   *
+   * Concurrency defaults to the configured `health.concurrency` (1..4). `gapMs`
+   * keeps a scheduled pass from looking like a burst; a bulk run passes `0`
+   * because its worker count is already the throttle and a human is watching.
+   *
+   * `onItem` reports every provider exactly once — a result or a skip — which is
+   * what lets the bulk runner persist progress as it happens instead of waiting
+   * for the whole run.
    */
   async checkMany(
     providerIds: string[] | null,
-    options: { kind?: HealthProbeKind; trigger?: HealthTrigger; gapMs?: number; respectInFlight?: boolean } = {},
+    options: {
+      kind?: HealthProbeKind;
+      trigger?: HealthTrigger;
+      gapMs?: number;
+      /** Job-level cancellation; aborted providers are reported as skipped. */
+      signal?: AbortSignal;
+      /** Worker count, clamped to 1..4. Defaults to `health.concurrency`. */
+      concurrency?: number;
+      /**
+       * Retained for call-site compatibility.
+       *
+       * De-duplication is now unconditional: `probeWithLock` is the single gate
+       * every path (scheduled pass, "check all", bulk run) goes through, so
+       * passing `false` here can no longer disable it — that switch existing at
+       * all is what allowed two paid paths to probe one source at once.
+       */
+      respectInFlight?: boolean;
+      /** Called once per provider, as soon as its outcome is known. */
+      onItem?: (item: {
+        providerId: string;
+        result?: HealthCheckResult;
+        skip?: { code: string; reason: string };
+      }) => void;
+      /** Bulk run ledger id, forwarded to every probe row. */
+      batchId?: string | null;
+    } = {},
   ): Promise<{
     results: HealthCheckResult[];
-    skipped: Array<{ providerId: string; reason: string }>;
+    skipped: Array<{ providerId: string; reason: string; code?: string }>;
     budget: ReturnType<HealthService["budget"]>;
   }> {
     const kind = options.kind ?? "connect";
@@ -590,11 +714,16 @@ export class HealthService {
         .map((row) => row.id);
 
     const results: HealthCheckResult[] = [];
-    const skipped: Array<{ providerId: string; reason: string }> = [];
+    const skipped: Array<{ providerId: string; reason: string; code?: string }> = [];
     const gap = options.gapMs ?? 400;
-    // Concurrency is capped at 4 by the settings schema; a serial default keeps
-    // a scheduled pass from looking like a burst to every vendor at once.
-    const workers = Math.max(1, Math.min(this.ctx.settings.get().health.concurrency ?? 1, 4));
+    // Concurrency is capped at 4; a serial default keeps a scheduled pass from
+    // looking like a burst to every vendor at once.
+    const workers = clampConcurrency(options.concurrency ?? this.ctx.settings.get().health.concurrency ?? 1);
+
+    const emitSkip = (providerId: string, code: string, reason: string): void => {
+      skipped.push({ providerId, reason, code });
+      options.onItem?.({ providerId, skip: { code, reason } });
+    };
 
     // The per-run cap applies to this loop, not to the daily counter: otherwise
     // a single "check all" would ignore maxRequestsPerRun entirely.
@@ -609,41 +738,66 @@ export class HealthService {
       }
     };
     const probe = async (id: string): Promise<void> => {
+      // A cancelled job must stop *before* the next paid request. Checking here
+      // (rather than only inside `checkOne`) means the remaining queue is
+      // reported as cancelled without reserving any budget at all.
+      if (options.signal?.aborted) {
+        emitSkip(id, "SKIPPED_CANCELLED", "cancelled: the bulk run was cancelled before this probe started");
+        return;
+      }
       // One probe per provider at a time. Two passes (a scheduled tick and a
       // manual "check all") would otherwise hit the same vendor twice, and for
       // a paid probe that is paying twice for one answer.
-      if (options.respectInFlight === true && this.inFlight.has(id)) {
-        skipped.push({ providerId: id, reason: "already_running" });
+      //
+      // Checked before the budget so a concurrent duplicate is reported as
+      // `already_running` rather than as an exhausted budget it did not cause.
+      if (this.isProbing(id)) {
+        emitSkip(id, "already_running", "already_running: another probe for this source is in flight");
         return;
       }
       if (kind === "search") {
         const remainingRun = this.budget().maxPerRun - spentThisRun;
         if (remainingRun <= 0) {
-          skipped.push({ providerId: id, reason: "budget_exhausted:run_limit" });
+          emitSkip(id, "SKIPPED_BUDGET", "budget_exhausted:run_limit");
           return;
         }
         const decision = decideBudget({ ...this.budget(), maxPerRun: remainingRun }, 1);
         if (!decision.allowed) {
-          skipped.push({ providerId: id, reason: `budget_exhausted:${decision.reason}` });
+          emitSkip(id, "SKIPPED_BUDGET", `budget_exhausted:${decision.reason}`);
           return;
         }
         spentThisRun += 1;
       }
-      this.inFlight.add(id);
       try {
-        const recorded = await this.checkOne(id, { kind, trigger });
+        const outcome = await this.probeWithLock(id, {
+          kind,
+          trigger,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          batchId: options.batchId ?? null,
+        });
+        if (outcome === "already_running") {
+          if (kind === "search") spentThisRun -= 1;
+          emitSkip(id, "already_running", "already_running: another probe for this source is in flight");
+          return;
+        }
         // A probe that never left the machine (no credential, refused before
         // the request) must not consume the per-run allowance: otherwise
         // "check all" stops early while nothing was spent.
-        if (kind === "search" && recorded.spent === false) spentThisRun -= 1;
-        results.push(recorded);
+        if (kind === "search" && outcome.spent === false) spentThisRun -= 1;
+        results.push(outcome);
+        options.onItem?.({ providerId: id, result: outcome });
       } catch (error) {
-        skipped.push({
-          providerId: id,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      } finally {
-        this.inFlight.delete(id);
+        // A cancellation is not a source failure: it carries its own code so
+        // the runner can record `SKIPPED_CANCELLED` and leave health untouched.
+        const code = (error as { code?: unknown } | null)?.code;
+        if (code === "cancelled") {
+          if (kind === "search") spentThisRun -= 1;
+          emitSkip(id, "SKIPPED_CANCELLED", "cancelled: the bulk run was cancelled while this probe was in flight");
+          return;
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        skipped.push({ providerId: id, reason });
+        options.onItem?.({ providerId: id, skip: { code: "unknown", reason } });
       }
     };
 
@@ -879,24 +1033,34 @@ export class HealthService {
       .orderBy(desc(providerHealthChecks.checkedAt))
       .limit(Math.min(Math.max(limit, 1), 500))
       .all();
-    return rows.map((row) => ({
-      id: row.id,
-      providerId: row.providerId,
-      providerName: "",
-      providerType: "",
-      keyId: row.keyId,
-      kind: row.kind as HealthProbeKind,
-      status: row.status as HealthStatus,
-      cause: (safeJson(row.detailJson) as { cause?: HealthCause }).cause ?? "ok",
-      errorCode: (row.errorCode ?? null) as ProviderErrorCode | null,
-      latencyMs: row.latencyMs,
-      resultCount: row.resultCount,
-      healthScore: row.healthScore,
-      message: String((safeJson(row.detailJson) as { message?: string }).message ?? ""),
-      checkedAt: row.checkedAt,
-      trigger: row.trigger as HealthTrigger,
-      cooldownUntil: ((safeJson(row.detailJson) as { cooldownUntil?: string }).cooldownUntil ?? null),
-    }));
+    return rows.map((row) => {
+      const detail = safeJson(row.detailJson);
+      return {
+        id: row.id,
+        providerId: row.providerId,
+        providerName: "",
+        providerType: "",
+        keyId: row.keyId,
+        kind: row.kind as HealthProbeKind,
+        status: row.status as HealthStatus,
+        cause: (detail as { cause?: HealthCause }).cause ?? "ok",
+        errorCode: (row.errorCode ?? null) as ProviderErrorCode | null,
+        latencyMs: row.latencyMs,
+        resultCount: row.resultCount,
+        healthScore: row.healthScore,
+        message: String((detail as { message?: string }).message ?? ""),
+        checkedAt: row.checkedAt,
+        trigger: row.trigger as HealthTrigger,
+        cooldownUntil: ((detail as { cooldownUntil?: string }).cooldownUntil ?? null),
+        // Rows written before migration 0008 have no count: `null` ("not measured"),
+        // never `0`.
+        requests: toRequestCount((detail as { requests?: unknown }).requests),
+        // The captured sample, capped at three. It is displayed as plain text and
+        // is the only place a result title reaches the UI, so the cap is applied
+        // here rather than trusting the reader.
+        sample: toSamples((detail as { sample?: unknown }).sample),
+      };
+    });
   }
 
   private summarize(
@@ -1035,6 +1199,10 @@ export class HealthService {
     cooldownMs?: number;
     sample?: Array<{ title: string; url: string }>;
     spent?: boolean;
+    /** Physical upstream requests, or `null` when none was sent. */
+    requests?: number | null;
+    /** Bulk run ledger id this probe belongs to. */
+    batchId?: string | null;
   }): HealthCheckResult {
     const id = newId("hc");
     const checkedAt = new Date(this.clock()).toISOString();
@@ -1044,6 +1212,7 @@ export class HealthService {
         ? new Date(this.clock() + input.cooldownMs).toISOString()
         : null;
     const errorCode = errorCodeFor(input.cause);
+    const requests = input.requests ?? null;
 
     this.db
       .insert(providerHealthChecks)
@@ -1062,9 +1231,14 @@ export class HealthService {
           message: input.message,
           cooldownUntil,
           sample: input.sample ?? [],
+          // Stored here rather than in a new column: the request count is a
+          // property of this observation, and `detail_json` is already the
+          // place per-observation facts live.
+          requests,
         }),
         trigger: input.trigger,
         checkedAt,
+        batchId: input.batchId ?? null,
       })
       .run();
 
@@ -1091,6 +1265,7 @@ export class HealthService {
       checkedAt,
       trigger: input.trigger,
       cooldownUntil,
+      requests,
       ...(input.sample ? { sample: input.sample } : {}),
       ...(input.spent === undefined ? {} : { spent: input.spent }),
     };
@@ -1123,6 +1298,110 @@ function nextUtcMidnight(nowMs: number): number {
   const date = new Date(nowMs);
   date.setUTCHours(24, 0, 0, 0);
   return date.getTime();
+}
+
+/** Concurrency for a probe pass: an integer in 1..4, never NaN, never 0. */
+function clampConcurrency(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(Math.round(value), 4));
+}
+
+/**
+ * An abort reason the classifier reads as a cancellation.
+ *
+ * `classifyError` checks the error `code` *before* its `/aborted/i` message
+ * fallback, so tagging the reason with `code: "cancelled"` is what keeps a
+ * cancellation from being recorded as a timeout and parking the source.
+ */
+function cancelledError(): SearchHubError {
+  return new SearchHubError("cancelled", "The health probe was cancelled; nothing was recorded.");
+}
+
+/** Abort reason for the probe's own deadline. Classifies as `timeout`. */
+function timeoutError(): Error {
+  return Object.assign(new Error("timeout"), { code: "timeout" });
+}
+
+/**
+ * Combines a probe's own timeout signal with a caller's cancellation signal.
+ *
+ * `AbortSignal.any` exists on Node 22, but is used through a feature check rather
+ * than assumed: a combination written by hand has to forward the *reason* to the
+ * inner controller's `abort()`, not just the "aborted" bit, or the reason's `code`
+ * is lost and a cancellation is reclassified as a timeout.
+ *
+ * The returned `dispose` removes the listener so a long-lived job signal does not
+ * accumulate one listener per probe.
+ */
+function composeAbort(
+  own: AbortSignal,
+  outer: AbortSignal | undefined,
+): { signal: AbortSignal; cancelled: () => boolean; dispose: () => void } {
+  if (!outer) return { signal: own, cancelled: () => false, dispose: () => {} };
+
+  const anySignal = (AbortSignal as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  if (typeof anySignal === "function") {
+    const combined = anySignal.call(AbortSignal, [own, outer]);
+    return {
+      signal: combined,
+      cancelled: () => outer.aborted && !own.aborted,
+      dispose: () => {},
+    };
+  }
+
+  const controller = new AbortController();
+  const forward = (source: AbortSignal) => () => {
+    if (controller.signal.aborted) return;
+    controller.abort(source.reason);
+  };
+  const onOwn = forward(own);
+  const onOuter = forward(outer);
+  if (own.aborted) controller.abort(own.reason);
+  else if (outer.aborted) controller.abort(outer.reason);
+  else {
+    own.addEventListener("abort", onOwn, { once: true });
+    outer.addEventListener("abort", onOuter, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cancelled: () => outer.aborted && !own.aborted,
+    dispose: () => {
+      own.removeEventListener("abort", onOwn);
+      outer.removeEventListener("abort", onOuter);
+    },
+  };
+}
+
+/**
+ * Reads `detail_json.requests` back into `number | null`.
+ *
+ * Rows written before v0.1.10 have no count at all, so they read as `null`
+ * ("not measured") instead of `0` — a zero would be a claim about the wire.
+ */
+function toRequestCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Reads the stored sample, filtered and capped at three.
+ *
+ * The UI renders these as plain text, so this is the last place that can hand a
+ * malformed row to it: a non-string title, a missing URL or a `javascript:` URL
+ * must never reach the browser as if a vendor had supplied something valid.
+ */
+function toSamples(value: unknown): Array<{ title: string; url: string }> {
+  if (!Array.isArray(value)) return [];
+  const out: Array<{ title: string; url: string }> = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const title = (entry as { title?: unknown }).title;
+    const url = (entry as { url?: unknown }).url;
+    if (typeof title !== "string" || typeof url !== "string") continue;
+    if (!/^https?:\/\//i.test(url)) continue;
+    out.push({ title: title.slice(0, 300), url: url.slice(0, 800) });
+    if (out.length === 3) break;
+  }
+  return out;
 }
 
 function safeJson(value: string | null): Record<string, unknown> {

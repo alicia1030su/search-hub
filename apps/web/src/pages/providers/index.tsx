@@ -23,7 +23,10 @@ import {
   t,
   verificationLabel,
 } from "../../lib/i18n";
+import { runStatusWord } from "../../lib/batch-labels";
+import { forgetBatchJob, readRememberedBatchJob } from "../../lib/batch-job-store";
 import type {
+  BatchJobView,
   GroupInput,
   ProviderCatalogEntry,
   ProviderCategory,
@@ -35,6 +38,7 @@ import { ConfirmDialog, Dialog, Sheet } from "../../components/overlay";
 import { Table, TBody, TD, TH, THead, TR } from "../../components/table";
 import { useToast } from "../../components/toast";
 import { ProviderHealthPanel } from "../../components/provider-health-panel";
+import { ProviderBatchTestFlow } from "../../components/provider-batch-test-flow";
 import {
   Alert,
   Badge,
@@ -92,31 +96,107 @@ export function ProvidersPage() {
   // force a provider-list refetch every time it reloads.
   const health = useAsyncData((signal) => api.healthOverview(signal), []);
 
-  const runHealthCheck = useCallback(
-    async (kind: "connect" | "search") => {
-      setBusy(true);
+  /**
+   * "Test all" is no longer a direct action.
+   *
+   * It opens the pre-flight dialog instead, which is where the operator learns
+   * what will be probed, what will be skipped and whether it costs money. The
+   * old buttons fired immediately — the only way to find out was the bill.
+   */
+  const [batchKind, setBatchKind] = useState<"connect" | "search" | null>(null);
+  /** A run to reopen directly (reload path), instead of starting a new preview. */
+  const [batchJobId, setBatchJobId] = useState<string | null>(null);
+  /** The last run recovered from `localStorage`, shown as a banner above the tabs. */
+  const [resume, setResume] = useState<{ kind: "connect" | "search"; view: BatchJobView } | null>(null);
+  /**
+   * The run whose notice the operator closed.
+   *
+   * Dismissing hides *that* run, and only that one: the pointer itself is kept,
+   * so the run is still what a later reload comes back to. A newer run produces
+   * a different job id and therefore a new notice.
+   */
+  const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
+  /**
+   * Bumped when the flow closes.
+   *
+   * Only then does the banner need to be re-read: re-reading while the dialog is
+   * open would re-show a notice behind the dialog the operator is looking at.
+   */
+  const [resumeTick, setResumeTick] = useState(0);
+
+  const openBatch = useCallback((kind: "connect" | "search") => {
+    // Always a fresh preview: this entry point was not asked to resume anything.
+    setBatchJobId(null);
+    setBatchKind(kind);
+  }, []);
+
+  /**
+   * The "last test" pointer, restored after a reload.
+   *
+   * The page keeps a job id in `localStorage` (the run itself lives on the
+   * server), and this effect asks the server what that job actually is. Two
+   * rules keep it honest:
+   *
+   *  - **Nothing is invented.** The banner's numbers come from the job row, so a
+   *    stale pointer cannot claim a finished run succeeded; a job the server no
+   *    longer has (or one that belongs to another account) removes the pointer
+   *    silently instead of raising an error on page load.
+   *  - **Nothing pops up.** The banner is a line above the tabs, not a dialog: a
+   *    reload must not interrupt whatever the operator came to do.
+   */
+  useEffect(() => {
+    const remembered = readRememberedBatchJob();
+    if (!remembered) {
+      setResume(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+    const controller = new AbortController();
+
+    // A run that is still going keeps its banner current; a finished one is read
+    // once. Polling stops with the terminal status, so a page left open overnight
+    // does not keep asking about a run that ended hours ago.
+    const load = async (): Promise<void> => {
       try {
-        const run = await api.healthCheck({ kind });
-        const failed = run.results.filter((item) => item.status === "unhealthy").length;
-        toast.success({
-          title: t("providers.health.checked", {
-            count: run.results.length,
-            failed,
-          }),
-          description:
-            run.skipped.length > 0
-              ? t("providers.health.skipped", { count: run.skipped.length })
-              : undefined,
-        });
-        health.reload();
-      } catch (error) {
-        toast.error({ title: toApiError(error).message });
-      } finally {
-        setBusy(false);
+        const view = await api.batchTestJob(remembered.jobId, controller.signal);
+        if (cancelled) return;
+        setResume({ kind: remembered.kind, view });
+        if (view.status === "running") {
+          timer = window.setTimeout(() => void load(), 2000);
+        }
+      } catch (failure) {
+        if (cancelled) return;
+        const apiError = toApiError(failure);
+        // 404: the job is gone. 403: it is another account's job. Either way
+        // there is nothing to come back to, so the pointer is dropped quietly.
+        if (apiError.status === 404 || apiError.status === 403) {
+          forgetBatchJob();
+          setResume(null);
+          return;
+        }
+        // Any other failure (network, 5xx) is not proof the job disappeared; the
+        // pointer stays and the next reload can try again.
       }
-    },
-    [health, t, toast],
-  );
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [resumeTick]);
+
+  /** Reopens the remembered run at the step its status implies. */
+  const openResumedBatch = useCallback(() => {
+    if (!resume) return;
+    setBatchJobId(resume.view.jobId);
+    setBatchKind(resume.kind);
+    // The notice has served its purpose; hiding it here keeps the page from
+    // showing it again behind the dialog the operator just opened.
+    setDismissedJobId(resume.view.jobId);
+  }, [resume]);
 
   const runHealthCheckOne = useCallback(
     async (providerId: string, kind: "connect" | "search") => {
@@ -364,6 +444,21 @@ export function ProvidersPage() {
               <RefreshCw className={providers.loading ? "animate-spin" : undefined} aria-hidden />
               {t("common.refresh")}
             </Button>
+            {/*
+              A shortcut, not a second implementation: it opens the same
+              pre-flight dialog the health tab uses, so an administrator arriving
+              on this page can find the entry point without switching tabs.
+            */}
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="providers-test-all"
+              title={t("providers.batch.entryHint")}
+              onClick={() => openBatch("search")}
+            >
+              <CircuitBoard aria-hidden />
+              {t("providers.batch.entry")}
+            </Button>
             <Button size="sm" onClick={() => setFormState({ provider: null, preset: null })}>
               <Plus aria-hidden />
               {t("providers.add")}
@@ -372,12 +467,48 @@ export function ProvidersPage() {
         }
       />
 
+      {resume && resume.view.jobId !== dismissedJobId ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-info/25 bg-info/5 px-3 py-2 text-xs"
+          data-testid="providers-resume-banner"
+        >
+          <p className="min-w-0 text-foreground" data-testid="providers-resume-text">
+            <span className="font-medium">{t("providers.batch.title")}</span>{" "}
+            {resume.view.status === "running"
+              ? t("providers.batch.resume.running", {
+                  done: resume.view.counts.done,
+                  total: resume.view.counts.total,
+                })
+              : t("providers.batch.resume.finished", { status: runStatusWord(resume.view.status) })}
+          </p>
+          <div className="flex items-center gap-1.5">
+            <Button size="sm" variant="ghost" onClick={() => setDismissedJobId(resume.view.jobId)}>
+              {t("providers.batch.resume.dismiss")}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="providers-resume-open"
+              onClick={openResumedBatch}
+            >
+              {resume.view.status === "running"
+                ? t("providers.batch.resume.viewProgress")
+                : t("providers.batch.resume.viewResults")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-1.5 border-b pb-2">
         {(["installed", "health", "market"] as const).map((key) => (
           <button
             key={key}
             type="button"
             onClick={() => setTab(key)}
+            // A stable handle for tests and for anything that needs to target a
+            // tab: the visible label carries a count suffix, so the accessible
+            // name is not constant.
+            data-testid={`providers-tab-${key}`}
             className={
               "rounded-md px-3 py-1.5 text-sm transition-colors " +
               (tab === key
@@ -436,7 +567,7 @@ export function ProvidersPage() {
               overview={health.data}
               loading={health.loading}
               error={health.error?.message ?? null}
-              onCheckAll={runHealthCheck}
+              onCheckAll={openBatch}
               onCheckOne={runHealthCheckOne}
               onReload={health.reload}
               busy={busy}
@@ -1096,6 +1227,26 @@ export function ProvidersPage() {
           }}
         />
       ) : null}
+
+      {/* One dialog for the whole flow: preview → progress → results. */}
+      <ProviderBatchTestFlow
+        open={batchKind !== null}
+        initialKind={batchKind ?? "connect"}
+        initialJobId={batchJobId}
+        onClose={() => {
+          setBatchKind(null);
+          setBatchJobId(null);
+          // The run may have just been started (or retried), and the banner is
+          // what makes "reload and come back to it" reachable at all.
+          setResumeTick((tick) => tick + 1);
+        }}
+        onFinished={() => {
+          // The overview shows the probe rows this run just wrote. The banner is
+          // deliberately *not* refreshed here: re-reading mid-dialog would make
+          // a dismissed notice reappear behind the open dialog.
+          health.reload();
+        }}
+      />
     </div>
   );
 }

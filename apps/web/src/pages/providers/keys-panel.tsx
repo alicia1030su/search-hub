@@ -3,6 +3,8 @@ import { ExternalLink, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-re
 import { api, toApiError, type ApiError } from "../../lib/api";
 import { formatDateTime, formatMs, formatNumber } from "../../lib/format";
 import { t } from "../../lib/i18n";
+import { codeAdvice, codeLabel } from "../../lib/batch-labels";
+import { redactKeyId, requestsLabel } from "../../lib/batch-classify";
 import type { ApiKeySummary, KeyInput, ProviderRuntimeSnapshot, ProviderTestResult } from "../../lib/types";
 import { ConfirmDialog, Dialog } from "../../components/overlay";
 import { Table, TBody, TD, TH, THead, TR } from "../../components/table";
@@ -49,6 +51,16 @@ export function TestResultDialog({
           >
             {result.message}
           </Alert>
+          {/*
+            The probe's own conclusion, when the server sends it. `requests` is
+            rendered as an em dash when absent: "no request was sent" is a fact,
+            and `0` would be a measurement this probe never made.
+          */}
+          <div className="flex flex-wrap gap-1.5">
+            {result.kind ? <Badge tone="muted">{result.kind}</Badge> : null}
+            {result.status ? <Badge tone={result.ok ? "success" : "warning"}>{result.status}</Badge> : null}
+            {result.cause ? <Badge tone="muted">{codeLabel(result.cause)}</Badge> : null}
+          </div>
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div className="rounded-md border bg-muted/25 p-2.5">
               <p className="text-[11px] text-muted-foreground">{t("providers.test.latency")}</p>
@@ -60,7 +72,44 @@ export function TestResultDialog({
                 {result.resultCount === undefined ? "—" : formatNumber(result.resultCount)}
               </p>
             </div>
+            <div className="rounded-md border bg-muted/25 p-2.5">
+              <p className="text-[11px] text-muted-foreground">{t("providers.batch.detail.requests")}</p>
+              <p className="font-mono text-sm" data-testid="single-test-requests">
+                {requestsLabel(result.requests ?? null)}
+              </p>
+            </div>
+            <div className="rounded-md border bg-muted/25 p-2.5">
+              <p className="text-[11px] text-muted-foreground">{t("providers.batch.detail.key")}</p>
+              {/*
+                A keyless source has no credential to redact, and saying so is
+                more useful than a bare em dash: "no credential used" is a fact
+                about the probe, not a missing value. There is no code path here
+                that could print key material either way — `redactKeyId` only
+                ever truncates an id.
+              */}
+              <p className="font-mono text-sm">
+                {result.keyId
+                  ? redactKeyId(result.keyId)
+                  : t("providers.batch.detail.keyNone")}
+              </p>
+            </div>
+            {/*
+              When the probe ran, straight from the health row's `checkedAt`.
+              An older server omits the field, and then the em dash is the honest
+              answer — inventing "just now" would date a probe nobody ran.
+            */}
+            <div className="col-span-2 rounded-md border bg-muted/25 p-2.5">
+              <p className="text-[11px] text-muted-foreground">{t("providers.test.checkedAt")}</p>
+              <p className="font-mono text-sm" data-testid="single-test-checked-at">
+                {formatDateTime(result.checkedAt)}
+              </p>
+            </div>
           </div>
+          {result.cause ? (
+            <p className="rounded-md bg-muted/40 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+              {codeAdvice(result.cause)}
+            </p>
+          ) : null}
           <div>
             <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">{t("providers.test.sample")}</p>
             {result.sample && result.sample.length > 0 ? (

@@ -1,4 +1,4 @@
-import type { ReactNode, ThHTMLAttributes, TdHTMLAttributes } from "react";
+import type { HTMLAttributes, ReactNode, ThHTMLAttributes, TdHTMLAttributes } from "react";
 import { classNames as cn } from "../lib/format";
 
 export function Table({
@@ -6,14 +6,15 @@ export function Table({
   className,
   minWidth = "min-w-[720px]",
   caption,
+  ...props
 }: {
   children: ReactNode;
   className?: string;
   minWidth?: string;
   caption?: string;
-}) {
+} & HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className="w-full overflow-x-auto rounded-xl border bg-card">
+    <div className="w-full overflow-x-auto rounded-xl border bg-card" {...props}>
       <table className={cn("w-full caption-bottom text-sm", minWidth, className)}>
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         {children}
@@ -36,13 +37,14 @@ export function TR({
   onClick,
   selected,
   id,
+  ...props
 }: {
   children: ReactNode;
   className?: string;
   onClick?: () => void;
   selected?: boolean;
   id?: string;
-}) {
+} & HTMLAttributes<HTMLTableRowElement>) {
   return (
     <tr
       id={id}
@@ -64,6 +66,7 @@ export function TR({
             }
           : undefined
       }
+      {...props}
     >
       {children}
     </tr>

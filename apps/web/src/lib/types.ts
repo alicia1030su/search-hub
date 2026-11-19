@@ -240,6 +240,25 @@ export interface ProviderTestResult {
   resultCount?: number;
   message: string;
   sample?: Array<{ title: string; url: string }>;
+  /**
+   * The same probe's conclusion, stated explicitly (v0.1.10).
+   *
+   * All optional: an older server omits them, and the UI then falls back to `ok`
+   * rather than inventing a classification it did not receive.
+   */
+  status?: HealthStatusValue;
+  cause?: string;
+  errorCode?: string | null;
+  /**
+   * Physical upstream requests, or `null` when none was sent.
+   *
+   * `null` is a fact, not a zero: the probe provably never reached the vendor.
+   * The UI renders it as an em dash and never estimates it from a page count.
+   */
+  requests?: number | null;
+  kind?: HealthProbeKindValue;
+  keyId?: string | null;
+  checkedAt?: string;
 }
 
 export interface ProviderInput {
@@ -713,6 +732,10 @@ export interface HealthCheckResult {
   checkedAt: string;
   trigger: string;
   cooldownUntil: string | null;
+  /** Physical upstream requests, or `null` when none was sent (v0.1.10). */
+  requests?: number | null;
+  /** Up to three captured rows, already capped and validated by the server. */
+  sample?: Array<{ title: string; url: string }>;
 }
 
 export interface ProviderHealthRow {
@@ -757,19 +780,121 @@ export interface HealthOverview {
   providers: ProviderHealthRow[];
   totals: Record<HealthStatusValue, number>;
   runtimeTotals: Record<RuntimeHealthValue, number>;
-  budget: {
-    day: string;
-    maxPerRun: number;
-    maxPerDay: number;
-    usedToday: number;
-    connectUsedToday: number;
-    /** Real searches against keyless sources: counted, never called free. */
-    anonymousSearchUsedToday: number;
-    remainingToday: number;
-    paidProbesEnabled: boolean;
-    scheduledEnabled: boolean;
-    intervalMinutes: number;
-  };
+  budget: ProviderHealthBudget;
+}
+
+/** The probe budget as the API reports it (UTC day, durable ledger). */
+export interface ProviderHealthBudget {
+  day: string;
+  maxPerRun: number;
+  maxPerDay: number;
+  usedToday: number;
+  connectUsedToday: number;
+  /** Real searches against keyless sources: counted, never called free. */
+  anonymousSearchUsedToday: number;
+  remainingToday: number;
+  paidProbesEnabled: boolean;
+  scheduledEnabled: boolean;
+  intervalMinutes: number;
+}
+
+// ---- v0.1.10: bulk provider test ----
+
+/**
+ * One source's outcome inside a bulk run.
+ *
+ * `state` is the UI's vocabulary, not the stored health status: `pending`
+ * ("answered but nothing came back") and `skipped` ("never sent a request") exist
+ * only here. The stored conclusion still lives in `provider_health_checks`, and
+ * `checkId` is the pointer to it.
+ */
+export type BatchState = "ok" | "failed" | "pending" | "skipped" | "unknown";
+
+/** Terminal vocabulary of a run. `interrupted` means "the process died mid-run". */
+export type BatchStatus = "running" | "completed" | "partial" | "cancelled" | "interrupted";
+
+export interface BatchItem {
+  providerId: string;
+  providerName: string;
+  /** Adapter type, copied at run time (a source can be deleted or re-typed later). */
+  providerType: string | null;
+  /**
+   * How many credentials the source had when the run was created.
+   *
+   * A count, never key material. `null` means "not recorded" — a row written
+   * before this column existed — and is rendered as an em dash.
+   */
+  keyCount: number | null;
+  state: BatchState;
+  /** Canonical code: `ok`, an error classification, or a `SKIPPED_*` reason. */
+  code: string;
+  latencyMs: number | null;
+  resultCount: number | null;
+  /** Physical upstream requests, or `null` when none was sent. Never estimated. */
+  requests: number | null;
+  /** Health-row id this item produced, or `null` if no conclusion was written. */
+  checkId: string | null;
+  reason: string | null;
+  /** When the probe finished; `null` for an item that was never probed. */
+  checkedAt: string | null;
+}
+
+export interface BatchCounts {
+  total: number;
+  /** Finished probes: `ok + failed + pending`. */
+  done: number;
+  ok: number;
+  failed: number;
+  /** `empty_results`: answered, but nothing came back ("pending review"). */
+  pending: number;
+  /** Never probed (disabled / no key / cooling / budget / cancelled). */
+  skipped: number;
+  /** `total - done - skipped`: items still `unknown`. */
+  remaining: number;
+}
+
+export interface BatchPreviewCounts {
+  eligible: number;
+  noKey: number;
+  noEnabledKey: number;
+  configError: number;
+  disabled: number;
+  keylessSkipped: number;
+  /** Cooling **and** exhausted budget: the seven columns sum to `total`. */
+  coolingSkipped: number;
+}
+
+export interface BatchPreview {
+  kind: HealthProbeKindValue;
+  total: number;
+  counts: BatchPreviewCounts;
+  budget: ProviderHealthBudget;
+  /** True when starting this run may spend vendor quota. */
+  paidRisk: boolean;
+  /** Probes that would actually be billed; `0` when nothing can be billed. */
+  estimatedPaidProbes: number;
+}
+
+export interface BatchJobView {
+  jobId: string;
+  status: BatchStatus;
+  kind: HealthProbeKindValue;
+  counts: BatchCounts;
+  items: BatchItem[];
+  budget: ProviderHealthBudget;
+  concurrency: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** `1000` while running, `null` once the run stopped. */
+  nextPollAfterMs: number | null;
+}
+
+export interface BatchStartResponse {
+  jobId: string;
+  status: BatchStatus;
+  total: number;
+  concurrency: number;
+  kind?: HealthProbeKindValue;
 }
 
 export interface McpStatus {

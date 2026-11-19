@@ -35,6 +35,14 @@ async function main(): Promise<void> {
     // Stop the probe timer before closing the database: a probe that fires
     // during teardown would write to a closing handle.
     stopHealth?.();
+    // Abort every bulk test in flight for the same reason. Their rows stay
+    // `running` until the next boot sweeps them to `interrupted`, which is the
+    // honest record of "we were killed mid-run".
+    try {
+      ctx.batch.shutdown();
+    } catch (error) {
+      ctx.logger.warn({ err: error }, "could not abort bulk provider tests during shutdown");
+    }
     ctx.logger.info({ signal }, "shutting down");
     try {
       await app.close();
