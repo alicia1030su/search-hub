@@ -239,8 +239,21 @@ function latestTimestamp(values: string[]): string | null {
  * The decision for one provider. Pure: same facts and options, same answer.
  *
  * Order (first match wins):
- *  disabled → no adapter → cooling/budget → undecryptable key → no key →
- *  no enabled key → keyless policy → eligible.
+ *  disabled → no adapter → cooldown → exhausted budget (only if the probe could
+ *  actually spend) → undecryptable key → no key → no enabled key → keyless
+ *  policy → eligible.
+ *
+ * Two deliberate refinements to the plain reading of §5's table:
+ *
+ *  - **The paid *switch* is not an eligibility rule.** It is a settings-level
+ *    decision that refuses the whole paid run (`startBatch` throws a 409 with
+ *    "paid probes are disabled") rather than silently converting twelve testable
+ *    sources into twelve "budget" skips, which would look like an exhausted
+ *    account. §5 row 3 lists only the *counters* (`remainingToday <= 0`), and
+ *    that is what this function implements.
+ *  - **The budget only gates a source with a usable credential.** A source with
+ *    no key at all cannot spend anything, so blaming the budget for it would send
+ *    the operator to the wrong settings page and hide the real reason.
  */
 export function decideEligibility(
   facts: EligibilityFacts,
@@ -275,14 +288,16 @@ export function decideEligibility(
     };
   }
 
-  // A paid probe consumes the operator's account quota; a connectivity probe
-  // and an anonymous search do not, so neither may be blocked by the paid cap.
-  const consumesPaidSlot = options.kind === "search" && adapter.requiresKey;
+  const enabledCount = facts.enabledKeyCounts.get(provider.id) ?? 0;
+  const anyCount = facts.anyKeyCounts.get(provider.id) ?? 0;
+  const hasUsableKey = adapter.requiresKey && enabledCount > 0 && facts.decryptable.get(provider.id) === true;
+
+  // A paid probe consumes the operator's account quota. A connectivity probe and
+  // an anonymous search do not, so neither may be blocked by the paid cap — and
+  // neither may a credentialed probe that has no credential to spend with.
+  const consumesPaidSlot = options.kind === "search" && hasUsableKey;
   if (consumesPaidSlot) {
     const budget = options.budget;
-    if (!budget.paidProbesEnabled) {
-      return { code: "SKIPPED_BUDGET", reason: "budget_exhausted: paid search probes are disabled in settings" };
-    }
     if (budget.remainingToday <= 0) {
       return {
         code: "SKIPPED_BUDGET",
@@ -295,9 +310,6 @@ export function decideEligibility(
   }
 
   if (adapter.requiresKey) {
-    const enabledCount = facts.enabledKeyCounts.get(provider.id) ?? 0;
-    const anyCount = facts.anyKeyCounts.get(provider.id) ?? 0;
-
     if (enabledCount > 0 && facts.decryptable.get(provider.id) === false) {
       // Never include the ciphertext, its length or a prefix: this string is
       // rendered in the browser and written to the probe log.

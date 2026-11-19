@@ -321,15 +321,23 @@ describe("eligibility decisions", () => {
     expect(decision.reason).not.toContain(keyId);
   });
 
-  it("puts a paid source into the budget bucket when paid probes are off", () => {
+  it("leaves the paid *switch* to the run, and only skips on exhausted counters", () => {
     const fixture = buildFixture();
     fixtures.push(fixture);
     const id = fixture.ids[0]!;
     const facts = loadEligibilityFacts(fixture.db, resolver(), [id]);
-    const decision = decideEligibility(facts, id, options({ budget: budget({ paidProbesEnabled: false }) }));
-    expect(decision.code).toBe("SKIPPED_BUDGET");
-    expect(decision.reason).toContain("budget_exhausted");
-    expect(decision.reason).toContain("disabled");
+
+    // `paidProbesEnabled=false` refuses the whole paid run (the route returns a
+    // 409 naming the setting). It must not be reported as "this source is out of
+    // budget": that would tell the operator to look at the wrong setting and
+    // would hide that the source itself is perfectly testable.
+    const switchOff = decideEligibility(facts, id, options({ budget: budget({ paidProbesEnabled: false }) }));
+    expect(switchOff.code).toBe("ELIGIBLE");
+
+    // The counters, on the other hand, *are* a per-source skip (§5 row 3).
+    const exhausted = decideEligibility(facts, id, options({ budget: budget({ remainingToday: 0 }) }));
+    expect(exhausted.code).toBe("SKIPPED_BUDGET");
+    expect(exhausted.reason).toContain("budget_exhausted");
   });
 
   it("treats an exhausted daily budget as a skip, not as a failure", () => {
