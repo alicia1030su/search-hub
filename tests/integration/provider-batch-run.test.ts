@@ -393,6 +393,10 @@ describe("batch run concurrency and budget", () => {
     await waitFor(() => harness.ctx.health.isProbing(providerIds[0]!), {
       label: "the first probe to hold the lock",
     });
+    // Wait for the first request to actually arrive, so the count below is a
+    // fixed baseline rather than "one request has maybe been sent".
+    await waitFor(() => stub.hits() >= 1, { label: "the first request to reach the stub" });
+    const hitsBeforeSecond = stub.hits();
 
     const second = await startJob(harness, { kind: "connect", providerIds, concurrency: 1 });
     const secondId = second.body["jobId"] as string;
@@ -407,11 +411,13 @@ describe("batch run concurrency and budget", () => {
     expect(item.code).toBe("already_running");
     expect(item.state).toBe("skipped");
     expect(item.checkId).toBeNull();
+    // The duplicate never reached the wire: the stub's hit count did not move
+    // while the second job ran.
+    expect(stub.hits()).toBe(hitsBeforeSecond);
 
     const firstView = await waitForJob(harness, firstId, (view) => view.status === "completed", "the first job", 10_000);
     expect(firstView.items[0]!.state).toBe("ok");
-    // One request for one answer, even though two runs asked for it: the
-    // duplicate never reached the wire.
+    // Exactly one request for one answer, even though two runs asked for it.
     expect(stub.hits()).toBe(1);
   });
 
