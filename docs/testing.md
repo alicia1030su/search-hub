@@ -18,11 +18,11 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 | E2E | `tests/e2e` | First-run, login, providers, lab, theme, settings, integrations in a browser | Provider latency at scale |
 | Smoke | `tests/scripts/smoke.sh` | Live process: setup → providers → keys → search → fault isolation → token → MCP | Anything requiring real vendor keys |
 
-## What is covered (1018 tests, 75 files)
+## What is covered (1034 tests, 78 files)
 
-### v0.1.10 bulk provider test (T01–T30)
+### v0.1.10 bulk provider test (T01–T45)
 
-Every one of the 30 acceptance cases maps to one file and one executable
+Every one of the 45 acceptance cases maps to one file and one executable
 assertion. Nothing is stubbed at the HTTP layer: a "probe" either reaches a
 `http.createServer` on 127.0.0.1 or is injected through `app.inject` against a
 real SQLite database. **No real vendor is contacted.**
