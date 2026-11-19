@@ -5,21 +5,31 @@
 | 项 | 结果 |
 |---|---|
 | 目标版本 | **v0.1.10（Stable）**，前序为 v0.1.9；本轮另有 v0.1.10-beta.1 / -beta.2 两次预发布 |
-| 自动化测试 | 见下方「最终门禁」一节，数字取自发布提交的实际运行结果 |
-| 浏览器 E2E | 同上；Playwright 覆盖批量体检、刷新恢复、页面顶部入口与单源测试 |
-| 类型 / Lint | `pnpm typecheck` 0 error；`oxlint` 0 warning / 0 error |
+| 自动化测试 | **1034 passed / 78 files**（`pnpm test`，发布提交 `f5cf56a`） |
+| 浏览器 E2E | **38 passed**（`pnpm test:e2e`），覆盖单源测试、批量体检、刷新恢复、顶部入口、重复点击幂等、混合五类统计与免 Key 策略 |
+| 类型 / Lint | `pnpm typecheck` 0 error；`oxlint` 0 warning / 0 error（281 files） |
 | 质量门禁 | `pnpm quality:eval` PASS（11 项手算自检全过） |
 | 依赖审计 | `pnpm audit --audit-level high` 无已知漏洞 |
-| 密钥扫描 | `scripts/secret-scan.mjs` 工作树 + 63 个 ref 全绿 |
+| 密钥扫描 | `scripts/secret-scan.mjs` 在发布工作树（410 个文本文件 + 63 个 ref）0 violation；截图脚本的口令改为运行时生成，**未扩大白名单** |
 | 迁移 | 0001–0008，全部为增量；0008 有升级/幂等/旧行兼容测试 |
-| 三平台包 | Windows x64 / Linux x64 / Linux arm64，各自在 GitHub Actions 对应平台构建并启动验收 |
-| Docker | 容器验收在 GitHub Actions 真实通过；镜像 `linux/amd64` 单架构 |
+| 三平台包 | Windows x64 / Linux x64 / Linux arm64 均在 GitHub Actions 对应平台构建，并各自通过「启动 + setup + REST 搜索 + MCP 三步 + 重启后数据仍在」16 项验收 |
+| Docker | 容器验收在 GitHub Actions 真实通过（Image, compose stack, MCP and 11-item acceptance）；镜像 `linux/amd64` 单架构 |
+| 升级与回滚 | CI：v0.1.4-beta.6 / v0.1.5-beta.1 / v0.1.7-beta.3 / v0.1.8 / v0.1.8-beta.1 → current 全部通过；**本地另做 v0.1.9 → v0.1.10 就地升级 24 项全过**（Key 仍可解密、会话仍有效、搜索与 MCP 正常） |
+| systemd | `systemd service lifecycle` 工作流在合并提交上通过 |
+| 故障注入 | `updater-faults` + `updater-test`（校验和拒绝、降级拒绝、架构拒绝、健康检查失败回滚）全部 PASS |
 | 真实厂商联调 | **4 个源**：Hacker News、Crossref、OpenAlex、PubMed |
 | 未联调 | 其余适配器按官方文档实现，无真实凭证 |
 | 多实例 | 未实现（单进程额度 + SQLite 预算账本；批量任务同样只支持单进程） |
 
-本节的具体通过数字、SHA 与逐项结果在发布后由主理人回填；任何一项未通过都会在下方
-「未通过 / 受限」中显式列出，不会以「部分完成」代替。
+发布事实：tag `v0.1.10` → `f5cf56a`（annotated），Release `prerelease=false` 且为 GitHub Latest；
+资产 4 个（Windows x64 74.1 MB / Linux x64 49.6 MB / Linux arm64 49.5 MB / SHA256SUMS），
+三份 digest 与 `SHA256SUMS` 逐条一致；四个资产均有有效的 build provenance（签名者
+`release.yml@refs/tags/v0.1.10`，源提交 `f5cf56a`）；GHCR 推送 `0.1.10`、`v0.1.10`、`latest`
+三个 tag，digest `sha256:c06b2a7e…`，`platforms=linux/amd64`。
+
+除上表已注明「未联调 / 未实现」的项，本节各门禁均已实际运行并通过；**没有任何一项以
+「部分完成」代替结果**，也**没有把未验证项描述为已通过**。受限项集中列在下面的
+「未通过 / 受限」中。
 
 ### v0.1.10 的验收范围
 
@@ -31,6 +41,20 @@
 6. 跨账号隔离：`search` scope 与其它账号都无法读取或取消本账号任务。
 7. 结果表 8 列、详情抽屉、脱敏 Key、`—` 代替未测量值。
 8. 中英文文案齐全（`i18n-parity` 强制）。
+
+### 未通过 / 受限（逐项，不用「部分完成」概括）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| v0.1.9 → v0.1.10 升级 | **PASS（本地）** | 用 v0.1.9 tag 源码本地打包，对 v0.1.10 包做就地升级，24 项断言全过；CI 的升级矩阵覆盖到 v0.1.8 与各 beta，不含 v0.1.9 这一条，故以本地实测补证 |
+| Windows / Linux 安装包 | **PASS（CI 实机）** | 三种目标各自在对应 runner 上构建并启动验收，不是「能编译」 |
+| Linux arm64 实机运行 | **PASS（CI）** | `ubuntu-24.04-arm` runner 上构建并启动验收 |
+| Docker 镜像 | **PASS（CI）** | 11 项容器验收通过；镜像仅 `linux/amd64`，arm64 主机请用独立包 |
+| 真实厂商联调 | **受限** | 仅 4 个源有真实凭证与真实网络证据；其余按官方文档实现，未联调 |
+| 质量评测数据 | **受限** | 只有合成基准，没有厂商标注集；分数只衡量机制，不衡量厂商 |
+| 多实例批量任务 | **NOT_IMPLEMENTED** | 单进程；跨实例无队列/协调者 |
+| 批量任务历史图表 | **NOT_IMPLEMENTED** | 台账保留多次运行，UI 一次展示一次 |
+| 刷新恢复的跨浏览器行为 | **受限（已知）** | 指针是浏览器本地 `localStorage`；换浏览器看不到快捷入口，任务本身仍可由 API 读取 |
 
 ---
 
