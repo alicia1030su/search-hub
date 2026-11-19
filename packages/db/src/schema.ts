@@ -426,7 +426,7 @@ export const providerTestBatches = sqliteTable(
     /**
      * `BatchItem[]`: per-source state, accumulated as the run progresses. Every
      * source in scope is present from the first write, so a reader can tell
-     * "not started yet" (`unknown`) from "skipped".
+     * "not started yet" (`unknown`) apart from `skipped`.
      */
     itemsJson: text("items_json").notNull().default("[]"),
     /** Budget snapshot taken when the run started; never re-read later. */
