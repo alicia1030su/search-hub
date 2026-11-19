@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   codeKey,
+  errorReasonOf,
   failedIds,
   groupOf,
   pendingIds,
@@ -35,6 +36,8 @@ function item(patch: Partial<BatchItem>): BatchItem {
   return {
     providerId: "p1",
     providerName: "Provider 1",
+    providerType: "mock",
+    keyCount: 1,
     state: "ok",
     code: "ok",
     latencyMs: 100,
@@ -42,6 +45,7 @@ function item(patch: Partial<BatchItem>): BatchItem {
     requests: 1,
     checkId: "hc_1",
     reason: null,
+    checkedAt: "2026-01-01T00:00:00.000Z",
     ...patch,
   };
 }
@@ -135,6 +139,22 @@ describe("batch result grouping", () => {
     expect(pendingIds(view)).toEqual(["empty"]);
   });
 
+  it("does not re-run a cancelled source when retrying the failures", () => {
+    // A cancel turns the remainder into `skipped / SKIPPED_CANCELLED`. They are
+    // not failures: re-submitting them would re-run exactly the work the
+    // operator stopped, and "retry failures" would silently become "retry
+    // everything".
+    const view = job([
+      item({ providerId: "failed", state: "failed", code: "server_error" }),
+      item({ providerId: "cancelled-1", state: "skipped", code: "SKIPPED_CANCELLED", checkId: null }),
+      item({ providerId: "cancelled-2", state: "skipped", code: "SKIPPED_CANCELLED", checkId: null }),
+      item({ providerId: "disabled", state: "skipped", code: "SKIPPED_DISABLED" }),
+      item({ providerId: "ok", state: "ok", code: "ok" }),
+    ]);
+    expect(failedIds(view)).toEqual(["failed"]);
+    expect(pendingIds(view)).toEqual([]);
+  });
+
   it("renders a missing request count as an em dash, never as zero", () => {
     expect(requestsLabel(null)).toBe("—");
     expect(requestsLabel(0)).toBe("0");
@@ -146,6 +166,25 @@ describe("batch result grouping", () => {
     expect(redactKeyId("key_abcdef1234567890")).toBe("key_ab…90");
     // Short identifiers are shown as-is rather than mangled into a fake hint.
     expect(redactKeyId("key_ab")).toBe("key_ab");
+  });
+
+  it("shows a reason only where it explains something, never as a success caption", () => {
+    // A healthy probe's message is a measurement ("3 result(s) in 30ms"), and its
+    // own columns already carry both numbers: printing it under "error reason"
+    // would claim a working source has a problem.
+    expect(errorReasonOf(item({ state: "ok", code: "ok", reason: "3 result(s) in 30ms" }))).toBeNull();
+    // Every state that needs explaining keeps its message.
+    const failed = item({ state: "failed", code: "timeout", reason: "timeout: no answer in 12000ms" });
+    expect(errorReasonOf(failed)).toBe("timeout: no answer in 12000ms");
+    expect(errorReasonOf(item({ state: "pending", code: "empty_results", reason: "empty_results: 0 rows" }))).toBe(
+      "empty_results: 0 rows",
+    );
+    expect(errorReasonOf(item({ state: "skipped", code: "SKIPPED_NO_KEY", reason: "no_key: none stored" }))).toBe(
+      "no_key: none stored",
+    );
+    // …and a missing or blank message is not rendered as an empty paragraph.
+    expect(errorReasonOf(item({ state: "failed", reason: null }))).toBeNull();
+    expect(errorReasonOf(item({ state: "failed", reason: "   " }))).toBeNull();
   });
 });
 

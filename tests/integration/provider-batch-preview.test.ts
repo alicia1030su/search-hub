@@ -366,6 +366,105 @@ describe("batch test preview", () => {
     expect(body.total).toBe(4);
   });
 
+  /**
+   * T43 — "include keyless sources" is a policy the preview *and* the runner read.
+   *
+   * The pre-flight toggle writes `includeUnverified`; if either side hardcoded
+   * "keyless sources participate", the dialog and the run would disagree. The
+   * assertions are on the HTTP surface (what the dialog renders) and on the
+   * run's item list (what actually happened), including that a policy skip
+   * writes no health row at all.
+   */
+  it("T43 a keyless source is skipped by policy when includeUnverified is off, and probed when it is on", async () => {
+    const harness = track(await startBatchHarness());
+    await allowLocal(harness);
+    const keyless = await addKeyless(harness, "policy-keyless");
+    const keyed = await addKeyed(harness, "policy-keyed", "sk-POLICY-KEYED-000000000000");
+
+    const included = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/provider-health/batch-test/preview?kind=connect",
+      ...harness.read(),
+    });
+    expect(included.statusCode, included.body).toBe(200);
+    const before = included.json() as { counts: Record<string, number> };
+    // `includeUnverified` is on by default: both sources are testable.
+    expect(before.counts["eligible"]).toBe(2);
+    expect(before.counts["keylessSkipped"]).toBe(0);
+
+    const patched = await harness.app.inject({
+      method: "PUT",
+      url: "/api/admin/provider-health/settings",
+      ...harness.write(),
+      payload: { includeUnverified: false },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+
+    const excluded = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/provider-health/batch-test/preview?kind=connect",
+      ...harness.read(),
+    });
+    expect(excluded.statusCode, excluded.body).toBe(200);
+    const after = excluded.json() as { total: number; counts: Record<string, number> };
+    expect(after.counts["keylessSkipped"]).toBe(1);
+    expect(after.counts["eligible"]).toBe(1);
+    // The seven counters still partition the scope exactly.
+    expect(
+      after.counts["eligible"]! +
+        after.counts["noKey"]! +
+        after.counts["noEnabledKey"]! +
+        after.counts["configError"]! +
+        after.counts["disabled"]! +
+        after.counts["keylessSkipped"]! +
+        after.counts["coolingSkipped"]!,
+    ).toBe(after.total);
+
+    // The run applies the same policy, and a skip is not a probe.
+    const created = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/provider-health/batch-test",
+      ...harness.write(),
+      payload: { kind: "connect" },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const jobId = created.json().jobId as string;
+
+    interface JobView {
+      status: string;
+      items: Array<{ providerId: string; state: string; code: string }>;
+    }
+    let view = (
+      await harness.app.inject({
+        method: "GET",
+        url: `/api/admin/provider-health/batch-test/${jobId}`,
+        ...harness.read(),
+      })
+    ).json() as JobView;
+    for (let attempt = 0; attempt < 100 && view.status === "running"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      view = (
+        await harness.app.inject({
+          method: "GET",
+          url: `/api/admin/provider-health/batch-test/${jobId}`,
+          ...harness.read(),
+        })
+      ).json() as JobView;
+    }
+
+    expect(view.status).toBe("completed");
+    const keylessItem = view.items.find((item) => item.providerId === keyless);
+    expect(keylessItem?.state).toBe("skipped");
+    expect(keylessItem?.code).toBe("SKIPPED_KEYLESS_BY_POLICY");
+    expect(view.items.find((item) => item.providerId === keyed)?.state).toBe("ok");
+
+    // Exactly one health row: the skipped source was never measured.
+    const rows = harness.ctx.sqlite
+      .prepare("SELECT provider_id FROM provider_health_checks")
+      .all() as Array<{ provider_id: string }>;
+    expect(rows.map((row) => row.provider_id)).toEqual([keyed]);
+  });
+
   /** A selected subset must not silently grow to the whole scope. */
   it("respects an explicit providerIds selection, including a comma-separated one", async () => {
     const harness = track(await startBatchHarness());

@@ -19,6 +19,12 @@
  *
  * Health facts stay in `provider_health_checks` (each row carries this run's
  * `batch_id`). This table answers only "how far did this run get".
+ *
+ * The item rows additionally copy three *display* facts — the adapter type, the
+ * size of the credential pool and the probe's `checkedAt` — so one read renders a
+ * complete table. They are denormalised deliberately: a source can be deleted or
+ * re-typed after a run, and the ledger has to describe the run that happened. No
+ * key material, key id or ciphertext is ever copied here.
  */
 import { and, eq } from "drizzle-orm";
 import type { SearchHubDb } from "@search-hub/db";
@@ -56,6 +62,22 @@ export type BatchStatus = "running" | "completed" | "partial" | "cancelled" | "i
 export interface BatchItem {
   providerId: string;
   providerName: string;
+  /**
+   * The adapter type, copied at run time.
+   *
+   * Denormalised on purpose: the operator reads a row long after the source may
+   * have been deleted or re-typed, and the ledger has to describe the run that
+   * happened rather than today's configuration.
+   */
+  providerType: string | null;
+  /**
+   * How many credentials this source had when the run was created.
+   *
+   * A count, never key material: this number travels to the browser and into the
+   * ledger, so it must not be derivable back to a secret or an id. `null` means
+   * "not recorded" (a row written before this column existed).
+   */
+  keyCount: number | null;
   state: BatchState;
   /** External code: a canonical classification or a `SKIPPED_*` code. */
   code: string;
@@ -66,6 +88,8 @@ export interface BatchItem {
   /** Health row id, when this item produced one. */
   checkId: string | null;
   reason: string | null;
+  /** When the probe finished, from the health row; `null` for a skipped item. */
+  checkedAt: string | null;
 }
 
 export interface BatchCounts {
@@ -156,17 +180,24 @@ export function externalCodeFor(cause: string): string {
  * is neither a success nor a failure: counting it as either would misreport a
  * broken index as healthy, or a healthy vendor as broken. `no_credential` is
  * likewise not a failure — nothing was sent — so it is recorded as a skip.
+ *
+ * `keyCount` is passed through rather than read here: a `HealthCheckResult`
+ * carries the key *id* it used, not the size of the pool, and the pool is a
+ * fact about the pre-flight, not about the probe.
  */
-export function itemForResult(result: HealthCheckResult): BatchItem {
+export function itemForResult(result: HealthCheckResult, keyCount: number | null = null): BatchItem {
   const cause = result.cause;
   const base = {
     providerId: result.providerId,
     providerName: result.providerName,
+    providerType: result.providerType,
+    keyCount,
     latencyMs: result.latencyMs,
     resultCount: result.resultCount,
     requests: result.requests,
     checkId: result.id,
     reason: result.message,
+    checkedAt: result.checkedAt,
   };
 
   if (cause === "cancelled") {
@@ -180,12 +211,19 @@ export function itemForResult(result: HealthCheckResult): BatchItem {
   return { ...base, state: "failed", code: externalCodeFor(cause) };
 }
 
-/** Item state for a skip that never sent a request. */
+/**
+ * Item state for a skip that never sent a request.
+ *
+ * `facts` carries what the pre-flight already knows about the source (its type
+ * and how many credentials it has). They are optional so the runner, which
+ * re-classifies an item it already recorded, can stay silent about them.
+ */
 export function itemForSkip(
   providerId: string,
   providerName: string,
   code: string,
   reason: string,
+  facts: { providerType?: string | null; keyCount?: number | null } = {},
 ): BatchItem {
   // `already_running` is a skip even though its code has no `SKIPPED_` prefix:
   // another probe was on the source, so this run learned nothing about it and
@@ -194,6 +232,8 @@ export function itemForSkip(
   return {
     providerId,
     providerName,
+    providerType: facts.providerType ?? null,
+    keyCount: facts.keyCount ?? null,
     state: skipped ? "skipped" : "failed",
     code,
     latencyMs: null,
@@ -201,6 +241,9 @@ export function itemForSkip(
     requests: null,
     checkId: null,
     reason,
+    // Nothing was probed, so there is no check time to report. Keeping it `null`
+    // (rather than the run's start time) is what lets the UI print an em dash.
+    checkedAt: null,
   };
 }
 
@@ -240,14 +283,30 @@ export function countItems(items: BatchItem[]): BatchCounts {
   return counts;
 }
 
+/**
+ * Reads the item ledger, tolerating rows written by older versions.
+ *
+ * `itemsJson` is a JSON column, so a row created before a field existed simply
+ * lacks that key. The three display-only columns (`providerType`, `keyCount`,
+ * `checkedAt`) are therefore normalised to `null` here instead of being trusted
+ * to exist: a reader that saw `undefined` would have to render it, and every
+ * call site would need its own "is this old?" branch.
+ */
 function parseItems(json: string): BatchItem[] {
   try {
     const parsed = JSON.parse(json) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is BatchItem =>
-        typeof item === "object" && item !== null && typeof (item as BatchItem).providerId === "string",
-    );
+    return parsed
+      .filter(
+        (item): item is BatchItem =>
+          typeof item === "object" && item !== null && typeof (item as BatchItem).providerId === "string",
+      )
+      .map((item) => ({
+        ...item,
+        providerType: item.providerType ?? null,
+        keyCount: typeof item.keyCount === "number" ? item.keyCount : null,
+        checkedAt: item.checkedAt ?? null,
+      }));
   } catch {
     return [];
   }
@@ -465,13 +524,23 @@ export class ProviderBatchService {
 
     // Every source in scope is present from the first write, so a reader can
     // tell "not started" (`unknown`) from "deliberately skipped".
+    //
+    // The type and the credential count come from the facts the eligibility gate
+    // already loaded, not from a second query per item: the table has to be able
+    // to describe a source even when it was skipped and no probe ever ran.
+    const factsById = new Map(facts.providers.map((provider) => [provider.id, provider] as const));
     const items: BatchItem[] = [];
     const eligibleIds: string[] = [];
     for (const decision of preview.decisions) {
+      const factsForItem = {
+        providerType: factsById.get(decision.providerId)?.type ?? null,
+        keyCount: facts.anyKeyCounts.get(decision.providerId) ?? 0,
+      };
       if (decision.enqueue) {
         items.push({
           providerId: decision.providerId,
           providerName: decision.providerName,
+          ...factsForItem,
           state: "unknown",
           code: "unknown",
           latencyMs: null,
@@ -479,6 +548,7 @@ export class ProviderBatchService {
           requests: null,
           checkId: null,
           reason: null,
+          checkedAt: null,
         });
         eligibleIds.push(decision.providerId);
         continue;
@@ -487,12 +557,24 @@ export class ProviderBatchService {
         // A configuration error is adjudicated at pre-flight: it counts as a
         // failure (and appears in "retry the failures"), and no request is sent.
         items.push(
-          itemForSkip(decision.providerId, decision.providerName, "configuration_error", decision.reason),
+          itemForSkip(
+            decision.providerId,
+            decision.providerName,
+            "configuration_error",
+            decision.reason,
+            factsForItem,
+          ),
         );
         continue;
       }
       items.push(
-        itemForSkip(decision.providerId, decision.providerName, decision.code as EligibilityCode, decision.reason),
+        itemForSkip(
+          decision.providerId,
+          decision.providerName,
+          decision.code as EligibilityCode,
+          decision.reason,
+          factsForItem,
+        ),
       );
     }
 
@@ -702,16 +784,22 @@ export class ProviderBatchService {
         const entry = byId.get(item.providerId);
         if (!entry) return;
         if (item.result) {
-          const next = itemForResult(item.result);
-          Object.assign(entry, next);
+          // `entry.keyCount` is passed through: it describes the pool the run
+          // started with, while the probe only reports which single key it
+          // picked.
+          Object.assign(entry, itemForResult(item.result, entry.keyCount));
         } else if (item.skip) {
           // Reuse the same mapping the pre-flight uses, so `already_running`
           // and `SKIPPED_*` are classified identically in both paths.
-          const next = itemForSkip(entry.providerId, entry.providerName, item.skip.code, item.skip.reason);
+          const next = itemForSkip(entry.providerId, entry.providerName, item.skip.code, item.skip.reason, {
+            providerType: entry.providerType,
+            keyCount: entry.keyCount,
+          });
           entry.state = next.state;
           entry.code = next.code;
           entry.reason = next.reason;
           entry.checkId = null;
+          entry.checkedAt = null;
           entry.latencyMs = null;
           entry.resultCount = null;
           entry.requests = null;

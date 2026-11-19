@@ -1,6 +1,6 @@
 import { t } from "./i18n";
 import { codeKey, groupOf, stateKey } from "./batch-classify";
-import type { BatchItem, BatchJobView, BatchState } from "./types";
+import type { BatchItem, BatchJobView, BatchState, BatchStatus } from "./types";
 
 /**
  * Human labels for the bulk-test surface.
@@ -58,4 +58,14 @@ export function runStatusLabel(job: BatchJobView): string {
   if (job.status === "running") return t("providers.batch.progress.running");
   if (job.status === "completed") return t("providers.batch.progress.completed");
   return t("providers.batch.progress.partial", { done: finished, total: job.counts.total });
+}
+
+/**
+ * Human label for a **terminal** run status, used by the "last test" banner.
+ *
+ * `running` is excluded on purpose: the banner says "still running" in its own
+ * sentence, so a status word would only repeat it.
+ */
+export function runStatusWord(status: Exclude<BatchStatus, "running">): string {
+  return t(`providers.batch.resume.status.${status}` as "providers.batch.resume.status.completed");
 }

@@ -24,7 +24,7 @@
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -43,7 +43,15 @@ const VIEWPORT = { width: 1600, height: 1000 };
 const SCALE = 2;
 
 const EMAIL = "admin@example.com";
-const PASSWORD = "Screenshot-Local-Only-1";
+/**
+ * The administrator password for this throwaway instance.
+ *
+ * Generated per run rather than written down: a fixed literal in a script is
+ * indistinguishable from a leaked credential to a scanner, and the only way to
+ * keep a scanner honest is to not ship the shape it looks for. It is never
+ * printed, never stored and dies with the temporary data directory.
+ */
+const PASSWORD = randomBytes(24).toString("base64url");
 const SETUP_TOKEN = "screenshots-provider-test-token";
 
 /** The two files this script owns. Nothing else is written. */

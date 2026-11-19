@@ -72,7 +72,10 @@ export function ProviderBatchTestDetail({
 
   const group = groupOf(item);
   const samples = (check?.sample ?? []).slice(0, 3);
-  const checkedAt = check?.checkedAt ?? null;
+  // The health row is authoritative, but the item carries its own copy of the
+  // probe time: a history read that failed must not make a probed source look
+  // like it was never checked.
+  const checkedAt = check?.checkedAt ?? item.checkedAt ?? null;
   const requests = check?.requests ?? item.requests;
 
   return (

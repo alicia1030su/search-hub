@@ -235,4 +235,63 @@ describe("a job started by another account", () => {
     // would make its result permanently unreadable.
     expect(response.statusCode, response.body).toBe(200);
   });
+
+  it("reads an item row written before the display columns existed without failing", async () => {
+    const h = await createHarness();
+    const now = new Date().toISOString();
+    h.ctx.db
+      .insert(providerTestBatches)
+      .values({
+        id: "bt_legacy_items",
+        kind: "connect",
+        status: "completed",
+        total: 1,
+        done: 1,
+        okCount: 1,
+        failedCount: 0,
+        pendingCount: 0,
+        skippedCount: 0,
+        concurrency: 1,
+        optionsJson: "{}",
+        // Exactly the shape a v0.1.9 build wrote: no `providerType`, no
+        // `keyCount`, no `checkedAt`. `items_json` is a JSON column, so an
+        // additive field is absent from old rows rather than `null`.
+        itemsJson: JSON.stringify([
+          {
+            providerId: "p_legacy",
+            providerName: "Legacy source",
+            state: "ok",
+            code: "ok",
+            latencyMs: 42,
+            resultCount: 2,
+            requests: 1,
+            checkId: "hc_legacy",
+            reason: null,
+          },
+        ]),
+        budgetJson: "{}",
+        createdBy: h.owner.label,
+        createdAt: now,
+        startedAt: now,
+        finishedAt: now,
+      })
+      .run();
+
+    const response = await h.app.inject({
+      method: "GET",
+      url: "/api/admin/provider-health/batch-test/bt_legacy_items",
+      cookies: { sh_session: h.owner.cookie },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json() as { items: Array<Record<string, unknown>> };
+    const item = body.items[0]!;
+    // The old conclusion survives untouched…
+    expect(item["state"]).toBe("ok");
+    expect(item["checkId"]).toBe("hc_legacy");
+    // …and the three additive columns read as `null`, which the UI renders as
+    // an em dash instead of inventing a type, a key count or a check time.
+    expect(item["providerType"]).toBeNull();
+    expect(item["keyCount"]).toBeNull();
+    expect(item["checkedAt"]).toBeNull();
+  });
 });

@@ -816,6 +816,15 @@ export type BatchStatus = "running" | "completed" | "partial" | "cancelled" | "i
 export interface BatchItem {
   providerId: string;
   providerName: string;
+  /** Adapter type, copied at run time (a source can be deleted or re-typed later). */
+  providerType: string | null;
+  /**
+   * How many credentials the source had when the run was created.
+   *
+   * A count, never key material. `null` means "not recorded" — a row written
+   * before this column existed — and is rendered as an em dash.
+   */
+  keyCount: number | null;
   state: BatchState;
   /** Canonical code: `ok`, an error classification, or a `SKIPPED_*` reason. */
   code: string;
@@ -826,6 +835,8 @@ export interface BatchItem {
   /** Health-row id this item produced, or `null` if no conclusion was written. */
   checkId: string | null;
   reason: string | null;
+  /** When the probe finished; `null` for an item that was never probed. */
+  checkedAt: string | null;
 }
 
 export interface BatchCounts {

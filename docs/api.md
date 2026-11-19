@@ -343,7 +343,9 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
   "counts": { "total": 20, "done": 7, "ok": 5, "failed": 1, "pending": 1,
               "skipped": 8, "remaining": 5 },
   "items": [
-    { "providerId": "prv_…", "providerName": "Brave", "state": "ok" | "failed" | "pending" | "skipped" | "unknown",
+    { "providerId": "prv_…", "providerName": "Brave", "providerType": "brave",
+      "state": "ok" | "failed" | "pending" | "skipped" | "unknown",
+      "keyCount": 2, "checkedAt": "2026-11-19T12:03:05.000Z",
       "code": "ok" | "auth_invalid" | "SKIPPED_NO_KEY" | …, "latencyMs": 412,
       "resultCount": 3, "requests": 2, "checkId": "hc_…", "reason": null }
   ],
@@ -359,6 +361,11 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
   describable as `部分完成 (done+skipped/total)` and never as "all done".
 - `requests: null` renders as `—`. `checkId: null` means no health conclusion was
   written for this item (skipped, cancelled, or refused before the call).
+- `providerType`, `keyCount` and `checkedAt` describe the run as it happened and
+  are copied into the ledger, so a row stays readable after the source is deleted
+  or re-typed. `keyCount` is a **count of credentials**, never a key or a key id.
+  Rows written by an earlier build read as `null` (rendered `—`); `checkedAt` is
+  `null` for anything that was never probed.
 - After a restart a run that was still going reads `interrupted` and **never**
   `completed`.
 

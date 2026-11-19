@@ -15,6 +15,31 @@ button finally runs the **same** probe the scheduler does.
 
 ### Added
 
+- **A bulk run survives a page reload.** Starting a run writes a pointer (job
+  id, kind, start time) to `localStorage`; on load the page asks the server what
+  that job actually is and shows a one-line notice above the tabs — "still
+  running (3 of 12)" or "finished (partially complete)" — with a button that
+  reopens the run at the step its status implies. The pointer is a pointer, not
+  a cache: a stale one cannot render a table, and a job that returns 404 or
+  belongs to another account clears it silently rather than raising an error on
+  page load.
+- **One entry point on the page an operator actually opens.** The 搜索源 page
+  header now carries 「全部测试」 next to 刷新/新增. It opens the *same*
+  pre-flight dialog the health tab uses, so there is one flow and one set of
+  rules, not two.
+- **The result table states the facts the spec asks for**: source *and* adapter
+  type, state, configured-key count, latency, result count, readable error
+  reason, last-checked time, and per-row 详情 / 重测 actions. Classification and
+  upstream-request count stay in the detail drawer where there is room to read
+  them. `null` renders as an em dash — "not measured" is never printed as `0`.
+- **The batch ledger records what the table shows.** `providerType`, `keyCount`
+  and `checkedAt` are copied into each item when the run is created or the probe
+  finishes, so a row still describes the run that happened after a source is
+  deleted or re-typed. A count of credentials, never a key or a key id. Rows
+  written by an earlier build normalise to `null` on read.
+- **The single-source dialog shows when the probe ran** (`checkedAt`), alongside
+  latency, result count, upstream requests and the redacted key label.
+
 - **Bulk provider test** (migration `0008`): `provider_test_batches` (a run
   ledger) plus `provider_health_checks.batch_id`. Health facts stay in
   `provider_health_checks`; the new table only answers "how far did this run
@@ -63,6 +88,12 @@ button finally runs the **same** probe the scheduler does.
   graded, optionally with the documents they returned but never had judged.
 
 ### Changed
+
+- **The docs screenshot script generates its throwaway password at run time**
+  instead of carrying a fixed literal. A hard-coded `PASSWORD = "…"` in a
+  script is indistinguishable from a leaked credential to a scanner, and the
+  only honest fix is to stop shipping the shape it looks for — not to widen the
+  scanner's allowlist.
 
 - **One probe path.** `POST /providers/:id/test` used to build its own
   `ProviderConfig` and invoke the adapter directly, without
@@ -123,6 +154,15 @@ button finally runs the **same** probe the scheduler does.
 - **No history chart for bulk runs.** The batch ledger keeps the latest runs but
   the UI shows one run at a time; the existing per-source health panel is the
   only trend surface, and it is unchanged.
+- **The reload notice is per browser, not per account.** It is a `localStorage`
+  pointer, so opening the same instance in another browser shows no notice until
+  a run is started there. The job itself is still readable through the API by the
+  account that owns it; only the shortcut is browser-local.
+- **A finished run's notice is read once.** A run that is still `running` refreshes
+  its banner every two seconds, but a run that already ended does not re-read —
+  a page left open overnight does not keep asking about a run that stopped hours
+  ago, at the cost of not noticing a status change that happened after the last
+  read.
 - **`requests` is `null` when it cannot be measured.** A probe that never issued
   a request (missing credential, refused before the call) reports `null` and the
   UI renders `—`. It is never derived from the planned page count — that

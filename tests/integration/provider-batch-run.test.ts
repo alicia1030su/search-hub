@@ -42,6 +42,12 @@ interface ItemView {
   requests: number | null;
   checkId: string | null;
   reason: string | null;
+  /** Adapter type recorded when the run was created. */
+  providerType: string | null;
+  /** Size of the source's credential pool; never key material. */
+  keyCount: number | null;
+  /** Probe time, or `null` for a source that was never probed. */
+  checkedAt: string | null;
 }
 
 interface JobView {
@@ -168,6 +174,13 @@ describe("batch run lifecycle", () => {
     // The item carries a health row id the operator can open, and a request count.
     expect(finished[0]!.checkId).not.toBeNull();
     expect(finished[0]!.requests).toBeGreaterThanOrEqual(1);
+    // The §7 columns: the row describes the source (type and credential count)
+    // and states when it was checked, so the table can render without a second
+    // request per row.
+    expect(finished[0]!.providerType).toBe("brave");
+    expect(finished[0]!.keyCount).toBe(1);
+    expect(finished[0]!.checkedAt).not.toBeNull();
+    expect(Number.isNaN(Date.parse(finished[0]!.checkedAt!))).toBe(false);
 
     // …and that health row exists: the conclusion lives in the probe log, not in
     // the batch table.
@@ -452,6 +465,13 @@ describe("batch run concurrency and budget", () => {
     for (const item of skipped) {
       expect(item.code).toBe("SKIPPED_BUDGET");
       expect(item.reason).toContain("budget_exhausted");
+      // A skipped source was never probed, so it has no check time — and the
+      // table must be able to say so instead of printing the run's start time.
+      expect(item.checkedAt).toBeNull();
+      // The description of the source survives the skip: the operator still needs
+      // to see which type it is and how many credentials it holds.
+      expect(item.providerType).toBe("brave");
+      expect(item.keyCount).toBe(1);
     }
     expect(view.counts.ok).toBe(1);
     // The ledger was not overspent: one probe for the run, and the day counter

@@ -27,6 +27,15 @@ const PASSWORD = "E2E-Local-Only-Password-1";
  */
 async function ensureSignedIn(page: Page): Promise<void> {
   await page.goto("/");
+  // The SPA decides client-side whether to render the login form, the setup form
+  // or the dashboard. Waiting for one of the forms first removes the race
+  // between the URL check below and the first paint — a fresh browser context
+  // has no session yet, so `/` legitimately renders as `/login` a moment later.
+  await page
+    .locator("#login-email, #setup-token")
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 })
+    .catch(() => undefined);
   if (page.url().includes("/setup") || (await page.locator("#setup-token").isVisible().catch(() => false))) {
     await page.locator("#setup-token").fill("e2e-setup-token");
     await page.locator("#setup-email").fill(EMAIL);
@@ -431,6 +440,188 @@ test.describe("搜索源批量体检", () => {
 
     await dialog.getByRole("button", { name: "Cancel" }).last().click();
     await page.getByTestId("locale-switcher").selectOption("zh-CN");
+  });
+
+  /**
+   * T31 — the top-of-page entry.
+   *
+   * `providers` is the page an administrator lands on, so "test everything" has
+   * to be reachable from there without first switching to the health tab. The
+   * assertion is on the *same* pre-flight dialog, not on a second flow: a second
+   * implementation would drift from the one the health tab opens.
+   */
+  test("T31 页面顶部「全部测试」打开同一个预检框", async ({ page }) => {
+    await page.goto("/providers");
+    await expect(page.getByTestId("providers-test-all")).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId("providers-test-all").click();
+
+    await expect(page.getByTestId("batch-preview")).toBeVisible();
+    // The button opens the live-search kind, and the dialog shows it selected.
+    await expect(page.getByTestId("batch-kind-search")).toBeVisible();
+    // Same scope counters as the health-tab entry: one flow, one implementation.
+    await expect(page.getByTestId("count-eligible")).toBeVisible();
+    await expect(page.getByTestId("batch-scope-total")).toContainText("范围内共");
+
+    await page.getByRole("dialog").getByRole("button", { name: "取消" }).click();
+    await expect(page.getByTestId("batch-preview")).toHaveCount(0);
+  });
+
+  /**
+   * T32 — a reload can come back to the last run.
+   *
+   * The job lives on the server and the page keeps only a pointer to it. The test
+   * therefore (a) starts a real run, (b) reloads, (c) checks the banner describes
+   * what the server says happened, and (d) opens the results from it. A page that
+   * merely remembered "a job existed" would pass nothing here.
+   */
+  test("T32 刷新后提示条出现并能打开上次检测结果", async ({ page }) => {
+    await page.goto("/providers");
+    await addMockProvider(page, "e2e-batch-t32", { resultCount: 2, latencyMs: 10, namespace: "t32" });
+
+    await gotoHealthTab(page);
+    await openPreview(page, "connect");
+    await page.getByTestId("batch-start").click();
+    await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
+    // Rows reached the table before the reload: otherwise the reopened view
+    // below would be indistinguishable from an empty one.
+    await expect(page.locator('[data-testid^="batch-row-"]').first()).toBeVisible();
+    // `.last()`: the dialog has both the header X and the footer button, and both
+    // carry the same accessible name.
+    await page.getByRole("dialog").getByRole("button", { name: "关闭" }).last().click();
+
+    await page.reload();
+    const banner = page.getByTestId("providers-resume-banner");
+    await expect(banner).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("providers-resume-text")).toContainText("上次检测已结束");
+    // No dialog on load: the notice is a line on the page, not a pop-up.
+    await expect(page.getByTestId("batch-results")).toHaveCount(0);
+
+    await page.getByTestId("providers-resume-open").click();
+    await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-testid^="batch-row-"]').first()).toBeVisible();
+    await expect(page.getByTestId("batch-result-status")).toContainText("已完成");
+
+    // Closing the dialog drops the notice: it has been acted on.
+    await page.getByRole("dialog").getByRole("button", { name: "关闭" }).last().click();
+    await expect(page.getByTestId("providers-resume-banner")).toHaveCount(0);
+  });
+
+  /**
+   * T33 — a pointer to a job that no longer exists is forgotten quietly.
+   *
+   * This is the reload after the database was reset (or after signing in as a
+   * different account). The page must not error, and must not show a banner about
+   * a run it can never open.
+   */
+  test("T33 任务不存在时静默清除，不显示提示条也不报错", async ({ page }) => {
+    await page.goto("/providers");
+    await page.evaluate(() => {
+      // `globalThis` rather than `window`: the e2e suite is compiled without the
+      // DOM library, and inside the browser they are the same object.
+      (globalThis as unknown as { localStorage: Storage }).localStorage.setItem(
+        "sh-provider-batch-job",
+        JSON.stringify({ jobId: "bt_does_not_exist", kind: "connect", startedAt: "2026-01-01T00:00:00.000Z" }),
+      );
+    });
+    await page.reload();
+
+    await expect(page.getByTestId("providers-resume-banner")).toHaveCount(0);
+    // No error alert either: a missing job is not something the operator did wrong.
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    // …and the pointer is gone, so the next reload does not ask again.
+    const stored = await page.evaluate(() =>
+      (globalThis as unknown as { localStorage: Storage }).localStorage.getItem("sh-provider-batch-job"),
+    );
+    expect(stored).toBeNull();
+  });
+
+  /**
+   * T34 — the result table fits the dialog, and its last column is usable.
+   *
+   * The failure this guards against is not cosmetic: a table whose action column
+   * is pushed outside the dialog's visible width hides the only per-row buttons an
+   * operator can press. §7 lists eight columns, and the two that do not belong
+   * there — the error classification and the upstream request count — stay in the
+   * drawer, which the last assertions check still shows them.
+   */
+  test("T34 结果表 8 列，1600×1000 下操作列完整可见且无横向溢出", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.goto("/providers");
+    await addMockProvider(page, "e2e-batch-t34", { resultCount: 3, latencyMs: 10, namespace: "t34" });
+
+    const providerId = await page.evaluate(async () => {
+      const response = await fetch("/api/admin/providers", {
+        credentials: "include",
+        headers: { accept: "application/json" },
+      });
+      const body = (await response.json()) as { providers: Array<{ id: string; name: string }> };
+      return body.providers.find((item) => item.name === "e2e-batch-t34")?.id ?? null;
+    });
+    expect(providerId).not.toBeNull();
+
+    await gotoHealthTab(page);
+    await openPreview(page, "connect");
+    await page.getByTestId("batch-start").click();
+    await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
+
+    // Exactly the eight columns of §7: source (+type), state, keys, latency,
+    // results, reason, last checked, actions.
+    await expect(page.getByTestId("batch-table").locator("thead th")).toHaveCount(8);
+    // The two facts that belong to the drawer are not columns any more.
+    await expect(page.locator('[data-testid^="batch-requests-"]')).toHaveCount(0);
+
+    // No horizontal scrolling is needed at the dialog's own width…
+    const overflow = await page.getByTestId("batch-table").evaluate((node) => ({
+      scrollWidth: node.scrollWidth,
+      clientWidth: node.clientWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+
+    // …and both action buttons of a row sit inside the dialog, horizontally.
+    // Vertical scrolling inside the dialog is allowed (a long list); a column
+    // pushed off the right edge is not.
+    for (const testId of [`batch-open-detail-${providerId}`, `batch-retry-one-${providerId}`]) {
+      const edges = await page.getByTestId(testId).evaluate((node) => {
+        const dialog = node.closest('[role="dialog"]');
+        const button = node.getBoundingClientRect();
+        const panel = dialog?.getBoundingClientRect();
+        return { left: button.left, right: button.right, panelLeft: panel?.left ?? 0, panelRight: panel?.right ?? 0 };
+      });
+      expect(edges.left).toBeGreaterThanOrEqual(edges.panelLeft - 1);
+      expect(edges.right).toBeLessThanOrEqual(edges.panelRight + 1);
+    }
+
+    // The retry button is not merely visible: pressing it probes that one source
+    // and shows the probe's **own** conclusion. The batch row is left alone — it
+    // is the record of what the run saw, and a later probe must not rewrite it.
+    const retryRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" && request.url().includes(`/api/admin/providers/${providerId}/test`),
+    );
+    await page.getByTestId(`batch-retry-one-${providerId}`).click();
+    expect(await retryRequest).toBeTruthy();
+
+    // The single-source result dialog opens on its own (no drawer needed), with
+    // the facts the batch row does not carry: request count and test time.
+    const singleResult = page.getByRole("dialog").filter({ hasText: "搜索测试" });
+    await expect(singleResult).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("single-test-requests")).toBeVisible();
+    await expect(page.getByTestId("single-test-checked-at")).toBeVisible();
+    await singleResult.getByRole("button", { name: "关闭" }).last().click();
+    await expect(singleResult).toHaveCount(0);
+
+    // …and the row still says what the run said (a retest is a new probe, not a
+    // patch on the ledger).
+    await expect(page.getByTestId(`batch-state-${providerId}`)).toHaveText("成功");
+
+    // The drawer still carries what the table no longer shows.
+    await page.getByTestId(`batch-open-detail-${providerId}`).click();
+    const drawer = page.getByTestId("batch-detail");
+    await expect(drawer).toBeVisible();
+    await expect(page.getByTestId("batch-detail-requests")).toBeVisible();
+    await expect(drawer).toContainText("错误分类");
+
+    await page.keyboard.press("Escape");
   });
 });
 

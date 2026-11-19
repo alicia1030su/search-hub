@@ -6,7 +6,7 @@
 
 > **状态：v0.1.10 · Stable Release（正式发布渠道）。**
 >
-> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存、搜索源健康管理中心与搜索质量评测实验室均已实现，并通过 **1022 个自动化测试（76 个文件）**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存、搜索源健康管理中心与搜索质量评测实验室均已实现，并通过 **1034 个自动化测试（78 个文件）**。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
 >
 > **Stable 的含义是「这是维护者当前选择的公开正式发布渠道」，不是「所有外部集成均已通过生产认证」。** 具体说：**Hacker News、Crossref、OpenAlex、PubMed 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**；搜索质量评测目前只有合成基准，**没有真实厂商标注集**。这些缺口在 [Provider 状态矩阵](./docs/provider-matrix.md)、[发布就绪报告](./docs/release-readiness.md) 与 [CHANGELOG](./CHANGELOG.md) 里逐项列明，未联调的能力不会被描述为“已验证”。
 
@@ -66,13 +66,13 @@ Search Hub 把这些做成一个可部署的服务：
 
 #### 一键批量检测
 
-单个来源可以「检测」，全部来源可以「全部测试」。批量检测分三步，每一步都能看清再决定：
+单个来源可以「测试」，全部来源可以「全部测试」。「全部测试」在**搜索源页面顶部**和健康 tab 各有一个入口，打开的是同一个预检流程。批量检测分三步，每一步都能看清再决定：
 
 | 步骤 | 你能看到什么 |
 |---|---|
 | **预检** | 6 个计数（可测 / 无 Key / 配置错误 / 已禁用 / 免 Key 跳过 / 冷却与预算）+ 今日剩余额度 + 是否可能产生第三方费用。七项之和等于范围内来源总数，不会有来源被悄悄漏掉 |
-| **执行** | 实时进度（`已完成/待检测`）、当前来源、成功 / 失败 / 待确认 / 跳过四个计数，以及取消按钮 |
-| **结果** | 按严重度排序（失败 → 受限 → 待确认 → 成功 → 跳过）、可筛选、可「只重测失败项」的表，点开每一行有分类、耗时、结果数、上游请求数与最多 3 条样例 |
+| **执行** | 实时进度（`已完成/待检测`、百分比、当前来源）、成功 / 失败 / 待确认 / 跳过四个计数，以及取消按钮 |
+| **结果** | 8 列结果表：来源（名称 + 适配器类型）/ 状态 / API Key（已配置数量）/ 耗时 / 结果数量 / 错误原因 / 最近检测 / 操作（详情、单行重测）；按严重度排序（失败 → 受限 → 待确认 → 成功 → 跳过）、可筛选、可「只重测失败项」。详情抽屉给分类、建议、实测上游请求数与最多 3 条样例 |
 
 - **默认只测已配置 Key 的来源**：没有凭据的源被标为「无 Key」跳过，不计入失败，也不进成功率分母。
 - **免 Key 来源默认跳过**：预检框里可以临时打开「包含免 Key 来源」；它们是真实搜索，会向第三方发请求。
@@ -80,6 +80,8 @@ Search Hub 把这些做成一个可部署的服务：
 - **付费提示**：真实搜索检测可能消耗厂商额度时，预检框会显著标出预计次数；付费检测关闭时开始按钮直接禁用并说明原因，不用点了才知道。
 - **取消可回读**：取消后已完成的结论仍然可读，未开始的部分标为「已取消」。
 - **重启不撒谎**：进程在检测中途被杀，任务状态是 `interrupted`（部分完成），永远不会显示成「全部完成」。
+- **刷新可回看**：开始检测后浏览器记住一个任务指针，刷新页面会在标签栏上方显示「上次检测仍在进行（已完成 x/共 y）」或「上次检测已结束（部分完成）」，点一下直接回到进度或结果；任务已不存在或属于别的账号时静默清除，不报错。
+- **未测量的字段显示 `—`**：没发过请求就没有耗时、结果数和请求数，不用 0 冒充一次测量；也没有任何地方会显示 API Key 明文。
 
 [![批量检测结果表](docs/screenshots/v0110/provider-batch-test.png)](docs/screenshots/v0110/provider-batch-test.png)
 
@@ -225,7 +227,7 @@ Search Hub 把这些做成一个可部署的服务：
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.9-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.10-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -234,7 +236,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.9    # 或不写 tag，默认取 latest
+docker pull ghcr.io/alicia1030su/search-hub:0.1.10    # 或不写 tag，默认取 latest
 # 镜像当前只构建 linux/amd64；arm64 主机请使用上面的 arm64 独立包
 docker compose up -d                                        # 或从源码构建
 ```
@@ -369,7 +371,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试 **1022 项 / 76 个文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试 **1034 项 / 78 个文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 持久化缓存 **23 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
 - 健康管理中心 **35 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、取消不退款、多 Key 共享账户额度、MCP 与 REST 同一门禁。使用注入时钟与可控调度，无真实等待；「付费」源是本地 Brave 契约服务 + 真实 Key，不调用任何厂商。
 - 凭证类型判断 **6 项**（`tests/integration/credential-classes.test.ts`）：六个公开源声明 `authType: none` 且 `requiresKey: false`；需 Key 无 Key 判 `unverified`；无 Key 源用本地 HN 线格式桩真实探测可判 `healthy`；`/api/health` 不再把无 Key 源算成不可用；需实例地址的源按配置缺失处理。
@@ -377,7 +379,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 - 中英文一致性 **5 项**（`tests/unit/i18n-parity.test.ts`）：键全覆盖、英文值无 CJK、占位符一致、无空值、`format.ts` 无硬编码 zh-CN 格式化。
 - 验收矩阵 **16 项**（PASS 11 / PARTIAL 4 / BLOCKED 1），由 `docs/ac-matrix.json` 自动生成，见 [docs/ac-matrix.md](./docs/ac-matrix.md)。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
-- Playwright **18 项**：首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注，以及语言切换后全站无中文残留并在刷新后保持。
+- Playwright **38 项**：首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注、语言切换后全站无中文残留并在刷新后保持，以及 v0.1.10 搜索源体检（单源测试通过/失败、真实上游请求计数、批量预检与进度、取消、只重测失败项、8 列表格、刷新恢复、重复点击幂等、混合五类统计、免 Key 策略）。
 
 **未验证（需要真实凭证或环境）**
 
@@ -416,7 +418,7 @@ tests              unit / integration / e2e / scripts
 ## 测试
 
 ```bash
-pnpm test                 # Vitest：单元 + 集成（1022 项）
+pnpm test                 # Vitest：单元 + 集成（1034 项）
 pnpm build && pnpm test:e2e
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 node tests/scripts/leak-scan.mjs        # 密钥泄漏扫描（自起临时实例）

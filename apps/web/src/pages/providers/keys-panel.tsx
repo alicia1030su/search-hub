@@ -80,7 +80,29 @@ export function TestResultDialog({
             </div>
             <div className="rounded-md border bg-muted/25 p-2.5">
               <p className="text-[11px] text-muted-foreground">{t("providers.batch.detail.key")}</p>
-              <p className="font-mono text-sm">{redactKeyId(result.keyId ?? null)}</p>
+              {/*
+                A keyless source has no credential to redact, and saying so is
+                more useful than a bare em dash: "no credential used" is a fact
+                about the probe, not a missing value. There is no code path here
+                that could print key material either way — `redactKeyId` only
+                ever truncates an id.
+              */}
+              <p className="font-mono text-sm">
+                {result.keyId
+                  ? redactKeyId(result.keyId)
+                  : t("providers.batch.detail.keyNone")}
+              </p>
+            </div>
+            {/*
+              When the probe ran, straight from the health row's `checkedAt`.
+              An older server omits the field, and then the em dash is the honest
+              answer — inventing "just now" would date a probe nobody ran.
+            */}
+            <div className="col-span-2 rounded-md border bg-muted/25 p-2.5">
+              <p className="text-[11px] text-muted-foreground">{t("providers.test.checkedAt")}</p>
+              <p className="font-mono text-sm" data-testid="single-test-checked-at">
+                {formatDateTime(result.checkedAt)}
+              </p>
             </div>
           </div>
           {result.cause ? (

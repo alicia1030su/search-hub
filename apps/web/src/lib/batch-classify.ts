@@ -101,6 +101,22 @@ export function requestsLabel(requests: number | null): string {
 }
 
 /**
+ * The message to show in the table's "error reason" column, or `null`.
+ *
+ * A successful probe's message is a *measurement* (`3 result(s) in 30ms`), and
+ * the row already carries both numbers in their own columns. Repeating it under
+ * the heading "error reason" would say a healthy source had a problem — and it
+ * would push genuinely bad rows out of the column. Every other state (a failure,
+ * `empty_results`, or a skip) has a message that explains the row, so it is
+ * shown.
+ */
+export function errorReasonOf(item: BatchItem): string | null {
+  if (item.state === "ok") return null;
+  const reason = item.reason?.trim() ?? "";
+  return reason.length > 0 ? reason : null;
+}
+
+/**
  * Renders `key_ab…9f` from a key **identifier**.
  *
  * There is no code path in this app that can produce the key material for

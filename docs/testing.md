@@ -59,6 +59,14 @@ real SQLite database. **No real vendor is contacted.**
 | T28 | same | `T28 只重测失败项时请求体恰好是失败集合` | intercepted POST body `providerIds` equals the failure set exactly — no throttled, no ok |
 | T29 | same | `T29 抽屉显示脱敏 Key 标签、样例不超过 3 条、requests 缺失显示 —` | `key_ab…9f` shape, ≤ 3 samples, `requests` renders `—`, no key material anywhere |
 | T30 | same + `tests/unit/i18n-parity.test.ts` + `tests/unit/provider-batch-view.test.ts` | `T30 英文界面下批量体检文案无硬编码中文` / parity / message coverage | `zh`/`en` key sets equal, no CJK in the dialog in English, every classification has a label and an advice sentence in both locales |
+| T31 | `tests/e2e/provider-batch.spec.ts` | `T31 页面顶部「全部测试」打开同一个预检框` | the page-header entry opens the **same** pre-flight dialog (same count rows, same scope line); closing it leaves no dialog behind |
+| T32 | same | `T32 刷新后提示条出现并能打开上次检测结果` | a real run → reload → the notice describes the server's status → opening it shows the result table from the *same* job id |
+| T33 | same | `T33 任务不存在时静默清除，不显示提示条也不报错` | a pointer to a job the server does not have produces no notice, no error alert, and is dropped from `localStorage` |
+| T34 | same | `T34 结果表 8 列，1600×1000 下操作列完整可见且无横向溢出` | exactly eight `<th>`; no `batch-requests-*` cell; `scrollWidth <= clientWidth`; both row actions inside the dialog box; a row retest opens the single-source dialog and leaves the batch row untouched |
+| T35 | `tests/e2e/provider-single-test.spec.ts` | `T34 单源测试通过：结论、结果数、测试时间与脱敏 Key，页面无 Key 明文` | pass path through the row button: `返回结果=3`, `requests=—` for a mock, `checkedAt` present, no plaintext key, health overview `healthy` after reload |
+| T36 | same | `T35 单源测试的上游请求数是真实测量，并写回健康概览` | a loopback HN stub: `requests` equals what the stub's socket counted, results = stub's rows, health flips to `healthy` |
+| T37 | same | `T36 单源测试失败：显示鉴权分类与建议，而不是笼统失败` | a real 401 from a loopback stub → "测试失败" + `Key 无效或已过期` + advice; health shows `invalid_credentials` |
+| T38 | `tests/e2e/provider-batch.spec.ts` | `T34`（同上） | the retest dialog is the **same** surface as the row's test button, so a retest reads identically wherever it starts |
 
 The E2E suite seeds only the built-in `mock` adapter and one `http.createServer`
 Brave-shaped stub on 127.0.0.1; `paidProbesEnabled` is switched on for the
