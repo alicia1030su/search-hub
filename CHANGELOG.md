@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.11 (2026-11-20)
+## v0.1.11 (2026-11-21)
 
 Provider health and bulk testing now use one credential and budget model. Keyless
 participation is a task-level choice, anonymous searches have their own durable
@@ -51,6 +51,10 @@ that a late runner can overwrite.
   new job starts.
 - A successful single-source test refreshes the health overview immediately;
   switching to the health tab no longer requires a full page reload.
+- Provider PATCH requests no longer inherit create-schema defaults, so updating
+  concurrency or RPM cannot silently erase provider/search configuration.
+- Key acquisition waits for the request's remaining deadline instead of failing
+  after an arbitrary two-second queue budget under parallel load.
 
 ### Fixed
 
