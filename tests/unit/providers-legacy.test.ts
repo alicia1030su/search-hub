@@ -249,7 +249,7 @@ describe("legacy Search Hub adapter: response shapes", () => {
 describe("legacy Search Hub adapter: error mapping", () => {
   const cases: Array<[number, string, boolean]> = [
     [401, "auth_invalid", false],
-    [403, "auth_invalid", false],
+    [403, "blocked", false],
     [429, "rate_limited", true],
     [500, "server_error", true],
     [503, "server_error", true],

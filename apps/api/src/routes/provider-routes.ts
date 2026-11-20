@@ -191,12 +191,11 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
             skipped.push({ type: item.type, reason: "no implemented adapter for this catalog entry" });
             continue;
           }
-          const adapter = getAdapter(item.type);
           const name = uniqueName(ctx, item.name ?? entry.name);
           const id = newId("prv");
           // A source that needs a key starts disabled; adding it is not the same
           // as being able to use it.
-          const enabled = adapter?.requiresKey ? false : item.enabled;
+          const enabled = ctx.providers.providerRequiresKey(item.type, {}) ? false : item.enabled;
           ctx.db
             .insert(providerInstances)
             .values({
@@ -312,8 +311,8 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
             skipped.push({ name: row.name, reason: "no implemented adapter" });
             continue;
           }
-          const needsKey = adapter.requiresKey;
-          const hasKey = ctx.providers.listKeys(row.id).some((key) => key.enabled);
+          const needsKey = ctx.providers.providerRequiresKey(row.type, safeConfig(row.configJson));
+          const hasKey = (ctx.providers.keyAvailability([row.id]).get(row.id)?.available ?? 0) > 0;
           if (needsKey && !hasKey) {
             skipped.push({ name: row.name, reason: "no credential configured" });
             continue;
@@ -372,9 +371,8 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
           continue;
         }
         if (input.enabled) {
-          const adapter = getAdapter(row.type);
-          const needsKey = adapter?.requiresKey ?? false;
-          const hasKey = ctx.providers.listKeys(id).some((key) => key.enabled);
+          const needsKey = ctx.providers.providerRequiresKey(row.type, safeConfig(row.configJson));
+          const hasKey = (ctx.providers.keyAvailability([id]).get(id)?.available ?? 0) > 0;
           if (needsKey && !hasKey) {
             // Enabling a credential-less source would fail at search time; the
             // operator needs to know why instead of seeing it silently skipped.
@@ -591,27 +589,7 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
       // `kind: "connect"`: this button asks "is this credential accepted", which
       // is a free question. Probing the paid search path here would bill the
       // operator for a key-status check.
-      const result = await testProvider(ctx, found.providerId, { keyId, kind: "connect" });
-      if (result.ok) {
-        ctx.providers.markKeyHealthy(found.providerId, keyId);
-        ctx.db
-          .update(apiKeys)
-          .set({ status: "healthy", consecutiveFailures: 0, cooldownUntil: null, lastErrorCode: null, lastErrorMessage: null })
-          .where(eq(apiKeys.id, keyId))
-          .run();
-      } else {
-        ctx.db
-          .update(apiKeys)
-          .set({
-            status: "invalid",
-            lastErrorCode: "auth_invalid",
-            lastErrorMessage: result.message.slice(0, 500),
-            lastFailureAt: new Date().toISOString(),
-          })
-          .where(eq(apiKeys.id, keyId))
-          .run();
-        ctx.providers.reload();
-      }
+      const result = await testProvider(ctx, found.providerId, { keyId, kind: "connect", manual: true });
       audit(ctx, actorLabel(actor), "key.test", keyId, { ok: result.ok }, request.ip);
       return result;
     }),
@@ -714,7 +692,7 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
 async function testProvider(
   ctx: AppContext,
   providerId: string,
-  options: { keyId?: string; kind?: "connect" | "search" } = {},
+  options: { keyId?: string; kind?: "connect" | "search"; manual?: boolean } = {},
 ): Promise<{
   ok: boolean;
   latencyMs: number;
@@ -735,6 +713,7 @@ async function testProvider(
     kind: options.kind ?? "search",
     trigger: "manual",
     ...(options.keyId === undefined ? {} : { keyId: options.keyId }),
+    ...(options.manual === undefined ? {} : { manual: options.manual }),
   });
 
   return {
@@ -759,6 +738,17 @@ function safeArray(json: string): string[] {
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
   } catch {
     return [];
+  }
+}
+
+function safeConfig(json: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
   }
 }
 

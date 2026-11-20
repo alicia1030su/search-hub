@@ -162,7 +162,7 @@ export function ProvidersPage() {
         const view = await api.batchTestJob(remembered.jobId, controller.signal);
         if (cancelled) return;
         setResume({ kind: remembered.kind, view });
-        if (view.status === "running") {
+        if (view.status === "running" || view.counts.remaining > 0) {
           timer = window.setTimeout(() => void load(), 2000);
         }
       } catch (failure) {
@@ -273,6 +273,7 @@ export function ProvidersPage() {
   }, [focusId, providers.data]);
 
   const adapters = providers.data?.adapters ?? [];
+  const resumeSettled = resume !== null && resume.view.status !== "running" && resume.view.counts.remaining === 0;
 
   const canAdd = (entry: ProviderCatalogEntry): boolean => {
     if (entry.implementation === "planned" || entry.implementation === "unavailable") return false;
@@ -286,6 +287,7 @@ export function ProvidersPage() {
       const result = await api.testProvider(provider.id);
       setTestState({ title: t("providers.test.title", { name: provider.name }), result });
       providers.reload();
+      health.reload();
     } catch (caught) {
       const apiError = toApiError(caught);
       toast.error({ title: apiError.message, description: apiError.code });
@@ -474,7 +476,7 @@ export function ProvidersPage() {
         >
           <p className="min-w-0 text-foreground" data-testid="providers-resume-text">
             <span className="font-medium">{t("providers.batch.title")}</span>{" "}
-            {resume.view.status === "running"
+            {resume.view.status === "running" || resume.view.counts.remaining > 0
               ? t("providers.batch.resume.running", {
                   done: resume.view.counts.done,
                   total: resume.view.counts.total,
@@ -491,7 +493,7 @@ export function ProvidersPage() {
               data-testid="providers-resume-open"
               onClick={openResumedBatch}
             >
-              {resume.view.status === "running"
+              {!resumeSettled
                 ? t("providers.batch.resume.viewProgress")
                 : t("providers.batch.resume.viewResults")}
             </Button>

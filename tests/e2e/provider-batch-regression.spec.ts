@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import {
   addKeyToProvider,
   addMockProvider,
+  adminJson,
   callAdminApi,
   createProviderViaApi,
   deleteProvidersByNamePrefix,
@@ -73,6 +74,13 @@ async function openDetail(page: Page, providerId: string) {
   return drawer;
 }
 
+/** Sets the task-local switch without ever writing global health settings. */
+async function setTaskKeyless(page: Page, enabled: boolean): Promise<void> {
+  const toggle = page.getByTestId("batch-include-keyless").getByRole("switch");
+  if ((await toggle.getAttribute("aria-checked")) !== String(enabled)) await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", String(enabled));
+}
+
 /**
  * Restores the settings this file is allowed to change.
  *
@@ -119,6 +127,7 @@ test.describe("搜索源批量体检的行为边界", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
 
     const starts: unknown[] = [];
     const polledJobs = new Set<string>();
@@ -187,6 +196,7 @@ test.describe("搜索源批量体检的行为边界", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
     await pinBatchScope(page, [okId, authId, limitedId, emptyId, noKeyId, offId]);
     await page.getByTestId("batch-start").click();
     await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
@@ -262,6 +272,7 @@ test.describe("搜索源批量体检的行为边界", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
 
     await expect.poll(() => countRow(page, "count-nokey")).toBeGreaterThan(0);
     // One source cannot be asked anything; the rest of the scope still can.
@@ -319,17 +330,19 @@ test.describe("搜索源批量体检的行为边界", () => {
       await gotoHealthTab(page);
       await openPreview(page, "connect");
 
-      // The default policy includes keyless sources: both are testable.
-      await expect.poll(() => countRow(page, "count-eligible")).toBeGreaterThanOrEqual(2);
+      // The task-local default excludes keyless sources, regardless of the
+      // global includeUnverified policy restored in beforeEach.
       const keylessSwitch = page.getByTestId("batch-include-keyless").getByRole("switch");
+      await expect(keylessSwitch).toHaveAttribute("aria-checked", "false");
+      await expect.poll(() => countRow(page, "count-keyless")).toBeGreaterThan(0);
+      await expect(page.getByTestId("batch-start")).toBeEnabled();
+
+      // Enabling it is scoped to this task and refetches the pre-flight.
+      await keylessSwitch.click();
       await expect(keylessSwitch).toHaveAttribute("aria-checked", "true");
+      await expect.poll(() => countRow(page, "count-eligible")).toBeGreaterThanOrEqual(2);
       await keylessSwitch.click();
       await expect(keylessSwitch).toHaveAttribute("aria-checked", "false");
-
-      // The keyless source is now a *policy* skip, and the run can still start
-      // because the credentialed source remains. Toggling refetches the
-      // pre-flight asynchronously, so the new count is polled rather than read
-      // once and raced.
       await expect.poll(() => countRow(page, "count-keyless")).toBeGreaterThan(0);
       await expect(page.getByTestId("batch-start")).toBeEnabled();
 
@@ -389,6 +402,7 @@ test.describe("搜索源批量体检的行为边界", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
     await pinBatchScope(page, [failId, ...slowIds]);
     await page.getByTestId("batch-start").click();
     await expect(page.getByTestId("batch-progress")).toBeVisible();
@@ -488,6 +502,121 @@ test.describe("搜索源批量体检的行为边界", () => {
       (globalThis as unknown as { localStorage: Storage }).localStorage.getItem("sh-provider-batch-job"),
     );
     expect(stored).toBeNull();
+  });
+
+  test("T45 免 Key 开关默认关闭、仅本次生效，刷新后原任务快照不变", async ({ page }) => {
+    await page.goto("/providers");
+    const name = `${PREFIX}t45-keyless`;
+    await addMockProvider(page, name, { resultCount: 2, latencyMs: 200, namespace: "t45" });
+    const providerId = await requireProviderId(page, name);
+    await page.route("**/api/admin/provider-health/batch-test/preview?*", async (route) => {
+      const url = new URL(route.request().url());
+      url.searchParams.set("providerIds", providerId);
+      await route.continue({ url: url.toString() });
+    });
+
+    await gotoHealthTab(page);
+    await openPreview(page, "connect");
+    await expect(page.getByTestId("batch-include-keyless").getByRole("switch")).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    await expect.poll(() => countRow(page, "count-keyless")).toBe(1);
+    await expect(page.getByTestId("batch-start")).toBeDisabled();
+    await setTaskKeyless(page, true);
+    await expect.poll(() => countRow(page, "count-eligible")).toBe(1);
+
+    let posted: { includeKeyless?: boolean } | null = null;
+    await pinBatchScope(page, [providerId], { onStart: (body) => (posted = body as { includeKeyless?: boolean }) });
+    const started = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname.endsWith("/api/admin/provider-health/batch-test"),
+    );
+    await page.getByTestId("batch-start").click();
+    const jobId = (await (await started).json()).jobId as string;
+    await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByTestId(`batch-row-${providerId}`)).toHaveAttribute("data-state", "ok");
+    expect(posted).toMatchObject({ includeKeyless: true });
+
+    const settings = await adminJson(page, "/api/admin/provider-health/settings", { method: "GET" });
+    expect((settings.body as { policy: { includeUnverified: boolean } }).policy.includeUnverified).toBe(true);
+    await page.getByRole("dialog").getByRole("button", { name: "关闭" }).last().click();
+
+    await page.reload();
+    await page.getByTestId("providers-resume-open").click();
+    await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId(`batch-row-${providerId}`)).toHaveAttribute("data-state", "ok");
+    const snapshot = await adminJson(page, `/api/admin/provider-health/batch-test/${jobId}`, { method: "GET" });
+    expect((snapshot.body as { includeKeyless: boolean }).includeKeyless).toBe(true);
+    await page.getByRole("dialog").getByRole("button", { name: "关闭" }).last().click();
+
+    await gotoHealthTab(page);
+    await openPreview(page, "connect");
+    await expect(page.getByTestId("batch-include-keyless").getByRole("switch")).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    await expect.poll(() => countRow(page, "count-keyless")).toBe(1);
+  });
+
+  test("T46 取消后必须轮询到 remaining=0 才停止并展示结果", async ({ page }) => {
+    await page.goto("/providers");
+    const ids: string[] = [];
+    for (let index = 1; index <= 3; index += 1) {
+      const name = `${PREFIX}t46-${index}`;
+      await addMockProvider(page, name, { resultCount: 2, latencyMs: 900, namespace: `t46-${index}` });
+      ids.push(await requireProviderId(page, name));
+    }
+
+    await gotoHealthTab(page);
+    await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
+    await pinBatchScope(page, ids);
+    const started = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname.endsWith("/api/admin/provider-health/batch-test"),
+    );
+    await page.getByTestId("batch-start").click();
+    const jobId = (await (await started).json()).jobId as string;
+
+    let readsAfterCancel = 0;
+    let staleReads = 0;
+    let cancelClicked = false;
+    await page.route(`**/api/admin/provider-health/batch-test/${jobId}`, async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      if (cancelClicked) readsAfterCancel += 1;
+      const response = await route.fetch();
+      const body = (await response.json()) as {
+        status: string;
+        counts: { remaining: number };
+        nextPollAfterMs: number | null;
+        items: Array<Record<string, unknown>>;
+      };
+      if (cancelClicked && staleReads < 2) {
+        staleReads += 1;
+        body.status = "cancelled";
+        body.counts.remaining = 1;
+        body.nextPollAfterMs = 1000;
+        body.items = body.items.map((item, index) =>
+          index === 0 ? { ...item, state: "unknown", code: "unknown" } : item,
+        );
+        await route.fulfill({ response, body: JSON.stringify(body), contentType: "application/json" });
+        return;
+      }
+      await route.fulfill({ response });
+    });
+
+    await expect(page.getByTestId("batch-progress")).toBeVisible();
+    cancelClicked = true;
+    await page.getByTestId("batch-cancel").click();
+    await expect.poll(() => readsAfterCancel).toBeGreaterThanOrEqual(3);
+    await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("batch-result-status")).toContainText("部分完成");
   });
 });
 

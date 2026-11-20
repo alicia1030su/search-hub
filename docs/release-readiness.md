@@ -1,5 +1,46 @@
 # 发布就绪报告
 
+## v0.1.11 Stable（2026-11-20）
+
+| 项 | 结果 |
+|---|---|
+| 目标版本 | **v0.1.11（Stable）**，前序为 v0.1.10 |
+| 自动化测试 | **1152 passed / 88 files**（`pnpm test`，冻结候选构建） |
+| 浏览器 E2E | **42 passed**（`pnpm test:e2e`） |
+| 类型 / Lint | `pnpm typecheck` 0 error；`oxlint` 0 warning / 0 error |
+| 构建 | `pnpm build` PASS；Windows x64 包构建、启动、REST/MCP、重启持久化验收 PASS |
+| 质量门禁 | `pnpm quality:eval` PASS（11 项手算自检全过；合成数据不足以支持优胜声明） |
+| 依赖审计 | `pnpm audit --audit-level high` 无已知漏洞 |
+| 密钥扫描 | 正确工作树 423 个文本文件 + 67 个 ref，0 violation；未扩大白名单、未关闭扫描 |
+| 迁移 | 0001–0009；0009 侧表记录 `budget_day`/`spent`，旧搜索保守计入付费桶，旧账本原样归档并一次性重算 |
+| 故障注入 | launcher lifecycle、updater install/rollback、updater fault injection 全部 PASS |
+| Docker / systemd / 三平台包 | **待 PR/tag CI**；本机 Docker Engine 不可用，不以本机结果替代 CI |
+| 真实 v0.1.10 → v0.1.11 升级 | **BLOCKED（进行中）**；真实发布包升级进程长时间无输出，结果未返回前不放行 |
+| 真实厂商联调 | **4 个源**：Hacker News、Crossref、OpenAlex、PubMed；其余未联调 |
+| 多实例 | **NOT_IMPLEMENTED**：单进程额度、SQLite 预算与批量任务协调 |
+
+### v0.1.11 修复范围
+
+1. 单 Key 失败不再一律写成 `invalid`；401、403、429、额度、DNS/TLS/超时/5xx 分类分离。
+2. 禁止跨 Provider 使用 Key；多 Key 统一走 `ProviderService`/`KeyScheduler` 可用性过滤与轮换。
+3. 免 Key 来源由任务级 `includeKeyless` 控制，与付费探测门禁分离；generic-http 凭据要求按配置识别。
+4. 独立匿名预算、`spent=0` 不计费、跨 UTC 午夜按预留日退款、账户组配额不串日。
+5. 批量取消在 immediate transaction 内原子更新终态、条目与计数；重启不会把半完成写成完成。
+6. 落账/排程/预算预留异常不会二次退款或泄漏 Key 租约；概览不可解密 Key 不再误报健康。
+7. Dashboard 完整统计 `forbidden` 与 `quota_exhausted`，Key 分段之和等于总数。
+
+### 未通过 / 受限
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 真实升级 | **BLOCKED** | 本地真实包升级进程未返回；不得以模拟或旧版本结果替代 |
+| Docker / systemd / 三平台 | **待 CI** | PR 与 tag 工作流完成后回填真实 run 与结论 |
+| 真实厂商联调 | **受限** | 仅 4 个源有真实网络证据 |
+| 质量评测数据 | **受限** | 只有合成基准，无厂商标注集 |
+| 多实例 | **NOT_IMPLEMENTED** | 无跨进程协调者 |
+
+---
+
 ## v0.1.10 Stable（2026-11-19）
 
 | 项 | 结果 |

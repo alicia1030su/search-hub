@@ -257,7 +257,7 @@ export function registerProviderHealthRoutes(app: FastifyInstance, ctx: AppConte
     jsonFor(app, async (request) => {
       adminOf(ctx, request);
       const query = parseInput(batchTestPreviewQuerySchema, request.query ?? {});
-      return ctx.batch.preview(query.kind, query.providerIds ?? null);
+      return ctx.batch.preview(query.kind, query.providerIds ?? null, query.includeKeyless);
     }),
   );
 
@@ -276,6 +276,7 @@ export function registerProviderHealthRoutes(app: FastifyInstance, ctx: AppConte
       const job = await ctx.batch.startBatch({
         kind: input.kind,
         providerIds: input.providerIds ?? null,
+        includeKeyless: input.includeKeyless,
         ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
         actor: actorLabel(actor),
       });
@@ -284,7 +285,7 @@ export function registerProviderHealthRoutes(app: FastifyInstance, ctx: AppConte
         actor,
         "provider_health.batch_test",
         job.jobId,
-        { kind: job.kind, total: job.counts.total, concurrency: job.concurrency },
+        { kind: job.kind, total: job.counts.total, concurrency: job.concurrency, includeKeyless: job.includeKeyless },
         request.ip,
       );
       // 201: a run resource was created. A client that only accepts 200 can read

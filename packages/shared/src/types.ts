@@ -27,6 +27,8 @@ export type KeyStatus =
   | "rate_limited"
   | "cooldown"
   | "invalid"
+  /** 上游明确拒绝权限/权益；不是无效密钥，独立冷却并 park 账户组。 */
+  | "forbidden"
   | "disabled"
   | "unknown"
   /**
@@ -866,6 +868,8 @@ export interface DashboardStats {
     rateLimited: number;
     cooldown: number;
     invalid: number;
+    forbidden: number;
+    quotaExhausted: number;
     disabled: number;
   };
   models: {

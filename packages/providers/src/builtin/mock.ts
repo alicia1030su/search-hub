@@ -92,6 +92,7 @@ export const mockAdapter: SearchProviderAdapter = {
       throw new ProviderError(ctx.config.id, "mock", "blocked", "Mock HTTP 403 (not entitled)", {
         retryable: false,
         statusCode: 403,
+        details: { upstreamStatus: 403 },
       });
     }
     if (failMode === "server_error") {

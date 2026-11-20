@@ -285,7 +285,7 @@ describe("tavily adapter", () => {
     expect(error.message).toMatch(/API key is missing/i);
   });
 
-  it("maps 401/403 to auth_invalid without retrying", async () => {
+  it("maps 401 to auth_invalid and 403 to blocked without retrying", async () => {
     for (const status of [401, 403]) {
       const { baseUrl } = await startServer(() => jsonReply({ detail: { error: "bad key" } }, status));
       const error = await captureError(
@@ -294,9 +294,10 @@ describe("tavily adapter", () => {
           makeCtx({ type: "tavily", baseUrl, apiKey: "bad" }),
         ),
       );
-      expect(error.code).toBe("auth_invalid");
+      expect(error.code).toBe(status === 401 ? "auth_invalid" : "blocked");
       expect(error.retryable).toBe(false);
       expect(error.statusCode).toBe(status);
+      expect(error.details).toMatchObject({ upstreamStatus: status });
     }
   });
 

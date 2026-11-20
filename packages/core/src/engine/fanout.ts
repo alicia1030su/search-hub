@@ -28,6 +28,8 @@ export interface ProviderRuntime {
   adapter: SearchProviderAdapter;
   scheduler: KeyScheduler;
   enabled: boolean;
+  /** Effective credential requirement for this instance (generic-http is config-driven). */
+  requiresKey?: boolean;
   /** Provider-level circuit breaker bookkeeping. */
   breaker: {
     failures: number;
@@ -75,6 +77,11 @@ function nowMs(): number {
 
 function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
   return AbortSignal.any([a, b]);
+}
+
+function isLocalPolicyBlock(error: unknown): boolean {
+  const details = (error as { details?: unknown } | null)?.details;
+  return typeof details === "object" && details !== null && (details as { localBlock?: unknown }).localBlock === true;
 }
 
 /**
@@ -163,9 +170,12 @@ export async function runProvider(
     // acquire path can resolve after the signal fires, so a lease obtained this
     // way must still be returned instead of leaking a slot.
     if (options.signal.aborted) break;
-    if (adapter.requiresKey || scheduler.hasKeys()) {
+    if (runtime.requiresKey ?? adapter.requiresKey) {
       const acquired = await scheduler.acquireWithReason({
-        maxWaitMs: Math.min(2_000, Math.max(0, deadline - nowMs())),
+        // Queue for the request's remaining lifetime, not an arbitrary shorter
+        // budget. Under parallel load a valid request can wait more than two
+        // seconds for a key slot while still having time to execute.
+        maxWaitMs: Math.max(0, deadline - nowMs()),
         signal: options.signal,
       });
       lease = acquired.lease;
@@ -191,7 +201,7 @@ export async function runProvider(
       // The wait can resolve after the caller aborted. Return the slot without
       // counting a failure; retrying a cancelled request is never correct.
       if (options.signal.aborted) {
-        lease.release({ ok: false, cancelled: true });
+        lease.release({ ok: false, notSent: true });
         lastCode = "cancelled";
         lastMessage = "Search cancelled by caller";
         break;
@@ -204,15 +214,22 @@ export async function runProvider(
         apiKey = await options.credentials.getKeyValue(lease.keyId);
       } catch (error) {
         // A credential-store failure must not leak the slot.
-        lease.release({ ok: false, cancelled: true });
+        lease.release({ ok: false, notSent: true });
         throw error;
       }
       if (!apiKey) {
-        lease.release({ ok: false, code: "auth_invalid", message: "API key not found" });
+        lease.release({ ok: false, notSent: true });
         lastCode = "auth_invalid";
         lastMessage = "API key could not be decrypted (master key changed?)";
         break;
       }
+    }
+
+    if (options.signal.aborted || nowMs() >= deadline) {
+      lease?.release({ ok: false, notSent: true });
+      lastCode = options.signal.aborted ? "cancelled" : "timeout";
+      lastMessage = options.signal.aborted ? "Search cancelled by caller" : "Provider deadline exceeded";
+      break;
     }
 
     const timeoutMs = Math.min(config.timeoutMs, Math.max(500, deadline - nowMs()));
@@ -221,6 +238,7 @@ export async function runProvider(
     const signal = combineSignals(options.signal, timeoutController.signal);
 
     const counted = { requests: 0 };
+    let localBudgetRefusal = false;
     try {
       // Every physical request an adapter makes passes through here. Counting
       // is per-invocation so the count belongs to this provider and this
@@ -229,8 +247,13 @@ export async function runProvider(
         options.fetch(url, {
           ...init,
           onRequest: (target) => {
+            try {
+              options.beforeRequest?.(config.id, target);
+            } catch (error) {
+              localBudgetRefusal = true;
+              throw error;
+            }
             counted.requests += 1;
-            options.beforeRequest?.(config.id, target);
           },
         });
       const output: ProviderSearchOutput = await adapter.search(
@@ -253,7 +276,11 @@ export async function runProvider(
       );
 
       const latencyMs = nowMs() - started;
-      lease?.release({ ok: true, latencyMs });
+      lease?.release(
+        counted.requests === 0
+          ? { ok: false, notSent: true }
+          : { ok: true, latencyMs },
+      );
       runtime.breaker.failures = 0;
       runtime.breaker.openUntilMs = null;
 
@@ -305,17 +332,34 @@ export async function runProvider(
       // aborted is the authoritative fact here, so anything surfacing after that
       // point is a cancel, not a verdict about the provider.
       if (lastCode === "cancelled" || options.signal.aborted) {
-        lease?.release({ ok: false, cancelled: true });
+        lease?.release({
+          ok: false,
+          ...(counted.requests === 0 ? { notSent: true } : { cancelled: true }),
+        });
         lastCode = "cancelled";
         lastMessage = "Search cancelled by caller";
         break;
       }
 
+      const localPolicyBlock = isLocalPolicyBlock(error);
+      if (localBudgetRefusal || localPolicyBlock) {
+        lease?.release(
+          counted.requests === 0
+            ? { ok: false, notSent: true }
+            : { ok: false, code: "bad_response", message: lastMessage },
+        );
+        break;
+      }
+
       lease?.release({
         ok: false,
-        code: lastCode,
-        message: lastMessage,
-        ...(classified.retryAfterMs === undefined ? {} : { retryAfterMs: classified.retryAfterMs }),
+        ...(counted.requests === 0
+          ? { notSent: true }
+          : {
+              code: lastCode,
+              message: lastMessage,
+              ...(classified.retryAfterMs === undefined ? {} : { retryAfterMs: classified.retryAfterMs }),
+            }),
       });
 
       if (!classified.retryable || lastCode === "auth_invalid" || lastCode === "quota_exceeded") {

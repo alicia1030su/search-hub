@@ -401,6 +401,53 @@ describe("admin surface", () => {
     expect(body.timeline.length).toBeGreaterThan(0);
   });
 
+  it("partitions every dashboard key status without dropping forbidden or quota_exhausted", async () => {
+    const harness = await createHarness();
+    const providerId = await createMockProvider(harness, "dashboard-key-status");
+    const statuses = ["healthy", "unknown", "rate_limited", "cooldown", "invalid", "forbidden", "quota_exhausted", "disabled"] as const;
+    for (const status of statuses) {
+      const added = await harness.app.inject({
+        method: "POST",
+        url: `/api/admin/providers/${providerId}/keys`,
+        ...adminHeaders(harness),
+        payload: { label: status, key: `sk-DASH-${status}-0000000000`, weight: 100, enabled: status !== "disabled" },
+      });
+      expect(added.statusCode, added.body).toBe(200);
+    }
+    for (const status of statuses) {
+      harness.ctx.sqlite.prepare("UPDATE api_keys SET status = ? WHERE provider_id = ? AND label = ?").run(status, providerId, status);
+    }
+    harness.ctx.providers.reload();
+
+    const dashboard = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/dashboard?range=24h",
+      cookies: { sh_session: harness.cookie },
+    });
+    expect(dashboard.statusCode, dashboard.body).toBe(200);
+    const keys = dashboard.json().keys as {
+      total: number;
+      healthy: number;
+      rateLimited: number;
+      cooldown: number;
+      invalid: number;
+      forbidden: number;
+      quotaExhausted: number;
+      disabled: number;
+    };
+    expect(keys).toEqual({
+      total: 8,
+      healthy: 2,
+      rateLimited: 1,
+      cooldown: 1,
+      invalid: 1,
+      forbidden: 1,
+      quotaExhausted: 1,
+      disabled: 1,
+    });
+    expect(keys.healthy + keys.rateLimited + keys.cooldown + keys.invalid + keys.forbidden + keys.quotaExhausted + keys.disabled).toBe(keys.total);
+  });
+
   it("exports configuration without secret material", async () => {
     const harness = await createHarness();
     const providerId = await createMockProvider(harness, "export-provider");

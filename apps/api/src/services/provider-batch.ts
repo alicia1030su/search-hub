@@ -39,6 +39,7 @@ import {
   previewBatch,
   type EligibilityCode,
   type PreviewCounts,
+  type ProviderKeyAvailability,
 } from "./provider-eligibility.js";
 
 /**
@@ -113,6 +114,8 @@ export interface BatchJobView {
   counts: BatchCounts;
   items: BatchItem[];
   budget: ReturnType<HealthService["budget"]>;
+  /** 创建任务时保存的免 Key 策略快照；刷新后只读。 */
+  includeKeyless: boolean;
   concurrency: number;
   startedAt: string | null;
   finishedAt: string | null;
@@ -127,14 +130,16 @@ export interface BatchPreview {
   budget: ReturnType<HealthService["budget"]> & { remainingRun: number };
   /** True when starting this run may spend vendor quota. */
   paidRisk: boolean;
-  /** How many eligible sources would send a credentialed search. */
+  /** 需要凭据且可作为付费搜索运行的源数量；付费开关关闭时仍用于解释策略。 */
   estimatedPaidProbes: number;
+  /** 本次任务实际可运行的匿名搜索源数量。 */
+  estimatedAnonymousProbes: number;
 }
 
 export interface BatchDependencies {
   db: SearchHubDb;
-  settings: { get(): { health: { concurrency: number; includeUnverified: boolean; paidProbesEnabled: boolean } } };
-  providers: { resolveKey(keyId: string): string | undefined };
+  settings: { get(): { health: { concurrency: number; paidProbesEnabled: boolean } } };
+  providers: { keyAvailability(ids: string[]): Map<string, ProviderKeyAvailability> };
   health: Pick<HealthService, "checkMany" | "budget">;
   appLogger: Logger;
 }
@@ -328,6 +333,9 @@ function parseBudget(json: string): ReturnType<HealthService["budget"]> {
     usedToday: 0,
     connectUsedToday: 0,
     anonymousSearchUsedToday: 0,
+    anonymousMaxPerRun: 0,
+    anonymousMaxPerDay: 0,
+    anonymousRemainingToday: 0,
     remainingToday: 0,
     paidProbesEnabled: false,
     scheduledEnabled: false,
@@ -338,6 +346,47 @@ function parseBudget(json: string): ReturnType<HealthService["budget"]> {
 function clampConcurrency(value: number): number {
   if (!Number.isFinite(value)) return 2;
   return Math.max(1, Math.min(Math.round(value), 4));
+}
+
+function countColumns(counts: BatchCounts) {
+  return {
+    total: counts.total,
+    done: counts.done,
+    okCount: counts.ok,
+    failedCount: counts.failed,
+    pendingCount: counts.pending,
+    skippedCount: counts.skipped,
+  };
+}
+
+function includeKeylessFrom(optionsJson: string): boolean {
+  try {
+    const parsed = JSON.parse(optionsJson) as { includeKeyless?: unknown };
+    return parsed.includeKeyless === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 终态旧行可能仍有 unknown；读视图将其归一为跳过，保证 remaining=0。 */
+function settledItems(items: BatchItem[], status: BatchStatus): BatchItem[] {
+  if (status === "running") return items;
+  const code = status === "cancelled" ? "SKIPPED_CANCELLED" : "SKIPPED_INTERRUPTED";
+  return items.map((item) =>
+    item.state === "unknown"
+      ? {
+          ...item,
+          state: "skipped",
+          code,
+          reason: `${code.toLowerCase()}: the run stopped before this source was resolved`,
+          latencyMs: null,
+          resultCount: null,
+          requests: null,
+          checkId: null,
+          checkedAt: null,
+        }
+      : item,
+  );
 }
 
 export class ProviderBatchService {
@@ -367,7 +416,7 @@ export class ProviderBatchService {
     return this.ctx.db;
   }
 
-  private healthPolicy(): { concurrency: number; includeUnverified: boolean; paidProbesEnabled: boolean } {
+  private healthPolicy(): { concurrency: number; paidProbesEnabled: boolean } {
     return this.ctx.settings.get().health;
   }
 
@@ -411,19 +460,22 @@ export class ProviderBatchService {
     ids: string[],
     kind: HealthProbeKind,
     includeKeyless: boolean,
+    budget: ReturnType<HealthService["budget"]> = this.ctx.health.budget(),
   ): number {
     if (kind !== "search") return 0;
-    const budget = this.ctx.health.budget();
-    return previewBatch(facts, ids, {
+    const result = previewBatch(facts, ids, {
       kind: "search",
       includeKeyless,
+      skipPaidWhenDisabled: false,
       budget: {
         ...budget,
+        paidProbesEnabled: true,
         remainingToday: Math.max(1, budget.maxPerDay),
         maxPerRun: Math.max(1, budget.maxPerRun),
       },
       nowMs: this.clock(),
-    }).counts.eligible;
+    });
+    return result.decisions.filter((decision) => decision.enqueue && decision.requiresKey).length;
   }
 
   /**
@@ -432,24 +484,23 @@ export class ProviderBatchService {
    * Reads only: T08 asserts that a preview leaves both tables untouched, and
    * that is a property of this method, not of the route.
    */
-  preview(kind: HealthProbeKind, providerIds?: string[] | null): BatchPreview {
+  preview(kind: HealthProbeKind, providerIds?: string[] | null, includeKeyless = false): BatchPreview {
     const ids = this.resolveScope(providerIds);
-    const policy = this.healthPolicy();
     const budget = this.ctx.health.budget();
     const facts = loadEligibilityFacts(this.db, this.ctx.providers, ids);
     const result = previewBatch(facts, ids, {
       kind,
-      includeKeyless: policy.includeUnverified,
+      includeKeyless,
+      skipPaidWhenDisabled: true,
       budget,
       nowMs: this.clock(),
     });
 
-    // Only a *paid* search can spend the operator's quota: a connectivity probe
-    // and an anonymous search cannot, and neither can a paid run that the paid
-    // switch forbids. `estimatedPaidProbes` therefore reports the probes that
-    // would actually be billed — `0` when nothing can be billed, so the dialog
-    // never warns about a cost that will not happen.
-    const candidates = this.paidCandidates(facts, ids, kind, policy.includeUnverified);
+    // 付费潜力只统计真正需要凭据的源；匿名源单独统计，不受付费开关影响。
+    const candidates = this.paidCandidates(facts, ids, kind, includeKeyless, budget);
+    const anonymousCandidates = result.decisions.filter(
+      (decision) => decision.enqueue && !decision.requiresKey,
+    ).length;
     const paidRisk = kind === "search" && candidates > 0 && budget.paidProbesEnabled;
 
     return {
@@ -458,7 +509,8 @@ export class ProviderBatchService {
       counts: result.counts,
       budget: { ...budget, remainingRun: budget.maxPerRun },
       paidRisk,
-      estimatedPaidProbes: paidRisk ? candidates : 0,
+      estimatedPaidProbes: candidates,
+      estimatedAnonymousProbes: anonymousCandidates,
     };
   }
 
@@ -471,6 +523,7 @@ export class ProviderBatchService {
   async startBatch(input: {
     kind?: HealthProbeKind;
     providerIds?: string[] | null;
+    includeKeyless?: boolean;
     concurrency?: number;
     actor: string;
   }): Promise<BatchJobView> {
@@ -487,24 +540,28 @@ export class ProviderBatchService {
       );
     }
     const policy = this.healthPolicy();
+    const includeKeyless = input.includeKeyless ?? false;
     const budget = this.ctx.health.budget();
     const facts = loadEligibilityFacts(this.db, this.ctx.providers, ids);
     const preview = previewBatch(facts, ids, {
       kind,
-      includeKeyless: policy.includeUnverified,
+      includeKeyless,
+      skipPaidWhenDisabled: true,
       budget,
       nowMs: this.clock(),
     });
 
-    // Refuse before writing anything. Both refusals are `validation_error` at
-    // 409: the request is well-formed but the instance's health policy forbids
-    // spending, and the UI has to be able to say which.
-    const candidates = this.paidCandidates(facts, ids, kind, policy.includeUnverified);
-    if (kind === "search" && candidates > 0) {
+    // 只有“纯付费范围”才整体拒绝。混合范围中付费源已在预检变成
+    // SKIPPED_PAID_DISABLED / SKIPPED_BUDGET，匿名源继续执行。
+    const candidates = this.paidCandidates(facts, ids, kind, includeKeyless, budget);
+    const anonymousCandidates = preview.decisions.filter(
+      (decision) => decision.enqueue && !decision.requiresKey,
+    ).length;
+    if (kind === "search" && candidates > 0 && anonymousCandidates === 0) {
       if (!budget.paidProbesEnabled) {
         throw new SearchHubError(
           "validation_error",
-          "Paid search probes are disabled. Enable them in Settings → Provider health, or run a connectivity test instead.",
+          "Paid search probes are disabled. Enable them in Settings → Provider health, include anonymous sources, or run a connectivity test instead.",
           { status: 409 },
         );
       }
@@ -512,7 +569,7 @@ export class ProviderBatchService {
         throw new SearchHubError(
           "validation_error",
           `Paid probe budget exhausted: ${budget.usedToday}/${budget.maxPerDay} used today. ` +
-            "Nothing was probed. Raise the daily limit or wait for the next UTC day.",
+            "Nothing was probed. Raise the daily limit, include anonymous sources, or wait for the next UTC day.",
           { status: 409 },
         );
       }
@@ -585,16 +642,11 @@ export class ProviderBatchService {
         id: jobId,
         kind,
         status: "running",
-        total: counts.total,
-        done: counts.done,
-        okCount: counts.ok,
-        failedCount: counts.failed,
-        pendingCount: counts.pending,
-        skippedCount: counts.skipped,
+        ...countColumns(counts),
         concurrency,
         optionsJson: JSON.stringify({
           providerIds: input.providerIds ? ids : null,
-          includeKeyless: policy.includeUnverified,
+          includeKeyless,
         }),
         itemsJson: JSON.stringify(items),
         budgetJson: JSON.stringify(budget),
@@ -640,9 +692,9 @@ export class ProviderBatchService {
     if (!row) throw new SearchHubError("not_found", "Provider test job not found");
     assertOwnedBy(row, actor);
 
-    const items = parseItems(row.itemsJson);
-    const counts = countItems(items);
     const status = STATUSES.includes(row.status as BatchStatus) ? (row.status as BatchStatus) : "interrupted";
+    const items = settledItems(parseItems(row.itemsJson), status);
+    const counts = countItems(items);
 
     return {
       jobId: row.id,
@@ -651,6 +703,7 @@ export class ProviderBatchService {
       counts,
       items,
       budget: parseBudget(row.budgetJson),
+      includeKeyless: includeKeylessFrom(row.optionsJson),
       concurrency: row.concurrency,
       startedAt: row.startedAt,
       finishedAt: row.finishedAt,
@@ -660,61 +713,109 @@ export class ProviderBatchService {
   }
 
   /**
-   * Stops a running job.
-   *
-   * Writes the status first, then aborts: a reader that arrives in between sees
-   * "cancelled" rather than a run that still looks alive. `skippedRemaining` is
-   * what the runner will account for as `SKIPPED_CANCELLED`; finished items are
-   * never touched, so their conclusions stay readable (T13).
+   * 原子停止任务：同一事务内重读 running 行、处理 unknown、重算并写回所有
+   * 计数与终态。提交后才 abort，因此 abort 回调不会看到半提交状态。
    */
   cancelBatch(jobId: string, actor?: string): { jobId: string; status: "cancelled"; skippedRemaining: number } {
-    const row = this.db
-      .select()
-      .from(providerTestBatches)
-      .where(eq(providerTestBatches.id, jobId))
-      .get();
-    if (!row) throw new SearchHubError("not_found", "Provider test job not found");
-    assertOwnedBy(row, actor);
-    if (row.status !== "running") {
-      throw new SearchHubError(
-        "conflict",
-        `This job already stopped (${row.status}); there is nothing to cancel.`,
-      );
-    }
+    let skippedRemaining = -1;
+    this.db.transaction(
+      (tx) => {
+        const row = tx.select().from(providerTestBatches).where(eq(providerTestBatches.id, jobId)).get();
+        if (!row) throw new SearchHubError("not_found", "Provider test job not found");
+        assertOwnedBy(row, actor);
+        if (row.status !== "running") {
+          throw new SearchHubError(
+            "conflict",
+            `This job already stopped (${row.status}); there is nothing to cancel.`,
+          );
+        }
 
-    const items = parseItems(row.itemsJson);
-    const skippedRemaining = items.filter((item) => item.state === "unknown").length;
-
-    this.db
-      .update(providerTestBatches)
-      .set({ status: "cancelled", finishedAt: new Date(this.clock()).toISOString() })
-      .where(and(eq(providerTestBatches.id, jobId), eq(providerTestBatches.status, "running")))
-      .run();
+        const currentItems = parseItems(row.itemsJson);
+        const unknownCount = currentItems.filter((item) => item.state === "unknown").length;
+        const items = currentItems.map((item) =>
+          item.state === "unknown"
+            ? {
+                ...item,
+                state: "skipped" as const,
+                code: "SKIPPED_CANCELLED",
+                reason: "cancelled: the bulk run was cancelled before this source was resolved",
+                latencyMs: null,
+                resultCount: null,
+                requests: null,
+                checkId: null,
+                checkedAt: null,
+              }
+            : item,
+        );
+        const counts = countItems(items);
+        const result = tx
+          .update(providerTestBatches)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(this.clock()).toISOString(),
+            itemsJson: JSON.stringify(items),
+            ...countColumns(counts),
+          })
+          .where(and(eq(providerTestBatches.id, jobId), eq(providerTestBatches.status, "running")))
+          .run();
+        if (Number(result.changes ?? 0) !== 1) {
+          throw new SearchHubError("conflict", "This job already stopped; there is nothing to cancel.");
+        }
+        skippedRemaining = unknownCount;
+      },
+      { behavior: "immediate" },
+    );
 
     const run = this.active.get(jobId);
     if (run) {
-      // The abort reason carries `code: "cancelled"` so a probe already on the
-      // wire is classified as a cancellation rather than as a timeout.
       run.controller.abort(Object.assign(new Error("cancelled"), { code: "cancelled" }));
     }
-
+    if (skippedRemaining < 0) {
+      throw new SearchHubError("conflict", "This job already stopped; there is nothing to cancel.");
+    }
     return { jobId, status: "cancelled", skippedRemaining };
   }
 
-  /**
-   * Rewrites every leftover `running` row to `interrupted`.
-   *
-   * One statement, idempotent: a second call matches zero rows. Returns the
-   * affected row count so a caller (or a test) can prove idempotence.
-   */
+  /** 将遗留 running 行及其 unknown 项原子改为 interrupted；重复调用返回 0。 */
   sweepInterrupted(nowMs?: number): number {
     const finishedAt = new Date(nowMs ?? this.clock()).toISOString();
-    const result = this.db
-      .update(providerTestBatches)
-      .set({ status: "interrupted", finishedAt })
-      .where(eq(providerTestBatches.status, "running"))
-      .run();
-    return Number(result.changes ?? 0);
+    let swept = 0;
+    this.db.transaction(
+      (tx) => {
+        const rows = tx.select().from(providerTestBatches).where(eq(providerTestBatches.status, "running")).all();
+        for (const row of rows) {
+          const items = parseItems(row.itemsJson).map((item) =>
+            item.state === "unknown"
+              ? {
+                  ...item,
+                  state: "skipped" as const,
+                  code: "SKIPPED_INTERRUPTED",
+                  reason: "interrupted: the process stopped before this source was resolved",
+                  latencyMs: null,
+                  resultCount: null,
+                  requests: null,
+                  checkId: null,
+                  checkedAt: null,
+                }
+              : item,
+          );
+          const counts = countItems(items);
+          const result = tx
+            .update(providerTestBatches)
+            .set({
+              status: "interrupted",
+              finishedAt,
+              itemsJson: JSON.stringify(items),
+              ...countColumns(counts),
+            })
+            .where(and(eq(providerTestBatches.id, row.id), eq(providerTestBatches.status, "running")))
+            .run();
+          swept += Number(result.changes ?? 0);
+        }
+      },
+      { behavior: "immediate" },
+    );
+    return swept;
   }
 
   /** Aborts every run in flight. Called on shutdown so no probe outlives teardown. */
@@ -731,13 +832,8 @@ export class ProviderBatchService {
   }
 
   /**
-   * The runner.
-   *
-   * Delegates the actual probing to `HealthService.checkMany`, which is the only
-   * place that knows about in-flight de-duplication and the paid budget, and
-   * persists after every item. No queue, no worker pool and no second
-   * de-duplication set lives here: the batch layer adds bookkeeping, not a
-   * parallel execution path.
+   * 运行器只委托 HealthService 执行探测；每次进度写入都在事务内重读当前
+   * items，只合并仍为 unknown 的项，旧快照不能覆盖 cancelled/interrupted。
    */
   private async run(
     jobId: string,
@@ -746,103 +842,80 @@ export class ProviderBatchService {
     concurrency: number,
     signal: AbortSignal,
   ): Promise<void> {
-    const row = this.db
-      .select()
-      .from(providerTestBatches)
-      .where(eq(providerTestBatches.id, jobId))
-      .get();
-    const items = parseItems(row?.itemsJson ?? "[]");
-    const byId = new Map(items.map((item) => [item.providerId, item] as const));
-
-    const persist = (): void => {
-      const counts = countItems(items);
-      this.db
-        .update(providerTestBatches)
-        .set({
-          total: counts.total,
-          done: counts.done,
-          okCount: counts.ok,
-          failedCount: counts.failed,
-          pendingCount: counts.pending,
-          skippedCount: counts.skipped,
-          itemsJson: JSON.stringify(items),
-        })
+    try {
+      const row = this.db
+        .select()
+        .from(providerTestBatches)
         .where(eq(providerTestBatches.id, jobId))
-        .run();
-    };
+        .get();
+      const byId = new Map(parseItems(row?.itemsJson ?? "[]").map((item) => [item.providerId, item] as const));
 
-    await this.ctx.health.checkMany(eligibleIds, {
-      kind,
-      trigger: "manual",
-      // The worker count is the throttle here: a fixed inter-probe gap would
-      // make a 200-source run take two minutes for no reason.
-      gapMs: 0,
-      concurrency,
-      signal,
-      batchId: jobId,
-      onItem: (item) => {
-        const entry = byId.get(item.providerId);
-        if (!entry) return;
-        if (item.result) {
-          // `entry.keyCount` is passed through: it describes the pool the run
-          // started with, while the probe only reports which single key it
-          // picked.
-          Object.assign(entry, itemForResult(item.result, entry.keyCount));
-        } else if (item.skip) {
-          // Reuse the same mapping the pre-flight uses, so `already_running`
-          // and `SKIPPED_*` are classified identically in both paths.
-          const next = itemForSkip(entry.providerId, entry.providerName, item.skip.code, item.skip.reason, {
-            providerType: entry.providerType,
-            keyCount: entry.keyCount,
-          });
-          entry.state = next.state;
-          entry.code = next.code;
-          entry.reason = next.reason;
-          entry.checkId = null;
-          entry.checkedAt = null;
-          entry.latencyMs = null;
-          entry.resultCount = null;
-          entry.requests = null;
-        } else {
-          return;
-        }
-        // One write per completed item. The alternative — batching writes —
-        // would leave a reader looking at a stale progress bar for the whole
-        // duration of a slow vendor.
-        persist();
-      },
-    });
+      const persist = (next: BatchItem): void => {
+        this.db.transaction((tx) => {
+          const current = tx.select().from(providerTestBatches).where(eq(providerTestBatches.id, jobId)).get();
+          if (!current || current.status !== "running") return;
+          const items = parseItems(current.itemsJson);
+          const index = items.findIndex((item) => item.providerId === next.providerId);
+          if (index < 0 || items[index]!.state !== "unknown") return;
+          items[index] = next;
+          const counts = countItems(items);
+          tx.update(providerTestBatches)
+            .set({ itemsJson: JSON.stringify(items), ...countColumns(counts) })
+            .where(and(eq(providerTestBatches.id, jobId), eq(providerTestBatches.status, "running")))
+            .run();
+        });
+      };
 
-    this.active.delete(jobId);
-    this.finalise(jobId);
+      await this.ctx.health.checkMany(eligibleIds, {
+        kind,
+        trigger: "manual",
+        gapMs: 0,
+        concurrency,
+        signal,
+        batchId: jobId,
+        onItem: (item) => {
+          const entry = byId.get(item.providerId);
+          if (!entry) return;
+          if (item.result) {
+            persist(itemForResult(item.result, entry.keyCount));
+          } else if (item.skip) {
+            persist(
+              itemForSkip(entry.providerId, entry.providerName, item.skip.code, item.skip.reason, {
+                providerType: entry.providerType,
+                keyCount: entry.keyCount,
+              }),
+            );
+          }
+        },
+      });
+
+      this.finalise(jobId);
+    } finally {
+      this.active.delete(jobId);
+    }
   }
 
-  /**
-   * Writes the terminal status for a run this process just finished.
-   *
-   * The `WHERE status = 'running'` guard is the safety net for a status another
-   * writer already decided (a cancel, or the sweep of another process): a run
-   * that was cancelled must not end up reported as `completed` just because the
-   * old runner eventually returned.
-   */
+  /** 事务内重读并只终结仍为 running 的行；cancelled 永远不会变 completed。 */
   private finalise(jobId: string): void {
-    const row = this.db
-      .select()
-      .from(providerTestBatches)
-      .where(eq(providerTestBatches.id, jobId))
-      .get();
-    if (!row) return;
-    const items = parseItems(row.itemsJson);
-    const allResolved = items.length > 0 && items.every((item) => item.state !== "unknown");
-
-    this.db
-      .update(providerTestBatches)
-      .set({
-        status: allResolved ? "completed" : "partial",
-        finishedAt: new Date(this.clock()).toISOString(),
-      })
-      .where(and(eq(providerTestBatches.id, jobId), eq(providerTestBatches.status, "running")))
-      .run();
+    this.db.transaction(
+      (tx) => {
+        const row = tx.select().from(providerTestBatches).where(eq(providerTestBatches.id, jobId)).get();
+        if (!row || row.status !== "running") return;
+        const items = parseItems(row.itemsJson);
+        const allResolved = items.length > 0 && items.every((item) => item.state !== "unknown");
+        const counts = countItems(items);
+        tx.update(providerTestBatches)
+          .set({
+            status: allResolved ? "completed" : "partial",
+            finishedAt: new Date(this.clock()).toISOString(),
+            itemsJson: JSON.stringify(items),
+            ...countColumns(counts),
+          })
+          .where(and(eq(providerTestBatches.id, jobId), eq(providerTestBatches.status, "running")))
+          .run();
+      },
+      { behavior: "immediate" },
+    );
   }
 }
 

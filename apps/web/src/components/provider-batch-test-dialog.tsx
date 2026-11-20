@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { api, toApiError } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useAsyncData } from "../lib/hooks";
-import type { BatchPreview, ProviderHealthPolicy } from "../lib/types";
+import type { BatchPreview } from "../lib/types";
 import { Alert, Badge, Button, EmptyState, Skeleton, Switch } from "../components/ui";
 
 /**
@@ -38,27 +38,18 @@ export function ProviderBatchTestDialog({
 }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savingPolicy, setSavingPolicy] = useState(false);
-  const [policy, setPolicy] = useState<ProviderHealthPolicy | null>(null);
+  /** 仅本次任务有效，不读取也不写回全局 health.includeUnverified。 */
+  const [includeKeyless, setIncludeKeyless] = useState(false);
 
-  const preview = useAsyncData<BatchPreview>((signal) => api.batchTestPreview({ kind }, signal), [kind, open]);
+  const preview = useAsyncData<BatchPreview>(
+    (signal) => api.batchTestPreview({ kind, includeKeyless }, signal),
+    [kind, includeKeyless, open],
+  );
 
   useEffect(() => {
     if (!open) return;
     setError(null);
-    let cancelled = false;
-    void api
-      .providerHealthSettings()
-      .then((data) => {
-        if (!cancelled) setPolicy(data.policy);
-      })
-      .catch(() => {
-        // The switch falls back to the preview's own budget snapshot; a failed
-        // settings read must not block the dialog.
-      });
-    return () => {
-      cancelled = true;
-    };
+    setIncludeKeyless(false);
   }, [open]);
 
   const counts = preview.data?.counts;
@@ -68,43 +59,29 @@ export function ProviderBatchTestDialog({
   const testable = eligible + configError;
   const budget = preview.data?.budget;
 
-  // `kind === "search" && eligible > 0 && paidProbesEnabled === false` is exactly
-  // the condition the server refuses with a 409. Rendering it here turns a failed
-  // click into an explained state.
+  const paidCandidates = preview.data?.estimatedPaidProbes ?? 0;
+  const anonymousCandidates = preview.data?.estimatedAnonymousProbes ?? 0;
+  // 只有纯付费范围才整体拒绝；混合范围会跳过付费源并继续匿名源。
   const blockedByPaidSwitch =
-    kind === "search" && eligible > 0 && budget !== undefined && budget.paidProbesEnabled === false;
+    kind === "search" &&
+    paidCandidates > 0 &&
+    anonymousCandidates === 0 &&
+    budget !== undefined &&
+    budget.paidProbesEnabled === false;
   const blockedByBudget =
     kind === "search" &&
-    eligible > 0 &&
+    paidCandidates > 0 &&
+    anonymousCandidates === 0 &&
     budget !== undefined &&
     budget.paidProbesEnabled &&
-    budget.remainingToday <= 0;
-  const blocked = blockedByPaidSwitch || blockedByBudget || testable === 0;
-
-  const includeKeyless = policy?.includeUnverified ?? true;
-
-  const toggleKeyless = useMemo(
-    () => async (next: boolean) => {
-      setSavingPolicy(true);
-      setError(null);
-      try {
-        const updated = await api.updateProviderHealthSettings({ includeUnverified: next });
-        setPolicy(updated.policy);
-        preview.reload();
-      } catch (failure) {
-        setError(toApiError(failure).message);
-      } finally {
-        setSavingPolicy(false);
-      }
-    },
-    [preview],
-  );
+    (budget.remainingToday <= 0 || budget.maxPerRun <= 0);
+  const blocked = blockedByPaidSwitch || blockedByBudget || testable === 0 || preview.loading;
 
   const start = async () => {
     setStarting(true);
     setError(null);
     try {
-      const job = await api.startBatchTest({ kind });
+      const job = await api.startBatchTest({ kind, includeKeyless });
       onStarted(job.jobId, kind);
     } catch (failure) {
       setError(toApiError(failure).message);
@@ -201,6 +178,13 @@ export function ProviderBatchTestDialog({
                 {t("providers.batch.budget.remaining", { count: budget.remainingToday })} ·{" "}
                 {t("providers.batch.budget.perRun", { count: budget.maxPerRun })}
               </p>
+              <p className="text-muted-foreground" data-testid="batch-anonymous-estimate">
+                {t("providers.batch.budget.anonymous", {
+                  count: anonymousCandidates,
+                  remaining: budget.anonymousRemainingToday,
+                  perRun: budget.anonymousMaxPerRun,
+                })}
+              </p>
               <p className="text-muted-foreground">{t("providers.batch.budget.day", { day: budget.day })}</p>
             </div>
           ) : null}
@@ -225,12 +209,24 @@ export function ProviderBatchTestDialog({
             <div data-testid="batch-include-keyless">
               <Switch
                 checked={includeKeyless}
-                disabled={savingPolicy || starting}
+                disabled={starting}
                 label={t("providers.batch.includeKeylessToggle")}
-                onChange={(next) => void toggleKeyless(next)}
+                onChange={setIncludeKeyless}
               />
             </div>
           </div>
+
+          {kind === "search" && paidCandidates > 0 && anonymousCandidates > 0 && budget?.paidProbesEnabled === false ? (
+            <div data-testid="batch-paid-disabled-mixed">
+              <Alert
+                tone="warning"
+                title={t("providers.batch.paidDisabledMixed", {
+                  paid: paidCandidates,
+                  anonymous: anonymousCandidates,
+                })}
+              />
+            </div>
+          ) : null}
 
           {blockedByPaidSwitch ? (
             <div data-testid="batch-blocked-paid">
@@ -239,7 +235,7 @@ export function ProviderBatchTestDialog({
           ) : null}
           {blockedByBudget ? (
             <div data-testid="batch-blocked-budget">
-              <Alert tone="warning" title={t("providers.batch.paidDisabled")} />
+              <Alert tone="warning" title={t("providers.batch.budgetExhausted")} />
             </div>
           ) : null}
           {testable === 0 ? (
@@ -266,7 +262,13 @@ export function ProviderBatchTestDialog({
                 disabled={blocked || starting}
                 loading={starting}
                 data-testid="batch-start"
-                title={blockedByPaidSwitch ? t("providers.batch.paidDisabled") : undefined}
+                title={
+                  blockedByPaidSwitch
+                    ? t("providers.batch.paidDisabled")
+                    : blockedByBudget
+                      ? t("providers.batch.budgetExhausted")
+                      : undefined
+                }
               >
                 {starting ? <Loader2 className="animate-spin" aria-hidden /> : null}
                 {t("providers.batch.start")}

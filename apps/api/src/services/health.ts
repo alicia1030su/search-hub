@@ -30,6 +30,7 @@ import {
 } from "@search-hub/providers";
 import { newId } from "../security/crypto.js";
 import type { Logger, SafeFetch } from "@search-hub/shared";
+import type { AcquireKeyResult, KeyAvailability, KeyProbeRelease } from "./providers.js";
 import {
   classifyError,
   cooldownFor,
@@ -47,7 +48,7 @@ import {
   type HealthTrigger,
   type RuntimeHealth,
 } from "./health-classify.js";
-import { ProbeBudget } from "./health-budget.js";
+import { ProbeBudget, type LedgerKind, type Reservation } from "./health-budget.js";
 
 /**
  * The exact slice of the application this service needs.
@@ -60,8 +61,12 @@ export interface HealthDependencies {
   db: SearchHubDb;
   settings: { get(): { health: HealthSettings } };
   providers: {
-    resolveKey(keyId: string): string | undefined;
-    reload(): void;
+    providerRequiresKey(type: string, config: Record<string, unknown>): boolean;
+    keyAvailability(ids: string[]): Map<string, KeyAvailability>;
+    acquireKey(
+      providerId: string,
+      options?: { keyId?: string; signal?: AbortSignal; maxWaitMs?: number; manual?: boolean },
+    ): Promise<AcquireKeyResult>;
   };
   fetch: SafeFetch;
   appLogger: Logger;
@@ -162,11 +167,16 @@ export interface HealthOverview {
     day: string;
     maxPerRun: number;
     maxPerDay: number;
+    anonymousMaxPerRun: number;
+    anonymousMaxPerDay: number;
     /** Paid searches reserved today. */
     usedToday: number;
     /** Free connectivity probes reserved today. */
     connectUsedToday: number;
+    /** Anonymous searches reserved today. */
+    anonymousSearchUsedToday: number;
     remainingToday: number;
+    anonymousRemainingToday: number;
     paidProbesEnabled: boolean;
     scheduledEnabled: boolean;
     intervalMinutes: number;
@@ -182,6 +192,8 @@ export interface HealthSettings {
   intervalMinutes: number;
   maxRequestsPerRun: number;
   maxRequestsPerDay: number;
+  anonymousMaxRequestsPerRun: number;
+  anonymousMaxRequestsPerDay: number;
   paidProbesEnabled: boolean;
   includeUnverified: boolean;
   concurrency: number;
@@ -224,15 +236,20 @@ export class HealthService {
       paidProbesEnabled: policy.paidProbesEnabled,
       maxPerRun: policy.maxRequestsPerRun,
       maxPerDay: policy.maxRequestsPerDay,
+      anonymousMaxPerRun: policy.anonymousMaxRequestsPerRun,
+      anonymousMaxPerDay: policy.anonymousMaxRequestsPerDay,
     });
     return {
       day: snapshot.day,
       maxPerRun: snapshot.maxPerRun,
       maxPerDay: snapshot.maxPerDay,
+      anonymousMaxPerRun: snapshot.anonymousMaxPerRun,
+      anonymousMaxPerDay: snapshot.anonymousMaxPerDay,
       usedToday: snapshot.searchUsedToday,
       connectUsedToday: snapshot.connectUsedToday,
       anonymousSearchUsedToday: snapshot.anonymousSearchUsedToday,
       remainingToday: snapshot.remainingToday,
+      anonymousRemainingToday: snapshot.anonymousRemainingToday,
       paidProbesEnabled: snapshot.paidProbesEnabled,
       scheduledEnabled: policy.scheduledEnabled,
       intervalMinutes: policy.intervalMinutes,
@@ -256,6 +273,8 @@ export class HealthService {
     options: {
       kind?: HealthProbeKind;
       keyId?: string;
+      /** 显式管理端重测：允许恢复 invalid/forbidden/cooldown/quota_exhausted。 */
+      manual?: boolean;
       trigger?: HealthTrigger;
       signal?: AbortSignal;
       /** Bulk run this probe belongs to; written to `provider_health_checks`. */
@@ -277,148 +296,211 @@ export class HealthService {
       throw cancelledError();
     }
 
-    // Resolve the credential, but do not treat its absence as "unhealthy":
-    // without a key we simply cannot tell, and saying so is the honest answer.
-    // Resolved *before* reserving budget so an impossible probe never spends.
-    const keys = this.db
-      .select()
-      .from(apiKeys)
-      .where(and(eq(apiKeys.providerId, providerId), eq(apiKeys.enabled, true)))
-      .all();
-    const targetKeyId = options.keyId ?? keys[0]?.id ?? null;
-    let apiKey: string | undefined;
-    if (targetKeyId) {
-      const resolved = this.ctx.providers.resolveKey(targetKeyId);
-      apiKey = resolved ?? undefined;
+    const providerConfig = safeJson(row.configJson);
+    const requiresKey = this.ctx.providers.providerRequiresKey(row.type, providerConfig);
+    if (row.type === "generic-http" && requiresKey && kind === "connect") {
+      throw new SearchHubError(
+        "validation_error",
+        "Credentialed generic providers require a search probe; a connectivity probe is not supported.",
+      );
     }
 
-    if (adapter.requiresKey && !apiKey) {
-      return this.record({
-        providerId,
-        providerName: row.name,
-        providerType: row.type,
-        keyId: targetKeyId,
-        kind,
-        status: "unverified",
-        cause: targetKeyId ? "config_incomplete" : "no_credential",
-        latencyMs: null,
-        resultCount: null,
-        message: targetKeyId
-          ? "The stored key could not be decrypted (master key changed?)"
-          : "No enabled API key. This provider is unverified, not healthy.",
-        trigger,
-        // Nothing was requested, so nothing was spent: the caller refunds its
-        // per-run allowance from this.
-        spent: false,
-        requests: null,
-        batchId: options.batchId ?? null,
+    // Key ownership/enabled/decryptability is validated by ProviderService before
+    // the lease is exposed. The lease is taken before budget reservation so a
+    // refused probe can return both Key and account slots with notSent.
+    const availability = this.ctx.providers.keyAvailability([providerId]).get(providerId);
+    let lease: Extract<AcquireKeyResult, { ok: true }> | undefined;
+    let targetKeyId = options.keyId ?? null;
+    if (options.keyId !== undefined || requiresKey) {
+      const acquired = await this.ctx.providers.acquireKey(providerId, {
+        ...(options.keyId === undefined ? {} : { keyId: options.keyId }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        manual: options.manual,
       });
+      if (acquired.ok) {
+        lease = acquired;
+        targetKeyId = acquired.keyId;
+      } else if (options.keyId !== undefined) {
+        throw keyAcquisitionError(acquired);
+      } else {
+        const accountQuota = acquired.reason === "account_quota";
+        return this.record({
+          providerId,
+          providerName: row.name,
+          providerType: row.type,
+          keyId: null,
+          kind,
+          status: accountQuota ? "unhealthy" : "unverified",
+          cause: accountQuota ? "quota_exceeded" : (availability?.total ?? 0) === 0 ? "no_credential" : "config_incomplete",
+          latencyMs: null,
+          resultCount: null,
+          message: acquired.message,
+          trigger,
+          spent: false,
+          requests: null,
+          batchId: options.batchId ?? null,
+        });
+      }
     }
 
-    // Reserve *before* the request. The reservation is a durable ledger write:
-    // if it cannot be recorded we refuse rather than spend money the budget has
-    // no record of. Connectivity probes are counted too (separately) but are
-    // not capped — capping them would leave the page unable to explain itself.
-    //
-    // A real search against a *keyless* source sends no credential, so it cannot
-    // consume the operator's account quota and must not require the paid switch:
-    // blocking it would make every public source permanently unverifiable. It is
-    // still counted in its own bucket — this code cannot know whether the vendor
-    // meters by IP, so it is counted, not assumed free.
-    const ledgerKind = kind === "search" && !adapter.requiresKey ? "search_anonymous" : kind;
-    const reservation = this.budgetLedger.reserve({
-      kind: ledgerKind,
-      paidProbesEnabled: policy.paidProbesEnabled,
-      maxPerRun: policy.maxRequestsPerRun,
-      maxPerDay: policy.maxRequestsPerDay,
-    });
-    if (!reservation.ok) {
-      if (kind === "search" && ledgerKind === "search") {
-        if (reservation.reason === "paid_disabled") {
+    // A real search with no credential cannot consume the operator's account
+    // quota. Anonymous generic connectivity also executes a search, so it belongs
+    // in the anonymous bucket rather than the free builtin connectivity bucket.
+    const anonymousSearch = lease === undefined && (kind === "search" || row.type === "generic-http");
+    const ledgerKind = anonymousSearch ? "search_anonymous" : kind;
+    let reservation: Reservation | undefined;
+    let requests = 0;
+    let timer: NodeJS.Timeout | undefined;
+    let detached: ReturnType<typeof composeAbort> | undefined;
+    let keyOutcome: KeyProbeRelease = { ok: false, notSent: true };
+
+    // One lifecycle owns both scarce resources. Anything that throws after the
+    // lease is acquired — including a ledger failure, a billing write failure or
+    // a scheduler write failure — must return the lease and a provably unused
+    // budget slot exactly once.
+    try {
+      reservation = this.budgetLedger.reserve({
+        kind: ledgerKind,
+        paidProbesEnabled: policy.paidProbesEnabled,
+        maxPerRun: policy.maxRequestsPerRun,
+        maxPerDay: policy.maxRequestsPerDay,
+        anonymousMaxPerRun: policy.anonymousMaxRequestsPerRun,
+        anonymousMaxPerDay: policy.anonymousMaxRequestsPerDay,
+      });
+      if (!reservation.ok) {
+        if (kind === "search" && ledgerKind === "search") {
+          if (reservation.reason === "paid_disabled") {
+            throw new SearchHubError(
+              "validation_error",
+              "Paid search probes are disabled. Enable them in Settings → Provider health, or run a connectivity probe instead.",
+            );
+          }
           throw new SearchHubError(
-            "validation_error",
-            "Paid search probes are disabled. Enable them in Settings → Provider health, or run a connectivity probe instead.",
+            "quota_exceeded",
+            `Health probe budget exhausted (${reservation.reason}). Paid probes used today: ${reservation.snapshot.searchUsedToday}/${policy.maxRequestsPerDay}.`,
           );
         }
-        throw new SearchHubError(
-          "quota_exceeded",
-          `Health probe budget exhausted (${reservation.reason}). Paid probes used today: ${reservation.snapshot.searchUsedToday}/${policy.maxRequestsPerDay}.`,
-        );
+        if (ledgerKind === "search_anonymous" && reservation.reason !== "ledger_unavailable") {
+          throw new SearchHubError(
+            "quota_exceeded",
+            `Anonymous health probe budget exhausted (${reservation.reason}). Anonymous probes used today: ${reservation.snapshot.anonymousSearchUsedToday}/${reservation.snapshot.anonymousMaxPerDay}.`,
+          );
+        }
+        throw new SearchHubError("internal_error", `Health probe budget is unavailable (${reservation.reason})`);
       }
-      // A connectivity probe is free; a broken ledger should not make the
-      // page unusable, but the miss is logged so it is not silent.
-      this.ctx.appLogger.warn(
-        { providerId, reason: reservation.reason },
-        "connect probe ran without a budget reservation",
-      );
-    }
 
-    /**
-     * Physical requests issued by this probe.
-     *
-     * Incremented from the fetch boundary (`onRequest`), which fires per physical
-     * request including redirect hops — the only place a count is accurate. It
-     * stays `0` until a request is actually attempted, and is reported as `null`
-     * in that case, so "never left the machine" is distinguishable from "one
-     * request".
-     */
-    let requests = 0;
-    const countedFetch: SafeFetch = (url, init) =>
-      this.ctx.fetch(url, {
-        ...init,
-        onRequest: (target) => {
-          requests += 1;
-          init?.onRequest?.(target);
-        },
-      });
-
-    const started = this.clock();
-    const controller = new AbortController();
-    const timeoutMs = Math.min(row.timeoutMs, kind === "connect" ? 12_000 : 20_000);
-    const timer = setTimeout(() => controller.abort(timeoutError()), timeoutMs);
-    const detached = composeAbort(controller.signal, options.signal);
-
-    try {
-      const result = await adapter.search(
-        { query: probeQuery(row.type, kind), limit: kind === "connect" ? 1 : 3, signal: detached.signal },
-        {
-          fetch: countedFetch,
-          ...(apiKey === undefined ? {} : { apiKey }),
-          config: {
-            id: row.id,
-            name: row.name,
-            type: row.type,
-            baseUrl: row.baseUrl,
-            timeoutMs,
-            maxResults: row.resultsPerPage,
-            language: row.language,
-            freshness: row.freshness as never,
-            model: null,
-            maxRetries: 0,
-            breakerThreshold: row.breakerThreshold,
-            breakerCooldownMs: row.breakerCooldownMs,
-            config: safeJson(row.configJson),
-            // The search path resolves the platform parameters into a concrete
-            // plan (`targetResults`, `maxPages`, `maxRequestsPerSearch`,
-            // `pageSize`). Passing the raw settings object here made every
-            // paginated adapter compute `Math.max(1, undefined) = NaN` pages,
-            // issue no request at all, and report `empty_results` — a healthy
-            // vendor marked degraded by the probe itself.
-            search: resolveSearchConfig(
-              catalogEntry ? buildManifest(catalogEntry) : buildManifest({ type: row.type } as never),
-              safeJson(row.searchConfigJson),
-            ),
+      /**
+       * Physical requests issued by this probe.
+       *
+       * Incremented from the fetch boundary (`onRequest`), which fires per physical
+       * request including redirect hops — the only place a count is accurate. It
+       * stays `0` until a request is actually attempted, and is reported as `null`
+       * in that case, so "never left the machine" is distinguishable from "one
+       * request".
+       */
+      const countedFetch: SafeFetch = (url, init) =>
+        this.ctx.fetch(url, {
+          ...init,
+          onRequest: (target) => {
+            requests += 1;
+            init?.onRequest?.(target);
           },
-          signal: detached.signal,
-          logger: this.ctx.appLogger,
-        },
-      );
+        });
+
+      const started = this.clock();
+      const controller = new AbortController();
+      const timeoutMs = Math.min(row.timeoutMs, kind === "connect" ? 12_000 : 20_000);
+      timer = setTimeout(() => controller.abort(timeoutError()), timeoutMs);
+      detached = composeAbort(controller.signal, options.signal);
+
+      let result: Awaited<ReturnType<typeof adapter.search>>;
+      try {
+        result = await adapter.search(
+          { query: probeQuery(row.type, kind), limit: kind === "connect" ? 1 : 3, signal: detached.signal },
+          {
+            fetch: countedFetch,
+            ...(lease === undefined ? {} : { apiKey: lease.secret }),
+            config: {
+              id: row.id,
+              name: row.name,
+              type: row.type,
+              baseUrl: row.baseUrl,
+              timeoutMs,
+              maxResults: row.resultsPerPage,
+              language: row.language,
+              freshness: row.freshness as never,
+              model: null,
+              maxRetries: 0,
+              breakerThreshold: row.breakerThreshold,
+              breakerCooldownMs: row.breakerCooldownMs,
+              config: safeJson(row.configJson),
+              // The search path resolves the platform parameters into a concrete
+              // plan (`targetResults`, `maxPages`, `maxRequestsPerSearch`,
+              // `pageSize`). Passing the raw settings object here made every
+              // paginated adapter compute `Math.max(1, undefined) = NaN` pages,
+              // issue no request at all, and report `empty_results` — a healthy
+              // vendor marked degraded by the probe itself.
+              search: resolveSearchConfig(
+                catalogEntry ? buildManifest(catalogEntry) : buildManifest({ type: row.type } as never),
+                safeJson(row.searchConfigJson),
+              ),
+            },
+            signal: detached.signal,
+            logger: this.ctx.appLogger,
+          },
+        );
+      } catch (error) {
+        const latencyMs = this.clock() - started;
+        const cause = controller.signal.aborted && !options.signal?.aborted ? "timeout" : classifyError(error);
+        // A cancelled probe is not evidence about the source: it says the caller
+        // (or shutdown) stopped it, so nothing is recorded against the provider.
+        // The lifecycle finally keeps a sent request's reservation and refunds
+        // only a probe that provably never left the machine.
+        if (cause === "cancelled" || detached.cancelled()) {
+          keyOutcome = { ok: false, ...(requests === 0 ? { notSent: true } : { cancelled: true }) };
+          throw cancelledError();
+        }
+        const retryAfterMs = parseRetryAfterMs((error as { retryAfterMs?: number } | null)?.retryAfterMs);
+        const cooldown =
+          cause === "quota_exceeded"
+            ? nextUtcMidnight(this.clock()) + 1_000 - this.clock()
+            : cooldownFor(cause, retryAfterMs);
+        keyOutcome = requests === 0
+          ? { ok: false, notSent: true }
+          : { ok: false, code: cause, message: error instanceof Error ? error.message : String(error), ...(retryAfterMs === null ? {} : { retryAfterMs }) };
+        const recorded = this.record({
+          providerId,
+          providerName: row.name,
+          providerType: row.type,
+          keyId: targetKeyId,
+          kind,
+          status: statusFor(cause),
+          cause,
+          latencyMs,
+          resultCount: null,
+          message: error instanceof Error ? error.message : String(error),
+          trigger,
+          cooldownMs: cooldown ?? undefined,
+          spent: requests > 0 && kind === "search" && ledgerKind === "search",
+          requests: requests > 0 ? requests : null,
+          billing: { kind: ledgerKind, day: reservation.snapshot.day },
+          credentialUsed: lease !== undefined,
+          batchId: options.batchId ?? null,
+        });
+        this.advanceSchedule(providerId, cause);
+        return recorded;
+      }
+
       const latencyMs = this.clock() - started;
       const count = result.results.length;
-
       // HTTP 200 with no rows is a degraded answer, not a healthy one: the
       // vendor answered, but the source is not usable for searching right now.
       const cause: HealthCause = count > 0 ? "ok" : "empty_results";
+      keyOutcome = requests === 0
+        ? { ok: false, notSent: true }
+        : count > 0
+          ? { ok: true, latencyMs }
+          : { ok: false, code: "empty_results", message: "Endpoint returned no results" };
       const recorded = this.record({
         providerId,
         providerName: row.name,
@@ -435,62 +517,27 @@ export class HealthService {
             : "Endpoint answered but returned no results; treated as degraded, not healthy.",
         trigger,
         sample: result.results.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
-        spent: kind === "search" && ledgerKind === "search" && reservation.ok,
+        spent: requests > 0 && kind === "search" && ledgerKind === "search",
         requests: requests > 0 ? requests : null,
-        batchId: options.batchId ?? null,
-      });
-      this.advanceSchedule(providerId, cause);
-      return recorded;
-    } catch (error) {
-      const latencyMs = this.clock() - started;
-      const cause = classifyError(error);
-      // A cancelled probe is not evidence about the source: it says the caller
-      // (or shutdown) stopped it, so nothing is recorded against the provider.
-      //
-      // Its budget is deliberately NOT refunded. A cancel can arrive after the
-      // request left the machine — the vendor may already have counted it — and
-      // this code cannot tell the two apart. Refunding on every cancel would let
-      // a client that aborts in a loop spend an unbounded number of paid requests
-      // while the ledger reports zero. Only a probe that provably never left
-      // (no credential, refused before the call) is refunded.
-      //
-      // The job signal is checked as well as the classification: an adapter that
-      // wraps the abort in its own error type loses the `code`, and the `/aborted/i`
-      // fallback in `classifyError` would then read a cancellation as a timeout
-      // and park the source — the exact failure this branch exists to prevent.
-      if (cause === "cancelled" || detached.cancelled()) {
-        throw cancelledError();
-      }
-      const retryAfterMs = parseRetryAfterMs(
-        (error as { retryAfterMs?: number } | null)?.retryAfterMs != null
-          ? String((error as { retryAfterMs?: number }).retryAfterMs! / 1000)
-          : null,
-      );
-      const cooldown = cooldownFor(cause, retryAfterMs);
-      // Account-wide problems must not be "fixed" by rotating keys; the record
-      // step parks the key and the scheduler stops offering it.
-      const recorded = this.record({
-        providerId,
-        providerName: row.name,
-        providerType: row.type,
-        keyId: targetKeyId,
-        kind,
-        status: statusFor(cause),
-        cause,
-        latencyMs,
-        resultCount: null,
-        message: error instanceof Error ? error.message : String(error),
-        trigger,
-        cooldownMs: cooldown ?? undefined,
-        spent: kind === "search" && ledgerKind === "search" && reservation.ok,
-        requests: requests > 0 ? requests : null,
+        billing: { kind: ledgerKind, day: reservation.snapshot.day },
+        credentialUsed: lease !== undefined,
         batchId: options.batchId ?? null,
       });
       this.advanceSchedule(providerId, cause);
       return recorded;
     } finally {
-      clearTimeout(timer);
-      detached.dispose();
+      try {
+        if (timer) clearTimeout(timer);
+        detached?.dispose();
+        if (reservation?.ok && requests === 0) {
+          this.budgetLedger.release(ledgerKind, reservation.snapshot.day);
+        }
+      } finally {
+        // Key state has one writer: the scheduler lease. release() waits for the
+        // dirty snapshot to reach SQLite before this API result is returned, and
+        // also runs when reservation, observation or scheduling writes fail.
+        if (lease) await lease.release(keyOutcome);
+      }
     }
   }
 
@@ -727,7 +774,8 @@ export class HealthService {
 
     // The per-run cap applies to this loop, not to the daily counter: otherwise
     // a single "check all" would ignore maxRequestsPerRun entirely.
-    let spentThisRun = 0;
+    let spentPaidThisRun = 0;
+    let spentAnonymousThisRun = 0;
     const queue = [...ids];
     const worker = async (): Promise<void> => {
       for (;;) {
@@ -755,18 +803,37 @@ export class HealthService {
         emitSkip(id, "already_running", "already_running: another probe for this source is in flight");
         return;
       }
-      if (kind === "search") {
-        const remainingRun = this.budget().maxPerRun - spentThisRun;
-        if (remainingRun <= 0) {
-          emitSkip(id, "SKIPPED_BUDGET", "budget_exhausted:run_limit");
-          return;
+      let paidThisProbe = false;
+      let anonymousThisProbe = false;
+      const row = this.db.select().from(providerInstances).where(eq(providerInstances.id, id)).get();
+      if (row) {
+        const config = safeJson(row.configJson);
+        const requiresKey = this.ctx.providers.providerRequiresKey(row.type, config);
+        const credentialed = requiresKey;
+        const anonymousSearch = !credentialed && (kind === "search" || row.type === "generic-http");
+        const budget = this.budget();
+        if (anonymousSearch) {
+          const remainingRun = budget.anonymousMaxPerRun - spentAnonymousThisRun;
+          if (remainingRun <= 0 || budget.anonymousRemainingToday <= 0) {
+            emitSkip(id, "SKIPPED_BUDGET", "budget_exhausted:anonymous_limit");
+            return;
+          }
+          spentAnonymousThisRun += 1;
+          anonymousThisProbe = true;
+        } else if (kind === "search" && credentialed) {
+          const remainingRun = budget.maxPerRun - spentPaidThisRun;
+          if (remainingRun <= 0) {
+            emitSkip(id, "SKIPPED_BUDGET", "budget_exhausted:run_limit");
+            return;
+          }
+          const decision = decideBudget({ ...budget, maxPerRun: remainingRun }, 1);
+          if (!decision.allowed) {
+            emitSkip(id, "SKIPPED_BUDGET", `budget_exhausted:${decision.reason}`);
+            return;
+          }
+          spentPaidThisRun += 1;
+          paidThisProbe = true;
         }
-        const decision = decideBudget({ ...this.budget(), maxPerRun: remainingRun }, 1);
-        if (!decision.allowed) {
-          emitSkip(id, "SKIPPED_BUDGET", `budget_exhausted:${decision.reason}`);
-          return;
-        }
-        spentThisRun += 1;
       }
       try {
         const outcome = await this.probeWithLock(id, {
@@ -776,14 +843,16 @@ export class HealthService {
           batchId: options.batchId ?? null,
         });
         if (outcome === "already_running") {
-          if (kind === "search") spentThisRun -= 1;
+          if (paidThisProbe) spentPaidThisRun -= 1;
+          if (anonymousThisProbe) spentAnonymousThisRun -= 1;
           emitSkip(id, "already_running", "already_running: another probe for this source is in flight");
           return;
         }
         // A probe that never left the machine (no credential, refused before
         // the request) must not consume the per-run allowance: otherwise
         // "check all" stops early while nothing was spent.
-        if (kind === "search" && outcome.spent === false) spentThisRun -= 1;
+        if (paidThisProbe && outcome.spent === false) spentPaidThisRun -= 1;
+        if (anonymousThisProbe && outcome.requests === null) spentAnonymousThisRun -= 1;
         results.push(outcome);
         options.onItem?.({ providerId: id, result: outcome });
       } catch (error) {
@@ -791,10 +860,13 @@ export class HealthService {
         // the runner can record `SKIPPED_CANCELLED` and leave health untouched.
         const code = (error as { code?: unknown } | null)?.code;
         if (code === "cancelled") {
-          if (kind === "search") spentThisRun -= 1;
+          if (paidThisProbe) spentPaidThisRun -= 1;
+          if (anonymousThisProbe) spentAnonymousThisRun -= 1;
           emitSkip(id, "SKIPPED_CANCELLED", "cancelled: the bulk run was cancelled while this probe was in flight");
           return;
         }
+        if (paidThisProbe) spentPaidThisRun -= 1;
+        if (anonymousThisProbe) spentAnonymousThisRun -= 1;
         const reason = error instanceof Error ? error.message : String(error);
         skipped.push({ providerId: id, reason });
         options.onItem?.({ providerId: id, skip: { code: "unknown", reason } });
@@ -989,10 +1061,13 @@ export class HealthService {
       .where(gte(searchEvents.createdAt, since24h))
       .all();
     const keys = this.db.select().from(apiKeys).all();
+    const availability = this.ctx.providers.keyAvailability(rows.map((row) => row.id));
     const states = this.db.select().from(providerProbeState).all();
     const stateById = new Map(states.map((item) => [item.providerId, item]));
 
-    const providers = rows.map((row) => this.summarize(row, checks, events, keys, stateById.get(row.id)));
+    const providers = rows.map((row) =>
+      this.summarize(row, checks, events, keys, availability.get(row.id), stateById.get(row.id)),
+    );
     const totals: Record<HealthStatus, number> = {
       healthy: 0,
       degraded: 0,
@@ -1068,6 +1143,7 @@ export class HealthService {
     checks: Array<typeof providerHealthChecks.$inferSelect>,
     events: Array<typeof searchEvents.$inferSelect>,
     keys: Array<typeof apiKeys.$inferSelect>,
+    keyFacts: KeyAvailability | undefined,
     state: typeof providerProbeState.$inferSelect | undefined,
   ): ProviderHealthSummary {
     const mine = checks
@@ -1093,12 +1169,10 @@ export class HealthService {
     }
 
     const providerKeys = keys.filter((item) => item.providerId === row.id);
-    const available = providerKeys.filter(
-      (item) =>
-        item.enabled &&
-        item.status !== "invalid" &&
-        (!item.cooldownUntil || Date.parse(item.cooldownUntil) <= Date.now()),
-    ).length;
+    // The overview must use the same strict facts as acquisition and bulk
+    // eligibility. A row-level filter cannot see decryption failures or shared
+    // account quota, and would report a changed master key as a healthy pool.
+    const available = keyFacts?.available ?? 0;
 
     // Status comes from the newest probe; with no probe at all the source is
     // unverified, even if it is enabled and has keys.
@@ -1106,8 +1180,7 @@ export class HealthService {
     const cause = lastCheck
       ? ((safeJson(lastCheck.detailJson) as { cause?: HealthCause }).cause ?? "ok")
       : null;
-    const adapter = getAdapter(row.type);
-    const requiresKey = adapter?.requiresKey ?? true;
+    const requiresKey = this.ctx.providers.providerRequiresKey(row.type, safeJson(row.configJson));
     const cooldownUntil = lastCheck
       ? (safeJson(lastCheck.detailJson) as { cooldownUntil?: string | null }).cooldownUntil ?? null
       : null;
@@ -1115,9 +1188,9 @@ export class HealthService {
       enabled: row.enabled,
       lastCheck: lastCheck ? { status, cause: cause ?? "ok", cooldownUntil } : null,
       requiresKey,
-      keyTotal: providerKeys.length,
+      keyTotal: keyFacts?.total ?? providerKeys.length,
       keyAvailable: available,
-      keyInvalid: providerKeys.filter((item) => item.status === "invalid").length,
+      keyInvalid: keyFacts?.invalid ?? 0,
       now: this.clock(),
     });
     const entry = getCatalogEntry(row.type);
@@ -1151,7 +1224,7 @@ export class HealthService {
       p95LatencyMs: percentile(latencies, 95),
       searchCalls: traffic.length,
       keyAvailable: available,
-      keyTotal: providerKeys.length,
+      keyTotal: keyFacts?.total ?? providerKeys.length,
       lastProbe: lastCheck
         ? {
             kind: lastCheck.kind as HealthProbeKind,
@@ -1201,6 +1274,10 @@ export class HealthService {
     spent?: boolean;
     /** Physical upstream requests, or `null` when none was sent. */
     requests?: number | null;
+    /** Durable billing bucket and reservation day; absent when nothing was reserved. */
+    billing?: { kind: LedgerKind; day: string };
+    /** Whether this observation used a credential lease. */
+    credentialUsed?: boolean;
     /** Bulk run ledger id this probe belongs to. */
     batchId?: string | null;
   }): HealthCheckResult {
@@ -1242,10 +1319,16 @@ export class HealthService {
       })
       .run();
 
-    // A failing credential changes how the scheduler treats that key; anything
-    // else is provider-level and leaves the key pool alone.
-    if (input.keyId && input.cause !== "ok") {
-      this.applyKeyOutcome(input.keyId, input.cause, cooldownUntil);
+    if (input.billing) {
+      this.budgetLedger.recordBilling({
+        healthCheckId: id,
+        kind: input.billing.kind,
+        budgetDay: input.billing.day,
+        classification: "exact",
+        providerType: input.providerType,
+        credentialUsed: input.credentialUsed === true,
+        spent: requests !== null && requests > 0,
+      });
     }
 
     return {
@@ -1270,34 +1353,19 @@ export class HealthService {
       ...(input.spent === undefined ? {} : { spent: input.spent }),
     };
   }
-
-  private applyKeyOutcome(keyId: string, cause: HealthCause, cooldownUntil: string | null): void {
-    const patch: Record<string, unknown> = { lastErrorCode: errorCodeFor(cause) };
-    if (cause === "auth_invalid") {
-      patch["status"] = "invalid";
-    } else if (cause === "quota_exceeded") {
-      patch["status"] = "quota_exhausted";
-      // Always park until at least the next UTC midnight: a quota-exhausted key
-      // without a cooldown would be retried on the next search and fail again.
-      patch["cooldownUntil"] =
-        cooldownUntil ?? new Date(nextUtcMidnight(this.clock())).toISOString();
-    } else if (cooldownUntil) {
-      patch["cooldownUntil"] = cooldownUntil;
-    }
-    try {
-      this.db.update(apiKeys).set(patch).where(eq(apiKeys.id, keyId)).run();
-      this.ctx.providers.reload();
-    } catch {
-      // A health probe must never fail the request that triggered it because a
-      // best-effort key annotation did not apply.
-    }
-  }
 }
 
 function nextUtcMidnight(nowMs: number): number {
   const date = new Date(nowMs);
   date.setUTCHours(24, 0, 0, 0);
   return date.getTime();
+}
+
+function keyAcquisitionError(result: Extract<AcquireKeyResult, { ok: false }>): SearchHubError {
+  if (result.reason === "account_quota") return new SearchHubError("quota_exceeded", result.message);
+  if (result.reason === "queue_timeout") return new SearchHubError("queue_timeout", result.message);
+  if (result.reason === "no_key") return new SearchHubError("no_available_key", result.message);
+  return new SearchHubError("validation_error", result.message, { status: 400 });
 }
 
 /** Concurrency for a probe pass: an integer in 1..4, never NaN, never 0. */

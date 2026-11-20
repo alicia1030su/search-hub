@@ -72,15 +72,21 @@
 |---|---|---|---|---|---|
 | 1 | `enabled=false` | `SKIPPED_DISABLED` | 否 | 否 | 禁用是运营明确决定，探测它没有意义 |
 | 2 | `getAdapter(type)` 为空 | `CONFIG_ERROR` | 否 | 是（失败） | 类型未实现是配置事故，要出现在失败列表里被修掉 |
-| 3 | 冷却中 / 额度已耗尽（`nextProbeAt` 未到、`remainingToday<=0`、`remainingRun<=0`） | `SKIPPED_COOLDOWN` / `SKIPPED_BUDGET` | 否 | 否 | 遵守现有保护；只解释原因，**不新增强制突破** |
-| 4 | `adapter.requiresKey` 且解密失败 | `CONFIG_ERROR` | 否 | 是（失败） | 不得当作「不存在」，不得泄漏任何解密内容或密文片段 |
+| 3 | 调度器冷却未到期 | `SKIPPED_COOLDOWN` | 否 | 否 | 遵守现有保护；只解释原因，**不新增强制突破** |
+| 4 | `providerRequiresKey(type, config)` 且全部启用 Key 无法解密 | `CONFIG_ERROR` | 否 | 是（失败） | 包含 generic `keyInjection`/`{{key}}`；不得泄漏解密内容或密文片段 |
 | 5 | `requiresKey` 且一条 Key 都没填 | `SKIPPED_NO_KEY` | 否 | 否 | 无法判断，不是坏 |
 | 6 | `requiresKey` 且 Key 全部禁用 | `SKIPPED_NO_ENABLED_KEY` | 否 | 否 | 与 5 区分：用户以为有 Key，实际被关掉了 |
-| 7 | `!requiresKey` 且未开启「包含免 Key 来源」 | `SKIPPED_KEYLESS_BY_POLICY` | 否 | 否 | 复用既有 `includeUnverified`；开启后入队，计费归 `search_anonymous` 桶 |
-| 8 | 以上都不命中 | `ELIGIBLE` | 是 | 是 | 真正会发请求的集合 |
+| 7 | 账户组配额耗尽 | `SKIPPED_ACCOUNT_QUOTA` | 否 | 否 | 不能靠轮换另一把 Key 绕过 |
+| 8 | 全部 Key 冷却 / 额度耗尽 / 失效 / 不可用 | `SKIPPED_COOLDOWN` / `SKIPPED_QUOTA_EXHAUSTED` / `SKIPPED_INVALID_KEY` / `SKIPPED_NO_USABLE_KEY` | 否 | 否 | 以 `keyAvailability` 的统一调度器事实判定 |
+| 9 | `!requiresKey` 且本任务 `includeKeyless=false` | `SKIPPED_KEYLESS_BY_POLICY` | 否 | 否 | 任务级参数，默认 false；不读写全局 `includeUnverified` |
+| 10 | 付费搜索且付费开关关闭 | `SKIPPED_PAID_DISABLED` | 否 | 否 | 混合任务跳过付费源、匿名继续；纯付费范围创建时 409 |
+| 11 | 对应付费/匿名预算耗尽 | `SKIPPED_BUDGET` | 否 | 否 | 两个桶独立计数 |
+| 12 | 以上都不命中 | `ELIGIBLE` | 是 | 是 | 真正会发请求的集合 |
 
-补充：第 3 条在 `kind=connect` 时只看冷却，不看付费额度（连接探测不消耗付费额度）。
+补充：第 3 条在 `kind=connect` 时只看冷却，不看付费额度（普通内建连接探测不消耗搜索额度）。
 第 4–6 条只对 `requiresKey` 生效；免 Key 来源在任何 Key 状态下都不因 Key 被拦。
+`generic-http` 例外：需凭据的 generic 连接探测不支持，预检即 `CONFIG_ERROR`；匿名 generic 连接探测
+实际执行搜索，必须检查匿名搜索预算。
 
 ## 6. 错误分类
 
@@ -204,11 +210,11 @@
 | T26 | Playwright：确认→进度→取消→结果表仍有已完成行 | P6 |
 | T27 | Playwright：排序为失败→受限→待确认→成功→跳过 | P6 |
 | T28 | Playwright：「只重测失败项」只提交失败集合 | P6 |
-| T29 | Playwright：抽屉显示脱敏 Key 标签与最多 3 条样例，`requests` 缺失显示「—」 | P6 |
+| T29 | Playwright：可选 Key 不被匿名探测使用，抽屉显示未使用凭证、最多 3 条样例，`requests` 缺失显示「—」；需凭据源的脱敏 Key 由 T35 覆盖 | P6 |
 | T30 | i18n：`zh-CN` 与 `en` 键集合相等，页面无硬编码中文 | P6 |
 
 ## 12. 待确认问题（含默认值）
 
-1. **`includeUnverified` 是否直接等同于「包含免 Key 来源」？** 默认：是，直接复用，不新增设置项（`healthSettingsPatchSchema` 保持字段不变）；若实施方发现语义冲突，只能新增 `includeKeyless`，不得改 `includeUnverified` 现有含义。
+1. **批量检测的免 Key 策略如何保存？** 已确定：请求级 `includeKeyless`，缺省 `false`，写入任务 `optionsJson` 快照；刷新恢复只读该快照。全局 `includeUnverified` 保持原含义，但不再控制批量任务。
 2. **`empty_results` 在「只重测失败项」里是否包含？** 默认：不包含——它属「待确认」，单独提供「重测待确认项」，避免把一次空结果放大成反复付费。
 3. **批量任务的 `total` 是否包含被跳过的来源？** 默认：包含（`total` = 范围总数，`skipped` 单列），因为 UI 需要显示「跳过 8」而不是让 20 悄悄变成 12。

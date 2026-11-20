@@ -442,7 +442,7 @@ describe("v0.1.10 P0 acceptance", () => {
       method: "POST",
       url: "/api/admin/provider-health/batch-test",
       ...harness.write(),
-      payload: { kind: "connect", providerIds: [emptyProvider] },
+      payload: { kind: "connect", providerIds: [emptyProvider], includeKeyless: true },
     });
     expect(emptyRun.statusCode, emptyRun.body).toBe(201);
     const emptyView = await waitForJob(

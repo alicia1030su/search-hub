@@ -337,6 +337,36 @@ export const providerHealthChecks = sqliteTable(
 export type ProviderHealthCheckRow = typeof providerHealthChecks.$inferSelect;
 
 /**
+ * Billing class of one completed health probe (migration `0009`).
+ *
+ * The provider type and credential fact are snapshots, not joins: changing a
+ * provider or deleting its key must never change what an old request cost.
+ * Legacy search rows are `legacy_conservative` and count against the paid bucket.
+ */
+export const providerHealthBilling = sqliteTable(
+  "provider_health_billing",
+  {
+    healthCheckId: text("health_check_id")
+      .primaryKey()
+      .references(() => providerHealthChecks.id, { onDelete: "cascade" }),
+    budgetKind: text("budget_kind").notNull(),
+    /** UTC day of the reservation, not the day the probe happened to finish. */
+    budgetDay: text("budget_day").notNull(),
+    classification: text("classification").notNull(),
+    providerTypeSnapshot: text("provider_type_snapshot"),
+    credentialUsed: integer("credential_used", { mode: "boolean" }).notNull().default(false),
+    /** Whether at least one physical upstream request was actually attempted. */
+    spent: integer("spent", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_provider_health_billing_budget").on(table.budgetKind, table.classification, table.healthCheckId),
+  ],
+);
+
+export type ProviderHealthBillingRow = typeof providerHealthBilling.$inferSelect;
+
+/**
  * Scheduler bookkeeping for one provider.
  *
  * Separate from `provider_health_checks` on purpose: the log is an append-only
@@ -383,7 +413,27 @@ export const healthProbeBudget = sqliteTable(
   (table) => [primaryKey({ columns: [table.day, table.kind] })],
 );
 
+/** Original ledger rows preserved before migration `0009` recomputed them once. */
+export const healthProbeBudgetLegacy = sqliteTable(
+  "health_probe_budget_legacy",
+  {
+    day: text("day").notNull(),
+    kind: text("kind").notNull(),
+    used: integer("used").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.day, table.kind] })],
+);
+
+/** One-shot marker preventing migration `0009` from recomputing later spend. */
+export const providerHealthBillingMigration = sqliteTable("provider_health_billing_migration", {
+  id: integer("id").primaryKey(),
+  appliedAt: text("applied_at").notNull(),
+});
+
 export type ProviderProbeStateRow = typeof providerProbeState.$inferSelect;
+export type HealthProbeBudgetLegacyRow = typeof healthProbeBudgetLegacy.$inferSelect;
+export type ProviderHealthBillingMigrationRow = typeof providerHealthBillingMigration.$inferSelect;
 
 /**
  * One bulk provider-test run (migration `0008`).

@@ -3,6 +3,7 @@ import {
   AccountQuotaRegistry,
   accountQuotaRegistry,
   type AccountQuotaLimits,
+  type AccountQuotaReservation,
 } from "./account-quota.js";
 
 /** Upper bound on parked callers; beyond this we reject instead of growing unbounded. */
@@ -23,6 +24,8 @@ export interface SchedulerKeySeed {
   weight: number;
   enabled: boolean;
   status: KeyStatus;
+  /** False when the stored ciphertext cannot be decrypted with the current master key. */
+  decryptable?: boolean;
   requestCount?: number;
   successCount?: number;
   failureCount?: number;
@@ -56,6 +59,7 @@ export interface KeyRuntimeSnapshot {
   peakInFlight: number;
   rpmUsed: number;
   quotaUsedToday: number;
+  quotaDate: string | null;
   requestCount: number;
   successCount: number;
   failureCount: number;
@@ -77,6 +81,8 @@ export interface KeyReleaseOutcome {
   message?: string;
   retryAfterMs?: number;
   cancelled?: boolean;
+  /** 租约已取但请求未发出：完整退回 Key 与账户组槽位，不计成功/失败。 */
+  notSent?: boolean;
 }
 
 export interface KeySchedulerOptions {
@@ -191,6 +197,9 @@ export class KeyScheduler {
       quotaUsedToday: 0,
       dailyQuota: this.accountLimits?.dailyQuota ?? null,
       lastDeniedAt: null,
+      parkedUntil: this.registry.parkedUntil(this.accountGroup, now) === null
+        ? null
+        : new Date(this.registry.parkedUntil(this.accountGroup, now)!).toISOString(),
     };
   }
 
@@ -231,8 +240,19 @@ export class KeyScheduler {
       existing.maskedKey = seed.maskedKey;
       existing.weight = Math.max(1, seed.weight);
       existing.enabled = seed.enabled;
-      if (!seed.enabled) existing.status = "disabled";
-      else if (existing.status === "disabled" && seed.enabled) existing.status = "healthy";
+      existing.decryptable = seed.decryptable ?? true;
+      existing.status = seed.enabled ? seed.status : "disabled";
+      existing.requestCount = seed.requestCount ?? existing.requestCount;
+      existing.successCount = seed.successCount ?? existing.successCount;
+      existing.failureCount = seed.failureCount ?? existing.failureCount;
+      existing.consecutiveFailures = seed.consecutiveFailures ?? existing.consecutiveFailures;
+      existing.avgLatencyMs = seed.avgLatencyMs ?? existing.avgLatencyMs;
+      existing.quotaUsedToday = seed.quotaUsedToday ?? existing.quotaUsedToday;
+      existing.quotaDate = seed.quotaDate ?? existing.quotaDate;
+      const cooldown = seed.cooldownUntil ? Date.parse(seed.cooldownUntil) : Number.NaN;
+      existing.cooldownUntilMs = Number.isNaN(cooldown) ? null : cooldown;
+      existing.lastErrorCode = seed.lastErrorCode ?? null;
+      existing.lastErrorMessage = seed.lastErrorMessage ?? null;
       next.delete(existing.id);
       kept.push(existing);
     }
@@ -282,6 +302,42 @@ export class KeyScheduler {
         const lease = this.tryAcquire();
         if (lease) return { lease };
         if (!this.hasPotentiallyUsableKey(Date.now())) return { lease: null, reason: "no_key" };
+      }
+      return { lease: null, reason: "queue_timeout" };
+    } finally {
+      this.waiting -= 1;
+    }
+  }
+
+  /**
+   * 显式 Key 租约。manual 只绕过状态/冷却/Key 数值配额，仍校验启用、可解密、
+   * 并发上限与账户组数值配额；其他调用方使用正常自动选择规则。
+   */
+  async acquireForKeyWithReason(
+    keyId: string,
+    options: { maxWaitMs?: number; signal?: AbortSignal; manual?: boolean } = {},
+  ): Promise<{ lease: KeyLease | null; reason?: "no_key" | "queue_timeout" | "account_quota" }> {
+    const immediate = this.tryAcquireKey(keyId, { manual: options.manual });
+    if (immediate) return { lease: immediate };
+    if (this.accountDenied) return { lease: null, reason: "account_quota" };
+    if (!this.explicitKeyPotentiallyUsable(keyId, options.manual ?? false, Date.now())) {
+      return { lease: null, reason: "no_key" };
+    }
+    if (this.waiting >= MAX_WAITERS) return { lease: null, reason: "queue_timeout" };
+
+    const waitBudget = Math.max(0, options.maxWaitMs ?? 2_000);
+    const deadline = Date.now() + waitBudget;
+    this.waiting += 1;
+    try {
+      while (Date.now() < deadline) {
+        if (options.signal?.aborted) return { lease: null, reason: "queue_timeout" };
+        await this.waitForSlot(Math.min(deadline - Date.now(), 250), options.signal);
+        const lease = this.tryAcquireKey(keyId, { manual: options.manual });
+        if (lease) return { lease };
+        if (this.accountDenied) return { lease: null, reason: "account_quota" };
+        if (!this.explicitKeyPotentiallyUsable(keyId, options.manual ?? false, Date.now())) {
+          return { lease: null, reason: "no_key" };
+        }
       }
       return { lease: null, reason: "queue_timeout" };
     } finally {
@@ -349,10 +405,15 @@ export class KeyScheduler {
   /** True when at least one key is enabled, not invalid and not in long cooldown. */
   private hasPotentiallyUsableKey(now: number): boolean {
     for (const key of this.keys) {
-      if (!key.enabled) continue;
+      if (!key.enabled || !key.decryptable) continue;
       // `quota_exhausted` is terminal for the day: retrying it costs a request
       // and always fails, so it must not be offered as a usable key.
-      if (key.status === "invalid" || key.status === "disabled" || key.status === "quota_exhausted") {
+      if (
+        key.status === "invalid" ||
+        key.status === "disabled" ||
+        key.status === "forbidden" ||
+        key.status === "quota_exhausted"
+      ) {
         continue;
       }
       this.refreshKey(key, now);
@@ -364,6 +425,21 @@ export class KeyScheduler {
     return false;
   }
 
+  private explicitKeyPotentiallyUsable(keyId: string, manual: boolean, now: number): boolean {
+    const key = this.keys.find((item) => item.id === keyId);
+    if (!key || !key.enabled || !key.decryptable) return false;
+    if (!manual) {
+      if (key.status === "invalid" || key.status === "forbidden" || key.status === "quota_exhausted") {
+        return false;
+      }
+      this.refreshKey(key, now);
+      if (key.cooldownUntilMs !== null) return false;
+      if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return false;
+      if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return false;
+    }
+    return true;
+  }
+
   /**
    * Atomically selects a key and reserves one concurrency slot.
    * Returns null when no key can serve the request right now.
@@ -372,46 +448,113 @@ export class KeyScheduler {
     // The account budget is consumed BEFORE a key slot: if the account is out of
     // quota, holding a key slot would only delay other requests that also cannot
     // succeed.
-    if (this.accountGroup && this.accountLimits) {
-      if (!this.registry.tryConsume(this.accountGroup, this.accountLimits, now)) {
-        this.accountDenied = true;
-        return null;
-      }
-    }
-    this.accountDenied = false;
+    const reservation = this.reserveAccount(now);
+    if (reservation === null) return null;
 
     const available = this.availableKeys(now);
     if (available.length === 0) {
       // Return the reserved slot: no request will be made against the vendor.
-      if (this.accountGroup && this.accountLimits) {
-        this.registry.refund(this.accountGroup, this.accountLimits, now);
-      }
+      if (reservation) this.registry.refundReservation(reservation);
       return null;
     }
 
     const selected = this.pick(available);
-    if (!selected) return null;
+    if (!selected) {
+      if (reservation) this.registry.refundReservation(reservation);
+      return null;
+    }
+    return this.reserveKey(selected, now, reservation ?? null);
+  }
 
+  /** 同步显式取 Key；manual 允许恢复 invalid/forbidden/cooldown/quota_exhausted。 */
+  tryAcquireKey(keyId: string, options: { manual?: boolean; now?: number } = {}): KeyLease | null {
+    const now = options.now ?? Date.now();
+    const key = this.keys.find((item) => item.id === keyId);
+    if (!key || !key.enabled || !key.decryptable) return null;
+    this.refreshKey(key, now);
+    if (key.inFlight >= this.perKeyConcurrency) return null;
+    if (!options.manual) {
+      if (key.status === "invalid" || key.status === "forbidden" || key.status === "quota_exhausted") {
+        return null;
+      }
+      if (key.cooldownUntilMs !== null) return null;
+      if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return null;
+      if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return null;
+    }
+    const reservation = this.reserveAccount(now, options.manual ?? false);
+    if (reservation === null) return null;
+    return this.reserveKey(key, now, reservation ?? null);
+  }
+
+  private reserveAccount(now: number, manual: boolean = false): AccountQuotaReservation | null | undefined {
+    this.accountDenied = false;
+    if (!this.accountGroup || !this.accountLimits) return undefined;
+    const reservation = this.registry.reserve(this.accountGroup, this.accountLimits, now, { ignorePark: manual });
+    if (!reservation) this.accountDenied = true;
+    return reservation;
+  }
+
+  private reserveKey(
+    key: RuntimeKey,
+    now: number,
+    reservation: AccountQuotaReservation | null,
+  ): KeyLease {
+    const previousLastUsedAtMs = key.lastUsedAtMs;
     // --- critical section: no awaits below this line ---
-    selected.inFlight += 1;
-    if (selected.inFlight > selected.peakInFlight) selected.peakInFlight = selected.inFlight;
-    selected.requestCount += 1;
-    selected.lastUsedAtMs = now;
-    selected.window.push(now);
-    if (this.dailyQuota !== null) selected.quotaUsedToday += 1;
-    selected.dirty = true;
-    this.emitDirty(selected);
+    key.inFlight += 1;
+    if (key.inFlight > key.peakInFlight) key.peakInFlight = key.inFlight;
+    key.requestCount += 1;
+    key.lastUsedAtMs = now;
+    key.window.push(now);
+    if (this.dailyQuota !== null) key.quotaUsedToday += 1;
+    key.dirty = true;
+    this.emitDirty(key);
     // --- critical section end ---
 
-    return new KeyLease(this, selected.id, selected.label, now);
+    return new KeyLease(
+      this,
+      key.id,
+      key.label,
+      now,
+      reservation,
+      previousLastUsedAtMs,
+      this.dailyQuota !== null,
+      utcDayKey(now),
+    );
   }
 
   /** Called by a lease; idempotent. */
-  release(keyId: string, outcome: KeyReleaseOutcome, now: number = Date.now()): void {
+  release(
+    keyId: string,
+    outcome: KeyReleaseOutcome,
+    now: number = Date.now(),
+    reservation: AccountQuotaReservation | null = null,
+    previousLastUsedAtMs: number | null = null,
+    reservedAt: number = now,
+    countedDaily: boolean = false,
+    quotaDateAtReserve: string | null = null,
+  ): void {
+    // The credential may have been deleted while the request was in flight.
+    // Refund its exact account reservation before looking up mutable Key state.
+    if (outcome.notSent && reservation) this.registry.refundReservation(reservation);
     const key = this.keys.find((item) => item.id === keyId);
     if (!key) return;
 
     key.inFlight = Math.max(0, key.inFlight - 1);
+    if (outcome.notSent) {
+      key.requestCount = Math.max(0, key.requestCount - 1);
+      const index = key.window.lastIndexOf(reservedAt);
+      if (index >= 0) key.window.splice(index, 1);
+      if (countedDaily && key.quotaDate === quotaDateAtReserve) {
+        key.quotaUsedToday = Math.max(0, key.quotaUsedToday - 1);
+      }
+      key.lastUsedAtMs = previousLastUsedAtMs;
+      key.dirty = true;
+      this.emitDirty(key);
+      this.wakeOne();
+      return;
+    }
+
     if (outcome.cancelled) {
       key.dirty = true;
       this.emitDirty(key);
@@ -419,6 +562,7 @@ export class KeyScheduler {
       return;
     }
 
+    const affectedAccountGroup = reservation?.group ?? this.accountGroup;
     if (outcome.ok) {
       key.successCount += 1;
       key.consecutiveFailures = 0;
@@ -428,17 +572,21 @@ export class KeyScheduler {
             ? outcome.latencyMs
             : key.avgLatencyMs * 0.7 + outcome.latencyMs * 0.3;
       }
-      if (key.status === "rate_limited" || key.status === "cooldown") {
+      // Only a real successful request proves the credential/account recovered.
+      if (
+        key.status === "rate_limited" ||
+        key.status === "cooldown" ||
+        key.status === "unknown" ||
+        key.status === "invalid" ||
+        key.status === "forbidden" ||
+        key.status === "quota_exhausted"
+      ) {
         key.cooldownUntilMs = null;
-        key.status = "healthy";
-      } else if (key.status === "unknown") {
-        key.status = "healthy";
-      } else if (key.status === "invalid") {
-        // A real successful call proves the credential still works.
-        key.status = "healthy";
+        key.status = key.enabled ? "healthy" : "disabled";
         key.lastErrorCode = null;
         key.lastErrorMessage = null;
       }
+      if (affectedAccountGroup) this.registry.unpark(affectedAccountGroup);
     } else {
       key.failureCount += 1;
       key.consecutiveFailures += 1;
@@ -453,19 +601,38 @@ export class KeyScheduler {
           break;
         }
         case "quota_exceeded": {
-          key.status = "cooldown";
-          key.cooldownUntilMs = outcome.retryAfterMs
-            ? now + outcome.retryAfterMs
-            : nextUtcMidnight(now) + 1000;
+          key.status = "quota_exhausted";
+          key.cooldownUntilMs = Math.max(
+            nextUtcMidnight(now) + 1_000,
+            outcome.retryAfterMs ? now + outcome.retryAfterMs : 0,
+          );
+          if (affectedAccountGroup) this.registry.park(affectedAccountGroup, key.cooldownUntilMs);
+          break;
+        }
+        case "forbidden":
+        case "blocked": {
+          key.status = "forbidden";
+          key.cooldownUntilMs = now + (outcome.retryAfterMs ?? this.cooldownMs);
+          if (affectedAccountGroup) this.registry.park(affectedAccountGroup, key.cooldownUntilMs);
           break;
         }
         case "auth_invalid": {
-          key.status = "invalid";
-          key.cooldownUntilMs = null;
+          // 兼容共享 HTTP helper 仍把 403 映射为 auth_invalid 的旧路径；
+          // 状态机不能把明确的权限拒绝误判成无效密钥。
+          if (/\b403\b|forbidden/i.test(outcome.message ?? "")) {
+            key.status = "forbidden";
+            key.cooldownUntilMs = now + (outcome.retryAfterMs ?? this.cooldownMs);
+            if (affectedAccountGroup) this.registry.park(affectedAccountGroup, key.cooldownUntilMs);
+          } else {
+            key.status = "invalid";
+            key.cooldownUntilMs = null;
+          }
           break;
         }
         case "timeout":
         case "network":
+        case "dns":
+        case "tls":
         case "server_error": {
           if (key.consecutiveFailures >= this.breakerThreshold) {
             const over = key.consecutiveFailures - this.breakerThreshold;
@@ -476,6 +643,7 @@ export class KeyScheduler {
           break;
         }
         default:
+          // empty_results/bad_response 等不证明凭据无效，保留当前有效性状态。
           break;
       }
     }
@@ -494,6 +662,7 @@ export class KeyScheduler {
     key.cooldownUntilMs = null;
     key.lastErrorCode = null;
     key.lastErrorMessage = null;
+    if (this.accountGroup) this.registry.unpark(this.accountGroup);
     key.dirty = true;
     this.emitDirty(key);
   }
@@ -508,11 +677,56 @@ export class KeyScheduler {
     this.emitDirty(key);
   }
 
+  /** 凭据库在租约等待期间发生变化时，立即把该 Key 移出自动候选。 */
+  setKeyDecryptable(keyId: string, decryptable: boolean): void {
+    const key = this.keys.find((item) => item.id === keyId);
+    if (!key) return;
+    key.decryptable = decryptable;
+  }
+
+  accountParkedUntil(now: number = Date.now()): string | null {
+    if (!this.accountGroup) return null;
+    const until = this.registry.parkedUntil(this.accountGroup, now);
+    return until === null ? null : new Date(until).toISOString();
+  }
+
   /** Returns and clears the dirty flags; used by the API persistence flusher. */
   drainDirty(): KeyRuntimeSnapshot[] {
     const dirty = this.keys.filter((key) => key.dirty);
     for (const key of dirty) key.dirty = false;
     return dirty.map((key) => this.snapshotKey(key));
+  }
+
+  /** 非消耗式可用性判断，供管理端汇总；不会预留或修改配额。 */
+  keyAvailable(keyId: string, now: number = Date.now()): boolean {
+    const key = this.keys.find((item) => item.id === keyId);
+    if (!key || !key.enabled || !key.decryptable) return false;
+    this.refreshKey(key, now);
+    if (
+      key.status === "invalid" ||
+      key.status === "disabled" ||
+      key.status === "forbidden" ||
+      key.status === "quota_exhausted" ||
+      key.cooldownUntilMs !== null ||
+      key.inFlight >= this.perKeyConcurrency
+    ) {
+      return false;
+    }
+    if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return false;
+    if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return false;
+    const account = this.accountSnapshot(now);
+    if (!account) return true;
+    if (account.parkedUntil !== null && account.parkedUntil !== undefined) return false;
+    if (account.rpmLimit > 0 && account.rpmUsed >= account.rpmLimit) return false;
+    return account.dailyQuota === null || account.quotaUsedToday < account.dailyQuota;
+  }
+
+  /** 账户组是否因 park 或日配额耗尽而不可用（RPM 瞬时限流不算耗尽）。 */
+  accountQuotaExhausted(now: number = Date.now()): boolean {
+    if (!this.accountGroup) return false;
+    if (this.registry.parkedUntil(this.accountGroup, now) !== null) return true;
+    const account = this.accountSnapshot(now);
+    return account !== null && account.dailyQuota !== null && account.quotaUsedToday >= account.dailyQuota;
   }
 
   snapshot(now: number = Date.now()): KeyRuntimeSnapshot[] {
@@ -529,6 +743,7 @@ export class KeyScheduler {
       weight: Math.max(1, seed.weight),
       enabled: seed.enabled,
       status: seed.enabled ? seed.status : "disabled",
+      decryptable: seed.decryptable ?? true,
       requestCount: seed.requestCount ?? 0,
       successCount: seed.successCount ?? 0,
       failureCount: seed.failureCount ?? 0,
@@ -563,7 +778,12 @@ export class KeyScheduler {
     }
     if (key.cooldownUntilMs !== null && key.cooldownUntilMs <= now) {
       key.cooldownUntilMs = null;
-      if (key.status === "rate_limited" || key.status === "cooldown") {
+      if (
+        key.status === "rate_limited" ||
+        key.status === "cooldown" ||
+        key.status === "forbidden" ||
+        key.status === "quota_exhausted"
+      ) {
         key.status = key.enabled ? "healthy" : "disabled";
       }
       key.dirty = true;
@@ -580,10 +800,15 @@ export class KeyScheduler {
       }
       this.refreshKey(key, now);
 
-      if (!key.enabled) continue;
+      if (!key.enabled || !key.decryptable) continue;
       // `quota_exhausted` is terminal for the day: retrying it costs a request
       // and always fails, so it must not be offered as a usable key.
-      if (key.status === "invalid" || key.status === "disabled" || key.status === "quota_exhausted") {
+      if (
+        key.status === "invalid" ||
+        key.status === "disabled" ||
+        key.status === "forbidden" ||
+        key.status === "quota_exhausted"
+      ) {
         continue;
       }
       if (key.cooldownUntilMs !== null) continue;
@@ -651,6 +876,7 @@ export class KeyScheduler {
       peakInFlight: key.peakInFlight,
       rpmUsed: key.window.length,
       quotaUsedToday: key.quotaUsedToday,
+      quotaDate: key.quotaDate,
       requestCount: key.requestCount,
       successCount: key.successCount,
       failureCount: key.failureCount,
@@ -682,12 +908,25 @@ export class KeyLease {
     readonly keyId: string,
     readonly keyLabel: string,
     readonly acquiredAt: number,
+    private readonly accountReservation: AccountQuotaReservation | null = null,
+    private readonly previousLastUsedAtMs: number | null = null,
+    private readonly countedDaily: boolean = false,
+    private readonly quotaDateAtReserve: string | null = null,
   ) {}
 
   release(outcome: KeyReleaseOutcome): void {
     if (this.released) return;
     this.released = true;
     const latencyMs = outcome.latencyMs ?? Date.now() - this.acquiredAt;
-    this.scheduler.release(this.keyId, { ...outcome, latencyMs });
+    this.scheduler.release(
+      this.keyId,
+      { ...outcome, latencyMs },
+      Date.now(),
+      this.accountReservation,
+      this.previousLastUsedAtMs,
+      this.acquiredAt,
+      this.countedDaily,
+      this.quotaDateAtReserve,
+    );
   }
 }

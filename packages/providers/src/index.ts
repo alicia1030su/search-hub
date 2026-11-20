@@ -1,4 +1,6 @@
 export * from "./catalog.js";
+import { genericProviderRequiresKey } from "./builtin/generic.js";
+import { getAdapter } from "./registry.js";
 export * from "./registry.js";
 export * from "./tc3.js";
 export * from "./manifest.js";
@@ -56,3 +58,10 @@ export * from "./builtin/deepseek-search.js";
 export * from "./builtin/doubao.js";
 export * from "./builtin/tencent-yuanbao.js";
 export * from "./builtin/mock.js";
+
+/** 所有模块共用的有效凭据判定；generic-http 由实例配置决定。 */
+export function providerRequiresKey(type: string, config: Record<string, unknown>): boolean {
+  const adapter = getAdapter(type);
+  if (!adapter) return false;
+  return type === "generic-http" ? genericProviderRequiresKey(config) : adapter.requiresKey;
+}

@@ -307,9 +307,13 @@ describe("batch run lifecycle", () => {
     expect(view.status).toBe("interrupted");
     expect(view.status).not.toBe("completed");
     expect(view.finishedAt).not.toBeNull();
-    // The completed items are still there; the rest were never resolved.
+    // 已完成项保留；未知项在 sweep 事务中全部变为 SKIPPED_INTERRUPTED。
     expect(view.counts.done).toBeGreaterThanOrEqual(1);
-    expect(view.counts.remaining).toBeGreaterThan(0);
+    expect(view.counts.remaining).toBe(0);
+    expect(view.counts.skipped).toBe(view.counts.total - view.counts.done);
+    expect(view.items.some((item) => item.state === "unknown")).toBe(false);
+    expect(view.items.filter((item) => item.code === "SKIPPED_INTERRUPTED")).toHaveLength(view.counts.skipped);
+    expect(view.counts.done + view.counts.skipped + view.counts.remaining).toBe(view.counts.total);
     expect(view.nextPollAfterMs).toBeNull();
   });
 
@@ -510,13 +514,13 @@ describe("batch run classification", () => {
       payload: { enabled: false },
     });
 
-    const created = await startJob(harness, { kind: "connect" });
+    const created = await startJob(harness, { kind: "connect", includeKeyless: true });
     const jobId = created.body["jobId"] as string;
     const view = await waitForJob(harness, jobId, (current) => current.status !== "running", "the run to finish", 10_000);
 
     const preview = await harness.app.inject({
       method: "GET",
-      url: "/api/admin/provider-health/batch-test/preview?kind=connect",
+      url: "/api/admin/provider-health/batch-test/preview?kind=connect&includeKeyless=true",
       ...harness.read(),
     });
     const previewBody = preview.json() as { total: number; counts: Record<string, number> };
@@ -630,7 +634,12 @@ describe("batch run classification", () => {
       baseUrl: stub.base,
     });
 
-    const created = await startJob(harness, { kind: "connect", providerIds: [providerId], concurrency: 1 });
+    const created = await startJob(harness, {
+      kind: "connect",
+      providerIds: [providerId],
+      includeKeyless: true,
+      concurrency: 1,
+    });
     const jobId = created.body["jobId"] as string;
     const view = await waitForJob(harness, jobId, (current) => current.status !== "running", "the run to finish");
 

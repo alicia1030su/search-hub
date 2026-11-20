@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../apps/api/src/app.js";
 import { createContext, type AppContext } from "../../apps/api/src/context.js";
@@ -21,6 +21,7 @@ import {
   closeStubs,
   createProvider,
   startBraveStub,
+  startHnStub,
 } from "../helpers/vendor-stubs.js";
 
 /**
@@ -456,20 +457,37 @@ describe("provider health centre", () => {
 
   it("T15 a cancelled probe records nothing and does not refund its slot", async () => {
     const harness = await createHarness();
-    const providerId = await addMock(harness, "cancel-probe", { resultCount: 0, failMode: "cancelled" });
+    await allowLocalhost(harness.app, adminHeaders(harness));
+    const stub = await startHnStub({ hits: 1, delayMs: 200 });
+    const providerId = await createProvider(harness.app, adminHeaders(harness), {
+      name: "cancel-probe",
+      type: "hackernews",
+      config: { baseUrl: stub.base, tags: "story" },
+    });
 
-    const response = await probeOne(harness, providerId, "search");
+    const controller = new AbortController();
+    const pending = harness.ctx.health.checkOne(providerId, {
+      kind: "search",
+      trigger: "manual",
+      signal: controller.signal,
+    });
+    // The socket saw the request before cancellation. A fixed sleep could abort
+    // too early (zero spend) or too late (a recorded success), so wait for the
+    // stub's own wire counter instead.
+    await vi.waitFor(() => expect(stub.hits()).toBe(1));
+    controller.abort(Object.assign(new Error("cancelled"), { code: "cancelled" }));
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    expect(stub.hits()).toBe(1);
+
     // No verdict is published about the source, and the caller is told why.
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-    expect(response.body).toContain("cancelled");
-    expect(probeRows(harness).filter((row) => row.kind === "search")).toHaveLength(0);
+    expect(probeRows(harness)).toHaveLength(0);
 
     const view = await overview(harness);
     expect(view.providers[0]!.runtime).toBe("unknown");
-    // The reservation is *kept*: a cancel can arrive after the request left the
-    // machine, so refunding it would let an abort loop spend unbounded requests
-    // while the ledger reports zero. A keyless source counts in the anonymous
-    // bucket; the paid bucket stays untouched because no credential was spent.
+    // The reservation is *kept*: the request left the machine, so refunding it
+    // would let an abort loop spend unbounded requests while the ledger reports
+    // zero. A keyless source counts in the anonymous bucket; the paid bucket
+    // stays untouched because no credential was spent.
     expect(view.budget.anonymousSearchUsedToday).toBe(1);
     expect(view.budget.usedToday).toBe(0);
   });
@@ -634,42 +652,28 @@ describe("provider health centre", () => {
       payload: { security: { privateHostAllowlist: ["127.0.0.1"] } },
     });
 
-    // Two keys, one already rejected by the vendor.
-    harness.ctx.db
-      .insert(apiKeys)
-      .values([
-        {
-          id: "key-good",
-          providerId,
-          label: "good",
-          keyCiphertext: "x",
-          keyIv: "x",
-          keyTag: "x",
-          keyVersion: 1,
-          keyHint: "good",
-          weight: 100,
-          enabled: true,
-          status: "healthy",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          id: "key-bad",
-          providerId,
-          label: "bad",
-          keyCiphertext: "x",
-          keyIv: "x",
-          keyTag: "x",
-          keyVersion: 1,
-          keyHint: "bad",
-          weight: 100,
-          enabled: true,
-          status: "invalid",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ])
-      .run();
+    // Two real encrypted keys, one already rejected by the vendor. The good
+    // key must be decryptable: H66 intentionally treats fake ciphertext as an
+    // unusable pool rather than reporting it healthy.
+    for (const [label, secret] of [
+      ["good", "sk-T23-GOOD-0000000000"],
+      ["bad", "sk-T23-BAD-00000000000"],
+    ] as const) {
+      const added = await harness.app.inject({
+        method: "POST",
+        url: `/api/admin/providers/${providerId}/keys`,
+        ...adminHeaders(harness),
+        payload: { label, key: secret, weight: 100, enabled: true },
+      });
+      expect(added.statusCode, added.body).toBe(200);
+    }
+    const keyRows = harness.ctx.sqlite
+      .prepare("SELECT id, label FROM api_keys WHERE provider_id = ?")
+      .all(providerId) as Array<{ id: string; label: string }>;
+    const goodKeyId = keyRows.find((key) => key.label === "good")!.id;
+    const badKeyId = keyRows.find((key) => key.label === "bad")!.id;
+    harness.ctx.sqlite.prepare("UPDATE api_keys SET status = 'invalid' WHERE id = ?").run(badKeyId);
+    harness.ctx.providers.reload();
 
     // Seed a healthy probe result so the runtime derivation has something to read.
     harness.ctx.db
@@ -677,7 +681,7 @@ describe("provider health centre", () => {
       .values({
         id: "hc_seed_ok",
         providerId,
-        keyId: "key-good",
+        keyId: goodKeyId,
         kind: "connect",
         status: "healthy",
         errorCode: null,
@@ -1008,8 +1012,14 @@ describe("provider health centre", () => {
 
   it("B1 a connectivity probe is counted, and cannot be fired unbounded by one request", async () => {
     const harness = await createHarness();
+    await allowLocalhost(harness.app, adminHeaders(harness));
+    const stub = await startHnStub({ hits: 1, delayMs: 100 });
     for (let index = 0; index < 6; index += 1) {
-      await addMock(harness, `connect-${index}`, { resultCount: 1 });
+      await createProvider(harness.app, adminHeaders(harness), {
+        name: `connect-${index}`,
+        type: "hackernews",
+        config: { baseUrl: stub.base, tags: "story" },
+      });
     }
     await setHealthPolicy(harness, { concurrency: 2 });
 
@@ -1020,16 +1030,18 @@ describe("provider health centre", () => {
       payload: { kind: "connect" },
     });
     expect(run.statusCode, run.body).toBe(200);
-    // Every provider was probed, and each probe is on the ledger: connectivity
-    // is not capped (capping it would make the page unexplainable), but the
-    // count is real so an operator can see how often a timer runs.
+    // Every provider was probed on the real fetch path, and each probe is on
+    // the ledger: connectivity is not capped, but the count is real so an
+    // operator can see how often a timer runs.
     expect(run.json().results).toHaveLength(6);
+    expect(stub.hits()).toBe(6);
     const view = await overview(harness);
     expect(view.budget.connectUsedToday).toBe(6);
     expect(view.budget.usedToday).toBe(0);
-    // Concurrency is capped by policy, not by the caller: the run finished with
-    // at most 2 probes in flight, which is what keeps a large estate from
-    // firing hundreds of sockets at once.
+    // Concurrency is capped by policy, not by the caller: the delayed stub
+    // measures simultaneous sockets rather than inferring concurrency from a
+    // completed result count.
+    expect(stub.peak()).toBeLessThanOrEqual(2);
     expect(harness.ctx.settings.get().health.concurrency).toBe(2);
   });
 

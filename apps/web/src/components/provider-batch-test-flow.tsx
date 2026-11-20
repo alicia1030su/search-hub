@@ -22,10 +22,8 @@ type Step = "preview" | "progress" | "results";
  * dialog for the progress would let the operator end up with two live views of
  * one run (one of them stale), so the step is local state instead.
  *
- * The transition to `results` is driven by the *server's* status, never by a
- * timer: a run that is still `running` keeps showing progress, and a run that
- * stopped — completed, cancelled, interrupted or partial — shows the table. That
- * is also why "partial" is rendered as a partial label and never as "completed".
+ * 只有在服务端状态已停止且 `remaining === 0` 时才进入结果页；取消后的陈旧
+ * 快照仍继续轮询，不会提前展示尚在结算的行。"partial" 也始终按部分完成展示。
  *
  * `initialJobId` is the reload path: the page stores the last job id, and after a
  * refresh it can reopen the very same run. The step is *not* assumed — the flow
@@ -98,19 +96,22 @@ export function ProviderBatchTestFlow({
     setPolling(false);
   }, [open, initialKind, initialJobId]);
 
-  const job = usePolling<BatchJobView | null>(
-    (signal) => (jobId === null ? Promise.resolve(null) : api.batchTestJob(jobId, signal)),
+  const job = usePolling<{ jobId: string; view: BatchJobView } | null>(
+    (signal) =>
+      jobId === null
+        ? Promise.resolve(null)
+        : api.batchTestJob(jobId, signal).then((view) => ({ jobId, view })),
     polling && jobId !== null ? 1000 : null,
     [jobId],
   );
 
-  const view = job.data;
+  // 切任务时忽略上一个任务的缓存快照，避免旧终态提前把新任务带入结果页。
+  const view = job.data?.jobId === jobId ? job.data.view : null;
+  const settled = view !== null && view.status !== "running" && view.counts.remaining === 0;
 
-  // A server-reported terminal status is the only thing that stops the polling
-  // and advances the step.
+  // 终态且 remaining=0 才停止轮询；取消后的陈旧快照仍会继续 poll 到 settled。
   useEffect(() => {
-    if (!view) return;
-    if (view.status === "running") return;
+    if (!view || !settled) return;
     setPolling(false);
     setStep("results");
     if (!finishedRef.current) {
@@ -118,10 +119,10 @@ export function ProviderBatchTestFlow({
       // Let the page refresh the health overview: the run wrote real probe rows.
       onFinished();
     }
-  }, [view, onFinished]);
+  }, [view, settled, onFinished]);
 
   const startWith = useCallback(
-    async (request: { kind: "connect" | "search"; providerIds?: string[] }) => {
+    async (request: { kind: "connect" | "search"; providerIds?: string[]; includeKeyless?: boolean }) => {
       setRetrying(true);
       setError(null);
       try {
@@ -253,7 +254,7 @@ export function ProviderBatchTestFlow({
                 </Button>
               </div>
             ) : null}
-            {view && view.status !== "running" ? (
+            {view && view.status !== "running" && view.counts.remaining === 0 ? (
               // A finished run leaves this step through the effect above; this
               // button is the manual fallback if that transition was missed.
               <div className="flex justify-end">
@@ -327,8 +328,20 @@ export function ProviderBatchTestFlow({
               job={view}
               retrying={retrying || singleTestingId !== null}
               onOpenDetail={(item) => setDetail(item)}
-              onRetryFailed={() => void startWith({ kind: view.kind, providerIds: failedIds(view) })}
-              onRetryPending={() => void startWith({ kind: view.kind, providerIds: pendingIds(view) })}
+              onRetryFailed={() =>
+                void startWith({
+                  kind: view.kind,
+                  providerIds: failedIds(view),
+                  includeKeyless: view.includeKeyless,
+                })
+              }
+              onRetryPending={() =>
+                void startWith({
+                  kind: view.kind,
+                  providerIds: pendingIds(view),
+                  includeKeyless: view.includeKeyless,
+                })
+              }
               onRetryOne={(providerId) => void retryOne(providerId)}
             />
           </div>

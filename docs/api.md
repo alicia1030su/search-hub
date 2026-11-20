@@ -220,13 +220,13 @@ Config export contains provider/model/group configuration plus **key labels only
 ```http
 GET  /api/admin/provider-health
 GET  /api/admin/provider-health/settings
-PUT  /api/admin/provider-health/settings   {scheduledEnabled?,intervalMinutes?,maxRequestsPerRun?,maxRequestsPerDay?,paidProbesEnabled?,concurrency?}
+PUT  /api/admin/provider-health/settings   {scheduledEnabled?,intervalMinutes?,maxRequestsPerRun?,maxRequestsPerDay?,anonymousMaxRequestsPerRun?,anonymousMaxRequestsPerDay?,paidProbesEnabled?,concurrency?}
 GET  /api/admin/provider-health/history?providerId=&limit=
 POST /api/admin/provider-health/:id/probe  {kind:"connect"|"search"}
 POST /api/admin/provider-health/:id/auto-probe  {enabled:boolean}
 POST /api/admin/provider-health/:id/reset
-GET  /api/admin/provider-health/batch-test/preview?kind=&providerIds=
-POST /api/admin/provider-health/batch-test         {kind?,providerIds?,concurrency?}
+GET  /api/admin/provider-health/batch-test/preview?kind=&providerIds=&includeKeyless=
+POST /api/admin/provider-health/batch-test         {kind?,providerIds?,includeKeyless?,concurrency?}
 GET  /api/admin/provider-health/batch-test/:jobId
 POST /api/admin/provider-health/batch-test/:jobId/cancel
 ```
@@ -249,6 +249,7 @@ POST /api/admin/provider-health/batch-test/:jobId/cancel
 {
   "day": "2026-11-17", "maxPerRun": 3, "maxPerDay": 20,
   "usedToday": 4, "connectUsedToday": 11, "anonymousSearchUsedToday": 6,
+  "anonymousMaxPerRun": 3, "anonymousMaxPerDay": 20, "anonymousRemainingToday": 14,
   "remainingToday": 16,
   "paidProbesEnabled": false, "scheduledEnabled": true, "intervalMinutes": 360
 }
@@ -256,15 +257,24 @@ POST /api/admin/provider-health/batch-test/:jobId/cancel
 
 - `kind:"search"` may cost money. When paid probing is disabled or the ledger is
   full the API returns `400` (disabled) or `429` (budget) and records nothing.
-- `maxRequestsPerRun` / `maxRequestsPerDay` / `intervalMinutes` / `concurrency`
-  are bounded server-side; a value outside the range is `400`, not clamped.
+- A credentialed `generic-http` source does not support `kind:"connect"`; the
+  request is rejected before upstream work. An anonymous `generic-http` connect
+  probe executes a search and is charged to `search_anonymous`.
+- `maxRequestsPerRun` / `maxRequestsPerDay` / `anonymousMaxRequestsPerRun` /
+  `anonymousMaxRequestsPerDay` / `intervalMinutes` / `concurrency` are bounded
+  server-side; a value outside the range is `400`, not clamped.
 - `usedToday` counts searches made **with a credential** (the paid bucket).
   `anonymousSearchUsedToday` counts real searches against keyless sources: they
-  are exempt from the paid switch because no credential can spend account quota,
-  and they are counted rather than labelled free.
-- A cancelled probe records nothing and keeps its reservation: a cancel can
-  arrive after the request left, so refunding it would let an abort loop spend
-  without the ledger noticing.
+  are exempt from the paid switch, use `anonymousMaxPerRun/Day`, and are counted
+  rather than labelled free. Optional key pools do not make a keyless provider paid.
+- A cancelled probe records no health conclusion. If `requests` is `null`/`0`,
+  the reservation is released on its original `budget_day` and the billing row is
+  written with `spent=false`; if any physical request was attempted, the slot is
+  kept even when the probe was cancelled or failed.
+- `provider_health_billing` stores the exact bucket, reservation day,
+  classification, credential-use fact and `spent`. Restart seeding and the 0009
+  one-shot recompute count only `spent=true` rows; legacy anonymous history is
+  accepted only when its classification is exact.
 - `reset` writes a marker; probes older than it stop deciding the status. History
   is kept and credentials are untouched.
 
@@ -299,27 +309,33 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
 - `requests` is counted at the fetch boundary (every physical request, redirects
   and pages included). `null` means no request was sent; it is never derived from
   the planned page count.
+- An explicit `keyId` must belong to the provider in the path. A cross-provider id
+  is rejected before health, budget or upstream work.
 - No key material appears in the response: `keyId` is an identifier and `sample`
-  holds only title/url.
+  holds only title/url. Optional key pools on keyless providers are not used
+  automatically; only `providerRequiresKey` or an explicit `keyId` takes a lease.
 
-### Bulk provider test (v0.1.10)
+### Bulk provider test (v0.1.10, updated v0.1.11)
 
 ```jsonc
-// GET /api/admin/provider-health/batch-test/preview?kind=search
+// GET /api/admin/provider-health/batch-test/preview?kind=search&includeKeyless=true
 {
   "kind": "search", "total": 20,
   "counts": { "eligible": 12, "noKey": 3, "noEnabledKey": 2, "configError": 0,
               "disabled": 3, "keylessSkipped": 0, "coolingSkipped": 0 },
   "budget": { "paidProbesEnabled": true, "remainingToday": 8, "remainingRun": 10,
-              "maxPerDay": 100, "maxPerRun": 10, "day": "2026-11-19", … },
-  "paidRisk": true, "estimatedPaidProbes": 12
+              "anonymousRemainingToday": 14, "anonymousMaxPerRun": 3,
+              "maxPerDay": 100, "maxPerRun": 10, "day": "2026-11-20", … },
+  "paidRisk": true, "estimatedPaidProbes": 12, "estimatedAnonymousProbes": 0
 }
 ```
 
-- The seven counters always sum to `total`; cooling and exhausted budget share
-  `coolingSkipped` so the identity holds. Per-item `code` still distinguishes them.
-- `paidRisk` is `kind === "search" && eligible > 0 && budget.paidProbesEnabled`;
-  `estimatedPaidProbes` is `0` when nothing can be billed.
+- The seven counters always sum to `total`; cooldown, quota, account quota and
+  paid-policy skips share `coolingSkipped`. Per-item `code` distinguishes them.
+- `includeKeyless` defaults to `false` and is task-scoped. `estimatedPaidProbes`
+  counts potential credential-required searches; `estimatedAnonymousProbes`
+  counts eligible keyless probes. `paidRisk` is true only when paid probing is on
+  and at least one paid probe is potential.
 - The preview is a **read**: it writes no health rows and no job rows.
 
 ```jsonc
@@ -329,10 +345,11 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
 
 - `kind` defaults to `search`; `providerIds` omitted means **every configured
   source** (the same scope the preview described), `[]` is `400` ("nothing to
-  test"), `concurrency` is `1..4` (`5` → `400`).
-- Pre-flight refusals happen **before** the row is written: paid probing disabled
-  or daily budget exhausted → `409 validation_error` with the setting named.
-  Nothing is probed and nothing is left behind.
+  test"), `includeKeyless` defaults to `false`, and `concurrency` is `1..4`.
+- A paid-only scope with paid probing disabled or its budget exhausted is refused
+  before insertion with `409 validation_error`. A mixed scope skips paid sources
+  (`SKIPPED_PAID_DISABLED` / `SKIPPED_BUDGET`) and continues anonymous sources; an
+  anonymous-only scope is always allowed.
 
 ```jsonc
 // GET /api/admin/provider-health/batch-test/:jobId
@@ -349,7 +366,7 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
       "code": "ok" | "auth_invalid" | "SKIPPED_NO_KEY" | …, "latencyMs": 412,
       "resultCount": 3, "requests": 2, "checkId": "hc_…", "reason": null }
   ],
-  "budget": { … }, "concurrency": 2,
+  "budget": { … }, "includeKeyless": true, "concurrency": 2,
   "startedAt": "…", "finishedAt": null,
   "nextPollAfterMs": 1000            // null once the run stopped
 }
@@ -366,18 +383,19 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
   or re-typed. `keyCount` is a **count of credentials**, never a key or a key id.
   Rows written by an earlier build read as `null` (rendered `—`); `checkedAt` is
   `null` for anything that was never probed.
-- After a restart a run that was still going reads `interrupted` and **never**
-  `completed`.
+- Terminal reads always have `remaining: 0` and `nextPollAfterMs: null`. After a
+  restart a run that was still going reads `interrupted`, its unknown items read
+  `SKIPPED_INTERRUPTED`, and it is **never** `completed`.
 
 ```jsonc
 // POST /api/admin/provider-health/batch-test/:jobId/cancel
 { "jobId": "bt_…", "status": "cancelled", "skippedRemaining": 5 }
 ```
 
-- Cancel sets the status and aborts the job; it does **not** wait for the runner.
-  Finished items keep their conclusion (`checkId` stays valid); the untested
-  remainder becomes `SKIPPED_CANCELLED`. Cancelling a job that already stopped is
-  `409 conflict`.
+- Cancel atomically rewrites unknown items, all counters, status, `finishedAt` and
+  `itemsJson` in one transaction, then aborts outside it. Finished items keep their
+  conclusion. Cancelling a job that already stopped is `409 conflict`; concurrent
+  cancels have exactly one winner.
 - All routes need `admin` scope; writes need CSRF. A `search`-scope token gets 403.
 
 ### Cache

@@ -1,4 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -12,6 +14,8 @@ let ctx: AppContext;
 let dir: string;
 let cookie: string;
 let csrf: string;
+let keyLimitServer: Server;
+let keyLimitBaseUrl: string;
 
 function testConfig(dataDir: string): AppConfig {
   return {
@@ -40,6 +44,7 @@ async function addProvider(
     payload: { name, type, enabled: true, config, ...(baseUrl ? { baseUrl } : {}) },
   });
   expect(response.statusCode).toBe(200);
+  expect(response.json().provider.config).toEqual(config);
   return response.json().provider.id as string;
 }
 
@@ -65,10 +70,29 @@ beforeAll(async () => {
   });
   cookie = setup.cookies.find((item) => item.name === "sh_session")!.value;
   csrf = setup.json().csrfToken as string;
+  keyLimitServer = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        results: [{ title: `Result for ${request.url ?? "/"}`, url: "https://example.com/result", snippet: "ok" }],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => keyLimitServer.listen(0, "127.0.0.1", () => resolve()));
+  const address = keyLimitServer.address() as AddressInfo;
+  keyLimitBaseUrl = `http://127.0.0.1:${address.port}`;
+  await app.inject({
+    method: "PUT",
+    url: "/api/admin/settings",
+    cookies: { sh_session: cookie },
+    headers: { "x-csrf-token": csrf },
+    payload: { security: { privateHostAllowlist: ["127.0.0.1"] } },
+  });
 });
 
 afterAll(async () => {
   await app.close();
+  await new Promise<void>((resolve) => keyLimitServer.close(() => resolve()));
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -98,7 +122,8 @@ describe("search error semantics", () => {
   it("surfaces no_available_key when a provider has no usable key", async () => {
     const providerId = await addProvider("keyless", { resultCount: 3, latencyMs: 5 });
     // A key-requiring adapter without any key: use a generic provider with
-    // key injection but no key configured to force auth_invalid.
+    // key injection but no key configured. The scheduler refuses before the
+    // adapter runs, so no upstream request is attempted.
     const generic = await addProvider(
       "needs-key",
       {
@@ -119,8 +144,8 @@ describe("search error semantics", () => {
       (item: { providerId: string }) => item.providerId === generic,
     );
     expect(genericStat.ok).toBe(false);
-    expect(genericStat.errorCode).toBe("auth_invalid");
-    expect(genericStat.errorMessage).toMatch(/requires an API key/i);
+    expect(genericStat.errorCode).toBe("no_available_key");
+    expect(genericStat.errorMessage).toMatch(/no available api key/i);
   });
 
   it("cancels an in-flight search and reports it honestly", async () => {
@@ -147,7 +172,18 @@ describe("search error semantics", () => {
   });
 
   it("respects the configured per-key concurrency under a burst", async () => {
-    const providerId = await addProvider("rate-limited-burst", { resultCount: 2, latencyMs: 30 });
+    const providerId = await addProvider(
+      "rate-limited-burst",
+      {
+        method: "GET",
+        path: "/search",
+        query: { q: "{{query}}" },
+        keyInjection: { in: "header", name: "x-api-key" },
+        resultsPath: "results",
+      },
+      "generic-http",
+      keyLimitBaseUrl,
+    );
     await app.inject({
       method: "PATCH",
       url: `/api/admin/providers/${providerId}`,
@@ -170,7 +206,7 @@ describe("search error semantics", () => {
       const response = await search({ query: `rpm ${index}`, providers: [providerId] });
       statuses.push(response.statusCode);
     }
-    expect(statuses.filter((status) => status === 503).length).toBeGreaterThan(0);
+    expect(statuses.filter((status) => status === 503).length, JSON.stringify(statuses)).toBeGreaterThan(0);
   });
 });
 

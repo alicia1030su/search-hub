@@ -45,7 +45,8 @@ interface SearchProviderAdapter {
 
 | Upstream | Code | Scheduler reaction |
 |---|---|---|
-| `401`, `403` | `auth_invalid` | Key suspended until re-tested |
+| `401` | `auth_invalid` | Key invalid until re-tested |
+| `403` | `blocked` / `forbidden` | Permission/entitlement denied; park the key/account group, never mark the key invalid |
 | `429` | `rate_limited` | Cooldown using `Retry-After` (or provider default) |
 | `402` | `quota_exceeded` | Cooldown until next UTC day / retry-after |
 | `408`, `504`, network | `timeout` / `network` | Retry with backoff, then cooldown |
@@ -105,7 +106,8 @@ Official docs: <https://docs.tavily.com/documentation/api-reference/endpoint/sea
 
 | Upstream | Code |
 |---|---|
-| `401`, `403` | `auth_invalid` (no retry) |
+| `401` | `auth_invalid` (no retry) |
+| `403` | `blocked` / `forbidden` (no retry; vendor quota override keeps `quota_exceeded`) |
 | `429` | `rate_limited` + `retryAfterMs` from `Retry-After` |
 | `432` (plan/quota ceiling) | `quota_exceeded` (no retry) — vendor-specific, not a bad key |
 | `433` (pay-as-you-go cap), `434` (flex-tier capacity) | `rate_limited` (retryable) |

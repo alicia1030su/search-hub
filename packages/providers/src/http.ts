@@ -12,10 +12,11 @@ import {
 } from "@search-hub/shared";
 
 function mapHttpStatus(status: number): {
-  code: "auth_invalid" | "rate_limited" | "quota_exceeded" | "timeout" | "server_error" | "bad_request" | "unknown";
+  code: "auth_invalid" | "blocked" | "rate_limited" | "quota_exceeded" | "timeout" | "server_error" | "bad_request" | "unknown";
   retryable: boolean;
 } {
-  if (status === 401 || status === 403) return { code: "auth_invalid", retryable: false };
+  if (status === 401) return { code: "auth_invalid", retryable: false };
+  if (status === 403) return { code: "blocked", retryable: false };
   if (status === 429) return { code: "rate_limited", retryable: true };
   if (status === 402) return { code: "quota_exceeded", retryable: false };
   if (status === 408 || status === 504) return { code: "timeout", retryable: true };
@@ -84,7 +85,7 @@ export async function callJson(
       if (!isUpstreamHttpError(error)) {
         if (error.code === "blocked") {
           throw new ProviderError(ctx.config.id, ctx.config.type, "blocked", error.message, {
-            statusCode: 403,
+            details: { localBlock: true },
             cause: error,
           });
         }
@@ -127,6 +128,7 @@ export async function callJson(
         throw new ProviderError(ctx.config.id, ctx.config.type, override.code, error.message, {
           statusCode: error.status,
           retryable: override.retryable,
+          details: error.details,
           ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
           cause: error,
         });
@@ -135,6 +137,7 @@ export async function callJson(
         throw new ProviderError(ctx.config.id, ctx.config.type, "rate_limited", error.message, {
           retryable: true,
           statusCode: 429,
+          details: error.details,
           ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
           cause: error,
         });
@@ -144,6 +147,7 @@ export async function callJson(
         // upstream code makes the scheduler cool the key instead of suspending it.
         throw new ProviderError(ctx.config.id, ctx.config.type, "quota_exceeded", error.message, {
           statusCode: 402,
+          details: error.details,
           retryable: false,
           ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
           cause: error,
@@ -155,13 +159,14 @@ export async function callJson(
           ctx.config.type,
           error.status === 408 ? "timeout" : "server_error",
           error.message,
-          { retryable: true, statusCode: error.status, cause: error },
+          { retryable: true, statusCode: error.status, details: error.details, cause: error },
         );
       }
       const classified = mapHttpStatus(error.status);
       throw new ProviderError(ctx.config.id, ctx.config.type, classified.code, error.message, {
         statusCode: error.status,
         retryable: classified.retryable,
+        details: error.details,
         ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
         cause: error,
       });

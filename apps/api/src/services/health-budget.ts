@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { SearchHubDb } from "@search-hub/db";
-import { healthProbeBudget, providerHealthChecks } from "@search-hub/db";
+import { healthProbeBudget, providerHealthBilling } from "@search-hub/db";
 import { decideBudget, type HealthProbeKind } from "./health-classify.js";
 
 /**
@@ -8,7 +8,7 @@ import { decideBudget, type HealthProbeKind } from "./health-classify.js";
  *
  * The requirement is not "count probes" but "never let a background timer spend
  * more than the operator allowed, under any concurrency, across restarts". That
- * rules out the read-then-act counter the previous implementation used: two
+ * rules out a read-then-act counter the previous implementation used: two
  * concurrent paid probes both read `used=19`, both pass, both spend.
  *
  * The ledger is one row per UTC day per kind, mutated by a conditional UPDATE:
@@ -28,11 +28,18 @@ import { decideBudget, type HealthProbeKind } from "./health-classify.js";
  * `search` is a real search made *with a credential*, so it can consume the
  * operator's account quota. `search_anonymous` is a real search against a
  * keyless public API: no credential is sent, so no account quota can be spent —
- * but it is still a request to a third party and is counted separately rather
- * than being called "free", because whether a vendor meters by IP is not
- * something this code can know.
+ * but it is still a request to a third party and has its own independent cap.
  */
 export type LedgerKind = HealthProbeKind | "search_anonymous";
+
+export interface BudgetOptions {
+  paidProbesEnabled: boolean;
+  maxPerRun: number;
+  maxPerDay: number;
+  /** Independent anonymous limits; omitted values inherit the paid limits. */
+  anonymousMaxPerRun?: number;
+  anonymousMaxPerDay?: number;
+}
 
 export interface BudgetSnapshot {
   /** UTC day the counters belong to. */
@@ -41,13 +48,18 @@ export interface BudgetSnapshot {
   maxPerRun: number;
   /** Paid searches allowed per UTC day. */
   maxPerDay: number;
+  /** Anonymous searches allowed in one run. */
+  anonymousMaxPerRun: number;
+  /** Anonymous searches allowed per UTC day. */
+  anonymousMaxPerDay: number;
   /** Paid searches already reserved today. */
   searchUsedToday: number;
   /** Free connectivity probes reserved today (counted, not capped). */
   connectUsedToday: number;
-  /** Real searches against keyless sources today (counted, not capped). */
+  /** Real searches against keyless sources today. */
   anonymousSearchUsedToday: number;
   remainingToday: number;
+  anonymousRemainingToday: number;
   paidProbesEnabled: boolean;
 }
 
@@ -55,6 +67,18 @@ export interface Reservation {
   ok: boolean;
   reason?: "run_limit" | "day_limit" | "paid_disabled" | "ledger_unavailable";
   snapshot: BudgetSnapshot;
+}
+
+export interface RecordBillingInput {
+  healthCheckId: string;
+  kind: LedgerKind;
+  /** UTC day on which the budget slot was reserved. */
+  budgetDay: string;
+  classification: "exact";
+  providerType: string;
+  credentialUsed: boolean;
+  /** True only when at least one physical upstream request was attempted. */
+  spent: boolean;
 }
 
 export class ProbeBudget {
@@ -68,8 +92,7 @@ export class ProbeBudget {
     return new Date(nowMs).toISOString().slice(0, 10);
   }
 
-  private raw(kind: LedgerKind): number {
-    const day = ProbeBudget.utcDay(this.clock());
+  private raw(kind: LedgerKind, day: string): number {
     const row = this.db
       .select()
       .from(healthProbeBudget)
@@ -79,14 +102,17 @@ export class ProbeBudget {
   }
 
   /**
-   * Seeds today's ledger from the probe log.
+   * Seeds today's ledger from the billing side table.
    *
    * An installation that upgrades mid-day already spent part of its budget, and
    * the rows are in `provider_health_checks`. Without this seeding, applying the
    * migration would hand out a second full day of paid probes.
+   *
+   * Legacy searches count as paid because their credential use was not recorded.
+   * Only an exact `search_anonymous` classification may seed the anonymous bucket;
+   * joining today's provider type or guessing from `key_id` would rewrite history.
    */
-  private ensureSeed(kind: LedgerKind): void {
-    const day = ProbeBudget.utcDay(this.clock());
+  private ensureSeed(kind: LedgerKind, day: string, nowMs: number): void {
     const existing = this.db
       .select({ used: healthProbeBudget.used })
       .from(healthProbeBudget)
@@ -94,18 +120,18 @@ export class ProbeBudget {
       .get();
     if (existing) return;
 
-    const since = `${day}T00:00:00.000Z`;
+    const filters = [
+      eq(providerHealthBilling.budgetKind, kind),
+      eq(providerHealthBilling.budgetDay, day),
+      eq(providerHealthBilling.spent, true),
+    ];
+    if (kind === "search_anonymous") {
+      filters.push(eq(providerHealthBilling.classification, "exact"));
+    }
     const rows = this.db
-      .select({ id: providerHealthChecks.id })
-      .from(providerHealthChecks)
-      .where(
-        and(
-          // Anonymous searches are recorded in the probe log as `search`; the
-          // ledger only splits them because their billing class differs.
-          eq(providerHealthChecks.kind, kind === "search_anonymous" ? "search" : kind),
-          sql`${providerHealthChecks.checkedAt} >= ${since}`,
-        ),
-      )
+      .select({ id: providerHealthBilling.healthCheckId })
+      .from(providerHealthBilling)
+      .where(and(...filters))
       .all();
 
     this.db
@@ -114,28 +140,59 @@ export class ProbeBudget {
         day,
         kind,
         used: rows.length,
-        updatedAt: new Date(this.clock()).toISOString(),
+        updatedAt: new Date(nowMs).toISOString(),
       })
       .onConflictDoNothing()
       .run();
   }
 
-  snapshot(options: { paidProbesEnabled: boolean; maxPerRun: number; maxPerDay: number }): BudgetSnapshot {
-    this.ensureSeed("search");
-    this.ensureSeed("connect");
-    this.ensureSeed("search_anonymous");
-    const day = ProbeBudget.utcDay(this.clock());
-    const searchUsed = this.raw("search");
+  private snapshotAt(options: BudgetOptions, nowMs: number): BudgetSnapshot {
+    const day = ProbeBudget.utcDay(nowMs);
+    this.ensureSeed("search", day, nowMs);
+    this.ensureSeed("connect", day, nowMs);
+    this.ensureSeed("search_anonymous", day, nowMs);
+    const searchUsed = this.raw("search", day);
+    const anonymousUsed = this.raw("search_anonymous", day);
+    const anonymousMaxPerRun = options.anonymousMaxPerRun ?? options.maxPerRun;
+    const anonymousMaxPerDay = options.anonymousMaxPerDay ?? options.maxPerDay;
     return {
       day,
       maxPerRun: options.maxPerRun,
       maxPerDay: options.maxPerDay,
+      anonymousMaxPerRun,
+      anonymousMaxPerDay,
       searchUsedToday: searchUsed,
-      connectUsedToday: this.raw("connect"),
-      anonymousSearchUsedToday: this.raw("search_anonymous"),
+      connectUsedToday: this.raw("connect", day),
+      anonymousSearchUsedToday: anonymousUsed,
       remainingToday: Math.max(0, options.maxPerDay - searchUsed),
+      anonymousRemainingToday: Math.max(0, anonymousMaxPerDay - anonymousUsed),
       paidProbesEnabled: options.paidProbesEnabled,
     };
+  }
+
+  snapshot(options: BudgetOptions): BudgetSnapshot {
+    return this.snapshotAt(options, this.clock());
+  }
+
+  /**
+   * Records the exact billing class after the caller inserts the health row.
+   * Idempotent per health check: a retry cannot change an already recorded fact.
+   */
+  recordBilling(input: RecordBillingInput): void {
+    this.db
+      .insert(providerHealthBilling)
+      .values({
+        healthCheckId: input.healthCheckId,
+        budgetKind: input.kind,
+        budgetDay: input.budgetDay,
+        classification: input.classification,
+        providerTypeSnapshot: input.providerType,
+        credentialUsed: input.credentialUsed,
+        spent: input.spent,
+        createdAt: new Date(this.clock()).toISOString(),
+      })
+      .onConflictDoNothing()
+      .run();
   }
 
   /**
@@ -143,44 +200,41 @@ export class ProbeBudget {
    *
    * `paid` is the caller's intent, not a hint: a paid reservation that cannot be
    * written must fail closed (the caller then refuses the request) because
-   * proceeding would spend money the ledger has no record of.
+   * proceeding would spend money the ledger has no record of. Anonymous searches
+   * have their own daily cap and do not require the paid switch.
    */
-  reserve(input: {
-    /** `search` is only passed for credential-backed searches. */
-    kind: LedgerKind;
-    paidProbesEnabled: boolean;
-    maxPerRun: number;
-    maxPerDay: number;
-  }): Reservation {
-    const snapshot = this.snapshot(input);
+  reserve(input: BudgetOptions & { kind: LedgerKind }): Reservation {
+    const nowMs = this.clock();
+    const snapshot = this.snapshotAt(input, nowMs);
+    const day = snapshot.day;
 
-    if (input.kind === "search") {
-      if (!input.paidProbesEnabled) {
+    if (input.kind !== "connect") {
+      if (input.kind === "search" && !input.paidProbesEnabled) {
         return { ok: false, reason: "paid_disabled", snapshot };
       }
-      const decision = decideBudget(
-        {
-          maxPerRun: input.maxPerRun,
-          maxPerDay: input.maxPerDay,
-          usedToday: snapshot.searchUsedToday,
-        },
-        1,
-      );
+      const maxPerRun = input.kind === "search" ? input.maxPerRun : (input.anonymousMaxPerRun ?? input.maxPerRun);
+      const maxPerDay = input.kind === "search" ? input.maxPerDay : (input.anonymousMaxPerDay ?? input.maxPerDay);
+      const usedToday = input.kind === "search" ? snapshot.searchUsedToday : snapshot.anonymousSearchUsedToday;
+      const decision = decideBudget({ maxPerRun, maxPerDay, usedToday }, 1);
       if (!decision.allowed) {
         return { ok: false, reason: decision.reason ?? "day_limit", snapshot };
       }
     }
 
-    const day = ProbeBudget.utcDay(this.clock());
-    this.ensureSeed(input.kind);
-    const cap = input.kind === "search" ? input.maxPerDay : Number.MAX_SAFE_INTEGER;
+    this.ensureSeed(input.kind, day, nowMs);
+    const cap =
+      input.kind === "connect"
+        ? Number.MAX_SAFE_INTEGER
+        : input.kind === "search"
+          ? input.maxPerDay
+          : (input.anonymousMaxPerDay ?? input.maxPerDay);
 
     // The conditional UPDATE is the whole concurrency story: a row is written
     // only if this probe still fits, so simultaneous callers cannot all pass a
     // check that was true for each of them individually.
     const updated = this.db
       .update(healthProbeBudget)
-      .set({ used: sql`${healthProbeBudget.used} + 1`, updatedAt: new Date(this.clock()).toISOString() })
+      .set({ used: sql`${healthProbeBudget.used} + 1`, updatedAt: new Date(nowMs).toISOString() })
       .where(
         and(
           eq(healthProbeBudget.day, day),
@@ -195,20 +249,26 @@ export class ProbeBudget {
       // the row disappeared. Either way nothing was spent.
       return {
         ok: false,
-        reason: input.kind === "search" ? "day_limit" : "ledger_unavailable",
-        snapshot: this.snapshot(input),
+        reason: input.kind === "connect" ? "ledger_unavailable" : "day_limit",
+        snapshot: this.snapshotAt(input, nowMs),
       };
     }
 
-    return { ok: true, snapshot: this.snapshot(input) };
+    return { ok: true, snapshot: this.snapshotAt(input, nowMs) };
   }
 
-  /** Gives a reservation back when the probe never left the machine. */
-  release(kind: LedgerKind): void {
-    const day = ProbeBudget.utcDay(this.clock());
+  /**
+   * Gives a reservation back when the probe never left the machine.
+   *
+   * `day` is the reservation's UTC day, not the day the caller happens to notice
+   * the refusal. A probe may cross midnight; refunding into the new day would
+   * leak the old day's slot and understate the new day's spend.
+   */
+  release(kind: LedgerKind, day: string): void {
+    const nowMs = this.clock();
     this.db
       .update(healthProbeBudget)
-      .set({ used: sql`max(0, ${healthProbeBudget.used} - 1)`, updatedAt: new Date(this.clock()).toISOString() })
+      .set({ used: sql`max(0, ${healthProbeBudget.used} - 1)`, updatedAt: new Date(nowMs).toISOString() })
       .where(and(eq(healthProbeBudget.day, day), eq(healthProbeBudget.kind, kind)))
       .run();
   }
