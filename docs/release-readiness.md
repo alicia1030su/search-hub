@@ -8,14 +8,16 @@
 | 自动化测试 | **1152 passed / 88 files**（`pnpm test`，冻结候选构建） |
 | 浏览器 E2E | **42 passed**（`pnpm test:e2e`） |
 | 类型 / Lint | `pnpm typecheck` 0 error；`oxlint` 0 warning / 0 error |
-| 构建 | `pnpm build` PASS；Windows x64 包构建、启动、REST/MCP、重启持久化验收 PASS |
+| 构建 | `pnpm build` PASS；Windows x64 / Linux x64 候选包已在 CI 真实构建、启动并通过 REST/MCP 与重启持久化验收 |
 | 质量门禁 | `pnpm quality:eval` PASS（11 项手算自检全过；合成数据不足以支持优胜声明） |
 | 依赖审计 | `pnpm audit --audit-level high` 无已知漏洞 |
-| 密钥扫描 | 正确工作树 423 个文本文件 + 67 个 ref，0 violation；未扩大白名单、未关闭扫描 |
+| 密钥扫描 | 正确工作树 423 个文本文件 + 68 个 ref，0 violation；未扩大白名单、未关闭扫描 |
 | 迁移 | 0001–0009；0009 侧表记录 `budget_day`/`spent`，旧搜索保守计入付费桶，旧账本原样归档并一次性重算 |
 | 故障注入 | launcher lifecycle、updater install/rollback、updater fault injection 全部 PASS |
-| Docker / systemd / 三平台包 | **待 PR/tag CI**；本机 Docker Engine 不可用，不以本机结果替代 CI |
-| 真实 v0.1.10 → v0.1.11 升级 | **BLOCKED（进行中）**；真实发布包升级进程长时间无输出，结果未返回前不放行 |
+| Docker | **PASS（CI）**：24/24、0 skipped；真实 HN 探测 `requests=1`，down/up 后预算 `1→1`、健康记录时间与请求数不变；Trivy CRITICAL=0 / HIGH=0 |
+| systemd | **PASS（CI）**：真实 HN 计划探测 `requests=1`；重启、停止 70 秒、升级失败回滚后预算始终 `1→1`，健康记录与 `nextProbeAt` 不变 |
+| 三平台正式发布包 | **待 tag Release CI**；Windows x64 / Linux x64 候选包已在升级矩阵中真实构建并启动，Linux arm64 正式资产随 tag 工作流验收 |
+| 真实 v0.1.10 → current 升级 | **PASS（CI）**：Windows 与 Linux 均下载真实 v0.1.10 发布包，对当前候选包就地升级；管理员、会话、Provider、Key 解密、搜索参数、REST/MCP 均保留 |
 | 真实厂商联调 | **4 个源**：Hacker News、Crossref、OpenAlex、PubMed；其余未联调 |
 | 多实例 | **NOT_IMPLEMENTED**：单进程额度、SQLite 预算与批量任务协调 |
 
@@ -29,12 +31,22 @@
 6. 落账/排程/预算预留异常不会二次退款或泄漏 Key 租约；概览不可解密 Key 不再误报健康。
 7. Dashboard 完整统计 `forbidden` 与 `quota_exhausted`，Key 分段之和等于总数。
 
+### CI 证据（产品代码门禁提交 `83557f9`）
+
+| 门禁 | Run | 结果 |
+|---|---|---|
+| CI | [44855896989](https://github.com/alicia1030su/search-hub/actions/runs/44855896989) | **PASS**：88 files / 1152 tests、Playwright 42/42、typecheck、lint、Windows launcher/updater、持久缓存、依赖审计与 Secret Scan |
+| Docker | [44855897001](https://github.com/alicia1030su/search-hub/actions/runs/44855897001) | **PASS**：24/24、0 skipped；真实 HN 健康探测与预算持久化、50/50 负载、崩溃恢复、MCP/REST 一致、Trivy 0/0 |
+| systemd | [44855897033](https://github.com/alicia1030su/search-hub/actions/runs/44855897033) | **PASS**：真实 HN 计划探测；重启、停止、升级失败回滚后预算与健康状态不变 |
+| 升级 / 故障注入 | [44855897006](https://github.com/alicia1030su/search-hub/actions/runs/44855897006) | **PASS**：Windows/Linux 真实 `v0.1.10 → current`，以及 updater 校验和、降级、架构、健康失败回滚 |
+
+Docker 首次候选运行在第 7 项失败，原因是旧脚本要求 mock 探测产生预算消耗；v0.1.11 对零物理请求正确退款。验收脚本已改用真实 HTTP 探测，未放宽预算、漏洞或测试门禁。H49 的固定时间单测也补齐了租约释放时钟，避免跨 UTC 日时依赖 CI 运行日期。
+
 ### 未通过 / 受限
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 真实升级 | **BLOCKED** | 本地真实包升级进程未返回；不得以模拟或旧版本结果替代 |
-| Docker / systemd / 三平台 | **待 CI** | PR 与 tag 工作流完成后回填真实 run 与结论 |
+| 三平台正式发布资产 | **待 tag Release CI** | Windows x64 / Linux x64 / Linux arm64 正式包、SHA256SUMS、Provenance 与 GHCR 在 tag 发布后核验 |
 | 真实厂商联调 | **受限** | 仅 4 个源有真实网络证据 |
 | 质量评测数据 | **受限** | 只有合成基准，无厂商标注集 |
 | 多实例 | **NOT_IMPLEMENTED** | 无跨进程协调者 |
