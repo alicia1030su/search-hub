@@ -13,7 +13,7 @@
  */
 import { and, desc, eq, gte, lte, or, isNull } from "drizzle-orm";
 import type { ProviderErrorCode } from "@search-hub/shared";
-import { SearchHubError } from "@search-hub/shared";
+import { SearchHubError, redactSecrets, sanitizeUrl } from "@search-hub/shared";
 import {
   apiKeys,
   providerHealthChecks,
@@ -62,6 +62,10 @@ export interface HealthDependencies {
   settings: { get(): { health: HealthSettings } };
   providers: {
     providerRequiresKey(type: string, config: Record<string, unknown>): boolean;
+    /** Redacts a persisted diagnostic using the current credential, when available. */
+    redactKeyMessage?(keyId: string | null | undefined, message: string | null): string | null;
+    /** Fallback for old rows whose key id is missing or was deleted. */
+    redactProviderMessage?(providerId: string, message: string | null): string | null;
     keyAvailability(ids: string[]): Map<string, KeyAvailability>;
     acquireKey(
       providerId: string,
@@ -99,6 +103,8 @@ export interface HealthCheckResult {
    * "unknown", not a number the UI would present as evidence.
    */
   requests: number | null;
+  /** Vendor billing unit is unknown; requests are never presented as billed calls. */
+  billingUnit?: "unknown";
   /**
    * Whether this probe consumed a paid budget slot.
    *
@@ -171,12 +177,17 @@ export interface HealthOverview {
     anonymousMaxPerDay: number;
     /** Paid searches reserved today. */
     usedToday: number;
-    /** Free connectivity probes reserved today. */
+    /** Physical connectivity HTTP hops reserved today. */
     connectUsedToday: number;
     /** Anonymous searches reserved today. */
     anonymousSearchUsedToday: number;
     remainingToday: number;
     anonymousRemainingToday: number;
+    /** Physical HTTP hops allowed for one connectivity probe. */
+    connectMaxPerProbe: number;
+    /** Physical HTTP hops allowed for connectivity probes per UTC day. */
+    connectMaxPerDay: number;
+    connectRemainingToday: number;
     paidProbesEnabled: boolean;
     scheduledEnabled: boolean;
     intervalMinutes: number;
@@ -194,6 +205,8 @@ export interface HealthSettings {
   maxRequestsPerDay: number;
   anonymousMaxRequestsPerRun: number;
   anonymousMaxRequestsPerDay: number;
+  connectMaxRequestsPerProbe: number;
+  connectMaxRequestsPerDay: number;
   paidProbesEnabled: boolean;
   includeUnverified: boolean;
   concurrency: number;
@@ -238,6 +251,8 @@ export class HealthService {
       maxPerDay: policy.maxRequestsPerDay,
       anonymousMaxPerRun: policy.anonymousMaxRequestsPerRun,
       anonymousMaxPerDay: policy.anonymousMaxRequestsPerDay,
+      connectMaxPerProbe: policy.connectMaxRequestsPerProbe,
+      connectMaxPerDay: policy.connectMaxRequestsPerDay,
     });
     return {
       day: snapshot.day,
@@ -245,11 +260,14 @@ export class HealthService {
       maxPerDay: snapshot.maxPerDay,
       anonymousMaxPerRun: snapshot.anonymousMaxPerRun,
       anonymousMaxPerDay: snapshot.anonymousMaxPerDay,
+      connectMaxPerProbe: snapshot.connectMaxPerProbe,
+      connectMaxPerDay: snapshot.connectMaxPerDay,
       usedToday: snapshot.searchUsedToday,
       connectUsedToday: snapshot.connectUsedToday,
       anonymousSearchUsedToday: snapshot.anonymousSearchUsedToday,
       remainingToday: snapshot.remainingToday,
       anonymousRemainingToday: snapshot.anonymousRemainingToday,
+      connectRemainingToday: snapshot.connectRemainingToday,
       paidProbesEnabled: snapshot.paidProbesEnabled,
       scheduledEnabled: policy.scheduledEnabled,
       intervalMinutes: policy.intervalMinutes,
@@ -278,6 +296,27 @@ export class HealthService {
       trigger?: HealthTrigger;
       signal?: AbortSignal;
       /** Bulk run this probe belongs to; written to `provider_health_checks`. */
+      batchId?: string | null;
+    } = {},
+  ): Promise<HealthCheckResult> {
+    const result = await this.probeWithLock(providerId, options);
+    if (result === "already_running") {
+      throw new SearchHubError(
+        "already_running",
+        "already_running: another health probe for this source is in flight",
+      );
+    }
+    return result;
+  }
+
+  private async checkOneUnlocked(
+    providerId: string,
+    options: {
+      kind?: HealthProbeKind;
+      keyId?: string;
+      manual?: boolean;
+      trigger?: HealthTrigger;
+      signal?: AbortSignal;
       batchId?: string | null;
     } = {},
   ): Promise<HealthCheckResult> {
@@ -349,44 +388,48 @@ export class HealthService {
     const anonymousSearch = lease === undefined && (kind === "search" || row.type === "generic-http");
     const ledgerKind = anonymousSearch ? "search_anonymous" : kind;
     let reservation: Reservation | undefined;
+    let connectReservation: Reservation | undefined;
     let requests = 0;
     let timer: NodeJS.Timeout | undefined;
     let detached: ReturnType<typeof composeAbort> | undefined;
     let keyOutcome: KeyProbeRelease = { ok: false, notSent: true };
+    let connectBudgetRefused = false;
 
     // One lifecycle owns both scarce resources. Anything that throws after the
     // lease is acquired — including a ledger failure, a billing write failure or
     // a scheduler write failure — must return the lease and a provably unused
     // budget slot exactly once.
     try {
-      reservation = this.budgetLedger.reserve({
-        kind: ledgerKind,
-        paidProbesEnabled: policy.paidProbesEnabled,
-        maxPerRun: policy.maxRequestsPerRun,
-        maxPerDay: policy.maxRequestsPerDay,
-        anonymousMaxPerRun: policy.anonymousMaxRequestsPerRun,
-        anonymousMaxPerDay: policy.anonymousMaxRequestsPerDay,
-      });
-      if (!reservation.ok) {
-        if (kind === "search" && ledgerKind === "search") {
-          if (reservation.reason === "paid_disabled") {
+      if (ledgerKind !== "connect") {
+        reservation = this.budgetLedger.reserve({
+          kind: ledgerKind,
+          paidProbesEnabled: policy.paidProbesEnabled,
+          maxPerRun: policy.maxRequestsPerRun,
+          maxPerDay: policy.maxRequestsPerDay,
+          anonymousMaxPerRun: policy.anonymousMaxRequestsPerRun,
+          anonymousMaxPerDay: policy.anonymousMaxRequestsPerDay,
+        });
+        if (!reservation.ok) {
+          if (kind === "search" && ledgerKind === "search") {
+            if (reservation.reason === "paid_disabled") {
+              throw new SearchHubError(
+                "validation_error",
+                "Paid search probes are disabled. Enable them in Settings → Provider health, or run a connectivity probe instead.",
+              );
+            }
             throw new SearchHubError(
-              "validation_error",
-              "Paid search probes are disabled. Enable them in Settings → Provider health, or run a connectivity probe instead.",
+              "quota_exceeded",
+              `Health probe budget exhausted (${reservation.reason}). Paid probes used today: ${reservation.snapshot.searchUsedToday}/${policy.maxRequestsPerDay}.`,
             );
           }
-          throw new SearchHubError(
-            "quota_exceeded",
-            `Health probe budget exhausted (${reservation.reason}). Paid probes used today: ${reservation.snapshot.searchUsedToday}/${policy.maxRequestsPerDay}.`,
-          );
+          if (ledgerKind === "search_anonymous" && reservation.reason !== "ledger_unavailable") {
+            throw new SearchHubError(
+              "quota_exceeded",
+              `Anonymous health probe budget exhausted (${reservation.reason}). Anonymous probes used today: ${reservation.snapshot.anonymousSearchUsedToday}/${reservation.snapshot.anonymousMaxPerDay}.`,
+            );
+          }
+          throw new SearchHubError("internal_error", `Health probe budget is unavailable (${reservation.reason})`);
         }
-        if (ledgerKind === "search_anonymous" && reservation.reason !== "ledger_unavailable") {
-          throw new SearchHubError(
-            "quota_exceeded",
-            `Anonymous health probe budget exhausted (${reservation.reason}). Anonymous probes used today: ${reservation.snapshot.anonymousSearchUsedToday}/${reservation.snapshot.anonymousMaxPerDay}.`,
-          );
-        }
-        throw new SearchHubError("internal_error", `Health probe budget is unavailable (${reservation.reason})`);
       }
 
       /**
@@ -401,7 +444,62 @@ export class HealthService {
       const countedFetch: SafeFetch = (url, init) =>
         this.ctx.fetch(url, {
           ...init,
+          secrets: [...(init?.secrets ?? []), ...(lease ? [lease.secret] : [])],
           onRequest: (target) => {
+            if (kind === "connect") {
+              if (requests >= policy.connectMaxRequestsPerProbe) {
+                connectBudgetRefused = true;
+                throw new SearchHubError(
+                  "quota_exceeded",
+                  `Connectivity probe request limit reached (${policy.connectMaxRequestsPerProbe} physical HTTP hops).`,
+                  { details: { localBudget: true, limit: policy.connectMaxRequestsPerProbe, requests } },
+                );
+              }
+              // A connect reservation belongs to the UTC day on which each hop
+              // is sent. Refuse a hop after midnight rather than silently
+              // charging it to yesterday's bucket.
+              const active = connectReservation ?? reservation;
+              if (active && active.snapshot.day !== ProbeBudget.utcDay(this.clock())) {
+                connectBudgetRefused = true;
+                throw new SearchHubError(
+                  "quota_exceeded",
+                  "Connectivity probe stopped at the UTC day boundary; retry to use today's request budget.",
+                  { details: { localBudget: true, reason: "day_changed", requests } },
+                );
+              }
+              const next = this.budgetLedger.reserve({
+                kind: "connect",
+                paidProbesEnabled: policy.paidProbesEnabled,
+                maxPerRun: policy.maxRequestsPerRun,
+                maxPerDay: policy.maxRequestsPerDay,
+                anonymousMaxPerRun: policy.anonymousMaxRequestsPerRun,
+                anonymousMaxPerDay: policy.anonymousMaxRequestsPerDay,
+                connectMaxPerProbe: policy.connectMaxRequestsPerProbe,
+                connectMaxPerDay: policy.connectMaxRequestsPerDay,
+              });
+              if (!next.ok) {
+                connectBudgetRefused = true;
+                throw new SearchHubError(
+                  "quota_exceeded",
+                  `Connectivity probe budget exhausted (${next.reason}). Physical HTTP hops used today: ${next.snapshot.connectUsedToday}/${next.snapshot.connectMaxPerDay}.`,
+                  { details: { localBudget: true, reason: next.reason, requests } },
+                );
+              }
+              // The clock can cross midnight between the check above and the
+              // conditional UPDATE. Refund the just-created new-day slot and
+              // refuse the hop instead of mixing days in one probe.
+              if (active && active.snapshot.day !== next.snapshot.day) {
+                this.budgetLedger.release("connect", next.snapshot.day);
+                connectBudgetRefused = true;
+                throw new SearchHubError(
+                  "quota_exceeded",
+                  "Connectivity probe stopped at the UTC day boundary; retry to use today's request budget.",
+                  { details: { localBudget: true, reason: "day_changed", requests } },
+                );
+              }
+              if (ledgerKind === "connect") reservation ??= next;
+              else connectReservation ??= next;
+            }
             requests += 1;
             init?.onRequest?.(target);
           },
@@ -450,6 +548,12 @@ export class HealthService {
           },
         );
       } catch (error) {
+        if (connectBudgetRefused) {
+          keyOutcome = requests === 0
+            ? { ok: false, notSent: true }
+            : { ok: false, cancelled: true };
+          throw error;
+        }
         const latencyMs = this.clock() - started;
         const cause = controller.signal.aborted && !options.signal?.aborted ? "timeout" : classifyError(error);
         // A cancelled probe is not evidence about the source: it says the caller
@@ -461,13 +565,17 @@ export class HealthService {
           throw cancelledError();
         }
         const retryAfterMs = parseRetryAfterMs((error as { retryAfterMs?: number } | null)?.retryAfterMs);
+        const safeMessage = redactSecrets(
+          error instanceof Error ? error.message : String(error),
+          [lease?.secret],
+        );
         const cooldown =
           cause === "quota_exceeded"
             ? nextUtcMidnight(this.clock()) + 1_000 - this.clock()
             : cooldownFor(cause, retryAfterMs);
         keyOutcome = requests === 0
           ? { ok: false, notSent: true }
-          : { ok: false, code: cause, message: error instanceof Error ? error.message : String(error), ...(retryAfterMs === null ? {} : { retryAfterMs }) };
+          : { ok: false, code: cause, message: safeMessage, ...(retryAfterMs === null ? {} : { retryAfterMs }) };
         const recorded = this.record({
           providerId,
           providerName: row.name,
@@ -478,12 +586,12 @@ export class HealthService {
           cause,
           latencyMs,
           resultCount: null,
-          message: error instanceof Error ? error.message : String(error),
+          message: safeMessage,
           trigger,
           cooldownMs: cooldown ?? undefined,
           spent: requests > 0 && kind === "search" && ledgerKind === "search",
           requests: requests > 0 ? requests : null,
-          billing: { kind: ledgerKind, day: reservation.snapshot.day },
+          ...(reservation ? { billing: { kind: ledgerKind, day: reservation.snapshot.day } } : {}),
           credentialUsed: lease !== undefined,
           batchId: options.batchId ?? null,
         });
@@ -516,10 +624,13 @@ export class HealthService {
             ? `${count} result(s) in ${latencyMs}ms`
             : "Endpoint answered but returned no results; treated as degraded, not healthy.",
         trigger,
-        sample: result.results.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
+        sample: result.results.slice(0, 3).map((item) => ({
+          title: redactSecrets(item.title, lease ? [lease.secret] : []),
+          url: sanitizeUrl(item.url, lease ? [lease.secret] : []),
+        })),
         spent: requests > 0 && kind === "search" && ledgerKind === "search",
         requests: requests > 0 ? requests : null,
-        billing: { kind: ledgerKind, day: reservation.snapshot.day },
+        ...(reservation ? { billing: { kind: ledgerKind, day: reservation.snapshot.day } } : {}),
         credentialUsed: lease !== undefined,
         batchId: options.batchId ?? null,
       });
@@ -531,6 +642,9 @@ export class HealthService {
         detached?.dispose();
         if (reservation?.ok && requests === 0) {
           this.budgetLedger.release(ledgerKind, reservation.snapshot.day);
+        }
+        if (connectReservation?.ok && requests === 0) {
+          this.budgetLedger.release("connect", connectReservation.snapshot.day);
         }
       } finally {
         // Key state has one writer: the scheduler lease. release() waits for the
@@ -687,6 +801,7 @@ export class HealthService {
       kind?: HealthProbeKind;
       trigger?: HealthTrigger;
       keyId?: string;
+      manual?: boolean;
       signal?: AbortSignal;
       batchId?: string | null;
     },
@@ -694,7 +809,7 @@ export class HealthService {
     if (this.inFlight.has(providerId)) return "already_running";
     this.inFlight.add(providerId);
     try {
-      return await this.checkOne(providerId, options);
+      return await this.checkOneUnlocked(providerId, options);
     } finally {
       this.inFlight.delete(providerId);
     }
@@ -813,6 +928,11 @@ export class HealthService {
         const anonymousSearch = !credentialed && (kind === "search" || row.type === "generic-http");
         const budget = this.budget();
         if (anonymousSearch) {
+          if (kind === "connect" && row.type === "generic-http" &&
+              (budget.connectMaxPerProbe < 1 || budget.connectRemainingToday <= 0)) {
+            emitSkip(id, "SKIPPED_BUDGET", "budget_exhausted:connect_http_limit");
+            return;
+          }
           const remainingRun = budget.anonymousMaxPerRun - spentAnonymousThisRun;
           if (remainingRun <= 0 || budget.anonymousRemainingToday <= 0) {
             emitSkip(id, "SKIPPED_BUDGET", "budget_exhausted:anonymous_limit");
@@ -863,6 +983,16 @@ export class HealthService {
           if (paidThisProbe) spentPaidThisRun -= 1;
           if (anonymousThisProbe) spentAnonymousThisRun -= 1;
           emitSkip(id, "SKIPPED_CANCELLED", "cancelled: the bulk run was cancelled while this probe was in flight");
+          return;
+        }
+        const details = (error as { details?: unknown } | null)?.details;
+        const localBudget = typeof details === "object" && details !== null &&
+          (details as { localBudget?: unknown }).localBudget === true;
+        if (code === "quota_exceeded" && kind === "connect" && localBudget) {
+          if (anonymousThisProbe && (details as { requests?: unknown }).requests === 0) {
+            spentAnonymousThisRun -= 1;
+          }
+          emitSkip(id, "SKIPPED_BUDGET", "budget_exhausted:connect_http_limit");
           return;
         }
         if (paidThisProbe) spentPaidThisRun -= 1;
@@ -1123,19 +1253,40 @@ export class HealthService {
         latencyMs: row.latencyMs,
         resultCount: row.resultCount,
         healthScore: row.healthScore,
-        message: String((detail as { message?: string }).message ?? ""),
+        message: row.diagnosticsSanitized
+          ? this.redactStoredMessage(
+              row.providerId,
+              row.keyId,
+              String((detail as { message?: string }).message ?? ""),
+            )
+          : (detail as { message?: string }).message
+            ? "[redacted: legacy diagnostic]"
+            : "",
         checkedAt: row.checkedAt,
         trigger: row.trigger as HealthTrigger,
         cooldownUntil: ((detail as { cooldownUntil?: string }).cooldownUntil ?? null),
         // Rows written before migration 0008 have no count: `null` ("not measured"),
         // never `0`.
         requests: toRequestCount((detail as { requests?: unknown }).requests),
+        billingUnit: "unknown",
         // The captured sample, capped at three. It is displayed as plain text and
         // is the only place a result title reaches the UI, so the cap is applied
         // here rather than trusting the reader.
-        sample: toSamples((detail as { sample?: unknown }).sample),
+        sample: row.diagnosticsSanitized
+          ? toSamples((detail as { sample?: unknown }).sample).map((sample) => ({
+              title: this.redactStoredMessage(row.providerId, row.keyId, sample.title),
+              url: this.redactStoredMessage(row.providerId, row.keyId, sample.url),
+            }))
+          : [],
       };
     });
+  }
+
+  /** Protects clients from diagnostics persisted by releases before v0.1.12. */
+  private redactStoredMessage(providerId: string, keyId: string | null, message: string): string {
+    let output = redactSecrets(message);
+    if (keyId) output = this.ctx.providers.redactKeyMessage?.(keyId, output) ?? output;
+    return this.ctx.providers.redactProviderMessage?.(providerId, output) ?? output;
   }
 
   private summarize(
@@ -1216,7 +1367,15 @@ export class HealthService {
       lastSuccessAt: lastSuccess?.checkedAt ?? null,
       lastErrorCode: lastCheck?.errorCode ?? null,
       lastErrorMessage: lastCheck
-        ? String((safeJson(lastCheck.detailJson) as { message?: string }).message ?? "")
+        ? lastCheck.diagnosticsSanitized
+          ? this.redactStoredMessage(
+              row.id,
+              lastCheck.keyId,
+              String((safeJson(lastCheck.detailJson) as { message?: string }).message ?? ""),
+            )
+          : (safeJson(lastCheck.detailJson) as { message?: string }).message
+            ? "[redacted: legacy diagnostic]"
+            : null
         : null,
       consecutiveFailures,
       successRate: traffic.length === 0 ? null : Number((okCount / traffic.length).toFixed(4)),
@@ -1312,10 +1471,12 @@ export class HealthService {
           // property of this observation, and `detail_json` is already the
           // place per-observation facts live.
           requests,
+          billingUnit: "unknown",
         }),
         trigger: input.trigger,
         checkedAt,
         batchId: input.batchId ?? null,
+        diagnosticsSanitized: true,
       })
       .run();
 
@@ -1349,6 +1510,7 @@ export class HealthService {
       trigger: input.trigger,
       cooldownUntil,
       requests,
+      billingUnit: "unknown",
       ...(input.sample ? { sample: input.sample } : {}),
       ...(input.spent === undefined ? {} : { spent: input.spent }),
     };

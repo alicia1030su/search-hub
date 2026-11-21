@@ -455,6 +455,8 @@ export interface SafeFetchInit extends RequestInit {
    * prevents the request from being sent.
    */
   onRequest?: (url: string) => void;
+  /** Exact credential values used by this request, for diagnostic redaction. */
+  secrets?: string[];
 }
 
 export type SafeFetch = <T = unknown>(

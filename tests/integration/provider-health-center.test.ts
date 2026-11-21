@@ -559,15 +559,19 @@ describe("provider health centre", () => {
       Array.from({ length: 100 }, () => probeOne(harness, providerId, "search")),
     );
     const accepted = responses.filter((item) => item.statusCode === 200).length;
+    const alreadyRunning = responses.filter((item) => item.statusCode === 409).length;
     const rejected = responses.filter((item) => item.statusCode === 429).length;
-    expect(accepted).toBe(5);
-    expect(rejected).toBe(95);
+    // All entry points now share the per-provider in-flight lock. Exactly one
+    // probe may enter; the other 99 are refused before budget or upstream work.
+    expect(accepted).toBe(1);
+    expect(alreadyRunning).toBe(99);
+    expect(rejected).toBe(0);
 
     const ledger = harness.ctx.db.select().from(healthProbeBudget).all();
     const used = ledger.find((row) => row.kind === "search")!.used;
-    expect(used).toBe(5);
-    // Exactly five probe rows were written; a rejected probe records nothing.
-    expect(probeRows(harness).filter((row) => row.kind === "search")).toHaveLength(5);
+    expect(used).toBe(1);
+    // Exactly one probe row was written; an already_running refusal records nothing.
+    expect(probeRows(harness).filter((row) => row.kind === "search")).toHaveLength(1);
   });
 
   it("T19 a restart does not reset the daily budget", async () => {

@@ -156,12 +156,14 @@ describe("cache migration on an existing database", () => {
       .get("app") as { value_json: string };
     expect(JSON.parse(setting.value_json).instance.name).toBe("Carried Over");
 
-    // Provider, key and probe rows survive, and the new budget ledger starts
-    // empty rather than inheriting a guessed number.
+    // Provider, key and probe rows survive. The historical connect observation
+    // is conservatively seeded as one physical hop by migrations 0009/0010.
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_instances").get()).toEqual({ n: 1 });
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM api_keys").get()).toEqual({ n: 1 });
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_checks").get()).toEqual({ n: 1 });
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM health_probe_budget").get()).toEqual({ n: 0 });
+    expect(handle.sqlite.prepare("SELECT kind, used FROM health_probe_budget").all()).toEqual([
+      { kind: "connect", used: 1 },
+    ]);
 
     // 5. `user_version` tracks the number of migrations, so the backup verifier
     //    and the updater both see the new schema.

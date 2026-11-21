@@ -97,6 +97,8 @@ export const apiKeys = sqliteTable(
     quotaDate: text("quota_date"),
     lastErrorCode: text("last_error_code"),
     lastErrorMessage: text("last_error_message"),
+    /** True only for diagnostics written after the v0.1.12 redaction fix. */
+    lastErrorSanitized: integer("last_error_sanitized", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -158,6 +160,8 @@ export const searchTasks = sqliteTable(
     errorsJson: text("errors_json"),
     requestJson: text("request_json"),
     responseJson: text("response_json"),
+    /** True only for task diagnostics written after the v0.1.12 redaction fix. */
+    diagnosticsSanitized: integer("diagnostics_sanitized", { mode: "boolean" }).notNull().default(false),
     actor: text("actor"),
     createdAt: text("created_at").notNull(),
     finishedAt: text("finished_at"),
@@ -183,6 +187,8 @@ export const searchEvents = sqliteTable(
     resultCount: integer("result_count").notNull().default(0),
     errorCode: text("error_code"),
     errorMessage: text("error_message"),
+    /** True only for event diagnostics written after the v0.1.12 redaction fix. */
+    diagnosticsSanitized: integer("diagnostics_sanitized", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull(),
   },
   (table) => [
@@ -299,8 +305,9 @@ export type AuditLogRow = typeof auditLogs.$inferSelect;
 /**
  * One row per completed health probe.
  *
- * `kind` separates a free connectivity probe from a paid search probe; the
- * dashboard must never blend them into a single "healthy" number.
+ * `kind` separates a connectivity probe from a paid search probe; connectivity
+ * hops use their own safety budget and are not assumed to be free. The dashboard
+ * must never blend the two into a single "healthy" number.
  */
 export const providerHealthChecks = sqliteTable(
   "provider_health_checks",
@@ -308,7 +315,7 @@ export const providerHealthChecks = sqliteTable(
     id: text("id").primaryKey(),
     providerId: text("provider_id").notNull(),
     keyId: text("key_id"),
-    /** "connect" (free: DNS/TLS/auth) or "search" (may cost money). */
+    /** "connect" (physical-hop safety budget) or "search" (paid budget). */
     kind: text("kind").notNull(),
     /** "healthy" | "degraded" | "unhealthy" | "unverified". */
     status: text("status").notNull(),
@@ -317,6 +324,8 @@ export const providerHealthChecks = sqliteTable(
     resultCount: integer("result_count"),
     healthScore: integer("health_score").notNull().default(0),
     detailJson: text("detail_json").notNull().default("{}"),
+    /** True only for health diagnostics written after the v0.1.12 redaction fix. */
+    diagnosticsSanitized: integer("diagnostics_sanitized", { mode: "boolean" }).notNull().default(false),
     /** "manual" | "schedule" | "recovery" | "search". */
     trigger: text("trigger").notNull(),
     checkedAt: text("checked_at").notNull(),
@@ -481,6 +490,8 @@ export const providerTestBatches = sqliteTable(
     itemsJson: text("items_json").notNull().default("[]"),
     /** Budget snapshot taken when the run started; never re-read later. */
     budgetJson: text("budget_json").notNull().default("{}"),
+    /** True only for batch item diagnostics written after v0.1.12 redaction. */
+    diagnosticsSanitized: integer("diagnostics_sanitized", { mode: "boolean" }).notNull().default(false),
     createdBy: text("created_by"),
     createdAt: text("created_at").notNull(),
     startedAt: text("started_at"),

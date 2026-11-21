@@ -56,6 +56,45 @@ describe("account quota reservation refunds", () => {
     expect(registry.snapshot("account", afterMidnight + 2)?.quotaUsedToday).toBe(0);
   });
 
+  it("read-only account snapshots evaluate UTC rollover and park expiry without mutating live state", () => {
+    const registry = new AccountQuotaRegistry();
+    const limits = { rpmLimit: 0, dailyQuota: 1 };
+    const dayOne = Date.UTC(2026, 10, 21, 12);
+    const dayTwo = Date.UTC(2026, 10, 22, 12);
+    registry.reserve("account", limits, dayOne);
+    registry.park("account", dayOne + 1_000);
+
+    expect(registry.snapshotReadOnly("account", dayTwo)).toMatchObject({
+      quotaUsedToday: 0,
+      parkedUntil: null,
+    });
+    // A later read at the original instant still sees the original facts: the
+    // read-only view did not reset the live UTC day or clear the live park.
+    expect(registry.snapshot("account", dayOne)).toMatchObject({
+      quotaUsedToday: 1,
+      parkedUntil: new Date(dayOne + 1_000).toISOString(),
+    });
+    expect(registry.reserve("account", limits, dayOne + 1)).toBeNull();
+  });
+
+  it("keyAvailableReadOnly does not reset the live account UTC day", () => {
+    const registry = new AccountQuotaRegistry();
+    const limits = { rpmLimit: 0, dailyQuota: 1 };
+    const dayOne = Date.UTC(2026, 10, 21, 12);
+    const dayTwo = Date.UTC(2026, 10, 22, 12);
+    const value = scheduler([seed("key")], {
+      accountGroup: "account",
+      accountLimits: limits,
+      registry,
+    });
+    const lease = value.tryAcquire(dayOne)!;
+    lease.release({ ok: true, latencyMs: 1 });
+
+    expect(value.keyAvailableReadOnly("key", dayTwo)).toBe(true);
+    expect(registry.snapshot("account", dayOne)?.quotaUsedToday).toBe(1);
+    expect(registry.reserve("account", limits, dayOne + 1)).toBeNull();
+  });
+
   it("refunds the account reservation even when the key was removed before release", () => {
     const registry = new AccountQuotaRegistry();
     const limits = { rpmLimit: 0, dailyQuota: 1 };

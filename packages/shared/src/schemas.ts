@@ -109,7 +109,7 @@ const providerCreateShape = {
   credential: z
     .object({
       label: z.string().trim().min(1).max(80).default("主凭证"),
-      key: z.string().trim().min(1).max(8192),
+      key: z.string().trim().min(8).max(8192),
       weight: z.number().int().min(1).max(1000).default(100),
       enabled: z.boolean().default(true),
     })
@@ -180,14 +180,14 @@ export const providerBatchStateSchema = z.object({
 
 export const keyCreateSchema = z.object({
   label: z.string().trim().min(1).max(80),
-  key: z.string().trim().min(1).max(8192),
+  key: z.string().trim().min(8).max(8192),
   weight: z.number().int().min(1).max(1000).default(100),
   enabled: z.boolean().default(true),
 });
 
 export const keyUpdateSchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
-  key: z.string().trim().min(1).max(8192).optional(),
+  key: z.string().trim().min(8).max(8192).optional(),
   weight: z.number().int().min(1).max(1000).optional(),
   enabled: z.boolean().optional(),
 });
@@ -293,6 +293,10 @@ export const healthSettingsPatchSchema = z.object({
   anonymousMaxRequestsPerRun: z.number().int().min(1).max(200).optional(),
   /** Keyless searches per UTC day, counted in their own bucket. */
   anonymousMaxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
+  /** Physical HTTP hops allowed for one connectivity probe. */
+  connectMaxRequestsPerProbe: z.number().int().min(1).max(20).optional(),
+  /** Physical HTTP hops allowed for connectivity probes per UTC day. */
+  connectMaxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
   paidProbesEnabled: z.boolean().optional(),
   /** Legacy global field; retained for old clients, not used by batch runs. */
   includeUnverified: z.boolean().optional(),

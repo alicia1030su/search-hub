@@ -4,11 +4,11 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.11 · Stable Release (the maintainer's public release channel).**
+> **Status: v0.1.12 · Stable candidate (final gates pending verification).**
 >
-> **Release gate:** this candidate build ran Vitest **1152/1152 (88 files)** and Playwright **42/42**. The Stable tag is published only after the full gate is green.
+> **Release gate:** the local candidate passes Vitest **1241 cases / 96 files** and Playwright **42 cases**. Remote CI, upgrade-matrix and formal-release results are recorded in `docs/release-readiness.md`.
 >
-> Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache, the provider health centre and the search quality lab are implemented; the automated suite covers unit, integration and browser flows. See the [testing guide](./docs/testing.md) for release-gate status. **The Docker image and the 11-item container acceptance have passed on GitHub Actions (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL).
+> Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache, the provider health centre and the search quality lab are implemented; the automated suite covers unit, integration and browser flows. See the [testing guide](./docs/testing.md) for release-gate status. **The v0.1.11 Docker image and 11-item container acceptance have a recorded GitHub Actions pass (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL). That record is not evidence that v0.1.12 has passed.
 >
 > **Stable means "this is the public release channel the maintainer ships", not "every third-party integration is production-certified".** Concretely: **Hacker News, Crossref, OpenAlex and PubMed are verified against the real network**; Tavily, Bocha, Brave, SearXNG and the rest are implemented from their official docs and are **not yet verified against real search results**; the quality lab currently has synthetic fixtures only, with **no vendor-labelled qrel set**. Those gaps are listed per provider in the [provider matrix](./docs/provider-matrix.md), the [release readiness report](./docs/release-readiness.md) and the [CHANGELOG](./CHANGELOG.md). Nothing untested is described as verified.
 
@@ -41,7 +41,7 @@ Search Hub packages that as a deployable service:
 | AI summary / embedding / rerank | Implemented, optional | OpenAI-compatible, Anthropic, Gemini, Cohere/Jina-compatible, custom HTTP |
 | Result cache (SQLite, persistent) | Implemented | 1–72 h TTL; survives restart and container rebuild; LRU eviction at a byte cap; expired rows swept every 10 minutes |
 | Search quality lab | Implemented | Four-grade human relevance judgments + P@10 / Recall@10 / MRR@10 / nDCG@10; offline baseline with no network and reproducible numbers; single / base / RRF comparison; RRF sweep with a development/holdout split; incomplete qrels produce N/A and INSUFFICIENT_EVIDENCE |
-| Provider health centre | Implemented | Implementation verification kept separate from runtime state; connectivity probe (one minimal request) and paid search probe; durable, concurrency-safe budget; exponential backoff and automatic recovery; per-source switch and reset |
+| Provider health centre | Implemented | Implementation verification kept separate from runtime state; connectivity probes meter physical HTTP hops (5 per probe / 50 per UTC day by default); paid search probes are off by default; every probe path shares one per-provider in-flight lock; durable, concurrency-safe budget; exponential backoff and automatic recovery; per-source switch and reset |
 | PostgreSQL | Not implemented | SQLite only; the data layer is isolated |
 | Redis multi-instance coordination | Not implemented | Single-process quota guarantees only |
 
@@ -54,8 +54,10 @@ Search Hub packages that as a deployable service:
 | Implementation verification | `documented` / `mock_verified` / `live_tested` / `unverified` — how the adapter was validated. **A passing probe never upgrades it.** |
 | Runtime state | `healthy` / `degraded` / `rate_limited` / `quota_exceeded` / `invalid_credentials` / `permission_denied` / `cooldown` / `unknown` / `unverified` / `disabled` — whether this instance works right now |
 
-- **Two probe kinds.** A connectivity probe sends one minimal request and only proves that DNS, TLS and the credential can establish a session — for a source that needs a credential the request still carries it, so it is not advertised as free. A search probe calls the vendor's search endpoint; only that can claim "it can search right now". Completely keyless sources (HN / Crossref / OpenAlex / PubMed / arXiv / Wikipedia) can be verified with a real search without the paid switch, and are counted in their own bucket.
-- **Budget.** Paid searches and anonymous searches have separate counters and separate caps (3 per run / 20 per day by default for each, adjustable within hard bounds). Counters live in the database, survive a restart, and cannot be exceeded by concurrent probes; if the reservation cannot be written, no request is made.
+- **Two probe kinds.** A connectivity probe follows the resolved minimal search plan; every physical HTTP hop from pagination or redirects consumes the independent connect budget. For a source that needs a credential the request still carries it, so it is not advertised as free. A search probe calls the vendor's search endpoint; only that can claim "it can search right now". Completely keyless sources (HN / Crossref / OpenAlex / PubMed / arXiv / Wikipedia) can be verified with a real search without the paid switch, and are counted in their own bucket.
+- **Budget.** Paid searches, anonymous searches and connectivity hops have separate counters. Paid/anonymous searches default to 3 per run / 20 per day each; connectivity defaults to 5 physical hops per probe / 50 per UTC day, all adjustable within hard bounds. Counters live in the database, survive a restart, and cannot be exceeded by concurrent probes; if the reservation cannot be written, no request is made. A request count is not a vendor bill: `billingUnit` is explicitly `unknown`.
+- **One lock per source.** Single-source tests, Key tests, scheduled passes, check-all and bulk runners share the same in-flight lock. A duplicate receives `409 already_running`; a bulk item records that code as a skip rather than a provider failure.
+- **Local refusal is not upstream evidence.** A connect-budget refusal returns `429 quota_exceeded`, writes no health conclusion, never invalidates the Key and never parks the source; a bulk item records `SKIPPED_BUDGET`. GET preview, overview, settings and MCP health reads do not write to the database.
 - **Automatic recovery.** Transient failures retry sooner with exponential backoff; terminal failures wait for the normal interval. One failure never permanently disables a source, and a success returns it to `healthy`.
 - **Off by default.** Scheduled probing only runs once you enable it, within the interval and the budget.
 - **A source that requires a credential but has none usable never reports healthy**; completely keyless public sources can be probed and show their real runtime state.
@@ -124,17 +126,28 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.11)
+## Download (v0.1.12 candidate)
 
-Three shapes, one search core, one database model, one admin UI.
+Three shapes, one search core, one database model, one admin UI. The v0.1.12 assets will be published after the final gates pass; v0.1.11 remains the current published Stable release.
 
 | Platform | Download | Requirements |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.11-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/search-hub-v0.1.11-windows-x64.zip) | **None** (no Node / pnpm / Git / Docker) |
-| Linux x64 | [`search-hub-v0.1.11-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/search-hub-v0.1.11-linux-x64.tar.gz) | **None** (Node runtime bundled) |
-| Linux arm64 | [`search-hub-v0.1.11-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/search-hub-v0.1.11-linux-arm64.tar.gz) | **None** |
+| Windows x64 | After publication: [`search-hub-v0.1.12-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **None** (no Node / pnpm / Git / Docker) |
+| Linux x64 | After publication: [`search-hub-v0.1.12-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **None** (Node runtime bundled) |
+| Linux arm64 | After publication: [`search-hub-v0.1.12-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **None** |
 
-Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/SHA256SUMS) and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
+Verify after publication: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) from the same Release and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
+
+> **v0.1.12 closes credential-leak and probe-accounting gaps.** URL query API
+> keys are redacted from JSON/HTML/encoded errors, error `details.url`, SQLite
+> health history, Key `last_error`, audit detail and MCP output. Single, bulk,
+> Key and scheduled probes share one in-flight lock; duplicates receive
+> `409 already_running`. Connectivity probes count physical HTTP hops, defaulting
+> to 5 per probe and 50 per UTC day, with `billingUnit=unknown`. A local connect
+> budget refusal is `429 quota_exceeded` and a bulk item is `SKIPPED_BUDGET`.
+> Health GET previews are read-only, and Key create/update require at least 8
+> characters. Migration `0010` archives the old connect ledger and recomputes it
+> conservatively, monotonically and idempotently.
 
 > **v0.1.11 closes the bulk-test, credential-safety and budget gaps.** The keyless
 > switch is now task-scoped and off by default; paid and anonymous searches use
@@ -237,7 +250,7 @@ Verify: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/relea
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.11-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.12-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
@@ -246,7 +259,7 @@ For long-running use, the package ships `search-hub.service` (non-root, `Protect
 **Docker**:
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.11    # or omit the tag to get latest
+docker pull ghcr.io/alicia1030su/search-hub:0.1.12    # candidate tag; available after publication
 # The image is built for linux/amd64 only; use the arm64 package above on arm64 hosts
 docker compose up -d                                        # or build from source
 ```
@@ -293,10 +306,10 @@ Requires Node ≥ 22.12 (`better-sqlite3` 13, Vite 8) and pnpm 12.
 
 Each provider can have multiple independent instances (`brave-eu`, `brave-us`) with their own URL, key pool, concurrency, priority, and strategy.
 
-- **Encryption**: AES-256-GCM; the master key comes from `SEARCH_HUB_ENCRYPTION_KEY` or a generated `data/master.key`. The API only returns a first-4 + last-4 mask (for example `sk-1…abcd`).
+- **Encryption**: AES-256-GCM; the master key comes from `SEARCH_HUB_ENCRYPTION_KEY` or a generated `data/master.key`. The API only returns a first-4 + last-4 mask (for example `sk-1…abcd`); create/update requires at least 8 characters after trimming.
 - **Strategies**: `round_robin`, `random`, `weighted_random`, `least_used`, `failover`.
 - **Quota**: per-key concurrency + requests per minute + optional daily quota; exceeding it returns an explicit error rather than dropping requests.
-- **Health**: `healthy`, `rate_limited`, `cooldown`, `invalid`, `forbidden`, `quota_exhausted`, `disabled`, `unknown`; each key can be tested or reset individually.
+- **Health**: `healthy`, `rate_limited`, `cooldown`, `invalid`, `forbidden`, `quota_exhausted`, `disabled`, `unknown`; each key can be tested or reset individually. Redacted `lastErrorCode` / `lastErrorMessage` values persist and clear after a successful retest.
 
 ## MCP
 
@@ -366,7 +379,7 @@ Mapping is declarative and restricted to safe dotted paths; no user code is exec
 - Admin API uses an HttpOnly session cookie with a CSRF header on every mutation; external integrations use revocable, scoped, rate-limited bearer tokens.
 - Every outbound request passes SSRF protection: DNS classification, connect-time `lookup` filtering, manual per-hop redirect re-validation; loopback, private, link-local, CGNAT and cloud-metadata addresses are refused by default. IPv4-mapped IPv6 (`[::ffff:127.0.0.1]`) is covered too.
 - **Proxied egress has an explicit trust boundary**: only `SEARCH_HUB_OUTBOUND_PROXY` enables a proxy (environment variables such as `HTTPS_PROXY` are never read implicitly), and `SEARCH_HUB_OUTBOUND_PROXY_TRUST` defaults to `untrusted`, in which case private targets are refused even when allowlisted. The app still validates every hop, but the target resolves at the proxy; the residual DNS-rebinding risk is covered by the `trusted-networks` declaration plus the proxy egress policy. See [SECURITY.md](./SECURITY.md).
-- Logs redact `authorization`, `cookie`, `apiKey`, `password`, and `token`; keys never appear in API responses, exports, or logs.
+- Logs redact `authorization`, `cookie`, `apiKey`, `password`, and `token`. Credential values in URL query parameters (`api_key`/`apikey`/`key`/`token` and custom query injections) are also scrubbed from error bodies, diagnostic URLs, `details.url`, SQLite history, Key errors, audit detail and MCP output; keys never appear in API responses, exports, or logs.
 - Retrieved content is always passed to models as untrusted data, with an explicit boundary and injection pattern detection.
 - Production responses carry CSP, `X-Frame-Options: DENY`, `nosniff`, and related headers.
 
@@ -376,21 +389,22 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- **Unit and integration suites — 1152 cases / 88 files**, covering the three quota tiers (concurrency/RPM/daily) and their peaks, a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- **Unit and integration local candidate — 1241 cases / 96 files passed**, covering the three quota tiers (concurrency/RPM/daily) and their peaks, a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
 - **Persistent cache — 23 cases** (`tests/integration/cache.test.ts`) **plus 3 migration cases** (`tests/unit/cache-migration.test.ts`): hits, isolation, TTL expiry, automatic sweep, survival across restart, concurrency, capacity eviction, response validation, credential isolation. TTL is checked with an injected clock, not by sleeping.
 - **Provider health centre — 35 cases** (`tests/integration/provider-health-center.test.ts`): off by default, no-key ⇒ `unverified`, both probe kinds, cause classification, budget concurrency/restart/overrun, backoff and recovery, one dead key, in-flight de-duplication, shutdown cleanup, no key leakage, permissions, reset, the cache never faking health, cancel not refunding, multiple keys on one shared account quota, and MCP/REST sharing the same gate. Injected clocks and controlled scheduling; no real waiting. The "paid" source in these tests is a local Brave contract server with a real key — no vendor is ever called.
 - **Credential classes — 6 cases** (`tests/integration/credential-classes.test.ts`): the catalogue and adapters agree on which sources take a key; a key-required source with no key is `unverified`; a keyless source probed against a local HN-wire-format stub can report `healthy`; `/api/health` stops counting keyless sources as unusable; a source needing its own instance URL is a configuration problem.
 - **Real network failures — 8 cases** (`tests/integration/network-failures.test.ts`): DNS resolution failure, a self-signed certificate, TLS against a plaintext port, a closed port, a server that never answers until the deadline, HTML where JSON is expected, an abort mid-flight, and a redirect into a private address. Every case goes through the real safe-fetch path — no mock objects carrying error strings.
+- **v0.1.12 targeted regressions**: query-key leakage through JSON/HTML/encoded errors, `details.url`, history, Key errors, audit and MCP; physical connect-hop budgets, local 429 refusals and bulk budget skips; one lock across single/bulk/Key/scheduled probes; zero-write health GET previews; migration `0010` archival, monotonicity and idempotence.
 - **i18n parity — 5 cases** (`tests/unit/i18n-parity.test.ts`): full key coverage, no CJK in English values, identical placeholders, no empty values, no hardcoded zh-CN formatter.
 - A 16-row acceptance matrix (PASS 11 / PARTIAL 4 / BLOCKED 1) generated from `docs/ac-matrix.json`: [docs/ac-matrix.md](./docs/ac-matrix.md).
 - Scripts: `smoke.sh` (setup → two sources → test → key → multi-source search → failure isolation → token → MCP initialize), `live-search.mjs` (real HN search, REST/MCP parity), `mcp-live.mjs` (official client, both transports), `leak-scan.mjs` (response/DB/log triple scan), `clean-install.mjs` (production install into a clean directory).
-- Playwright browser suite: first-run (including the setup token), login, add source, search lab, theme, settings, integrations, the "not implemented" catalogue marker, a language switch that leaves no Chinese in `<main>` and survives a reload, and the v0.1.11 provider health work (single-source pass/failure, a measured upstream request count, bulk preview and progress, cancel, retry-failures-only, the eight-column table, reload recovery, double-click idempotence, a mixed five-kind scope, and the keyless policy).
+- Playwright browser suite: **42 cases passed locally** — first-run (including the setup token), login, add source, search lab, theme, settings, integrations, the "not implemented" catalogue marker, a language switch that leaves no Chinese in `<main>` and survives a reload, and provider health work (single-source pass/failure, measured upstream requests, bulk preview/progress, cancel, retry-failures-only, the eight-column table, reload recovery, double-click idempotence, a mixed five-kind scope, and the keyless policy).
 
 **Not verified (requires credentials or infrastructure)**
 
 - Brave: no subscription key; no live call to `api.search.brave.com`.
 - SearXNG: no self-hosted instance.
-- Docker: **locally** the Docker engine is unavailable (WSL is blocked by policy); **remotely** GitHub Actions builds the image and runs the 11-item container acceptance (24/24, see the Docker workflow under Actions). The two are not interchangeable.
+- Docker: **locally** the Docker engine is unavailable (WSL is blocked by policy); the **remote** GitHub Actions pass belongs to v0.1.11. v0.1.12 must be re-verified on its candidate commit; the two are not interchangeable.
 - AI / embedding / rerank: no vendor keys; request/response contracts tested against local mock servers only.
 - Multi-instance: Redis coordination is not implemented; quotas are guaranteed per process.
 
@@ -403,7 +417,7 @@ These limits are repeated in [docs/testing.md](./docs/testing.md) and the releas
 - **No persistent vector index** — embeddings re-score results within one request.
 - **No multi-tenancy** — one administrator, no team permissions.
 - **In-process rate limiting** — multiple replicas would each enforce their own limits.
-- **Health probing is per instance** — the budget ledger is a SQLite table, so two replicas keep two ledgers.
+- **Single-process probe coordination** — the per-source in-flight lock does not span instances, and each instance uses its own SQLite budget ledger. Connectivity request counts are local safety limits, not vendor billing units.
 
 ## Layout
 

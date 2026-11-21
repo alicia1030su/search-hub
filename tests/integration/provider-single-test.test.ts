@@ -38,6 +38,8 @@ interface TestBody {
   cause: string;
   errorCode: string | null;
   requests: number | null;
+  billingUnit?: "unknown";
+  spent?: boolean;
   kind: string;
   keyId: string | null;
   checkedAt: string;
@@ -216,6 +218,8 @@ describe("single provider test", () => {
     expect(body.cause).toBe("ok");
     expect(body.errorCode).toBeNull();
     expect(typeof body.requests).toBe("number");
+    expect(body.billingUnit).toBe("unknown");
+    expect(body.spent).toBe(true);
     expect(body.kind).toBe("search");
     expect(typeof body.keyId).toBe("string");
     expect(typeof body.checkedAt).toBe("string");
@@ -396,7 +400,7 @@ describe("single provider test", () => {
     expect(row).toEqual({ status: "healthy", cooldown_until: null });
   });
 
-  it("tests a key as a free connectivity probe", async () => {
+  it("tests a key as a connectivity probe with unknown vendor billing", async () => {
     const harness = track(await startBatchHarness());
     const { providerId, stub } = await setUpBrave(harness, { results: 5 });
     const keys = await harness.app.inject({

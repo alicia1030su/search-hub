@@ -42,7 +42,8 @@ export interface AppSettings {
    *
    * Scheduled probes are **off by default**: a background job that hits paid
    * search endpoints without an explicit decision is how an operator wakes up to
-   * a bill. Connectivity probes are free and may be enabled separately.
+   * a bill. Connectivity probes use a separate physical-hop safety budget and
+   * may be enabled separately; they are not assumed to be free.
    */
   health: {
     scheduledEnabled: boolean;
@@ -52,7 +53,11 @@ export interface AppSettings {
     /** Keyless searches have an independent bucket and do not require the paid switch. */
     anonymousMaxRequestsPerRun: number;
     anonymousMaxRequestsPerDay: number;
-    /** Paid search probes; without this, only free connectivity probes run. */
+    /** Physical HTTP hops allowed for one connectivity probe. */
+    connectMaxRequestsPerProbe: number;
+    /** Physical HTTP hops allowed for all connectivity probes per UTC day. */
+    connectMaxRequestsPerDay: number;
+    /** Paid search probes; without this, only connectivity probes run. */
     paidProbesEnabled: boolean;
     /** Legacy global field retained for compatibility; batch runs use task-level policy. */
     includeUnverified: boolean;
@@ -90,6 +95,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     maxRequestsPerDay: 20,
     anonymousMaxRequestsPerRun: 3,
     anonymousMaxRequestsPerDay: 20,
+    connectMaxRequestsPerProbe: 5,
+    connectMaxRequestsPerDay: 50,
     paidProbesEnabled: false,
     includeUnverified: false,
     concurrency: 1,
@@ -188,6 +195,8 @@ export class SettingsService {
     health.maxRequestsPerDay = Math.min(2000, Math.max(1, Math.round(health.maxRequestsPerDay)));
     health.anonymousMaxRequestsPerRun = Math.min(200, Math.max(1, Math.round(health.anonymousMaxRequestsPerRun)));
     health.anonymousMaxRequestsPerDay = Math.min(2000, Math.max(1, Math.round(health.anonymousMaxRequestsPerDay)));
+    health.connectMaxRequestsPerProbe = Math.min(20, Math.max(1, Math.round(health.connectMaxRequestsPerProbe)));
+    health.connectMaxRequestsPerDay = Math.min(2000, Math.max(1, Math.round(health.connectMaxRequestsPerDay)));
     health.concurrency = Math.min(4, Math.max(1, Math.round(health.concurrency)));
     // A run budget larger than the day budget can never be spent; keeping it
     // smaller makes "check all" stop at the daily ceiling instead of queuing.

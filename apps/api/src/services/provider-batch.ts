@@ -86,6 +86,8 @@ export interface BatchItem {
   resultCount: number | null;
   /** Physical upstream requests, or `null` when none was sent. */
   requests: number | null;
+  /** Vendor billing unit is unknown; HTTP hops are not billed-call counts. */
+  billingUnit?: "unknown";
   /** Health row id, when this item produced one. */
   checkId: string | null;
   reason: string | null;
@@ -200,6 +202,7 @@ export function itemForResult(result: HealthCheckResult, keyCount: number | null
     latencyMs: result.latencyMs,
     resultCount: result.resultCount,
     requests: result.requests,
+    billingUnit: result.billingUnit,
     checkId: result.id,
     reason: result.message,
     checkedAt: result.checkedAt,
@@ -297,7 +300,7 @@ export function countItems(items: BatchItem[]): BatchCounts {
  * to exist: a reader that saw `undefined` would have to render it, and every
  * call site would need its own "is this old?" branch.
  */
-function parseItems(json: string): BatchItem[] {
+function parseItems(json: string, legacy = false): BatchItem[] {
   try {
     const parsed = JSON.parse(json) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -311,21 +314,16 @@ function parseItems(json: string): BatchItem[] {
         providerType: item.providerType ?? null,
         keyCount: typeof item.keyCount === "number" ? item.keyCount : null,
         checkedAt: item.checkedAt ?? null,
+        reason: legacy && item.reason ? "[redacted: legacy diagnostic]" : item.reason,
       }));
   } catch {
     return [];
   }
 }
 
-function parseBudget(json: string): ReturnType<HealthService["budget"]> {
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    if (typeof parsed === "object" && parsed !== null) return parsed as ReturnType<HealthService["budget"]>;
-  } catch {
-    /* fall through */
-  }
-  // A malformed snapshot must not become a claim about today's budget; the
-  // caller renders "unknown" rather than a zero it would read as "exhausted".
+function unknownBudget(): ReturnType<HealthService["budget"]> {
+  // A malformed or pre-v0.1.12 snapshot must not become a claim about today's
+  // budget. Zero in the connect fields means "not recorded", not "exhausted".
   return {
     day: "",
     maxPerRun: 0,
@@ -335,12 +333,54 @@ function parseBudget(json: string): ReturnType<HealthService["budget"]> {
     anonymousSearchUsedToday: 0,
     anonymousMaxPerRun: 0,
     anonymousMaxPerDay: 0,
+    connectMaxPerProbe: 0,
+    connectMaxPerDay: 0,
     anonymousRemainingToday: 0,
+    connectRemainingToday: 0,
     remainingToday: 0,
     paidProbesEnabled: false,
     scheduledEnabled: false,
     intervalMinutes: 0,
   };
+}
+
+function parseBudget(json: string): ReturnType<HealthService["budget"]> {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (typeof parsed === "object" && parsed !== null) {
+      const fallback = unknownBudget();
+      const record = parsed as Record<string, unknown>;
+      type NumericBudgetKey = Exclude<
+        keyof typeof fallback,
+        "day" | "paidProbesEnabled" | "scheduledEnabled"
+      >;
+      const numberOr = (key: NumericBudgetKey, value: unknown): number =>
+        typeof value === "number" && Number.isFinite(value) ? value : fallback[key];
+      return {
+        ...fallback,
+        ...record,
+        day: typeof record.day === "string" ? record.day : fallback.day,
+        maxPerRun: numberOr("maxPerRun", record.maxPerRun),
+        maxPerDay: numberOr("maxPerDay", record.maxPerDay),
+        usedToday: numberOr("usedToday", record.usedToday),
+        connectUsedToday: numberOr("connectUsedToday", record.connectUsedToday),
+        anonymousSearchUsedToday: numberOr("anonymousSearchUsedToday", record.anonymousSearchUsedToday),
+        anonymousMaxPerRun: numberOr("anonymousMaxPerRun", record.anonymousMaxPerRun),
+        anonymousMaxPerDay: numberOr("anonymousMaxPerDay", record.anonymousMaxPerDay),
+        connectMaxPerProbe: numberOr("connectMaxPerProbe", record.connectMaxPerProbe),
+        connectMaxPerDay: numberOr("connectMaxPerDay", record.connectMaxPerDay),
+        anonymousRemainingToday: numberOr("anonymousRemainingToday", record.anonymousRemainingToday),
+        connectRemainingToday: numberOr("connectRemainingToday", record.connectRemainingToday),
+        remainingToday: numberOr("remainingToday", record.remainingToday),
+        paidProbesEnabled: typeof record.paidProbesEnabled === "boolean" ? record.paidProbesEnabled : false,
+        scheduledEnabled: typeof record.scheduledEnabled === "boolean" ? record.scheduledEnabled : false,
+        intervalMinutes: numberOr("intervalMinutes", record.intervalMinutes),
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  return unknownBudget();
 }
 
 function clampConcurrency(value: number): number {
@@ -650,6 +690,7 @@ export class ProviderBatchService {
         }),
         itemsJson: JSON.stringify(items),
         budgetJson: JSON.stringify(budget),
+        diagnosticsSanitized: true,
         createdBy: input.actor,
         createdAt,
         startedAt: createdAt,
@@ -693,7 +734,7 @@ export class ProviderBatchService {
     assertOwnedBy(row, actor);
 
     const status = STATUSES.includes(row.status as BatchStatus) ? (row.status as BatchStatus) : "interrupted";
-    const items = settledItems(parseItems(row.itemsJson), status);
+    const items = settledItems(parseItems(row.itemsJson, !row.diagnosticsSanitized), status);
     const counts = countItems(items);
 
     return {

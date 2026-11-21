@@ -316,7 +316,7 @@ export const en: Record<MessageKey, string> = {
   "providers.health.historyLatency": "Latency",
   "providers.health.historyResults": "Results",
   "providers.health.paidWarning":
-    "A live search probe calls the vendor's paid endpoint and consumes your API quota. Each probe is one billable request.",
+    "A live search probe calls the vendor endpoint and may consume API quota. One logical probe can issue multiple HTTP requests through pagination or redirects; the vendor billing unit is unknown.",
   "providers.health.policy.title": "Automatic probing and budget",
   "providers.health.policy.desc":
     "Off by default. Once enabled, probes run on the interval within the per-run and per-day budgets; the counters live in the database and survive a restart.",
@@ -326,6 +326,9 @@ export const en: Record<MessageKey, string> = {
   "providers.health.policy.perRun": "Live searches per run",
   "providers.health.policy.perDay": "Live searches per day (UTC boundary)",
   "providers.health.policy.concurrency": "Concurrent probes",
+  "providers.health.policy.connectPerProbe": "HTTP hops per connectivity probe",
+  "providers.health.policy.connectPerDay": "Daily connectivity HTTP hops",
+  "providers.health.connectWarning": "Connectivity probes still call the adapter's real request path and may cost vendor quota. Limits count physical HTTP hops, including pagination and redirects. The vendor billing unit is unknown.",
   "providers.health.policy.saved": "Probe policy saved",
   "providers.health.budget.day": "Budget day (UTC): {{day}}",
   "providers.health.budget.split": "Live search {{search}}/{{max}} · connectivity {{connect}}",
@@ -407,6 +410,7 @@ export const en: Record<MessageKey, string> = {
   "providers.batch.keysConfigured": "{{count}} configured",
   "providers.batch.action.detail": "Details",
   "providers.batch.requestsUnknownHint": "No request was sent, so there is no upstream request count",
+  "providers.batch.detail.billingUnknown": "vendor billing unit unknown",
   "providers.batch.retryFailed": "Retry failures only",
   "providers.batch.retryPending": "Retry pending only",
   "providers.batch.retryOne": "Retry",

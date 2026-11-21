@@ -32,8 +32,8 @@ A cookie-authenticated mutation without `x-csrf-token` returns `403`, never a si
 | 401 | `unauthorized` | Missing/revoked token or expired session |
 | 403 | `forbidden` | Missing CSRF header, wrong scope, blocked destination |
 | 404 | `not_found` | Unknown task/provider/key/model |
-| 409 | `conflict` / `already_initialized` | Duplicate name, or setup already completed |
-| 429 | `rate_limited` | Login or token rate limit |
+| 409 | `conflict` / `already_initialized` / `already_running` | Duplicate name, setup already completed, or another probe for the same provider is in flight |
+| 429 | `rate_limited` / `quota_exceeded` | Login/token rate limit, or a local paid/anonymous/connect probe budget is exhausted |
 | 501 | `unsupported` | Provider type has no adapter |
 | 503 | `no_available_key` / `queue_timeout` / `circuit_open` / `server_error` | All keys unusable, every slot busy beyond the queue budget, the provider circuit is open, or every provider failed |
 | 504 | `timeout` | Global deadline exceeded |
@@ -177,7 +177,7 @@ PATCH  /api/admin/groups/:id
 DELETE /api/admin/groups/:id
 ```
 
-Creating a provider whose `catalog.implementation` is `planned` or `unavailable` returns `501` with the catalog reason.
+Creating a provider whose `catalog.implementation` is `planned` or `unavailable` returns `501` with the catalog reason. Key create and Key update require `key` to contain at least 8 characters after trimming (maximum 8192); a shorter value is `400 validation_error`. Key summaries include redacted `lastErrorCode` / `lastErrorMessage`; a successful test clears them. No secret, ciphertext, IV or auth tag is returned.
 
 ### Models
 
@@ -220,7 +220,7 @@ Config export contains provider/model/group configuration plus **key labels only
 ```http
 GET  /api/admin/provider-health
 GET  /api/admin/provider-health/settings
-PUT  /api/admin/provider-health/settings   {scheduledEnabled?,intervalMinutes?,maxRequestsPerRun?,maxRequestsPerDay?,anonymousMaxRequestsPerRun?,anonymousMaxRequestsPerDay?,paidProbesEnabled?,concurrency?}
+PUT  /api/admin/provider-health/settings   {scheduledEnabled?,intervalMinutes?,maxRequestsPerRun?,maxRequestsPerDay?,anonymousMaxRequestsPerRun?,anonymousMaxRequestsPerDay?,connectMaxRequestsPerProbe?,connectMaxRequestsPerDay?,paidProbesEnabled?,concurrency?}
 GET  /api/admin/provider-health/history?providerId=&limit=
 POST /api/admin/provider-health/:id/probe  {kind:"connect"|"search"}
 POST /api/admin/provider-health/:id/auto-probe  {enabled:boolean}
@@ -245,23 +245,24 @@ POST /api/admin/provider-health/batch-test/:jobId/cancel
   "probeMode": "connect", "keyAvailable": 2, "keyTotal": 3
 }
 
-// budget block (UTC day boundary, both counters explicit)
+// budget block (UTC day boundary, all three counters explicit)
 {
-  "day": "2026-11-17", "maxPerRun": 3, "maxPerDay": 20,
+  "day": "2026-11-21", "maxPerRun": 3, "maxPerDay": 20,
   "usedToday": 4, "connectUsedToday": 11, "anonymousSearchUsedToday": 6,
   "anonymousMaxPerRun": 3, "anonymousMaxPerDay": 20, "anonymousRemainingToday": 14,
+  "connectMaxPerProbe": 5, "connectMaxPerDay": 50, "connectRemainingToday": 39,
   "remainingToday": 16,
   "paidProbesEnabled": false, "scheduledEnabled": true, "intervalMinutes": 360
 }
 ```
 
-- `kind:"search"` may cost money. When paid probing is disabled or the ledger is
-  full the API returns `400` (disabled) or `429` (budget) and records nothing.
-- A credentialed `generic-http` source does not support `kind:"connect"`; the
-  request is rejected before upstream work. An anonymous `generic-http` connect
-  probe executes a search and is charged to `search_anonymous`.
+- `kind:"search"` may cost money. When paid probing is disabled or the paid/anonymous ledger is full the API returns `400 validation_error` (paid disabled) or `429 quota_exceeded` (budget) and records no health conclusion.
+- `kind:"connect"` uses an independent physical-hop budget. `connectMaxRequestsPerProbe` (default 5, range 1–20) and `connectMaxRequestsPerDay` (default 50, range 1–2000) are reserved at the fetch boundary for every page and redirect. A local refusal is `429 quota_exceeded` with `details.localBudget=true`; it does not write a health/billing row, invalidate the Key or park the provider.
+- A credentialed `generic-http` source does not support `kind:"connect"`; the request is rejected before upstream work. An anonymous `generic-http` connect probe executes a search and is charged to `search_anonymous`.
+- All probe paths share one per-provider in-flight lock. A duplicate single/Key/scheduled probe returns `409 already_running`; a bulk runner records `code:"already_running"`, `state:"skipped"`, `checkId:null` and sends no second request.
 - `maxRequestsPerRun` / `maxRequestsPerDay` / `anonymousMaxRequestsPerRun` /
-  `anonymousMaxRequestsPerDay` / `intervalMinutes` / `concurrency` are bounded
+  `anonymousMaxRequestsPerDay` / `connectMaxRequestsPerProbe` /
+  `connectMaxRequestsPerDay` / `intervalMinutes` / `concurrency` are bounded
   server-side; a value outside the range is `400`, not clamped.
 - `usedToday` counts searches made **with a credential** (the paid bucket).
   `anonymousSearchUsedToday` counts real searches against keyless sources: they
@@ -272,9 +273,21 @@ POST /api/admin/provider-health/batch-test/:jobId/cancel
   written with `spent=false`; if any physical request was attempted, the slot is
   kept even when the probe was cancelled or failed.
 - `provider_health_billing` stores the exact bucket, reservation day,
-  classification, credential-use fact and `spent`. Restart seeding and the 0009
-  one-shot recompute count only `spent=true` rows; legacy anonymous history is
-  accepted only when its classification is exact.
+  classification, credential-use fact and `spent`. Probe results and
+  `detail_json` include `billingUnit:"unknown"`: HTTP hops are a local safety
+  metric, never a vendor billing claim. Restart seeding and the 0009 one-shot
+  recompute count only `spent=true` rows; legacy anonymous history is accepted
+  only when its classification is exact.
+- Migration `0010` archives the old `connect` ledger rows and recomputes usage
+  from spent billing rows joined to `detail_json.requests`. Missing/zero/invalid
+  counts conservatively count as one hop; `max(current,recomputed)` prevents a
+  decrease, and replaying the migration is idempotent.
+- Migration `0011` marks new diagnostics as sanitized. Pre-upgrade free-form
+  diagnostics remain unchanged in SQLite but read as
+  `[redacted: legacy diagnostic]`, including after Key rotation or deletion.
+- Every health GET surface is read-only. Batch preview, overview, settings and
+  MCP health do not insert health, billing, budget, job or audit rows. A missing
+  ledger row is computed from spent billing rows without materializing it.
 - `reset` writes a marker; probes older than it stop deciding the status. History
   is kept and credentials are untouched.
 
@@ -282,7 +295,7 @@ POST /api/admin/provider-health/batch-test/:jobId/cancel
 
 ```http
 POST /api/admin/providers/:id/test   {kind?,keyId?,trigger?}
-POST /api/admin/keys/:keyId/test     # always kind:"connect"
+POST /api/admin/keys/:keyId/test     # always kind:"connect"; still consumes connect hops
 ```
 
 ```jsonc
@@ -295,6 +308,8 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
   "cause": "ok",                 // classification (`empty_results`, `auth_invalid`, …)
   "errorCode": null,             // provider-error vocabulary, or null
   "requests": 2,                 // physical upstream requests; null = none sent
+  "billingUnit": "unknown",      // hops are not a vendor billing unit
+  "spent": true,                 // paid-search budget slot consumed; connect hops use their own bucket
   "kind": "search",
   "keyId": "key_…",              // identifier only, never the secret
   "checkedAt": "2026-11-19T…Z"
@@ -305,7 +320,9 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
   `empty_results`, which is "answered, but nothing came back".
 - `:id/test` defaults to `kind:"search"` and therefore obeys the paid-probe
   switch: paid probing disabled → `400 validation_error`, budget exhausted →
-  `429 quota_exceeded`. `/keys/:keyId/test` stays `kind:"connect"` (free).
+  `429 quota_exceeded`. `/keys/:keyId/test` stays `kind:"connect"`: it does not
+  consume a paid-search slot, but every physical hop consumes the connect budget
+  and the vendor billing unit remains unknown.
 - `requests` is counted at the fetch boundary (every physical request, redirects
   and pages included). `null` means no request was sent; it is never derived from
   the planned page count.
@@ -314,8 +331,13 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
 - No key material appears in the response: `keyId` is an identifier and `sample`
   holds only title/url. Optional key pools on keyless providers are not used
   automatically; only `providerRequiresKey` or an explicit `keyId` takes a lease.
+- Error messages and `details.url` redact credential-bearing query parameters,
+  including percent-encoded names/values and custom generic-http query
+  injections. Non-sensitive parameters (`q`, `engine`, `page`, …) remain useful
+  for diagnosis. The same rule covers JSON/HTML error bodies, SQLite health
+  history, Key `last_error_message`, audit detail and MCP health output.
 
-### Bulk provider test (v0.1.10, updated v0.1.11)
+### Bulk provider test (v0.1.10, updated v0.1.12)
 
 ```jsonc
 // GET /api/admin/provider-health/batch-test/preview?kind=search&includeKeyless=true
@@ -336,7 +358,9 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
   counts potential credential-required searches; `estimatedAnonymousProbes`
   counts eligible keyless probes. `paidRisk` is true only when paid probing is on
   and at least one paid probe is potential.
-- The preview is a **read**: it writes no health rows and no job rows.
+- The preview is a **read**: it writes no health, billing, budget, job, settings
+  or audit rows. If today's ledger row is absent, usage is derived from spent
+  billing rows in memory.
 
 ```jsonc
 // POST /api/admin/provider-health/batch-test  → 201
@@ -346,10 +370,17 @@ POST /api/admin/keys/:keyId/test     # always kind:"connect"
 - `kind` defaults to `search`; `providerIds` omitted means **every configured
   source** (the same scope the preview described), `[]` is `400` ("nothing to
   test"), `includeKeyless` defaults to `false`, and `concurrency` is `1..4`.
-- A paid-only scope with paid probing disabled or its budget exhausted is refused
-  before insertion with `409 validation_error`. A mixed scope skips paid sources
-  (`SKIPPED_PAID_DISABLED` / `SKIPPED_BUDGET`) and continues anonymous sources; an
-  anonymous-only scope is always allowed.
+- A paid-only search scope with paid probing disabled or its budget exhausted is
+  refused before insertion with `409 validation_error`. A mixed scope skips paid
+  sources (`SKIPPED_PAID_DISABLED` / `SKIPPED_BUDGET`) and continues anonymous
+  sources; an anonymous-only scope is always allowed.
+- A connect scope uses `connectMaxRequestsPerProbe/Day`. A local per-probe or
+  daily refusal is caught by the runner as `state:"skipped"`,
+  `code:"SKIPPED_BUDGET"`, `checkId:null`; it is not a failed provider and does
+  not abort other eligible items.
+- Every runner item acquires the same `probeWithLock` gate as a single test. If
+  another path already owns that provider, the item is skipped with
+  `code:"already_running"` and no second upstream request is sent.
 
 ```jsonc
 // GET /api/admin/provider-health/batch-test/:jobId
@@ -601,3 +632,14 @@ and `movements` (document-level rank changes; `entered` / `exited` rows carry
 | body over the limit | 413 | `bad_request` |
 | result write failed, volume full | **507** | `internal_error` (+ `details.runId`) |
 | result write failed, other cause | 500 | `internal_error` (+ `details.runId`) |
+
+### Contracts added by v0.1.12
+
+| Case | Status | Code / result |
+|---|---|---|
+| another probe owns the same provider | 409 | `already_running` |
+| connect per-probe or UTC-day hop cap reached locally | 429 | `quota_exceeded` (+ `details.localBudget`) |
+| Key create/update shorter than 8 trimmed characters | 400 | `validation_error` |
+| bulk item loses the shared in-flight lock | item result | `state:"skipped"`, `code:"already_running"`, `checkId:null` |
+| bulk connect item hits a local hop cap | item result | `state:"skipped"`, `code:"SKIPPED_BUDGET"`, `checkId:null` |
+| health preview/overview/settings/MCP read | 200 | no database writes |

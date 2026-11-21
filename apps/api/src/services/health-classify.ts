@@ -3,9 +3,12 @@
  *
  * The design rules this module encodes:
  *
- * 1. **A free probe and a paid search are different facts.** `connect` probes
- *    (DNS/TLS/auth) cost nothing and are allowed by default; `search` probes hit
- *    the vendor's paid endpoint and are opt-in with an explicit budget.
+ * 1. **A connectivity probe and a paid search are different facts.** `connect`
+ *    probes are allowed by default and never consume the paid-search budget,
+ *    but each physical HTTP hop consumes a dedicated safety budget because a
+ *    redirect or pagination can issue multiple upstream requests. `search`
+ *    probes hit the vendor's search endpoint and are opt-in with an explicit
+ *    paid budget.
  * 2. **Missing credentials are `unverified`, never `healthy`.** Claiming a source
  *    works because its URL resolves would be a lie the UI then amplifies.
  * 3. **Errors are classified by cause, not by HTTP status alone.** 401 (bad key),

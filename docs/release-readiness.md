@@ -1,5 +1,65 @@
 # 发布就绪报告
 
+## v0.1.12 Stable 候选（2026-11-21）
+
+> **口径**：本节是候选就绪记录，不是发布完成报告。Vitest 总数、Playwright 结果、远端 CI、
+> 三平台实机验收、升级矩阵与正式 Release 均须由发布负责人在最终提交上核验；未观察到结果
+> 的项目明确写为待验证，不沿用 v0.1.11 的通过记录。
+
+| 项 | 候选状态 |
+|---|---|
+| 目标版本 | **v0.1.12（Stable 候选）**，前序 Stable 为 v0.1.11 |
+| 自动化测试 | **PASS（本地）**：1241 项 / 96 文件，`vitest run --maxWorkers=2` exit 0 |
+| 浏览器 E2E | **PASS（本地）**：Playwright 42/42，最终构建上实跑确认 |
+| 文档 / Provider 矩阵门禁 | **PASS（本地）**：`pnpm check:docs` / `pnpm check:matrix` 均 exit 0 |
+| 类型检查 | **PASS（本地）**：`pnpm typecheck` exit 0（服务端 + Web） |
+| 迁移 | 0001–0011；0010 归档并保守重算 `connect` 物理跳账本；0011 增加诊断 sanitized 标记，旧行默认 false、原文不改，读取时 withheld |
+| 真实 v0.1.11 → current 升级 | 已在 `upgrade.yml` 配置 Windows/Linux、端口 8929；**远端结果未验证，不得记 PASS** |
+| 远端 CI | **PENDING（未验证）**：候选提交的正确 SHA 与全部 required checks 待观察 |
+| 三平台发布包 / Docker / systemd | **PENDING（v0.1.12 未验证）**：v0.1.11 的历史通过记录不作为本轮证据 |
+| 正式 Release / GHCR / Provenance | **PENDING（未验证）**：未观察到本候选的 tag、Release 或镜像发布证据 |
+| 真实厂商联调 | 仍为 Hacker News、Crossref、OpenAlex、PubMed 4 个源；其余未联调 |
+| 多实例 | **NOT_IMPLEMENTED**：同源探测锁与 SQLite 预算均为单进程 |
+
+### v0.1.12 候选修复范围
+
+1. 修复 URL query API Key 在 JSON/HTML/编码错误、错误 `details.url`、SQLite 健康历史、
+   Key `last_error_message`、审计详情与 MCP 健康输出中的泄漏；非敏感查询参数保留用于排障。
+2. 单源、批量、Key 与定时探测统一经过 `HealthService.probeWithLock`；重复探测为
+   `409 already_running`，批量条目记 skipped，不重复发请求。
+3. 连接探测按物理 HTTP 跳预留预算，默认单次 5 跳 / 每日 50 跳；本地超限为
+   `429 quota_exceeded`，不写健康结论、不失效 Key、不停用源；批量记 `SKIPPED_BUDGET`。
+4. 探测结果与健康详情明确 `billingUnit:"unknown"`，不把请求数冒充厂商账单。
+5. 批量预检、健康概览、设置 GET 与 MCP 健康读取只读；缺失账本只在内存从
+   `spent=true` 计费行计算，不物化预算、不写审计。
+6. Key 创建/更新最短 8 字符；脱敏的 `lastErrorCode` / `lastErrorMessage` 持久化，
+   重测成功后清除。迁移 0011 让旧诊断在 Key 轮换/删除后仍安全 withheld。
+
+### 候选验证记录
+
+| 命令 / 检查 | 执行环境 | 结果 |
+|---|---|---|
+| `pnpm check:docs` | 本地候选工作树 | **PASS**，exit 0；catalog 58 / builtin 50 / live_tested 4 |
+| `pnpm check:matrix` | 本地候选工作树 | **PASS**，exit 0；生成矩阵与 catalog 一致 |
+| `pnpm typecheck` | 本地候选工作树 | **PASS**，exit 0；`tsconfig.node.json` 与 Web tsconfig 均通过 |
+| `pnpm test` | 本地候选工作树 | **PASS**：1241/96，exit 0 |
+| `pnpm test:e2e` | 本地候选构建 | **PASS**：42/42，exit 0 |
+| `pnpm build` / typecheck / lint | 本地候选工作树 | **PASS**：构建成功；类型 0 error；lint 0 warning / 0 error |
+| `pnpm audit --audit-level high` | 本地候选工作树 | **PASS**：无已知漏洞 |
+| `node scripts/secret-scan.mjs` | 本地候选工作树 | **PASS**：434 个文本文件 / 71 refs，0 violation；未修改白名单 |
+| launcher / updater / fault injection | 本地 Windows | **PASS**：生命周期、安装回滚、下载/校验/架构/迁移回滚故障注入全部通过 |
+| Upgrade / Docker / systemd / Release | GitHub Actions | **PENDING（未验证）** |
+
+### 已知限制与发布阻断口径
+
+- 探测锁、Key 额度与预算仍不跨进程；多实例部署没有协调者。
+- 连接 HTTP 跳数是本地安全预算，不是厂商计费单位；`billingUnit` 保持 `unknown`。
+- 只有 4 个搜索源有真实网络证据，质量评测仍只有合成基准。
+- **在此节所有“待验证”项得到正确 SHA 的真实结果之前，不得把 v0.1.12 标记为已发布或
+  全部门禁 PASS。** 本地文档检查通过也不能替代测试、打包实机验收与资产校验。
+
+---
+
 ## v0.1.11 Stable（2026-11-21）
 
 | 项 | 结果 |

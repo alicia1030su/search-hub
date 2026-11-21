@@ -222,7 +222,11 @@ export interface LogQuery {
   providerId?: string;
 }
 
-export function recentEvents(db: SearchHubDb, query: LogQuery): Array<Record<string, unknown>> {
+export function recentEvents(
+  db: SearchHubDb,
+  query: LogQuery,
+  redactMessage?: (providerId: string, message: string) => string,
+): Array<Record<string, unknown>> {
   const rows = db
     .select()
     .from(searchEvents)
@@ -241,7 +245,11 @@ export function recentEvents(db: SearchHubDb, query: LogQuery): Array<Record<str
       latencyMs: row.latencyMs,
       resultCount: row.resultCount,
       errorCode: row.errorCode,
-      errorMessage: row.errorMessage,
+      errorMessage: row.errorMessage === null
+        ? null
+        : row.diagnosticsSanitized
+          ? redactMessage?.(row.providerId, row.errorMessage) ?? row.errorMessage
+          : "[redacted: legacy diagnostic]",
       createdAt: row.createdAt,
     }));
 }

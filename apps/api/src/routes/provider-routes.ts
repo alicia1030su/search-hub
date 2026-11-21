@@ -586,9 +586,9 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
       const { keyId } = request.params as { keyId: string };
       const found = ctx.providers.findKeyById(keyId);
       if (!found) throw new SearchHubError("not_found", "API key not found");
-      // `kind: "connect"`: this button asks "is this credential accepted", which
-      // is a free question. Probing the paid search path here would bill the
-      // operator for a key-status check.
+      // `kind: "connect"` avoids the paid-search bucket, but still sends a real
+      // request and consumes the physical-hop safety budget. Vendor billing for
+      // that request is unknown; never describe this check as free.
       const result = await testProvider(ctx, found.providerId, { keyId, kind: "connect", manual: true });
       audit(ctx, actorLabel(actor), "key.test", keyId, { ok: result.ok }, request.ip);
       return result;
@@ -703,6 +703,10 @@ async function testProvider(
   cause: string;
   errorCode: string | null;
   requests: number | null;
+  /** Vendor billing unit is unknown; HTTP hops are not billed-call counts. */
+  billingUnit?: "unknown";
+  /** Whether this probe consumed a paid budget slot. */
+  spent?: boolean;
   kind: string;
   keyId: string | null;
   checkedAt: string;
@@ -726,6 +730,8 @@ async function testProvider(
     cause: result.cause,
     errorCode: result.errorCode,
     requests: result.requests,
+    billingUnit: result.billingUnit,
+    ...(result.spent === undefined ? {} : { spent: result.spent }),
     kind: result.kind,
     keyId: result.keyId,
     checkedAt: result.checkedAt,

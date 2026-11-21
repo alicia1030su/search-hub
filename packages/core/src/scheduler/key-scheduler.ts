@@ -184,12 +184,22 @@ export class KeyScheduler {
 
   /** Account-level budget state, for the admin UI. Null when no group is set. */
   accountSnapshot(now: number = Date.now()) {
+    return this.accountSnapshotWith(this.registry.snapshot.bind(this.registry), now);
+  }
+
+  /** Read-only account state for GET endpoints; no UTC/park mutation. */
+  accountSnapshotReadOnly(now: number = Date.now()) {
+    return this.accountSnapshotWith(this.registry.snapshotReadOnly.bind(this.registry), now);
+  }
+
+  private accountSnapshotWith(
+    read: (group: string, now: number) => ReturnType<AccountQuotaRegistry["snapshot"]>,
+    now: number,
+  ) {
     if (!this.accountGroup) return null;
-    const snapshot = this.registry.snapshot(this.accountGroup, now);
+    const snapshot = read(this.accountGroup, now);
     if (snapshot) return snapshot;
-    // The group exists in configuration but no request has used it yet. Return
-    // a zeroed snapshot so the UI can show the configured limits instead of
-    // pretending the group is not configured.
+    const parkedUntil = this.registry.parkedUntilReadOnly(this.accountGroup, now);
     return {
       group: this.accountGroup,
       rpmUsed: 0,
@@ -197,9 +207,7 @@ export class KeyScheduler {
       quotaUsedToday: 0,
       dailyQuota: this.accountLimits?.dailyQuota ?? null,
       lastDeniedAt: null,
-      parkedUntil: this.registry.parkedUntil(this.accountGroup, now) === null
-        ? null
-        : new Date(this.registry.parkedUntil(this.accountGroup, now)!).toISOString(),
+      parkedUntil: parkedUntil === null ? null : new Date(parkedUntil).toISOString(),
     };
   }
 
@@ -310,8 +318,8 @@ export class KeyScheduler {
   }
 
   /**
-   * 显式 Key 租约。manual 只绕过状态/冷却/Key 数值配额，仍校验启用、可解密、
-   * 并发上限与账户组数值配额；其他调用方使用正常自动选择规则。
+   * 显式 Key 租约。manual 只绕过状态/冷却，仍校验启用、可解密、并发上限、
+   * Key RPM/日配额与账户组数值配额；其他调用方使用正常自动选择规则。
    */
   async acquireForKeyWithReason(
     keyId: string,
@@ -434,9 +442,13 @@ export class KeyScheduler {
       }
       this.refreshKey(key, now);
       if (key.cooldownUntilMs !== null) return false;
-      if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return false;
-      if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return false;
     }
+    // Manual recovery can bypass a terminal verdict, never a numerical budget.
+    // Keep this in sync with tryAcquireKey so a refused lease is reported as
+    // no_key rather than queue_timeout.
+    this.refreshKey(key, now);
+    if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return false;
+    if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return false;
     return true;
   }
 
@@ -478,9 +490,11 @@ export class KeyScheduler {
         return null;
       }
       if (key.cooldownUntilMs !== null) return null;
-      if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return null;
-      if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return null;
     }
+    // Manual recovery may bypass terminal status/cooldown, never RPM or daily
+    // quota: otherwise repeated button clicks can exceed the operator's limit.
+    if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return null;
+    if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return null;
     const reservation = this.reserveAccount(now, options.manual ?? false);
     if (reservation === null) return null;
     return this.reserveKey(key, now, reservation ?? null);
@@ -690,6 +704,12 @@ export class KeyScheduler {
     return until === null ? null : new Date(until).toISOString();
   }
 
+  accountParkedUntilReadOnly(now: number = Date.now()): string | null {
+    if (!this.accountGroup) return null;
+    const until = this.registry.parkedUntilReadOnly(this.accountGroup, now);
+    return until === null ? null : new Date(until).toISOString();
+  }
+
   /** Returns and clears the dirty flags; used by the API persistence flusher. */
   drainDirty(): KeyRuntimeSnapshot[] {
     const dirty = this.keys.filter((key) => key.dirty);
@@ -697,11 +717,33 @@ export class KeyScheduler {
     return dirty.map((key) => this.snapshotKey(key));
   }
 
-  /** 非消耗式可用性判断，供管理端汇总；不会预留或修改配额。 */
+  /** 非消耗式可用性判断，供写路径使用；不会预留配额。 */
   keyAvailable(keyId: string, now: number = Date.now()): boolean {
     const key = this.keys.find((item) => item.id === keyId);
     if (!key || !key.enabled || !key.decryptable) return false;
     this.refreshKey(key, now);
+    return this.isAvailable(key, this.accountSnapshot(now));
+  }
+
+  /**
+   * Read-only availability for admin GET endpoints.
+   *
+   * Refreshing a live key can clear an expired cooldown or roll a UTC quota day,
+   * which marks it dirty. A GET must not create work for the persistence flusher,
+   * so evaluate a copy instead.
+   */
+  keyAvailableReadOnly(keyId: string, now: number = Date.now()): boolean {
+    const key = this.keys.find((item) => item.id === keyId);
+    if (!key || !key.enabled || !key.decryptable) return false;
+    const view = { ...key, window: [...key.window] };
+    this.refreshKey(view, now);
+    return this.isAvailable(view, this.accountSnapshotReadOnly(now));
+  }
+
+  private isAvailable(
+    key: RuntimeKey,
+    account: ReturnType<KeyScheduler["accountSnapshot"]>,
+  ): boolean {
     if (
       key.status === "invalid" ||
       key.status === "disabled" ||
@@ -714,7 +756,6 @@ export class KeyScheduler {
     }
     if (this.rpmLimit > 0 && key.window.length >= this.rpmLimit) return false;
     if (this.dailyQuota !== null && key.quotaUsedToday >= this.dailyQuota) return false;
-    const account = this.accountSnapshot(now);
     if (!account) return true;
     if (account.parkedUntil !== null && account.parkedUntil !== undefined) return false;
     if (account.rpmLimit > 0 && account.rpmUsed >= account.rpmLimit) return false;
@@ -729,9 +770,25 @@ export class KeyScheduler {
     return account !== null && account.dailyQuota !== null && account.quotaUsedToday >= account.dailyQuota;
   }
 
+  accountQuotaExhaustedReadOnly(now: number = Date.now()): boolean {
+    if (!this.accountGroup) return false;
+    if (this.registry.parkedUntilReadOnly(this.accountGroup, now) !== null) return true;
+    const account = this.accountSnapshotReadOnly(now);
+    return account !== null && account.dailyQuota !== null && account.quotaUsedToday >= account.dailyQuota;
+  }
+
   snapshot(now: number = Date.now()): KeyRuntimeSnapshot[] {
     for (const key of this.keys) this.refreshKey(key, now);
     return this.keys.map((key) => this.snapshotKey(key));
+  }
+
+  /** Snapshot for read-only endpoints: time-based refresh never marks live keys dirty. */
+  snapshotReadOnly(now: number = Date.now()): KeyRuntimeSnapshot[] {
+    return this.keys.map((key) => {
+      const view = { ...key, window: [...key.window] };
+      this.refreshKey(view, now);
+      return this.snapshotKey(view);
+    });
   }
 
   private toRuntimeKey(seed: SchedulerKeySeed): RuntimeKey {

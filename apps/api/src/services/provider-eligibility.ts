@@ -296,6 +296,14 @@ export function decideEligibility(
         return { code: "SKIPPED_BUDGET", reason: "budget_exhausted: per-run paid-probe limit is zero" };
       }
     } else {
+      if (options.kind === "connect" && provider.type === "generic-http") {
+        if (budget.connectMaxPerProbe < 1 || budget.connectRemainingToday <= 0) {
+          return {
+            code: "SKIPPED_BUDGET",
+            reason: "budget_exhausted:connect_http_limit",
+          };
+        }
+      }
       if (budget.anonymousRemainingToday <= 0) {
         return {
           code: "SKIPPED_BUDGET",

@@ -117,12 +117,17 @@ export function ProviderBatchTestDetail({
         <DataRow
           label={t("providers.batch.detail.requests")}
           value={
-            <span
-              data-testid="batch-detail-requests"
-              title={requests === null ? t("providers.batch.requestsUnknownHint") : undefined}
-            >
-              {requestsLabel(requests)}
-            </span>
+            <>
+              <span
+                data-testid="batch-detail-requests"
+                title={requests === null ? t("providers.batch.requestsUnknownHint") : undefined}
+              >
+                {requestsLabel(requests)}
+              </span>{" "}
+              <span className="text-muted-foreground" data-testid="batch-detail-billing-unit">
+                ({t("providers.batch.detail.billingUnknown")})
+              </span>
+            </>
           }
         />
         <DataRow label={t("providers.batch.detail.code")} value={codeLabel(item.code)} />

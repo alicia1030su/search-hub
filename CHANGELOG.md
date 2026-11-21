@@ -4,6 +4,87 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.12 (2026-11-21) — Stable
+
+This release closes credential-leak and probe-accounting gaps. URL query
+credentials are redacted across error responses and durable diagnostics, every
+provider probe path shares one in-flight lock, and connectivity probes now
+consume a physical-HTTP-hop budget instead of one slot per logical probe.
+
+Remote CI, packaged-binary acceptance and publication evidence are recorded
+separately in [`docs/release-readiness.md`](docs/release-readiness.md); this
+entry does not infer those results from local checks.
+
+### Added
+
+- **Durable connectivity-hop budgets.** `connectMaxRequestsPerProbe` defaults
+  to 5 and `connectMaxRequestsPerDay` to 50 (UTC day). Every physical request,
+  including pagination and redirect hops, reserves one `connect` ledger unit
+  before it is sent.
+- **Explicit billing uncertainty.** Probe results and health detail records
+  carry `billingUnit: "unknown"`. An HTTP request count is never presented as a
+  vendor-billed call or a claim that connectivity is free.
+- **Persistent Key failure diagnostics.** Key summaries expose the redacted
+  `lastErrorCode` / `lastErrorMessage` alongside status and counters; successful
+  retries clear the error.
+- **Migration `0010`.** Old `connect` counters are copied intact to
+  `health_probe_budget_connect_legacy`, then conservatively recomputed from
+  spent billing rows and recorded physical request counts.
+- **Migration `0011` and legacy diagnostic withholding.** New health, Key,
+  search-task, search-event and batch diagnostics are marked as sanitized.
+  Pre-upgrade free-form diagnostics remain byte-for-byte intact for audit but
+  read as `[redacted: legacy diagnostic]`, so a rotated or deleted credential
+  cannot leak through old error text.
+
+### Changed
+
+- **One in-flight lock for every probe path.** Single-source tests, Key tests,
+  scheduled passes, check-all and bulk runners all use `probeWithLock`. A
+  duplicate receives `409 already_running`; a bulk item records the same code
+  as a skip, not a provider failure.
+- **Connectivity budget refusal is local, not upstream evidence.** Exceeding a
+  per-probe or daily hop limit returns `429 quota_exceeded`, writes no health
+  conclusion, does not invalidate the Key and does not park the source. A bulk
+  run records `SKIPPED_BUDGET` and continues where possible.
+- **All health previews are read-only.** Batch preview, overview, settings and
+  MCP health reads do not create budget, billing, health, job or audit rows. If
+  a ledger row is absent, the snapshot computes usage from spent billing rows
+  without materializing it.
+- **Key input hardening.** Key create and Key update require at least 8
+  characters after trimming, preventing accidental unusable credentials.
+
+### Fixed
+
+- **URL query API-key leakage.** Credential-bearing query values are now
+  redacted in JSON and HTML upstream errors, URL-encoded and double-encoded
+  echoes, custom generic-http query parameters, diagnostic URLs and error
+  `details.url`. The same redaction covers SQLite health history, Key
+  `last_error_message`, audit detail and MCP health output while preserving
+  non-sensitive parameters such as `q`, `engine` and `page`.
+- **Connect probes no longer hide physical traffic.** A logical connect probe
+  that paginates or redirects is metered at the fetch boundary, and the next
+  hop is refused before it leaves the process when the local cap is reached.
+
+### Upgrade notes
+
+- Migration `0010` treats missing, zero or invalid historical request counts as
+  one conservative hop, uses `max(current, recomputed)` so counters never
+  decrease, and is idempotent when replayed. Existing health and billing rows
+  are preserved.
+- Migration `0011` only adds sanitized markers with a default of false. It does
+  not rewrite or delete existing diagnostics; readers withhold unmarked legacy
+  text instead of trying to recover a credential that may no longer exist.
+- The previous stable upgrade path is covered by the CI matrix from published
+  `v0.1.11` packages to the current candidate on Windows and Linux, port 8929.
+  This is configured coverage, not a claim that remote CI has passed.
+
+### Known limitations
+
+- Probe locks and budgets remain single-process; multiple replicas do not share
+  either the in-flight set or the SQLite ledger.
+- `billingUnit` remains `unknown` because no vendor pricing rule can be derived
+  reliably from an HTTP hop count.
+
 ## v0.1.11 (2026-11-21)
 
 Provider health and bulk testing now use one credential and budget model. Keyless

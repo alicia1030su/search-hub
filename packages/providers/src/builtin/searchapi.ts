@@ -1,5 +1,6 @@
 import {
   ProviderError,
+  redactSecrets,
   type ProviderContext,
   type ProviderSearchInput,
   type ProviderSearchOutput,
@@ -66,7 +67,7 @@ export const searchapiAdapter: SearchProviderAdapter = {
       const response = await callJson(ctx, { url: url.toString(), method: "GET" });
       const payload = response.data as Record<string, unknown>;
       if (typeof payload["error"] === "string") {
-        throw new ProviderError(ctx.config.id, "searchapi", "bad_request", payload["error"]);
+        throw new ProviderError(ctx.config.id, "searchapi", "bad_request", redactSecrets(payload["error"], [ctx.apiKey]));
       }
       const organic = Array.isArray(payload["organic_results"])
         ? (payload["organic_results"] as OrganicResult[])

@@ -292,7 +292,28 @@ function PolicyCard({ onSaved }: { onSaved: () => void }) {
               onChange={(event) => patch({ concurrency: Number(event.target.value) })}
             />
           </Field>
+          <Field label={t("providers.health.policy.connectPerProbe")} htmlFor="health-connect-per-probe">
+            <Input
+              id="health-connect-per-probe"
+              type="number"
+              min={1}
+              max={20}
+              value={String(current.connectMaxRequestsPerProbe)}
+              onChange={(event) => patch({ connectMaxRequestsPerProbe: Number(event.target.value) })}
+            />
+          </Field>
+          <Field label={t("providers.health.policy.connectPerDay")} htmlFor="health-connect-per-day">
+            <Input
+              id="health-connect-per-day"
+              type="number"
+              min={1}
+              max={2000}
+              value={String(current.connectMaxRequestsPerDay)}
+              onChange={(event) => patch({ connectMaxRequestsPerDay: Number(event.target.value) })}
+            />
+          </Field>
         </div>
+        <p className="text-[11px] text-muted-foreground">{t("providers.health.connectWarning")}</p>
         <div className="flex justify-end">
           <Button size="sm" disabled={!draft || saving} loading={saving} onClick={() => void save()}>
             {t("common.save")}

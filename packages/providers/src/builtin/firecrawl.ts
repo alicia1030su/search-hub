@@ -1,5 +1,6 @@
 import {
   ProviderError,
+  redactSecrets,
   type ProviderContext,
   type ProviderSearchInput,
   type ProviderSearchOutput,
@@ -81,7 +82,7 @@ export const firecrawlAdapter: SearchProviderAdapter = {
         ctx.config.id,
         "firecrawl",
         "bad_request",
-        String(payload["error"] ?? "Firecrawl reported success=false"),
+        redactSecrets(String(payload["error"] ?? "Firecrawl reported success=false"), [ctx.apiKey]),
       );
     }
     const data = (payload["data"] ?? {}) as Record<string, unknown>;
