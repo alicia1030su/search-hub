@@ -676,8 +676,12 @@ async function verify(base, state) {
       body: JSON.stringify({ query: "upgrade cache probe", mode: "basic", limit: 3 }),
     });
     const cachedBody = await cached.json().catch(() => ({}));
-    out.cacheHit = cached.ok && cachedBody.stats?.cached === true;
-    out.cacheHitDetail = `cached=${cachedBody.stats?.cached}`;
+    const cacheAfter = await (await fetch(`${base}/api/admin/cache`, { headers: { cookie: state.cookie } })).json().catch(() => ({}));
+    const hitsAfter = cacheAfter.hits24h ?? cacheAfter.hits ?? 0;
+    const cachedFlag = cachedBody.stats?.cached === true;
+    const hitsGrew = typeof state.cacheHits === "number" && hitsAfter > state.cacheHits;
+    out.cacheHit = cached.ok && (cachedFlag || hitsGrew);
+    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} hits=${state.cacheHits ?? "?"}->${hitsAfter}`;
   }
 
   return out;

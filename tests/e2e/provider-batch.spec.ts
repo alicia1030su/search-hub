@@ -579,11 +579,12 @@ test.describe("搜索源批量体检", () => {
     await expect(page.getByTestId("providers-resume-banner")).toHaveCount(0);
     // No error alert either: a missing job is not something the operator did wrong.
     await expect(page.getByRole("alert")).toHaveCount(0);
-    // …and the pointer is gone, so the next reload does not ask again.
-    const stored = await page.evaluate(() =>
+    // …and the pointer is gone, so the next reload does not ask again. The
+    // banner is absent before the async 404 resolves, so wait for the actual
+    // storage mutation rather than racing it.
+    await expect.poll(() => page.evaluate(() =>
       (globalThis as unknown as { localStorage: Storage }).localStorage.getItem("sh-provider-batch-job"),
-    );
-    expect(stored).toBeNull();
+    )).toBeNull();
   });
 
   /**
