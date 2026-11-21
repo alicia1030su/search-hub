@@ -458,13 +458,43 @@ CACHE_ENTRIES_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/cach
 
 # Health state and the probe budget must survive too: both are rows in the same
 # database, so a container that loses them has lost more than a cache.
-curl -s -b "$COOKIES" -o "$WORK/probe-before.json" --max-time 30 \
+#
+# The deterministic mock adapter deliberately issues no physical request. Since
+# v0.1.11 refunds a provably unused reservation, it cannot prove budget
+# persistence. Use a dedicated keyless Hacker News provider for a real HTTP
+# probe, and disable the background scheduler so no unrelated tick can move the
+# baseline between the two reads.
+curl -s -b "$COOKIES" -o "$WORK/health-policy.json" --max-time 15 \
+  -X PUT -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -d '{"scheduledEnabled":false}' "$BASE/api/admin/provider-health/settings" || true
+health_probe_create=$(curl -s -b "$COOKIES" -o "$BODY" -w '%{http_code}' --max-time 20 \
   -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
-  -d '{"kind":"connect"}' "$BASE/api/admin/provider-health/$MOCK_ID/probe" || true
+  -d '{"name":"hn-health-probe","type":"hackernews","enabled":true,"timeoutMs":15000,"resultsPerPage":1}' \
+  "$BASE/api/admin/providers")
+HEALTH_PROBE_ID=$(jget "$BODY" provider.id)
+PROBE_HTTP=""
+PROBE_STATUS=""
+PROBE_CAUSE=""
+PROBE_REQUESTS=0
+PROBE_CHECKED_AT=""
+if [ "$health_probe_create" = "200" ] && [ -n "$HEALTH_PROBE_ID" ]; then
+  for attempt in 1 2 3; do
+    PROBE_HTTP=$(curl -s -b "$COOKIES" -o "$WORK/probe-before.json" -w '%{http_code}' --max-time 30 \
+      -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+      -d '{"kind":"connect"}' "$BASE/api/admin/provider-health/$HEALTH_PROBE_ID/probe" || true)
+    PROBE_STATUS=$(jget "$WORK/probe-before.json" result.status)
+    PROBE_CAUSE=$(jget "$WORK/probe-before.json" result.cause)
+    PROBE_REQUESTS=$(jget "$WORK/probe-before.json" result.requests)
+    PROBE_CHECKED_AT=$(jget "$WORK/probe-before.json" result.checkedAt)
+    PROBE_REQUESTS=${PROBE_REQUESTS:-0}
+    if [ "$PROBE_HTTP" = "200" ] && [ "${PROBE_REQUESTS:-0}" -ge 1 ] 2>/dev/null; then break; fi
+    [ "$attempt" -lt 3 ] && sleep 3
+  done
+fi
 HEALTH_BEFORE=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/provider-health" > "$WORK/health1.json"; \
   jget "$WORK/health1.json" budget.connectUsedToday)
-HEALTH_STATE_BEFORE=$(jget "$WORK/health1.json" providers.0.runtime)
-log "  health: connect_probes_before=${HEALTH_BEFORE:-0} runtime=${HEALTH_STATE_BEFORE:-unknown}"
+HEALTH_DAY_BEFORE=$(jget "$WORK/health1.json" budget.day)
+log "  health: provider_create=$health_probe_create probe_http=${PROBE_HTTP:-none} status=${PROBE_STATUS:-none} cause=${PROBE_CAUSE:-none} requests=${PROBE_REQUESTS:-0} connect_probes_before=${HEALTH_BEFORE:-0} day=${HEALTH_DAY_BEFORE:-n/a}"
 # The baseline is read *after* the warm-up search, because that search is itself
 # one more task: comparing against a count taken before it would fail on the
 # probe's own side effect rather than on persistence.
@@ -493,16 +523,32 @@ if wait_health; then
     jget "$WORK/cache2stats.json" entries)
   HEALTH_AFTER=$(curl -s -b "$COOKIES" --max-time 15 "$BASE/api/admin/provider-health" > "$WORK/health2.json"; \
     jget "$WORK/health2.json" budget.connectUsedToday)
-  HEALTH_STATE_AFTER=$(jget "$WORK/health2.json" providers.0.runtime)
+  HEALTH_DAY_AFTER=$(jget "$WORK/health2.json" budget.day)
+  HEALTH_CHECK_AFTER=""
+  HEALTH_REQUESTS_AFTER=0
+  if [ -n "$HEALTH_PROBE_ID" ]; then
+    curl -s -b "$COOKIES" --max-time 15 \
+      "$BASE/api/admin/provider-health/history?providerId=$HEALTH_PROBE_ID&limit=1" \
+      > "$WORK/health-history-after.json" || true
+    HEALTH_CHECK_AFTER=$(jget "$WORK/health-history-after.json" checks.0.checkedAt)
+    HEALTH_REQUESTS_AFTER=$(jget "$WORK/health-history-after.json" checks.0.requests)
+    HEALTH_REQUESTS_AFTER=${HEALTH_REQUESTS_AFTER:-0}
+  fi
   log "  after down/up: volume survived=$VOLUME_AFTER_DOWN hn-live=${PROV_AFTER2:-?} searches=${SEARCH_AFTER2:-0} initialized=$SETUP_STATE cache_hit=${CACHE_HIT:-no} entries=${CACHE_ENTRIES_AFTER:-0}"
+  log "  health after down/up: connect_probes=${HEALTH_AFTER:-0} day=${HEALTH_DAY_AFTER:-n/a} checked_at=${HEALTH_CHECK_AFTER:-none} requests=${HEALTH_REQUESTS_AFTER:-0}"
   if [ "${VOLUME_AFTER_DOWN:-0}" -ge 1 ] && [ "$PROV_AFTER2" = "$PROV_BEFORE" ] \
      && [ "${SEARCH_AFTER2:-x}" = "${DASH_BEFORE:-y}" ] && [ "$SETUP_STATE" = "true" ] \
      && [ "${CACHE_ENTRIES_BEFORE:-0}" -ge 1 ] \
      && [ "${CACHE_HIT:-false}" = "true" ] && [ "${CACHE_ENTRIES_AFTER:-0}" -ge 1 ] \
-     && [ "${HEALTH_BEFORE:-0}" -ge 1 ] && [ "${HEALTH_AFTER:-0}" = "${HEALTH_BEFORE}" ]; then
-    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true cache_entries=${CACHE_ENTRIES_BEFORE}->${CACHE_ENTRIES_AFTER} cache_hit=true connect_probes=${HEALTH_BEFORE}->${HEALTH_AFTER} runtime=${HEALTH_STATE_AFTER:-unknown}"
+     && [ "$health_probe_create" = "200" ] && [ "$PROBE_HTTP" = "200" ] \
+     && [ "${PROBE_REQUESTS:-0}" -ge 1 ] 2>/dev/null \
+     && [ "${HEALTH_BEFORE:-0}" -ge 1 ] && [ "${HEALTH_AFTER:-0}" = "${HEALTH_BEFORE}" ] \
+     && [ "$HEALTH_DAY_AFTER" = "$HEALTH_DAY_BEFORE" ] \
+     && [ "$HEALTH_CHECK_AFTER" = "$PROBE_CHECKED_AT" ] \
+     && [ "${HEALTH_REQUESTS_AFTER:-0}" = "${PROBE_REQUESTS:-0}" ]; then
+    record PASS "7. persistence" "volume kept across down/up; providers=$PROV_AFTER2 searches=$SEARCH_AFTER2 initialized=true cache_entries=${CACHE_ENTRIES_BEFORE}->${CACHE_ENTRIES_AFTER} cache_hit=true connect_probes=${HEALTH_BEFORE}->${HEALTH_AFTER} probe_requests=${PROBE_REQUESTS} checked_at=${PROBE_CHECKED_AT}"
   else
-    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE warm_status=${CACHE_WARM_STATUS:-none} entries ${CACHE_ENTRIES_BEFORE:-0}->${CACHE_ENTRIES_AFTER:-0} cache_hit=${CACHE_HIT:-false} connect_probes ${HEALTH_BEFORE:-0}->${HEALTH_AFTER:-0}"
+    record FAIL "7. persistence" "volume=$VOLUME_AFTER_DOWN providers ${PROV_BEFORE:-?}->${PROV_AFTER2:-?} searches ${DASH_BEFORE:-0}->${SEARCH_AFTER2:-0} initialized=$SETUP_STATE warm_status=${CACHE_WARM_STATUS:-none} entries ${CACHE_ENTRIES_BEFORE:-0}->${CACHE_ENTRIES_AFTER:-0} cache_hit=${CACHE_HIT:-false} health_create=$health_probe_create probe_http=${PROBE_HTTP:-none} probe_requests=${PROBE_REQUESTS:-0} connect_probes ${HEALTH_BEFORE:-0}->${HEALTH_AFTER:-0} day ${HEALTH_DAY_BEFORE:-n/a}->${HEALTH_DAY_AFTER:-n/a} checked_at ${PROBE_CHECKED_AT:-none}->${HEALTH_CHECK_AFTER:-none} history_requests=${HEALTH_REQUESTS_AFTER:-0}"
   fi
 else
   record FAIL "7. persistence" "health did not recover after down/up"

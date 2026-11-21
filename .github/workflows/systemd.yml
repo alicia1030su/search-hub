@@ -185,10 +185,13 @@ jobs:
             CSRF=$(jq -r .csrfToken /tmp/setup.json)
             auth=(-b "$COOKIE" -H "x-csrf-token: $CSRF" -H "content-type: application/json")
 
-            # A keyless provider: its probes must work with paid probing OFF, so
-            # a failure here is a health bug, not a budget refusal.
+            # A keyless provider with a real HTTP adapter: a scheduled probe must
+            # issue a physical request and persist both the observation and the
+            # connectivity budget. The mock adapter intentionally issues no wire
+            # request, so it cannot prove either fact under the v0.1.11 refund
+            # semantics.
             curl -sS "${auth[@]}" -o /tmp/prov.json \
-              -d "{\"name\":\"sched-probe\",\"type\":\"mock\",\"enabled\":true,\"timeoutMs\":5000,\"maxRetries\":0,\"config\":{\"resultCount\":2}}" \
+              -d "{\"name\":\"sched-probe\",\"type\":\"hackernews\",\"enabled\":true,\"timeoutMs\":15000,\"maxRetries\":0,\"resultsPerPage\":1}" \
               "$BASE/api/admin/providers"
             PRV=$(jq -r .provider.id /tmp/prov.json)
             [ -n "$PRV" ] && [ "$PRV" != "null" ] || { echo "FAIL: provider not created"; cat /tmp/prov.json; exit 1; }
@@ -204,30 +207,41 @@ jobs:
             PROBED=0
             for i in $(seq 1 45); do
               curl -sS -b "$COOKIE" -o /tmp/health.json "$BASE/api/admin/provider-health"
-              CONNECT=$(jq -r ".budget.connectUsedToday" /tmp/health.json)
-              if [ "${CONNECT:-0}" -ge 1 ]; then PROBED=1; break; fi
+              CHECKED=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .lastCheckedAt // empty" /tmp/health.json)
+              if [ -n "$CHECKED" ]; then
+                curl -sS -b "$COOKIE" -o /tmp/probe-history.json \
+                  "$BASE/api/admin/provider-health/history?providerId=$PRV&limit=1"
+                TRIGGER=$(jq -r ".checks[0].trigger // empty" /tmp/probe-history.json)
+                REQUESTS=$(jq -r ".checks[0].requests // 0" /tmp/probe-history.json)
+                if [ "$TRIGGER" = "schedule" ] && [ "${REQUESTS:-0}" -ge 1 ]; then PROBED=1; break; fi
+              fi
               sleep 2
             done
-            [ "$PROBED" = "1" ] || { echo "FAIL: no scheduled probe ran within 90s"; cat /tmp/health.json; exit 1; }
-            NEXT_BEFORE=$(jq -r ".providers[0].nextProbeAt" /tmp/health.json)
-            CHECKED_BEFORE=$(jq -r ".providers[0].lastCheckedAt" /tmp/health.json)
+            [ "$PROBED" = "1" ] || { echo "FAIL: no scheduled physical HTTP probe ran within 90s"; cat /tmp/health.json; cat /tmp/probe-history.json 2>/dev/null || true; exit 1; }
+            NEXT_BEFORE=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .nextProbeAt // \"null\"" /tmp/health.json)
+            CHECKED_BEFORE=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .lastCheckedAt // \"null\"" /tmp/health.json)
             CONNECT_BEFORE=$(jq -r ".budget.connectUsedToday" /tmp/health.json)
-            RUNTIME_BEFORE=$(jq -r ".providers[0].runtime" /tmp/health.json)
-            echo "before restart: connect=$CONNECT_BEFORE runtime=$RUNTIME_BEFORE next=$NEXT_BEFORE checked=$CHECKED_BEFORE"
+            DAY_BEFORE=$(jq -r ".budget.day" /tmp/health.json)
+            RUNTIME_BEFORE=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .runtime // \"unknown\"" /tmp/health.json)
+            PROBE_STATUS=$(jq -r ".checks[0].status // \"unknown\"" /tmp/probe-history.json)
+            echo "before restart: connect=$CONNECT_BEFORE runtime=$RUNTIME_BEFORE status=$PROBE_STATUS requests=$REQUESTS next=$NEXT_BEFORE checked=$CHECKED_BEFORE"
             [ "$NEXT_BEFORE" != "null" ] || { echo "FAIL: nextProbeAt was not persisted"; exit 1; }
+            [ "${CONNECT_BEFORE:-0}" -ge 1 ] || { echo "FAIL: physical probe did not consume connectivity budget"; exit 1; }
 
             echo "--- health scheduler: restart keeps schedule and budget ---"
             systemctl restart search-hub
             for i in $(seq 1 30); do curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break; sleep 2; done
             sleep 3
             curl -sS -b "$COOKIE" -o /tmp/health2.json "$BASE/api/admin/provider-health"
-            NEXT_AFTER=$(jq -r ".providers[0].nextProbeAt" /tmp/health2.json)
-            CHECKED_AFTER=$(jq -r ".providers[0].lastCheckedAt" /tmp/health2.json)
+            NEXT_AFTER=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .nextProbeAt // \"null\"" /tmp/health2.json)
+            CHECKED_AFTER=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .lastCheckedAt // \"null\"" /tmp/health2.json)
             CONNECT_AFTER=$(jq -r ".budget.connectUsedToday" /tmp/health2.json)
+            DAY_AFTER=$(jq -r ".budget.day" /tmp/health2.json)
             echo "after restart: connect=$CONNECT_AFTER next=$NEXT_AFTER checked=$CHECKED_AFTER"
             [ "$NEXT_AFTER" = "$NEXT_BEFORE" ] || { echo "FAIL: nextProbeAt changed across restart ($NEXT_BEFORE -> $NEXT_AFTER)"; exit 1; }
             [ "$CHECKED_AFTER" = "$CHECKED_BEFORE" ] || { echo "FAIL: a probe was re-run immediately after restart"; exit 1; }
-            [ "${CONNECT_AFTER:-0}" -ge "${CONNECT_BEFORE:-0}" ] || { echo "FAIL: budget counter went backwards"; exit 1; }
+            [ "$DAY_AFTER" = "$DAY_BEFORE" ] || { echo "FAIL: budget day changed during the restart check"; exit 1; }
+            [ "${CONNECT_AFTER:-0}" = "${CONNECT_BEFORE:-0}" ] || { echo "FAIL: budget counter changed across restart"; exit 1; }
 
             echo "--- health scheduler: a stopped unit does not probe ---"
             systemctl stop search-hub
@@ -238,8 +252,10 @@ jobs:
             sleep 2
             curl -sS -b "$COOKIE" -o /tmp/health3.json "$BASE/api/admin/provider-health"
             CONNECT_AFTER_STOP=$(jq -r ".budget.connectUsedToday" /tmp/health3.json)
-            echo "after stop/start: connect=$CONNECT_AFTER_STOP"
-            [ "${CONNECT_AFTER_STOP:-0}" -le $((CONNECT_AFTER + 1)) ] || { echo "FAIL: probes ran while the unit was stopped"; exit 1; }
+            CHECKED_AFTER_STOP=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .lastCheckedAt // \"null\"" /tmp/health3.json)
+            echo "after stop/start: connect=$CONNECT_AFTER_STOP checked=$CHECKED_AFTER_STOP"
+            [ "${CONNECT_AFTER_STOP:-0}" = "${CONNECT_AFTER:-0}" ] || { echo "FAIL: probes ran while the unit was stopped"; exit 1; }
+            [ "$CHECKED_AFTER_STOP" = "$CHECKED_AFTER" ] || { echo "FAIL: health observation changed while the unit was stopped"; exit 1; }
 
             echo "--- health scheduler: upgrade + rollback keeps the daily budget ---"
             PKG2=/pkgs/search-hub-v0.9.9-linux-x64.tar.gz
@@ -256,8 +272,11 @@ jobs:
             curl -sS -b "$COOKIE" -o /tmp/health4.json "$BASE/api/admin/provider-health"
             CONNECT_FINAL=$(jq -r ".budget.connectUsedToday" /tmp/health4.json)
             DAY_FINAL=$(jq -r ".budget.day" /tmp/health4.json)
-            echo "after rollback: connect=$CONNECT_FINAL day=$DAY_FINAL"
-            [ "${CONNECT_FINAL:-0}" -ge "${CONNECT_AFTER:-0}" ] || { echo "FAIL: rollback reset the daily budget"; exit 1; }
+            CHECKED_FINAL=$(jq -r --arg id "$PRV" ".providers[] | select(.providerId == \$id) | .lastCheckedAt // \"null\"" /tmp/health4.json)
+            echo "after rollback: connect=$CONNECT_FINAL day=$DAY_FINAL checked=$CHECKED_FINAL"
+            [ "$DAY_FINAL" = "$DAY_BEFORE" ] || { echo "FAIL: rollback changed the budget day"; exit 1; }
+            [ "${CONNECT_FINAL:-0}" = "${CONNECT_AFTER:-0}" ] || { echo "FAIL: rollback reset or incremented the daily budget"; exit 1; }
+            [ "$CHECKED_FINAL" = "$CHECKED_AFTER" ] || { echo "FAIL: rollback lost or replaced the persisted probe"; exit 1; }
             echo "PASS health scheduler under systemd (connect=$CONNECT_BEFORE->$CONNECT_FINAL day=$DAY_FINAL)"
           '
 
