@@ -30,7 +30,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -268,9 +268,7 @@ function readCacheHitCounts(dataDir) {
   if (!existsSync(path)) return null;
   let db;
   try {
-    const localRequire = createRequire(join(REPO, "apps", "api", "package.json"));
-    const Database = localRequire("better-sqlite3");
-    db = new Database(path, { readonly: true, fileMustExist: true });
+    const db = new DatabaseSync(path, { readOnly: true });
     const rows = db.prepare("SELECT cache_key, hit_count FROM search_cache").all();
     return new Map(rows.map((row) => [row.cache_key, Number(row.hit_count)]));
   } catch {
@@ -706,7 +704,7 @@ async function verify(base, state) {
     const cachedFlag = cachedBody.stats?.cached === true;
     const hitsGrew = typeof state.cacheHits === "number" && hitsAfter > state.cacheHits;
     out.cacheHit = cached.ok && (cachedFlag || hitsGrew || rowHitsGrew);
-    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} hits=${state.cacheHits ?? "?"}->${hitsAfter} rowHitsGrew=${rowHitsGrew}`;
+    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} hits=${state.cacheHits ?? "?"}->${hitsAfter} rowHitsGrew=${rowHitsGrew} rows=${state.cacheHitCounts ? JSON.stringify([...state.cacheHitCounts.values()]) : "unavailable"}->${hitCountsAfter ? JSON.stringify([...hitCountsAfter.values()]) : "unavailable"}`;
   }
 
   return out;
