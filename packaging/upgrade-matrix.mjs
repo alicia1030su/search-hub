@@ -216,6 +216,12 @@ try {
   check("master.key unchanged", after.masterKey, after.masterKeyDetail);
   check("database grew but kept its identity", after.db, after.dbDetail);
   check("no new migration was left unapplied", after.migrations, after.migrationsDetail);
+  if (after.searchTask !== undefined) check("search task record survived", after.searchTask, after.searchTaskDetail);
+  if (after.healthHistory !== undefined) check("health history survived", after.healthHistory, after.healthHistoryDetail);
+  if (after.healthBudget !== undefined) check("health budget ledger survived", after.healthBudget, after.healthBudgetDetail);
+  if (after.batchJob !== undefined) check("provider batch task survived", after.batchJob, after.batchJobDetail);
+  if (after.cache !== undefined) check("cache entries survived", after.cache, after.cacheDetail);
+  if (after.cacheHit !== undefined) check("cache remained usable after upgrade", after.cacheHit, after.cacheHitDetail);
   // The upgrade must add the catalogue entries that beta.1 shipped without.
   check(
     "catalogue now contains minimax/metaso",
@@ -483,6 +489,54 @@ async function populate(base) {
   });
   const searchBody = await search.json().catch(() => ({}));
 
+  // v0.1.12+ state that the CLI release must preserve. Older matrix entries may
+  // not expose these endpoints; record only what the old version really created.
+  const healthProbe = await fetch(`${base}/api/admin/provider-health/${providerId}/probe`, {
+    method: "POST",
+    headers: h,
+    body: JSON.stringify({ kind: "connect" }),
+  });
+  const healthBody = healthProbe.ok ? await healthProbe.json().catch(() => ({})) : {};
+  const healthHistory = await fetch(`${base}/api/admin/provider-health/history?providerId=${providerId}&limit=100`, { headers: { cookie } });
+  const historyBody = healthHistory.ok ? await healthHistory.json().catch(() => ({ checks: [] })) : { checks: [] };
+  const healthSettings = await fetch(`${base}/api/admin/provider-health/settings`, { headers: { cookie } });
+  const settingsBody = healthSettings.ok ? await healthSettings.json().catch(() => ({})) : {};
+
+  let batchJob = null;
+  if (providerId) {
+    const started = await fetch(`${base}/api/admin/provider-health/batch-test`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ kind: "connect", providerIds: [providerId], includeKeyless: true }),
+    });
+    const startedBody = started.ok ? await started.json().catch(() => ({})) : {};
+    if (startedBody.jobId) {
+      for (let i = 0; i < 40; i += 1) {
+        const poll = await fetch(`${base}/api/admin/provider-health/batch-test/${startedBody.jobId}`, { headers: { cookie } });
+        const body = poll.ok ? await poll.json().catch(() => ({})) : {};
+        if (body.status && body.status !== "running") { batchJob = body; break; }
+        await sleep(100);
+      }
+    }
+  }
+
+  const cacheQuery = "upgrade cache probe";
+  const cacheSettings = await fetch(`${base}/api/admin/settings`, {
+    method: "PUT",
+    headers: h,
+    body: JSON.stringify({ cache: { enabled: true, ttlSeconds: 3600 } }),
+  });
+  const cacheEnabled = cacheSettings.ok;
+  if (cacheEnabled) {
+    await fetch(`${base}/api/search`, { method: "POST", headers: h, body: JSON.stringify({ query: cacheQuery, mode: "basic", limit: 3 }) });
+    await fetch(`${base}/api/search`, { method: "POST", headers: h, body: JSON.stringify({ query: cacheQuery, mode: "basic", limit: 3 }) });
+  }
+  const cachedSearch = cacheEnabled
+    ? await fetch(`${base}/api/search`, { method: "POST", headers: h, body: JSON.stringify({ query: cacheQuery, mode: "basic", limit: 3 }) })
+    : null;
+  const cachedBody = cachedSearch ? await cachedSearch.json().catch(() => ({})) : {};
+  const cacheStats = await (await fetch(`${base}/api/admin/cache`, { headers: { cookie } })).json().catch(() => ({}));
+
   const mcpToken = await fetch(`${base}/api/admin/tokens`, {
     method: "POST",
     headers: h,
@@ -498,6 +552,16 @@ async function populate(base) {
     providerId,
     keyId: keyBody?.key?.id ?? keyBody?.id ?? null,
     searchResultCount: (searchBody.results ?? []).length,
+    searchTaskId: searchBody.taskId ?? null,
+    healthCheckId: healthBody.result?.checkId ?? null,
+    healthHistoryCount: Array.isArray(historyBody.checks) ? historyBody.checks.length : null,
+    healthBudget: settingsBody.budget ?? null,
+    batchJobId: batchJob?.jobId ?? null,
+    batchStatus: batchJob?.status ?? null,
+    batchCounts: batchJob?.counts ?? null,
+    cacheEntries: cacheEnabled ? (cacheStats.entries ?? null) : null,
+    cacheHits: cacheEnabled ? (cacheStats.hits24h ?? cacheStats.hits ?? null) : null,
+    cachedSearchHit: cacheEnabled && cachedBody.stats?.cached === true,
     bearer,
     admin: setup.ok,
     adminDetail: `HTTP ${setup.status}`,
@@ -569,6 +633,52 @@ async function verify(base, state) {
   const health = await fetch(`${base}/api/health`);
   out.migrations = health.ok;
   out.migrationsDetail = `health ${health.status}`;
+
+  if (state.searchTaskId) {
+    const taskRes = await fetch(`${base}/api/search/tasks/${state.searchTaskId}`, { headers: { cookie: state.cookie } });
+    const task = taskRes.ok ? await taskRes.json().catch(() => ({})) : {};
+    out.searchTask = taskRes.ok && task.id === state.searchTaskId;
+    out.searchTaskDetail = `HTTP ${taskRes.status}, id=${task.id ?? "missing"}`;
+  }
+  if (state.healthHistoryCount !== null) {
+    const historyRes = await fetch(`${base}/api/admin/provider-health/history?providerId=${state.providerId}&limit=100`, { headers: { cookie: state.cookie } });
+    const history = historyRes.ok ? await historyRes.json().catch(() => ({ checks: [] })) : { checks: [] };
+    out.healthHistory = historyRes.ok && (history.checks?.length ?? 0) >= state.healthHistoryCount;
+    out.healthHistoryDetail = `${history.checks?.length ?? 0} checks (was ${state.healthHistoryCount})`;
+  }
+  if (state.healthBudget) {
+    const settingsRes = await fetch(`${base}/api/admin/provider-health/settings`, { headers: { cookie: state.cookie } });
+    const settings = settingsRes.ok ? await settingsRes.json().catch(() => ({})) : {};
+    const before = state.healthBudget;
+    const after = settings.budget ?? {};
+    const preserved = (after.usedToday ?? 0) >= (before.usedToday ?? 0)
+      && (after.connectUsedToday ?? 0) >= (before.connectUsedToday ?? 0)
+      && (after.anonymousSearchUsedToday ?? 0) >= (before.anonymousSearchUsedToday ?? 0);
+    out.healthBudget = settingsRes.ok && preserved;
+    out.healthBudgetDetail = `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`;
+  }
+  if (state.batchJobId) {
+    const batchRes = await fetch(`${base}/api/admin/provider-health/batch-test/${state.batchJobId}`, { headers: { cookie: state.cookie } });
+    const batch = batchRes.ok ? await batchRes.json().catch(() => ({})) : {};
+    out.batchJob = batchRes.ok && batch.jobId === state.batchJobId && batch.status === state.batchStatus;
+    out.batchJobDetail = `HTTP ${batchRes.status}, status=${batch.status ?? "missing"}`;
+  }
+  if (state.cacheEntries !== null) {
+    const settingsRes = await fetch(`${base}/api/admin/settings`, { headers: { cookie: state.cookie } });
+    const settings = settingsRes.ok ? await settingsRes.json().catch(() => ({})) : {};
+    const cacheRes = await fetch(`${base}/api/admin/cache`, { headers: { cookie: state.cookie } });
+    const cache = cacheRes.ok ? await cacheRes.json().catch(() => ({})) : {};
+    out.cache = settingsRes.ok && settings.cache?.enabled === true && cacheRes.ok && (cache.entries ?? 0) >= state.cacheEntries && state.cacheEntries > 0;
+    out.cacheDetail = `${cache.entries ?? 0} entries (was ${state.cacheEntries})`;
+    const cached = await fetch(`${base}/api/search`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: state.cookie, "x-csrf-token": state.csrf },
+      body: JSON.stringify({ query: "upgrade cache probe", mode: "basic", limit: 3 }),
+    });
+    const cachedBody = await cached.json().catch(() => ({}));
+    out.cacheHit = cached.ok && cachedBody.stats?.cached === true;
+    out.cacheHitDetail = `cached=${cachedBody.stats?.cached}`;
+  }
 
   return out;
 }

@@ -3,6 +3,9 @@
 Base URL: `https://<your-instance>`. All requests and responses are JSON.
 OpenAPI 3.1: [`/api/openapi.json`](../apps/api/src/routes/openapi-routes.ts) · human-readable list: `/api/docs`.
 
+The standalone `shub` client uses these same endpoints; it does not expose a
+second search implementation. See [CLI documentation](./cli.md).
+
 ## Authentication
 
 Two mechanisms:
@@ -85,6 +88,11 @@ Request body:
 ```
 
 `providers` and `group` are mutually exclusive; `group` wins. Omit both to use every enabled provider.
+
+`GET /api/providers` requires `sources:read` and returns provider summaries plus
+runtime snapshots. Each summary includes `keyCount`, `healthyKeyCount` and
+`availableKeyCount`; the latter is the scheduler's current usable-key count and
+never contains key material.
 
 Modes: `basic` (rank by provider order), `rrf` (fusion), `rerank`, `embedding`, `embedding_rerank`, `rerank_summary`, `deep` (query rewrite + multi-query + summary). Requested stages fail fast with `400` if the required model is not configured.
 

@@ -1,14 +1,14 @@
 # Search Hub
 
-**自托管的 AI 聚合搜索基础设施。** 一套服务，聚合多个搜索源，管理多组 API Key，输出统一结果，并通过 REST、MCP 与 Agent Skills 同时对外提供能力。
+**自托管的 AI 聚合搜索基础设施。** 一套服务，聚合多个搜索源，管理多组 API Key，输出统一结果，并通过 REST API、MCP、Agent Skills 与独立 CLI `shub` 同时对外提供能力。
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.12 · Stable 候选（最终门禁待复核）。**
+> **状态：v0.1.12 · Stable 已发布；v0.1.13 开发中（CLI）。**
 >
-> **发布门禁**：本地候选 Vitest **1241 项 / 96 文件**、Playwright **42 项**均已通过；远端 CI、升级矩阵与正式发布结果以 `docs/release-readiness.md` 的最终记录为准。
+> **发布门禁**：v0.1.13 本地全量 Vitest **1299 项 / 100 文件**、Playwright **42 项**、CLI 专项 **58 项**均已通过；远端 CI、升级矩阵与正式发布结果以 `docs/release-readiness.md` 的最终记录为准。
 >
-> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存、搜索源健康管理中心与搜索质量评测实验室均已实现；自动化套件覆盖单元、集成与浏览器流程，发布门禁结果见 [测试文档](./docs/testing.md)。**v0.1.11 的 Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）留下通过记录**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）；该记录不作为 v0.1.12 已通过的证据。
+> **v0.1.13 主题**：新增可独立安装的 `shub` 命令行客户端，支持搜索、深度搜索、来源列表、状态、环境诊断、配置与 Provider 健康检测；CLI 只调用 REST API，不重新实现搜索核心。
 >
 > **Stable 的含义是「这是维护者当前选择的公开正式发布渠道」，不是「所有外部集成均已通过生产认证」。** 具体说：**Hacker News、Crossref、OpenAlex、PubMed 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**；搜索质量评测目前只有合成基准，**没有真实厂商标注集**。这些缺口在 [Provider 状态矩阵](./docs/provider-matrix.md)、[发布就绪报告](./docs/release-readiness.md) 与 [CHANGELOG](./CHANGELOG.md) 里逐项列明，未联调的能力不会被描述为“已验证”。
 
@@ -23,7 +23,7 @@ Search Hub 把这些做成一个可部署的服务：
 - **多源并发**：一次查询同时发给多个搜索源，单源失败不影响整体，返回部分成功结果与失败原因。
 - **Key 池**：同一搜索源可配置任意多个 Key，支持轮询、随机、加权随机、最少使用、故障切换；每 Key 独立并发、RPM、日配额、冷却与熔断。
 - **统一结果**：URL 规范化、精确/近似去重、RRF 融合，保留每个结果的命中来源与原始排名。
-- **三个入口，一套核心**：REST、MCP、Agent Skills 全部调用同一个 `executeSearch`，不存在第二套实现。
+- **四个入口，一套核心**：REST、MCP、Agent Skills 与 CLI 都调用同一个服务端搜索核心；CLI 只是远程 HTTP 客户端，不存在第二套实现。
 - **可选智能增强**：AI 摘要（带 `[n]` 引用）、Embedding 语义重排、Rerank。未配置模型时普通搜索完全可用。
 
 ## 核心能力
@@ -38,6 +38,7 @@ Search Hub 把这些做成一个可部署的服务：
 | REST API + OpenAPI 3.1 | 已实现 | `/api/openapi.json` 与 `/api/docs` |
 | MCP Server | 已实现 | 2026-07-28 现代协议 + 2025-11-25 传统握手；Streamable HTTP + stdio |
 | Agent Skills | 已实现 | 3 个 `SKILL.md`，遵循 agentskills.io 结构 |
+| CLI `shub` | v0.1.13 开发中 | 独立 Windows/Linux 可执行包；搜索、深度搜索、来源、状态、诊断、配置与健康检测；JSON/NDJSON 纯净输出 |
 | AI 摘要 / Embedding / Rerank | 已实现（可选） | OpenAI 兼容 / Anthropic / Gemini / Cohere-Jina 兼容 / custom-http |
 | 结果缓存（SQLite 持久化） | 已实现 | 1–72 小时可配；重启/容器重建后仍有效；容量上限自动 LRU 淘汰，后台每 10 分钟清理过期 |
 | 中英文界面 | 已实现 | zh-CN 为默认，en-US 完整覆盖；语言选择持久化，日期/数字跟随语言 |
@@ -148,17 +149,41 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.12 候选）
+## 下载安装（v0.1.13 候选）
 
-三种形态，同一套搜索核心、数据库模型与管理后台。v0.1.12 资产在最终门禁通过后发布；当前已发布稳定版仍为 v0.1.11。
+v0.1.12 已正式发布；v0.1.13 将新增独立 CLI，并在发布门禁通过后提供服务器与 CLI 资产。
 
-| 平台 | 下载 | 需要什么 |
-|---|---|---|
-| Windows x64 | 发布后：[`search-hub-v0.1.12-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | 发布后：[`search-hub-v0.1.12-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **无**（随包 Node 运行时） |
-| Linux arm64 | 发布后：[`search-hub-v0.1.12-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **无** |
+| 平台 | 服务端 | CLI `shub` | 需要什么 |
+|---|---|---|---|
+| Windows x64 | `search-hub-v0.1.13-windows-x64.zip` | `shub-v0.1.13-windows-x64.zip` | **无** |
+| Linux x64 | `search-hub-v0.1.13-linux-x64.tar.gz` | `shub-v0.1.13-linux-x64.tar.gz` | **无** |
+| Linux arm64 | `search-hub-v0.1.13-linux-arm64.tar.gz` | `shub-v0.1.13-linux-arm64.tar.gz` | **无** |
+| Node.js 22+ | — | `shub-v0.1.13-node22.tar.gz` | Node.js 22+ |
 
-校验：发布后从同一 Release 下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) 并执行 `sha256sum -c SHA256SUMS`。
+发布后从 [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) 下载同一份 `SHA256SUMS` 并执行 `sha256sum -c SHA256SUMS`；每个资产同时提供构建溯源。CLI 不需要部署服务端，可连接本机或远程 Search Hub。
+
+### CLI 快速开始
+
+```bash
+export SEARCH_HUB_URL="https://search.example.com"
+export SEARCH_HUB_TOKEN="sh_..."
+shub search "Linux"
+shub search "AI" --json
+shub sources
+shub status
+shub doctor
+```
+
+PowerShell：
+
+```powershell
+$env:SEARCH_HUB_URL = "https://search.example.com"
+$env:SEARCH_HUB_TOKEN = "sh_..."
+.\shub.exe search "Linux"
+.\shub.exe sources
+```
+
+Token 只从环境变量或 `--token-stdin` 读取，不写入明文配置。完整说明见 [docs/cli.md](./docs/cli.md)。
 
 > **v0.1.12 收口凭据泄漏与探测计量**：修复 URL query API Key 在 JSON/HTML/编码错误、错误 `details.url`、SQLite 健康历史、Key `last_error`、审计与 MCP 输出中的泄漏；单源、批量、Key 与定时探测统一 in-flight 锁，重复请求为 409 `already_running`；连接探测改为按物理 HTTP 跳计数，默认单次 5 跳、每日 50 跳，`billingUnit=unknown`；本地连接预算拒绝为 429 `quota_exceeded`，批量记 `SKIPPED_BUDGET`；GET 健康预览只读；Key 创建/更新最短 8 字符。新增迁移 `0010`，归档旧连接账本并只增不减、幂等重算。
 
@@ -294,6 +319,22 @@ corepack pnpm start          # 以编译产物运行（生产形态）
 - **额度**：每 Key 并发上限 + 每分钟请求数 + 每日配额（可选）；超限返回明确错误，不静默丢请求。
 - **健康状态**：`healthy` / `rate_limited` / `cooldown` / `invalid` / `forbidden` / `quota_exhausted` / `disabled` / `unknown`，可在 Key 面板单独测试与重置；脱敏的 `lastErrorCode` / `lastErrorMessage` 持久化，重测成功后清除。
 
+## CLI `shub`
+
+CLI 是独立远程 HTTP 客户端，不需要 Node.js、SQLite、Redis、Docker 或搜索厂商 Key。它复用 REST API，不重新实现 Provider、KeyScheduler、RRF、缓存、健康检测或模型调用。
+
+```bash
+shub search "Linux 内核最新变化"
+shub search "AI 搜索技术" --mode deep
+shub sources --enabled --json
+shub status
+shub doctor --verbose
+shub providers test --all --kind connect
+shub providers test --all --kind search --confirm-cost
+```
+
+JSON 模式 stdout 只有合法 JSON；NDJSON 明确标记 `streaming:false`，不伪装实时流。`partial` 默认保留结果并返回 0，`--strict` 返回非零。Token 仅从 `SEARCH_HUB_TOKEN` 或 `--token-stdin` 读取。详见 [docs/cli.md](./docs/cli.md)。
+
 ## 连接 MCP
 
 服务端同时提供 Streamable HTTP 与 stdio：
@@ -375,7 +416,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试本地候选 **1241 项 / 96 文件全部通过**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试本地候选 **1299 项 / 100 文件全部通过**，其中 CLI 专项 **58 项**；覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 持久化缓存 **23 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
 - 健康管理中心 **35 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、取消不退款、多 Key 共享账户额度、MCP 与 REST 同一门禁。使用注入时钟与可控调度，无真实等待；「付费」源是本地 Brave 契约服务 + 真实 Key，不调用任何厂商。
 - 凭证类型判断 **6 项**（`tests/integration/credential-classes.test.ts`）：六个公开源声明 `authType: none` 且 `requiresKey: false`；需 Key 无 Key 判 `unverified`；无 Key 源用本地 HN 线格式桩真实探测可判 `healthy`；`/api/health` 不再把无 Key 源算成不可用；需实例地址的源按配置缺失处理。
@@ -390,7 +431,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 - Brave：没有订阅 Key，且本机网络到 `api.search.brave.com` 超时，未发起真实请求。
 - SearXNG：没有自建实例；公共实例在本机网络不可达，未联调。
-- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** GitHub Actions 的通过记录属于 v0.1.11，v0.1.12 必须在候选提交上重新验证，两者不要混为一谈。
+- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** v0.1.12 的 GitHub Actions 通过记录见 `docs/release-readiness.md`，v0.1.13 必须在候选提交上重新验证，两者不要混为一谈。
 - AI 模型、Embedding、Rerank：没有真实厂商 Key，仅用本地模拟服务验证请求/响应契约。
 - 多实例部署：未实现 Redis 协调，当前仅保证单进程额度。
 

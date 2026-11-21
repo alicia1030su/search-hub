@@ -225,10 +225,128 @@ jobs:
             dist/package/*linux-${{ matrix.arch }}.tar.gz.sha256
           if-no-files-found: error
 
+  cli-windows:
+    name: CLI Windows x64 standalone
+    needs: gate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build server bundle and standalone CLI
+        shell: bash
+        env:
+          PACKAGE_TARGET: windows-x64
+          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+          node packaging/build-cli-package.mjs
+      - name: Verify CLI against a real Search Hub server
+        shell: bash
+        run: node packaging/verify-cli-package.mjs windows-x64
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: cli-windows-x64
+          path: |
+            dist/cli/*windows-x64.zip
+            dist/cli/*windows-x64.zip.sha256
+          if-no-files-found: error
+
+  cli-linux:
+    name: CLI Linux ${{ matrix.arch }} standalone
+    needs: gate
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+          - arch: arm64
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build server bundle and standalone CLI
+        env:
+          PACKAGE_TARGET: linux-${{ matrix.arch }}
+          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+          node packaging/build-cli-package.mjs
+      - name: Verify CLI against a real Search Hub server
+        run: node packaging/verify-cli-package.mjs linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: cli-linux-${{ matrix.arch }}
+          path: |
+            dist/cli/*linux-${{ matrix.arch }}.tar.gz
+            dist/cli/*linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+
+  cli-portable:
+    name: CLI Node.js 22 portable package
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and verify portable CLI
+        env:
+          PACKAGE_TARGET: node22
+          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+          node packaging/build-cli-package.mjs
+          node packaging/verify-cli-package.mjs node22
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: cli-node22
+          path: |
+            dist/cli/*node22.tar.gz
+            dist/cli/*node22.tar.gz.sha256
+          if-no-files-found: error
+
   publish:
     name: Publish ${{ needs.gate.outputs.channel == 'stable' && 'stable release' || 'prerelease' }}
     runs-on: ubuntu-latest
-    needs: [gate, windows, linux]
+    needs: [gate, windows, linux, cli-windows, cli-linux, cli-portable]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
@@ -289,6 +407,9 @@ jobs:
           if [ "$CHANNEL" = "stable" ]; then
             cat > release-body.md <<EOF
           Search Hub **v${VERSION}** — stable release.
+
+          This release includes the standalone \`shub\` CLI for Windows x64, Linux x64,
+          Linux arm64 and Node.js 22+. The CLI connects to an existing Search Hub REST API.
 
           See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md) for what
           changed, and the known limitations stated there before relying on any

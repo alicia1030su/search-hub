@@ -192,6 +192,8 @@ export class ProviderService {
     ProviderInstance & {
       keyCount: number;
       healthyKeyCount: number;
+      /** Keys the scheduler can use now (enabled, decryptable, not cooling or quota-blocked). */
+      availableKeyCount: number;
       circuitOpen: boolean;
       searchConfig: Record<string, unknown>;
       accountGroup: string | null;
@@ -259,6 +261,7 @@ export class ProviderService {
         updatedAt: row.updatedAt,
         keyCount: keys.length,
         healthyKeyCount: snapshot.filter((key) => key.status === "healthy" && key.enabled).length,
+        availableKeyCount: availability.get(row.id)?.available ?? 0,
         circuitOpen:
           entry !== undefined &&
           entry.breaker.openUntilMs !== null &&
