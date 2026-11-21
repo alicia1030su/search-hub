@@ -216,6 +216,28 @@ describe("brave adapter", () => {
     expect((error as ProviderError).retryable).toBe(false);
   });
 
+  it("maps upstream 403 to blocked and preserves its trusted upstream status", async () => {
+    const { baseUrl } = await startServer((_req, res) => {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "No entitlement" } }));
+    });
+    const error = (await braveAdapter
+      .search(
+        { query: "x", limit: 3, signal: AbortSignal.timeout(3000) },
+        {
+          fetch: allowLocalFetch,
+          apiKey: "restricted",
+          config: config({ type: "brave", baseUrl }),
+          signal: AbortSignal.timeout(3000),
+          logger: console as never,
+        },
+      )
+      .catch((caught) => caught)) as ProviderError;
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error.code).toBe("blocked");
+    expect(error.details).toMatchObject({ upstreamStatus: 403 });
+  });
+
   it("maps 429 with Retry-After to rate_limited", async () => {
     const { baseUrl } = await startServer((_req, res) => {
       res.writeHead(429, { "content-type": "application/json", "retry-after": "7" });

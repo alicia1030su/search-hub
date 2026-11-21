@@ -18,8 +18,8 @@ runtime                     = healthy        # 上一次探测确实成功了
 `docs/live-evidence/<type>.json` 里的真实请求证据支持（见
 [provider-matrix.md](./provider-matrix.md) 的生成规则）。
 
-同样，**没有 API Key 的源永远不是 healthy**：探测在发出请求前就返回 `unverified`，
-因为"URL 能解析"不是"能搜索"。
+同样，**需要凭据但没有可用凭据的源不会显示 healthy**；完全免 Key 的公开源可以正常探测，
+其健康状态来自真实请求结果，而不是"URL 能解析"。
 
 ## 一、运行健康状态
 
@@ -37,9 +37,9 @@ runtime                     = healthy        # 上一次探测确实成功了
 | `unverified` | 没有可用凭证 / 无法判断 | 否 |
 | `disabled` | 管理员主动禁用 | 是（本就不在搜索范围） |
 
-只有 `quota_exceeded` 与 `invalid_credentials` 会 park 一个源：这两种情况下重试只会
-再次失败并可能继续计费。**一次超时、一次 429 都不会移除一个源**——那正是"一次探测
-永久杀死一个源"的经典事故。
+额度耗尽、无效凭证与权限拒绝会停用对应 Key 或账户组；其中 `quota_exceeded` 与
+`invalid_credentials` 会 park 一个源，因为重试只会再次失败并可能继续计费。
+**一次超时、一次 429 都不会移除一个源**——那正是"一次探测永久杀死一个源"的经典事故。
 
 存储层保留原来的四值 `status`（`provider_health_checks.status`），`runtime` 由
 `status + cause + 凭证池 + 冷却` 派生，因此不需要重写历史，也不会因升级而丢失结论。
@@ -48,7 +48,7 @@ runtime                     = healthy        # 上一次探测确实成功了
 
 三层结构：
 
-1. **Key**：某一个 API Key 的状态（`healthy` / `invalid` / `quota_exhausted` / 冷却中）。
+1. **Key**：某一个 API Key 的状态（`healthy` / `invalid` / `forbidden` / `quota_exhausted` / 冷却中）。
 2. **Provider 实例**：本页展示的 `runtime`。
 3. **Provider 类型**：Catalog 的 `implementation.verification`，与实例无关。
 
@@ -82,8 +82,10 @@ runtime                     = healthy        # 上一次探测确实成功了
 
 | 限制 | 默认 | 上限 |
 |---|---|---|
-| 每轮真实搜索探测 | 3 | 200 |
-| 每日真实搜索探测 | 20 | 2000 |
+| 每轮付费真实搜索探测 | 3 | 200 |
+| 每日付费真实搜索探测 | 20 | 2000 |
+| 每轮匿名真实搜索探测 | 3 | 200 |
+| 每日匿名真实搜索探测 | 20 | 2000 |
 | 探测间隔 | 360 分钟 | 5 – 10080 分钟 |
 | 并发探测 | 1 | 4 |
 
@@ -92,18 +94,24 @@ runtime                     = healthy        # 上一次探测确实成功了
 - 连接探测**单独计数**（`connectUsedToday`），不占付费预算。它不设每日上限（设上限会让
   页面无法解释"这个源为什么不可用"），但受两个约束：调度器每 60 秒才 tick 一次，且并发
   上限为 4；手动"检测全部"一次最多触发与源数量相同的请求。
-- **无凭证源的真实搜索**单独计数（`anonymousSearchUsedToday`），既不占用付费预算，也不需要
-  打开付费开关——它不发送任何凭证，不可能消耗账户额度。之所以单独计数而不是标成"免费"：
-  代码无法知道厂商是否按 IP 计量，所以只记录事实，不做"免费"的断言。
-- 每日计数**持久化**在 `health_probe_budget` 表，重启不重置；升级到本版本时会用当天
-  已有的 `provider_health_checks` 记录**回填**，不会凭空多给一整天。
+- **无凭证源的真实搜索**单独计数（`anonymousSearchUsedToday`），使用独立的
+  `anonymousMaxRequestsPerRun/Day`（默认 3 / 20），既不占用付费预算，也不需要打开付费开关。
+  之所以单独计数而不是标成"免费"：代码无法知道厂商是否按 IP 计量，所以只记录事实。
+- 判定“是否使用凭据”以 `providerRequiresKey(type, config)` 为准；generic-http 配置了
+  `keyInjection` 或 `{{key}}` 时属于需凭据源。可选 Key 池存在不会自动把免 Key 源变成付费源。
+- 每日计数**持久化**在 `health_probe_budget` 表，重启不重置。迁移 `0009` 先归档旧桶，再从
+  `provider_health_billing.budget_day/spent` 一次性重算；只有 `spent=true` 的记录计入，旧的匿名
+  历史必须有精确分类才计入匿名，其余保守计入付费，不会凭空多给一整天。
 - 扣减用条件更新（`UPDATE ... SET used = used + 1 WHERE used < max`）实现，
   同一天两个并发探测不可能都通过检查。100 并发探测的上限断言见测试 T18。
 - **写不进账本就不发请求**：预算预留失败时，真实搜索探测返回 429，不会"先花钱后补账"。
 - 手动探测同样受预算约束，没有后门。
-- **取消不退款**：取消可能发生在请求已发出之后，厂商可能已经计费，而本代码无法区分。若取消
-  也退款，一个反复中止请求的客户端就能在账本显示 0 的情况下无限消耗额度。只有**确定没发出**
-  的探测（没有可用凭证、参数不合法即被拒绝）才退款。
+- **退款以真实物理请求数为准**：`requests=null/0` 证明探测没有离开进程，此时按预留时记录的
+  `budget_day` 退还对应付费/匿名槽位，并写 `spent=false`。即使探测跨过 UTC 午夜，也不会退到
+  新的一天。`requests>0` 时取消或失败都不退款，因为厂商可能已经计费。
+- **精确计费侧表**：`provider_health_billing` 记录 `budget_kind`、`budget_day`、
+  `classification`、`credential_used` 与 `spent`。升级回填只统计 `spent=true` 的记录；旧的匿名
+  桶只有在历史分类可证明时才计入匿名，其余保守计入付费。
 - **多实例不共享预算**：计数在各自进程的 SQLite 文件里，横向扩容时每个实例都有独立的
   每日额度。这是已知限制，不是"全局预算"。
 - 每次预留/拒绝都写审计日志（`provider_health.probe`）与结构化日志。
@@ -137,7 +145,7 @@ runtime                     = healthy        # 上一次探测确实成功了
 | POST | `/api/admin/provider-health/:id/probe` | 手动探测（`{"kind":"connect"\|"search"}`） |
 | POST | `/api/admin/provider-health/:id/auto-probe` | 开关单个源的自动探测 |
 | POST | `/api/admin/provider-health/:id/reset` | 重置健康状态 |
-| GET | `/api/admin/provider-health/batch-test/preview?kind=&providerIds=` | 批量检测预检（只读） |
+| GET | `/api/admin/provider-health/batch-test/preview?kind=&providerIds=&includeKeyless=` | 批量检测预检（只读，`includeKeyless` 缺省 false） |
 | POST | `/api/admin/provider-health/batch-test` | 创建批量检测任务 |
 | GET | `/api/admin/provider-health/batch-test/:jobId` | 读取进度与逐源结果（只读） |
 | POST | `/api/admin/provider-health/batch-test/:jobId/cancel` | 取消任务 |
@@ -160,33 +168,35 @@ runtime                     = healthy        # 上一次探测确实成功了
 |---|---|---|---|---|
 | 1 | `enabled=false` | `SKIPPED_DISABLED` | 否 | 否 |
 | 2 | `getAdapter(type)` 为空 | `CONFIG_ERROR` | 否 | **是（算失败）** |
-| 3 | 冷却未到期 / 计数器已耗尽（`remainingToday<=0`、`maxPerRun<=0`） | `SKIPPED_COOLDOWN` / `SKIPPED_BUDGET` | 否 | 否 |
-| 4 | `requiresKey` 且首条启用 Key 解密失败 | `CONFIG_ERROR` | 否 | **是（算失败）** |
+| 3 | 调度器冷却未到期 | `SKIPPED_COOLDOWN` | 否 | 否 |
+| 4 | `requiresKey` 且全部启用 Key 无法解密 | `CONFIG_ERROR` | 否 | **是（算失败）** |
 | 5 | `requiresKey` 且一条 Key 都没填 | `SKIPPED_NO_KEY` | 否 | 否 |
 | 6 | `requiresKey` 且 Key 全部被禁用 | `SKIPPED_NO_ENABLED_KEY` | 否 | 否 |
-| 7 | `!requiresKey` 且未开启「包含免 Key 来源」 | `SKIPPED_KEYLESS_BY_POLICY` | 否 | 否 |
-| 8 | 以上都不命中 | `ELIGIBLE` | 是 | 是 |
+| 7 | 账户组配额耗尽 | `SKIPPED_ACCOUNT_QUOTA` | 否 | 否 |
+| 8 | 全部 Key 冷却 / 额度耗尽 / 失效 / 不可用 | `SKIPPED_COOLDOWN` / `SKIPPED_QUOTA_EXHAUSTED` / `SKIPPED_INVALID_KEY` / `SKIPPED_NO_USABLE_KEY` | 否 | 否 |
+| 9 | `!requiresKey` 且本任务未开启「包含免 Key 来源」 | `SKIPPED_KEYLESS_BY_POLICY` | 否 | 否 |
+| 10 | 付费搜索且付费开关关闭 | `SKIPPED_PAID_DISABLED` | 否 | 否 |
+| 11 | 对应付费/匿名预算耗尽 | `SKIPPED_BUDGET` | 否 | 否 |
+| 12 | 以上都不命中 | `ELIGIBLE` | 是 | 是 |
 
 两点必须说清楚：
 
-- **付费开关不是资格规则。** `paidProbesEnabled=false` 时，服务端拒绝整个**付费运行**
-  （`POST …/batch-test` 返回 409 `validation_error`，文案指明去哪个设置页开启），而不是
-  把 12 个完全健康的源逐个标成"预算耗尽"——那会让人去查错的设置项。§表第 3 条只处理
-  **计数器**（`remainingToday<=0`、`maxPerRun<=0`）。
-- **预算只拦"有可用凭据"的源。** 一条 Key 都没有的源一分钱也花不了，它应该报
-  `SKIPPED_NO_KEY`（具体原因），而不是 `SKIPPED_BUDGET`（笼统原因）。
-- `kind=connect` 时只看冷却，不看付费额度；免 Key 来源在任何 Key 状态下都不因 Key 被拦。
+- **付费开关只影响需凭据的搜索源。** 混合任务里这些源记 `SKIPPED_PAID_DISABLED`，匿名源继续；
+  只有纯付费范围才在创建任务时返回 409 `validation_error`。仅匿名范围始终允许启动。
+- **预算按真实类别分开。** 需凭据源看付费额度，免 Key 源看匿名额度；无 Key 的需凭据源先报
+  `SKIPPED_NO_KEY`，不会被笼统报成预算耗尽。
+- `kind=connect` 不看搜索额度；generic-http 的匿名连接探测执行真实搜索，仍计入匿名桶。
 
 ### 统计口径
 
 - `total` = 范围内来源总数，**包含**被跳过的源（否则 UI 无法显示"跳过 8"）。
-- `skipped` = 命中第 1/3/5/6/7 条的来源，**不进分母、不计失败**。
+- `skipped` = 所有 `SKIPPED_*` 来源，**不进分母、不计失败**。
 - `testable` = `total - skipped`，**含** `CONFIG_ERROR`（它在预检阶段即判失败，但确实被检测过）。
 - `done` = `ok + failed + pending`；`pending` 就是 `empty_results`。
 - 成功率 = `ok / testable`。
 - 恒等式（进测试）：`done + skipped + remaining === total` 且 `ok + failed + pending === done`。
-- 预检的 7 个计数之和 **等于** `total`：冷却与预算耗尽共用 `coolingSkipped` 一列，
-  逐条 `code` 仍然区分两者。
+- 预检的 7 个计数之和 **等于** `total`：冷却、额度、账户配额与付费策略跳过共用
+  `coolingSkipped` 一列，逐条 `code` 仍然区分具体原因。
 
 ### 错误分类（对外 12 个规范名）
 
@@ -236,19 +246,19 @@ runtime                     = healthy        # 上一次探测确实成功了
 
 ### 取消与 `interrupted` 的语义
 
-- **取消**只写 `status='cancelled'` 并 abort 任务级 `AbortSignal`，**不等待 runner 收尾**。
-  已完成的条目保持不可变（结论仍可读）；未开始的条目由 worker 在出队前记
-  `SKIPPED_CANCELLED`；在途条目被 abort 后同样记 `SKIPPED_CANCELLED`，**不写健康行、
-  不退款**（取消可能发生在请求已经发出之后，这一点无法区分）。
+- **取消是原子事务**：同一事务内重读 `running` 行，把所有 `unknown` 项改为
+  `SKIPPED_CANCELLED`，重算全部计数，再写 `cancelled`、`finishedAt` 与 `itemsJson`；
+  提交后才 abort 任务级 `AbortSignal`，不等待 runner 收尾。已完成的条目保持不可变。
+  取消不写健康行；预算是否退还取决于 `requests`：为 0 时按原 `budget_day` 退款，大于 0 时保留。
 - **取消的 abort reason 带 `code:"cancelled"`**，否则 `classifyError` 的 `/aborted/i`
   兜底会把它判成 `timeout` 并给源写一条降级记录——这是最容易踩的坑，runner 侧另有一道
   `detached.cancelled()` 兜底。
-- **`interrupted`**：进程被 kill 时，行仍是 `running`。**下次启动**由
-  `ProviderBatchService` 构造函数执行一条幂等 `UPDATE … WHERE status='running'`，把它改成
-  `interrupted` 并补写 `finished_at`。第二次执行匹配 0 行。因此重启后**永远不会**读成
-  `completed`。
-- 只有 `remaining>0` 的异常收尾才写 `partial`，UI 不依赖它表达"部分完成"——部分完成由
-  `done + skipped < total` 判定。
+- **`interrupted`**：进程被 kill 时，行仍是 `running`。下次启动由
+  `ProviderBatchService` 构造函数在事务内把遗留 `unknown` 项改为 `SKIPPED_INTERRUPTED`，
+  重算计数并写 `interrupted`/`finished_at`。第二次执行匹配 0 行；终态读视图保证
+  `remaining=0`，因此重启后永远不会读成 `completed` 或永久 running。
+- 正常收尾写 `completed`，异常收尾写 `partial`；两者都在事务内重读且只终结仍为 `running`
+  的行。`cancelled` 永远不会被旧 runner 覆盖成 `completed`。UI 以状态与 `remaining=0` 共同判断 settled。
 
 ### 上游请求数从哪来
 
@@ -297,8 +307,9 @@ runtime                     = healthy        # 上一次探测确实成功了
 |---|---|---|
 | `provider_health_checks` | 追加式探测日志（历史）；`batch_id` 指向产生它的批量任务 | 0003 / 0008 |
 | `provider_probe_state` | 每源排期：自动开关、连续失败、退避级别、下次探测时间、重置标记 | 0005 |
-| `health_probe_budget` | 每日每类探测的持久计数 | 0005 |
-| `provider_test_batches` | 批量检测**任务台账**：进度、逐源状态、起始预算快照 | 0008 |
+| `health_probe_budget` | 每日每类探测的持久计数（`connect` / `search` / `search_anonymous`） | 0005 / 0009 |
+| `provider_health_billing` | 每次真实搜索的精确计费分类、是否使用凭据、是否实际发出请求 | 0009 |
+| `provider_test_batches` | 批量检测**任务台账**：进度、逐源状态、起始预算与任务级策略快照 | 0008 |
 
 **`provider_test_batches` 不是第二套健康表。** 健康事实只有 `provider_health_checks`
 一个来源；任务台账只回答"这次跑到哪了"。删除一条台账不会改写任何健康历史。
@@ -306,8 +317,9 @@ runtime                     = healthy        # 上一次探测确实成功了
 `requests` 存放在 `provider_health_checks.detail_json`（`{"requests": n}`），
 没有新增主表列——避免为了一个观测字段再动一次主表。
 
-迁移 `0005` **只建新表**，不改任何既有表与数据。迁移 `0008` 只做两件事：给
-`provider_health_checks` 加可空 `batch_id`（历史行为 `NULL`，无需回填）并新建台账表。
+迁移 `0005` **只建新表**，不改任何既有表与数据。迁移 `0008` 给
+`provider_health_checks` 加可空 `batch_id` 并新建台账表。迁移 `0009` 新增精确计费分类表与
+`spent` 事实，把旧预算桶归档后按可审计记录一次性重算，之后的新预留直接写独立账本桶。
 升级兼容性由 `tests/unit/cache-migration.test.ts`、`tests/unit/quality-migration.test.ts`
 与 `tests/unit/batch-migration.test.ts` 用真实 SQLite 文件验证：先按旧迁移集建库并写入
 管理员、Provider、Key、探测记录与设置，再跑完整迁移，断言逐项不变。

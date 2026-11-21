@@ -10,7 +10,7 @@
  *  3. **Complete.** Every column the service writes exists with the declared
  *     default, so a runner can insert a row without naming all of them.
  */
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -167,5 +167,114 @@ describe("provider test batch migration 0008", () => {
     const second = runMigrations(handle.sqlite, directory);
     expect(second.applied).toHaveLength(0);
     expect(second.skipped).toContain("0008_provider_test_batches.sql");
+  });
+});
+
+describe("provider health billing migration 0009", () => {
+  const directory = resolveMigrationsDir();
+  const handles: DbHandle[] = [];
+  const dirs: string[] = [];
+
+  function tempDir(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const handle of handles.splice(0)) {
+      try {
+        handle.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("archives legacy buckets, recomputes once, and preserves reservations made after migration", () => {
+    const file = join(tempDir("search-hub-billing-migration-"), "billing.db");
+    const handle = createDb({ file });
+    handles.push(handle);
+    runMigrations(handle.sqlite, directory);
+    const now = "2026-11-20T12:00:00.000Z";
+    handle.sqlite
+      .prepare("INSERT INTO provider_instances (id, name, type, created_at, updated_at) VALUES (?,?,?,?,?)")
+      .run("p1", "legacy", "brave", now, now);
+    const insertCheck = handle.sqlite.prepare(
+      "INSERT INTO provider_health_checks (id, provider_id, kind, status, health_score, detail_json, trigger, checked_at) VALUES (?,?,?,?,?,?,?,?)",
+    );
+    insertCheck.run("hc-legacy", "p1", "search", "healthy", 100, "{}", "manual", now);
+    insertCheck.run("hc-exact", "p1", "search", "healthy", 100, "{}", "manual", now);
+    const insertBudget = handle.sqlite.prepare(
+      "INSERT INTO health_probe_budget (day, kind, used, updated_at) VALUES (?,?,?,?)",
+    );
+    insertBudget.run("2026-11-20", "search", 4, now);
+    insertBudget.run("2026-11-20", "search_anonymous", 9, now);
+    insertBudget.run("2026-11-20", "connect", 2, now);
+    const legacyRows = handle.sqlite.prepare("SELECT * FROM health_probe_budget ORDER BY kind").all();
+
+    const columns = (handle.sqlite.prepare("PRAGMA table_info(provider_health_billing)").all() as Array<{ name: string }>)
+      .map((row) => row.name);
+    expect(columns).toEqual([
+      "health_check_id",
+      "budget_kind",
+      "budget_day",
+      "classification",
+      "provider_type_snapshot",
+      "credential_used",
+      "spent",
+      "created_at",
+    ]);
+
+    const sql = readFileSync(join(directory, "0009_provider_health_billing.sql"), "utf8");
+    // Simulate the first migration before its one-shot marker is written.
+    handle.sqlite.prepare("DELETE FROM provider_health_billing_migration WHERE id=1").run();
+    handle.sqlite.exec(sql);
+    handle.sqlite.exec(sql);
+    expect(handle.sqlite.prepare("SELECT * FROM health_probe_budget_legacy ORDER BY kind").all()).toEqual(legacyRows);
+    expect(handle.sqlite.prepare("SELECT id FROM provider_health_billing_migration").all()).toEqual([{ id: 1 }]);
+    expect(handle.sqlite.prepare("SELECT kind, used FROM health_probe_budget ORDER BY kind").all()).toEqual([
+      { kind: "connect", used: 2 },
+      { kind: "search", used: 4 },
+      { kind: "search_anonymous", used: 0 },
+    ]);
+    let rows = handle.sqlite
+      .prepare("SELECT health_check_id, budget_kind, budget_day, classification, provider_type_snapshot, credential_used, spent FROM provider_health_billing ORDER BY health_check_id")
+      .all();
+    expect(rows).toEqual([
+      { health_check_id: "hc-exact", budget_kind: "search", budget_day: "2026-11-20", classification: "legacy_conservative", provider_type_snapshot: null, credential_used: 0, spent: 1 },
+      { health_check_id: "hc-legacy", budget_kind: "search", budget_day: "2026-11-20", classification: "legacy_conservative", provider_type_snapshot: null, credential_used: 0, spent: 1 },
+    ]);
+
+    // A partially migrated database may already know an exact anonymous row.
+    // With no marker, the one-shot recompute must use it instead of the polluted
+    // legacy anonymous counter, while preserving the larger paid counter.
+    handle.sqlite
+      .prepare("UPDATE provider_health_billing SET budget_kind=?, classification=?, provider_type_snapshot=?, credential_used=? WHERE health_check_id=?")
+      .run("search_anonymous", "exact", "generic-http", 0, "hc-exact");
+    handle.sqlite.prepare("DELETE FROM provider_health_billing_migration WHERE id=1").run();
+    handle.sqlite.exec(sql);
+    expect(handle.sqlite.prepare("SELECT kind, used FROM health_probe_budget ORDER BY kind").all()).toEqual([
+      { kind: "connect", used: 2 },
+      { kind: "search", used: 4 },
+      { kind: "search_anonymous", used: 1 },
+    ]);
+    expect(handle.sqlite.prepare("SELECT * FROM health_probe_budget_legacy ORDER BY kind").all()).toEqual(legacyRows);
+
+    // Once marked, later reservations are authoritative and repeated SQL cannot
+    // clear or replace them.
+    handle.sqlite.prepare("UPDATE health_probe_budget SET used=2 WHERE kind='search_anonymous'").run();
+    handle.sqlite.exec(sql);
+    rows = handle.sqlite
+      .prepare("SELECT health_check_id, budget_kind, budget_day, classification, provider_type_snapshot, credential_used, spent FROM provider_health_billing ORDER BY health_check_id")
+      .all();
+    expect(rows).toEqual([
+      { health_check_id: "hc-exact", budget_kind: "search_anonymous", budget_day: "2026-11-20", classification: "exact", provider_type_snapshot: "generic-http", credential_used: 0, spent: 1 },
+      { health_check_id: "hc-legacy", budget_kind: "search", budget_day: "2026-11-20", classification: "legacy_conservative", provider_type_snapshot: null, credential_used: 0, spent: 1 },
+    ]);
+    expect(handle.sqlite.prepare("SELECT used FROM health_probe_budget WHERE kind='search_anonymous'").get()).toEqual({ used: 2 });
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_checks").get()).toEqual({ n: 2 });
+    expect(handle.sqlite.prepare("SELECT * FROM health_probe_budget_legacy ORDER BY kind").all()).toEqual(legacyRows);
   });
 });

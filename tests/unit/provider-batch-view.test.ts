@@ -69,6 +69,7 @@ function job(items: BatchItem[]): BatchJobView {
       remaining: items.filter((entry) => entry.state === "unknown").length,
     },
     items,
+    includeKeyless: false,
     budget: {
       day: "2026-01-01",
       maxPerRun: 10,
@@ -76,6 +77,9 @@ function job(items: BatchItem[]): BatchJobView {
       usedToday: 0,
       connectUsedToday: 0,
       anonymousSearchUsedToday: 0,
+      anonymousMaxPerRun: 10,
+      anonymousMaxPerDay: 100,
+      anonymousRemainingToday: 100,
       remainingToday: 100,
       paidProbesEnabled: true,
       scheduledEnabled: false,

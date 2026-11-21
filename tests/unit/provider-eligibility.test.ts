@@ -20,6 +20,7 @@ import {
   loadEligibilityFacts,
   previewBatch,
   testableCount,
+  type EligibilityFacts,
   type EligibilityOptions,
 } from "../../apps/api/src/services/provider-eligibility.js";
 import type { HealthService } from "../../apps/api/src/services/health.js";
@@ -55,6 +56,9 @@ function budget(patch: Partial<ReturnType<HealthService["budget"]>> = {}): Retur
     usedToday: 0,
     connectUsedToday: 0,
     anonymousSearchUsedToday: 0,
+    anonymousMaxPerRun: 10,
+    anonymousMaxPerDay: 100,
+    anonymousRemainingToday: 100,
     remainingToday: 100,
     paidProbesEnabled: true,
     scheduledEnabled: false,
@@ -165,15 +169,31 @@ function buildFixture(): Fixture {
   return { handle, db, dir, ids, keys };
 }
 
-/**
- * A `resolveKey` stand-in: every ciphertext in this fixture is decryptable
- * except those a test explicitly corrupts (see the decrypt-failure case).
- */
-function resolver(broken: Set<string> = new Set()) {
+/** 与 ProviderService 相同的批量可用性契约；测试显式标记解密失败的 Key。 */
+function resolver(db: SearchHubDb, broken: Set<string> = new Set()) {
   return {
-    resolveKey(keyId: string): string | undefined {
-      if (broken.has(keyId)) return undefined;
-      return `plaintext-${keyId}`;
+    keyAvailability(ids: string[]) {
+      const rows = db.select().from(apiKeys).all().filter((key) => ids.includes(key.providerId));
+      return new Map(
+        ids.map((providerId) => {
+          const keys = rows.filter((key) => key.providerId === providerId);
+          const enabled = keys.filter((key) => key.enabled);
+          const decryptable = enabled.filter((key) => !broken.has(key.id));
+          return [
+            providerId,
+            {
+              total: keys.length,
+              enabled: enabled.length,
+              decryptable: decryptable.length,
+              available: decryptable.length,
+              invalid: 0,
+              quotaExhausted: 0,
+              coolingUntil: null,
+              accountQuotaExhausted: false,
+            },
+          ];
+        }),
+      );
     },
   };
 }
@@ -183,7 +203,7 @@ describe("eligibility decisions", () => {
     const fixture = buildFixture();
     fixtures.push(fixture);
     const ids = [...fixture.ids];
-    const facts = loadEligibilityFacts(fixture.db, resolver(), ids);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), ids);
     const preview = previewBatch(facts, ids, options());
 
     expect(preview.total).toBe(20);
@@ -247,7 +267,7 @@ describe("eligibility decisions", () => {
       .run();
     const ids = [...fixture.ids, keyless];
 
-    const facts = loadEligibilityFacts(fixture.db, resolver(), ids);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), ids);
     const preview = previewBatch(facts, ids, options({ includeKeyless: false }));
 
     const sum =
@@ -284,7 +304,7 @@ describe("eligibility decisions", () => {
       })
       .run();
 
-    const facts = loadEligibilityFacts(fixture.db, resolver(), [id]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), [id]);
     // Paid probing off + zero budget must not matter for a connectivity probe.
     const connect = decideEligibility(
       facts,
@@ -306,7 +326,7 @@ describe("eligibility decisions", () => {
     fixtures.push(fixture);
     const id = fixture.ids[0]!;
     const keyId = "key-ok-1";
-    const facts = loadEligibilityFacts(fixture.db, resolver(new Set([keyId])), [id]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db, new Set([keyId])), [id]);
     const decision = decideEligibility(facts, id, options());
 
     expect(decision.code).toBe("CONFIG_ERROR");
@@ -325,7 +345,7 @@ describe("eligibility decisions", () => {
     const fixture = buildFixture();
     fixtures.push(fixture);
     const id = fixture.ids[0]!;
-    const facts = loadEligibilityFacts(fixture.db, resolver(), [id]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), [id]);
 
     // `paidProbesEnabled=false` refuses the whole paid run (the route returns a
     // 409 naming the setting). It must not be reported as "this source is out of
@@ -344,7 +364,7 @@ describe("eligibility decisions", () => {
     const fixture = buildFixture();
     fixtures.push(fixture);
     const id = fixture.ids[0]!;
-    const facts = loadEligibilityFacts(fixture.db, resolver(), [id]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), [id]);
     const decision = decideEligibility(facts, id, options({ budget: budget({ remainingToday: 0 }) }));
     expect(decision.code).toBe("SKIPPED_BUDGET");
     expect(decision.reason).toContain("budget_exhausted");
@@ -381,7 +401,7 @@ describe("eligibility decisions", () => {
       })
       .run();
 
-    const facts = loadEligibilityFacts(fixture.db, resolver(), [id]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), [id]);
     const decision = decideEligibility(
       facts,
       id,
@@ -423,7 +443,7 @@ describe("eligibility decisions", () => {
       })
       .run();
 
-    const facts = loadEligibilityFacts(fixture.db, resolver(), [id]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), [id]);
     const decision = decideEligibility(facts, id, options());
     expect(decision.code).toBe("CONFIG_ERROR");
     expect(decision.reason).toContain("adapter_missing");
@@ -432,7 +452,7 @@ describe("eligibility decisions", () => {
   it("reports an unknown provider id as a configuration error", () => {
     const fixture = buildFixture();
     fixtures.push(fixture);
-    const facts = loadEligibilityFacts(fixture.db, resolver(), [fixture.ids[0]!]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), [fixture.ids[0]!]);
     const decision = decideEligibility(facts, "does-not-exist", options());
     expect(decision.code).toBe("CONFIG_ERROR");
     expect(decision.reason).toContain("provider_not_found");
@@ -468,10 +488,141 @@ describe("eligibility decisions", () => {
         updatedAt: now,
       })
       .run();
-    const facts = loadEligibilityFacts(fixture.db, resolver(), [id]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db), [id]);
     // Disabling a source is an administrative decision; the missing adapter is a
     // maintenance detail that must not be blamed for it.
     expect(decideEligibility(facts, id, options()).code).toBe("SKIPPED_DISABLED");
+  });
+});
+
+describe("credential availability eligibility", () => {
+  function availability(patch: Partial<{
+    total: number;
+    enabled: number;
+    decryptable: number;
+    available: number;
+    invalid: number;
+    quotaExhausted: number;
+    coolingUntil: string | null;
+    accountQuotaExhausted: boolean;
+  }> = {}) {
+    return {
+      total: 1,
+      enabled: 1,
+      decryptable: 1,
+      available: 1,
+      invalid: 0,
+      quotaExhausted: 0,
+      coolingUntil: null,
+      accountQuotaExhausted: false,
+      ...patch,
+    };
+  }
+
+  function factsWithAvailability(
+    value: ReturnType<typeof availability>,
+    type = "brave",
+    config: Record<string, unknown> = {},
+  ): EligibilityFacts {
+    return {
+      providers: [{ id: "p", name: "p", type, enabled: true, config }],
+      enabledKeyCounts: new Map([["p", value.enabled]]),
+      anyKeyCounts: new Map([["p", value.total]]),
+      decryptable: new Map([["p", value.decryptable > 0]]),
+      coolingUntil: new Map(),
+      keyAvailability: new Map([["p", value]]),
+    } as unknown as EligibilityFacts;
+  }
+
+  it("skips invalid, quota-exhausted and account-quota-exhausted pools explicitly", () => {
+    expect(decideEligibility(factsWithAvailability(availability({ available: 0, invalid: 1 })), "p", options()).code)
+      .toBe("SKIPPED_INVALID_KEY");
+    expect(decideEligibility(factsWithAvailability(availability({ available: 0, quotaExhausted: 1 })), "p", options()).code)
+      .toBe("SKIPPED_QUOTA_EXHAUSTED");
+    expect(
+      decideEligibility(
+        factsWithAvailability(availability({ available: 1, accountQuotaExhausted: true })),
+        "p",
+        options(),
+      ).code,
+    ).toBe("SKIPPED_ACCOUNT_QUOTA");
+  });
+
+  it("uses cooldown and decryption facts without probing a first enabled key", () => {
+    expect(
+      decideEligibility(
+        factsWithAvailability(availability({ available: 0, coolingUntil: "2026-01-01T00:05:00.000Z" })),
+        "p",
+        options(),
+      ).code,
+    ).toBe("SKIPPED_COOLDOWN");
+    expect(decideEligibility(factsWithAvailability(availability({ decryptable: 0, available: 0 })), "p", options()).code)
+      .toBe("CONFIG_ERROR");
+  });
+
+  it("keeps a pool eligible when at least one key is actually available", () => {
+    const value = availability({ total: 2, enabled: 2, decryptable: 2, available: 1, invalid: 1 });
+    expect(decideEligibility(factsWithAvailability(value), "p", options()).code).toBe("ELIGIBLE");
+  });
+
+  it("rejects credentialed generic connectivity before it can be previewed as eligible", () => {
+    const facts = factsWithAvailability(availability(), "generic-http", {
+      keyInjection: { in: "header", name: "X-Key" },
+    });
+    const decision = decideEligibility(facts, "p", options({ kind: "connect" }));
+    expect(decision.code).toBe("CONFIG_ERROR");
+    expect(decision.reason).toContain("generic");
+  });
+
+  it("applies anonymous budget to generic connectivity but not builtin keyless connectivity", () => {
+    const exhausted = budget({ anonymousRemainingToday: 0, anonymousMaxPerRun: 1 });
+    const generic = factsWithAvailability(
+      availability({ total: 0, enabled: 0, decryptable: 0, available: 0 }),
+      "generic-http",
+    );
+    const builtin = factsWithAvailability(
+      availability({ total: 0, enabled: 0, decryptable: 0, available: 0 }),
+      "hackernews",
+    );
+    expect(decideEligibility(generic, "p", options({ kind: "connect", budget: exhausted })).code).toBe(
+      "SKIPPED_BUDGET",
+    );
+    expect(decideEligibility(builtin, "p", options({ kind: "connect", budget: exhausted })).code).toBe("ELIGIBLE");
+  });
+
+  it("loads provider config and asks keyAvailability once instead of decrypting a key", () => {
+    const fixture = buildFixture();
+    fixtures.push(fixture);
+    const id = "generic-policy";
+    const now = "2026-01-01T00:00:00.000Z";
+    fixture.db
+      .insert(providerInstances)
+      .values({
+        id,
+        name: id,
+        type: "generic-http",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:9",
+        configJson: JSON.stringify({ keyInjection: { in: "header", name: "X-Key" } }),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    let calls = 0;
+    const facts = loadEligibilityFacts(
+      fixture.db,
+      {
+        keyAvailability(ids: string[]) {
+          calls += 1;
+          expect(ids).toEqual([id]);
+          return new Map([[id, availability({ total: 0, enabled: 0, decryptable: 0, available: 0 })]]);
+        },
+      } as never,
+      [id],
+    );
+    expect(calls).toBe(1);
+    expect(facts.providers[0]!.config).toEqual({ keyInjection: { in: "header", name: "X-Key" } });
+    expect(decideEligibility(facts, id, options({ includeKeyless: true })).code).toBe("SKIPPED_NO_KEY");
   });
 });
 
@@ -479,7 +630,7 @@ describe("success-rate denominator", () => {
   it("is `testable`: skips are excluded, configuration errors are not", () => {
     const fixture = buildFixture();
     fixtures.push(fixture);
-    const facts = loadEligibilityFacts(fixture.db, resolver(new Set(["key-ok-2"])), [...fixture.ids]);
+    const facts = loadEligibilityFacts(fixture.db, resolver(fixture.db, new Set(["key-ok-2"])), [...fixture.ids]);
     const preview = previewBatch(facts, [...fixture.ids], options());
 
     // 20 sources: 8 skipped (3 disabled + 3 no key + 2 all-keys-disabled).

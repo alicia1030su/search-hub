@@ -350,8 +350,11 @@ export const api = {
    * have a side effect, and it can be opened any number of times before the
    * operator decides.
    */
-  batchTestPreview: (params: { kind: "connect" | "search"; providerIds?: string[] }, signal?: AbortSignal) => {
-    const query = new URLSearchParams({ kind: params.kind });
+  batchTestPreview: (
+    params: { kind: "connect" | "search"; providerIds?: string[]; includeKeyless?: boolean },
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({ kind: params.kind, includeKeyless: String(params.includeKeyless ?? false) });
     if (params.providerIds && params.providerIds.length > 0) {
       // Comma-separated, matching the query schema; a repeated parameter would be
       // read as a single string by the server.
@@ -359,8 +362,12 @@ export const api = {
     }
     return request<BatchPreview>(`/admin/provider-health/batch-test/preview?${query.toString()}`, { signal });
   },
-  startBatchTest: (body: { kind: "connect" | "search"; providerIds?: string[]; concurrency?: number }) =>
-    request<BatchStartResponse>("/admin/provider-health/batch-test", { method: "POST", body }),
+  startBatchTest: (body: {
+    kind: "connect" | "search";
+    providerIds?: string[];
+    includeKeyless?: boolean;
+    concurrency?: number;
+  }) => request<BatchStartResponse>("/admin/provider-health/batch-test", { method: "POST", body }),
   batchTestJob: (jobId: string, signal?: AbortSignal) =>
     request<BatchJobView>(`/admin/provider-health/batch-test/${seg(jobId)}`, { signal }),
   cancelBatchTest: (jobId: string) =>

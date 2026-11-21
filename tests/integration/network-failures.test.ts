@@ -206,6 +206,19 @@ describe("real network failures reach the classifier", () => {
     expect(classifyError(error!)).not.toBe("ok");
   }, 15_000);
 
+  it("classifies a real HTTP 500 response as server_error", async () => {
+    const server = track(
+      createHttpServer((_request, response) => {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end('{"error":"upstream failed"}');
+      }),
+    );
+    const port = await listen(server);
+    const error = await failure(`http://127.0.0.1:${port}/api`);
+    expect(classifyError(error)).toBe("server_error");
+    expect(statusFor("server_error")).toBe("degraded");
+  });
+
   it("treats an HTTP 200 that is not the expected API as bad_response, not healthy", async () => {
     const server = track(
       createHttpServer((_request, response) => {
@@ -294,5 +307,7 @@ describe("real network failures reach the classifier", () => {
     // before any connection: that is the guard doing its job.
     expect(error).not.toBeNull();
     expect(String((error as { code?: string }).code)).toBe("blocked");
+    expect(classifyError(error)).toBe("network");
+    expect(classifyError(error)).not.toBe("forbidden");
   });
 });

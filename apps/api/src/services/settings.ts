@@ -49,9 +49,12 @@ export interface AppSettings {
     intervalMinutes: number;
     maxRequestsPerRun: number;
     maxRequestsPerDay: number;
+    /** Keyless searches have an independent bucket and do not require the paid switch. */
+    anonymousMaxRequestsPerRun: number;
+    anonymousMaxRequestsPerDay: number;
     /** Paid search probes; without this, only free connectivity probes run. */
     paidProbesEnabled: boolean;
-    /** Also probe providers that have no enabled key (will report unverified). */
+    /** Legacy global field retained for compatibility; batch runs use task-level policy. */
     includeUnverified: boolean;
     /**
      * How many probes may run at once.
@@ -85,8 +88,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     intervalMinutes: 360,
     maxRequestsPerRun: 3,
     maxRequestsPerDay: 20,
+    anonymousMaxRequestsPerRun: 3,
+    anonymousMaxRequestsPerDay: 20,
     paidProbesEnabled: false,
-    includeUnverified: true,
+    includeUnverified: false,
     concurrency: 1,
   },
   logging: { level: "info" },
@@ -181,11 +186,16 @@ export class SettingsService {
     // 3 per run / 20 per day are the shipped defaults; the caps are hard.
     health.maxRequestsPerRun = Math.min(200, Math.max(1, Math.round(health.maxRequestsPerRun)));
     health.maxRequestsPerDay = Math.min(2000, Math.max(1, Math.round(health.maxRequestsPerDay)));
+    health.anonymousMaxRequestsPerRun = Math.min(200, Math.max(1, Math.round(health.anonymousMaxRequestsPerRun)));
+    health.anonymousMaxRequestsPerDay = Math.min(2000, Math.max(1, Math.round(health.anonymousMaxRequestsPerDay)));
     health.concurrency = Math.min(4, Math.max(1, Math.round(health.concurrency)));
     // A run budget larger than the day budget can never be spent; keeping it
     // smaller makes "check all" stop at the daily ceiling instead of queuing.
     if (health.maxRequestsPerRun > health.maxRequestsPerDay) {
       health.maxRequestsPerRun = health.maxRequestsPerDay;
+    }
+    if (health.anonymousMaxRequestsPerRun > health.anonymousMaxRequestsPerDay) {
+      health.anonymousMaxRequestsPerRun = health.anonymousMaxRequestsPerDay;
     }
   }
 

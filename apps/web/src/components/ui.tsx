@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { classNames as cn } from "../lib/format";
 import { keyStatusLabel, searchStatusLabel } from "../lib/i18n";
+import { keyStatusTones } from "../lib/key-status";
 import type { KeyStatus, SearchStatus } from "../lib/types";
 
 /* ---- button ------------------------------------------------------------- */
@@ -261,15 +262,6 @@ export function Badge({
     </span>
   );
 }
-
-const keyStatusTones: Record<KeyStatus, BadgeTone> = {
-  healthy: "success",
-  rate_limited: "warning",
-  cooldown: "warning",
-  invalid: "destructive",
-  disabled: "muted",
-  unknown: "muted",
-};
 
 export function KeyStatusBadge({ status }: { status: KeyStatus }) {
   return <Badge tone={keyStatusTones[status]}>{keyStatusLabel(status)}</Badge>;

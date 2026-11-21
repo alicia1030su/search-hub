@@ -191,11 +191,12 @@ erDiagram
 // 实际契约在 packages/shared/src/types.ts（不是单独 contract 文件）
 export type ProviderErrorCode =
   | "rate_limited"   // 429，按 Retry-After 冷却
-  | "auth_invalid"   // 401/403，Key 作废
+  | "auth_invalid"   // 401，Key 失效
+  | "forbidden"      // 上游 403，Key/账户组权限受限；不是无效密钥
   | "quota_exceeded" // 402，按周期停用
   | "timeout" | "network" | "server_error"   // 可重试
   | "bad_request"    // 4xx 非鉴权，不重试
-  | "blocked"        // SSRF 拦截，不重试不换 Key
+  | "blocked"        // 本地 SSRF 拦截或未特化的上游 403；不重试
   | "no_available_key" // 调度器无可用 Key（不是上游错误）
   | "unsupported" | "cancelled" | "unknown";
 export interface ProviderSearchInput {
@@ -229,6 +230,7 @@ export interface SearchProviderAdapter {
 |---|---|---|---|---|
 | `rate_limited` | → `rate_limited`，`cooldownUntil = now + Retry-After`（缺省 `cooldownMs=30s`） | 是（下一次尝试自动换 Key） | 否 | 是 |
 | `auth_invalid` | → `invalid`（需人工 `markHealthy` 或重测恢复） | 否（直接 break） | 否 | 否 |
+| `forbidden` | → `forbidden` 并 park 账户组；永不映射成 `invalid` | 否 | 否 | 否 |
 | `quota_exceeded` | → `cooldown` 至次日 UTC 零点 | 否 | 否 | 否 |
 | `timeout` / `network` / `server_error` | Key 级：连续失败 ≥ `breakerThreshold` → Key 进 `cooldown`，退避 `min(cooldownMs·2^超限次数, 10min)`；**Provider 级**另有一套 `runtime.breaker`（同三类错误连续达阈值则整源熔断 `breakerCooldownMs`，期间直接 `no_available_key` 跳过） | 是 | 是 | 是 |
 | `bad_request` / `blocked` / `unsupported` | 不变 | 否 | 否 | 否 |
@@ -244,13 +246,13 @@ export interface SearchProviderAdapter {
 runProviderContract(makeAdapter, {
   happyPath:        'results 非空，url 非空，顺序即排名',
   abort:            'ctx.abort() 后 50ms 内抛 ProviderError{cancelled}',
-  authMapping:      '401/403 → auth_invalid',
+  authMapping:      '401 → auth_invalid；403 → blocked/forbidden（vendor override 保留额度语义）',
   rateLimitMapped:  '429 + Retry-After:12 → rate_limited, retryAfterMs≈12000',
   serverError:      '500/502/503 → server_error',
   badJson:          '畸形 JSON/缺字段 → ProviderError（不抛原始 SyntaxError）',
   noSecretLeak:     'apiKey="sk-TEST-<uuid>"，日志/message/raw 均不得出现',
   ssrfBlocked:      'baseUrl 指向 127.0.0.1 / 169.254.169.254 → blocked 且不建连',
-  selfTestDistinct: 'DNS 失败 → network；错误 Key → auth_invalid，两者不混类',
+  selfTestDistinct: 'DNS 失败 → dns_error；401 → auth_invalid；403 → forbidden，三者不混类',
 });
 ```
 
@@ -447,7 +449,7 @@ v0.1.1 的调度分两步：
 - **无 Key 且需要 Key** ⇒ `unverified`，在请求离开进程之前就返回，且 `spent: false`（预算不扣）。
 - **完全无 Key 的源**（`authType: none` 且 `requiresKey: false`）走 `search_anonymous` 账本桶，可以绕过付费开关做真实搜索验证；它被**计数**，不被宣称为免费——厂商是否按 IP 计量在本仓库内不可知。
 - **探测使用解析后的搜索计划**：`resolveSearchConfig(buildManifest(catalogEntry), searchConfigJson)`，而不是把原始设置直接塞给适配器。否则 `pagination` 会算出 `Math.max(1, undefined) = NaN` 页，发出 0 个请求却记录 `empty_results`。
-- **取消不退款**：取消可能发生在请求已经离开本机之后，退款会让「取消循环」无限消耗付费额度而账本显示为 0。只有**可证明未发出**的探测才退款。
+- **取消按真实请求数退款**：`requests=0` 时按预留日 `budget_day` 退款并写 `spent=false`；`requests>0` 时保留，因为请求可能已经离开本机。跨 UTC 午夜也不会退到新的一天。
 - **错误分类看 cause 链**：safe-fetch 把 socket 错误包进 `SearchHubError("network")`，OpenSSL 的判决在第 3 层 cause，`classifyCauseChain()` 只从 cause 链恢复 `tls` / `dns` 两种，避免把 429 猜成网络问题。分类结果决定冷却时间（TLS 30 分钟 vs 网络 20 秒）。
 
 预算与调度：
@@ -456,7 +458,7 @@ v0.1.1 的调度分两步：
 |---|---|
 | 账本表 | `health_probe_budget(day, kind, used, updated_at)`，`kind` ∈ `connect` / `search` / `search_anonymous`；主键 `(day, kind)`，UTC 日界 |
 | 扣减 | `UPDATE ... SET used = used + 1 WHERE used < :max`，受影响行数为 0 即拒绝；写不进账本就不发请求 |
-| 回填 | `ensureSeed()` 在升级当天从已有 `provider_health_checks` 回填，避免升级后凭空多给一天额度 |
+| 回填 | `0009` 归档旧桶后，从 `provider_health_billing.budget_day/spent` 一次性重算；只统计 `spent=true`，匿名历史需精确分类，其余保守计入付费 |
 | 调度状态 | `provider_probe_state(auto_probe_enabled, consecutive_failures, backoff_level, next_probe_at, reset_at)` |
 | 退避 | 瞬时失败 `min(interval, 60s × 2^(level-1))` + ±20% 抖动，下限 15 秒；终态失败等正常间隔；成功清零 |
 | 生命周期 | 调度器有 `ticking` / `stopped` 守卫，`unref()` 不阻止进程退出，关机时先停调度再关数据库 |

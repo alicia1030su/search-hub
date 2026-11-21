@@ -25,8 +25,10 @@ import {
  *    and an em dash when the adapter provably never opened a socket;
  *  - the failure dialog names the classification (`auth_invalid` → "Key 无效或
  *    已过期") instead of a generic "failed";
- *  - the health overview reflects the probe after a reload, so the conclusion
- *    survives the dialog.
+ *  - the health overview refreshes immediately after the dialog closes, and the
+ *    conclusion still survives a reload;
+ *  - a vendor 403 is shown as forbidden, not invalid, in both the result and Key
+ *    status surfaces.
  *
  * Nothing here mocks the app's API. The only stand-in is a `127.0.0.1` HTTP
  * server shaped like the vendor wire format, started by this file, and reached
@@ -44,16 +46,41 @@ interface VendorStub {
 /**
  * A minimal vendor-shaped HTTP server.
  *
- * `hn` answers the Hacker News wire format (keyless), `unauthorized` answers
- * 401 to every request so a real upstream status produces the classification.
+ * `hn`/`brave` answer their respective wire formats; `unauthorized`/`forbidden`
+ * return real 401/403 statuses so classifications come from upstream evidence.
  */
-async function startVendorStub(mode: "hn" | "unauthorized"): Promise<VendorStub> {
+async function startVendorStub(mode: "hn" | "brave" | "unauthorized" | "forbidden"): Promise<VendorStub> {
   let hits = 0;
   const server: Server = createServer((request, response) => {
     hits += 1;
     if (mode === "unauthorized") {
       response.writeHead(401, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { code: "UNAUTHORIZED", message: "invalid token" } }));
+      return;
+    }
+    if (mode === "forbidden") {
+      response.writeHead(403, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { code: "FORBIDDEN", message: "permission denied" } }));
+      return;
+    }
+    if (mode === "brave") {
+      if (!request.url?.startsWith("/res/v1/web/search")) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "not found" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          web: {
+            results: Array.from({ length: 3 }, (_, index) => ({
+              title: `E2E 单源测试样例 ${index + 1}`,
+              url: `https://example.org/e2e-single-${index + 1}`,
+              description: "brave stub",
+            })),
+          },
+        }),
+      );
       return;
     }
     if (!request.url?.startsWith("/api/v1/search")) {
@@ -138,56 +165,60 @@ test.describe("搜索源单源测试", () => {
   });
 
   /**
-   * T34 — the pass path through the row button.
-   *
-   * The mock adapter answers in-process, so the dialog must report an em dash
-   * for upstream requests (D7: `null` means "no request was sent", and an
-   * invented number is worse than an honest dash). The credential attached to
-   * the source exists only to make the redaction assertion meaningful: key
-   * material must never reach the page, and the key *identifier* is truncated.
+   * T35 — 需凭据源走真实上游，Key 只以截断标识展示，明文与完整 ID 不进入页面。
    */
   test("T35 单源测试通过：结论、结果数、测试时间与脱敏 Key，页面无 Key 明文", async ({ page }) => {
-    await page.goto("/providers");
-    const name = "e2e-single-t34";
-    await addMockProvider(page, name, { resultCount: 3, latencyMs: 10, namespace: "t34" });
-    const providerId = await requireProviderId(page, name);
-    await addKeyToProvider(page, providerId, SECRET);
-    const keys = await adminJson(page, `/api/admin/providers/${providerId}/keys`, { method: "GET" });
-    const keyId = (keys.body as Array<{ id: string }> | null)?.[0]?.id ?? null;
-    expect(keyId).not.toBeNull();
+    const stub = await startVendorStub("brave");
+    try {
+      await page.goto("/providers");
+      await allowLoopback(page);
+      expect(
+        await callAdminApi(page, "/api/admin/settings", {
+          method: "PUT",
+          body: { health: { paidProbesEnabled: true, maxRequestsPerRun: 10, maxRequestsPerDay: 50 } },
+        }),
+      ).toBe(200);
+      const name = "e2e-single-t34";
+      await addHttpProvider(page, name, "brave", stub.base);
+      const providerId = await requireProviderId(page, name);
+      await addKeyToProvider(page, providerId, SECRET);
+      const keys = await adminJson(page, `/api/admin/providers/${providerId}/keys`, { method: "GET" });
+      const keyId = (keys.body as Array<{ id: string }> | null)?.[0]?.id ?? null;
+      if (keyId === null) throw new Error("key was not created");
 
-    // Before the probe: the health overview has no conclusion for this source.
-    await gotoHealthTab(page);
-    await expect(healthCard(page, name)).toContainText("尚未检测");
-    expect(await readHealthRuntime(page, providerId)).toBe("unknown");
+      await gotoHealthTab(page);
+      await expect(healthCard(page, name)).toContainText("尚未检测");
+      expect(await readHealthRuntime(page, providerId)).toBe("unknown");
 
-    await page.getByTestId("providers-tab-installed").click();
-    const dialog = await runRowTest(page, providerId);
+      await page.getByTestId("providers-tab-installed").click();
+      const dialog = await runRowTest(page, providerId);
 
-    // The title names the source, so the dialog cannot be mistaken for another.
-    await expect(dialog).toContainText("搜索测试：");
-    await expect(dialog).toContainText(name);
-    await expect(dialog).toContainText("测试通过");
-    await expect(metricValue(dialog, "返回结果")).toHaveText("3");
-    // A mock adapter never opens a socket: `null` is the honest answer.
-    await expect(page.getByTestId("single-test-requests")).toHaveText("—");
-    await expect(page.getByTestId("single-test-checked-at")).toHaveText(/\d{4}[-/]\d{2}[-/]\d{2}/);
-    // The key id is truncated for display; neither the secret nor the full
-    // identifier reaches the page.
-    await expect(dialog).toContainText("…");
-    const dialogText = await dialog.innerText();
-    expect(dialogText).not.toContain(SECRET);
-    expect(dialogText).not.toContain(keyId as string);
-    expect(await page.locator("body").innerText()).not.toContain(SECRET);
+      await expect(dialog).toContainText("搜索测试：");
+      await expect(dialog).toContainText(name);
+      await expect(dialog).toContainText("测试通过");
+      await expect(metricValue(dialog, "返回结果")).toHaveText("3");
+      await expect(page.getByTestId("single-test-requests")).toHaveText(/^\d+$/);
+      expect(Number(await page.getByTestId("single-test-requests").innerText())).toBe(stub.hits());
+      await expect(page.getByTestId("single-test-checked-at")).toHaveText(/\d{4}[-/]\d{2}[-/]\d{2}/);
+      await expect(dialog).toContainText("…");
+      const dialogText = await dialog.innerText();
+      expect(dialogText).not.toContain(SECRET);
+      expect(dialogText).not.toContain(keyId);
+      expect(await page.locator("body").innerText()).not.toContain(SECRET);
 
-    await closeDialog(page);
-
-    // The conclusion is a server fact: a fresh health overview shows it.
-    await page.reload();
-    await gotoHealthTab(page);
-    await expect(healthCard(page, name)).toContainText("健康");
-    await expect(healthCard(page, name)).toContainText("上次检测");
-    expect(await readHealthRuntime(page, providerId)).toBe("healthy");
+      await closeDialog(page);
+      await page.reload();
+      await gotoHealthTab(page);
+      await expect(healthCard(page, name)).toContainText("健康");
+      await expect(healthCard(page, name)).toContainText("上次检测");
+      expect(await readHealthRuntime(page, providerId)).toBe("healthy");
+    } finally {
+      await callAdminApi(page, "/api/admin/settings", {
+        method: "PUT",
+        body: { health: { paidProbesEnabled: false } },
+      });
+      await stub.close();
+    }
   });
 
   /**
@@ -274,6 +305,56 @@ test.describe("搜索源单源测试", () => {
       await gotoHealthTab(page);
       await expect(healthCard(page, name)).toContainText("凭证无效");
       expect(await readHealthRuntime(page, providerId)).toBe("invalid_credentials");
+    } finally {
+      await stub.close();
+    }
+  });
+
+  test("T38 单源测试后无需整页刷新，切健康 tab 立即看到新状态", async ({ page }) => {
+    await page.goto("/providers");
+    const name = "e2e-single-t38";
+    await addMockProvider(page, name, { resultCount: 2, latencyMs: 10, namespace: "t38" });
+    const providerId = await requireProviderId(page, name);
+
+    await gotoHealthTab(page);
+    await expect(healthCard(page, name)).toContainText("尚未检测");
+    expect(await readHealthRuntime(page, providerId)).toBe("unknown");
+
+    await page.getByTestId("providers-tab-installed").click();
+    const dialog = await runRowTest(page, providerId);
+    await expect(dialog).toContainText("测试通过");
+    await closeDialog(page);
+
+    await page.getByTestId("providers-tab-health").click();
+    await expect(healthCard(page, name)).toContainText("健康");
+    await expect(healthCard(page, name)).toContainText("上次检测");
+    expect(await readHealthRuntime(page, providerId)).toBe("healthy");
+  });
+
+  test("T39 上游 403 后 Key 显示权限受限且使用 warning 色", async ({ page }) => {
+    const stub = await startVendorStub("forbidden");
+    try {
+      await page.goto("/providers");
+      await allowLoopback(page);
+      const name = "e2e-single-t39";
+      await addHttpProvider(page, name, "brave", stub.base);
+      const providerId = await requireProviderId(page, name);
+      await addKeyToProvider(page, providerId, SECRET);
+      const keys = await adminJson(page, `/api/admin/providers/${providerId}/keys`, { method: "GET" });
+      const keyId = (keys.body as Array<{ id: string }> | null)?.[0]?.id ?? null;
+      expect(keyId).not.toBeNull();
+      const tested = await adminJson(page, `/api/admin/keys/${keyId}/test`, { method: "POST", body: {} });
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect((tested.body as { cause?: string }).cause).toBe("forbidden");
+
+      await page.locator(`#provider-${providerId}`).getByTitle("Key 管理").click();
+      const sheet = page.getByRole("dialog");
+      await expect(sheet).toBeVisible();
+      const row = sheet.getByRole("row").filter({ hasText: "e2e" });
+      const badge = row.getByText("权限受限");
+      await expect(badge).toBeVisible();
+      await expect(badge).toHaveClass(/text-warning/);
+      await expect(badge).not.toHaveClass(/text-destructive/);
     } finally {
       await stub.close();
     }

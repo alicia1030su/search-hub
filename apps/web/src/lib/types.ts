@@ -16,7 +16,15 @@ export type ProviderVerification =
 export type ProviderType = string;
 
 export type KeyStrategy = "round_robin" | "random" | "weighted_random" | "least_used" | "failover";
-export type KeyStatus = "healthy" | "rate_limited" | "cooldown" | "invalid" | "disabled" | "unknown";
+export type KeyStatus =
+  | "healthy"
+  | "rate_limited"
+  | "cooldown"
+  | "invalid"
+  | "forbidden"
+  | "quota_exhausted"
+  | "disabled"
+  | "unknown";
 export type Freshness = "day" | "week" | "month" | "year" | "all";
 export type SearchMode =
   | "web"
@@ -559,6 +567,8 @@ export interface DashboardStats {
     rateLimited: number;
     cooldown: number;
     invalid: number;
+    forbidden: number;
+    quotaExhausted: number;
     disabled: number;
   };
   models: {
@@ -710,6 +720,8 @@ export interface ProviderHealthPolicy {
   intervalMinutes: number;
   maxRequestsPerRun: number;
   maxRequestsPerDay: number;
+  anonymousMaxRequestsPerRun: number;
+  anonymousMaxRequestsPerDay: number;
   paidProbesEnabled: boolean;
   includeUnverified: boolean;
   concurrency: number;
@@ -792,6 +804,9 @@ export interface ProviderHealthBudget {
   connectUsedToday: number;
   /** Real searches against keyless sources: counted, never called free. */
   anonymousSearchUsedToday: number;
+  anonymousMaxPerRun: number;
+  anonymousMaxPerDay: number;
+  anonymousRemainingToday: number;
   remainingToday: number;
   paidProbesEnabled: boolean;
   scheduledEnabled: boolean;
@@ -873,6 +888,8 @@ export interface BatchPreview {
   paidRisk: boolean;
   /** Probes that would actually be billed; `0` when nothing can be billed. */
   estimatedPaidProbes: number;
+  /** Eligible searches that send no credential and use the anonymous budget. */
+  estimatedAnonymousProbes: number;
 }
 
 export interface BatchJobView {
@@ -882,6 +899,8 @@ export interface BatchJobView {
   counts: BatchCounts;
   items: BatchItem[];
   budget: ProviderHealthBudget;
+  /** Per-run policy snapshot; a reload never re-reads the global setting. */
+  includeKeyless: boolean;
   concurrency: number;
   startedAt: string | null;
   finishedAt: string | null;

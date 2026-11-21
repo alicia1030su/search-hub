@@ -69,7 +69,8 @@ export const yourAdapter: SearchProviderAdapter = {
 
 | 上游 | 抛出 | 重试 |
 |---|---|---|
-| 401 / 403 | `ProviderError(..., "auth_invalid")` | 否，Key 置 invalid |
+| 401 | `ProviderError(..., "auth_invalid")` | 否，Key 置 invalid |
+| 403 | `ProviderError(..., "blocked")` → `forbidden` | 否，Key/账户组权限受限，**不得**置 invalid |
 | 429 | `rate_limited` + `retryAfterMs`（从 `Retry-After` 解析） | 是，按冷却 |
 | 402 / 配额 | `quota_exceeded` | 否，冷却到次日 |
 | 408 / 504 / 网络 | `timeout` / `network` | 是 |

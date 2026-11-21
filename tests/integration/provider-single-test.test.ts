@@ -368,6 +368,34 @@ describe("single provider test", () => {
    * search path work" — and answering that question must not spend the paid
    * budget.
    */
+  it("manually retests an invalid or cooling key and restores it after a real success", async () => {
+    const harness = track(await startBatchHarness());
+    const { providerId } = await setUpBrave(harness, { results: 3 });
+    const keys = await harness.app.inject({
+      method: "GET",
+      url: `/api/admin/providers/${providerId}/keys`,
+      ...harness.read(),
+    });
+    const keyId = (keys.json() as Array<{ id: string }>)[0]!.id;
+    harness.ctx.sqlite
+      .prepare("UPDATE api_keys SET status = ?, cooldown_until = ? WHERE id = ?")
+      .run("invalid", new Date(Date.now() + 60_000).toISOString(), keyId);
+    harness.ctx.providers.reload();
+
+    const response = await harness.app.inject({
+      method: "POST",
+      url: `/api/admin/keys/${keyId}/test`,
+      ...harness.write(),
+      payload: {},
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().cause).toBe("ok");
+    const row = harness.ctx.sqlite
+      .prepare("SELECT status, cooldown_until FROM api_keys WHERE id = ?")
+      .get(keyId) as { status: string; cooldown_until: string | null };
+    expect(row).toEqual({ status: "healthy", cooldown_until: null });
+  });
+
   it("tests a key as a free connectivity probe", async () => {
     const harness = track(await startBatchHarness());
     const { providerId, stub } = await setUpBrave(harness, { results: 5 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Captures the two v0.1.10 provider-test screenshots from a real instance.
+ * Captures the two v0.1.11 provider-test screenshots from a real instance.
  *
  * Nothing here is drawn or edited: the script boots the built server against a
  * throwaway data directory, seeds deterministic **mock** sources (the built-in
@@ -19,7 +19,7 @@
  *
  * Usage:
  *   pnpm build && node scripts/docs-screenshots-provider-test.mjs
- *   node scripts/docs-screenshots-provider-test.mjs --out docs/screenshots/v0110
+ *   node scripts/docs-screenshots-provider-test.mjs --out docs/screenshots/v0111
  */
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -38,7 +38,7 @@ const flag = (name, fallback) => {
   return index === -1 ? fallback : (args[index + 1] ?? fallback);
 };
 
-const OUT_DIR = resolve(REPO, flag("out", "docs/screenshots/v0110"));
+const OUT_DIR = resolve(REPO, flag("out", "docs/screenshots/v0111"));
 const VIEWPORT = { width: 1600, height: 1000 };
 const SCALE = 2;
 
@@ -74,7 +74,7 @@ const SHOTS = [
       // what this release fixed.
       const row = page.locator("tr", { hasText: "演示源 Eta" }).first();
       await row.waitFor({ timeout: 30_000 });
-      await row.getByRole("button", { name: "测试" }).click();
+      await row.getByRole("button", { name: "测试连通性" }).click();
       await page.getByTestId("single-test-requests").waitFor({ timeout: 30_000 });
       await page.waitForTimeout(300);
     },
@@ -94,6 +94,10 @@ const SHOTS = [
       await page.getByTestId("providers-tab-health").click();
       await page.getByTestId("health-test-all-connect").waitFor({ timeout: 30_000 });
       await page.getByTestId("health-test-all-connect").click();
+      const keylessToggle = page.getByTestId("batch-include-keyless").getByRole("switch");
+      await expect(keylessToggle).toHaveAttribute("aria-checked", "false");
+      await keylessToggle.click();
+      await expect(keylessToggle).toHaveAttribute("aria-checked", "true");
       await page.getByTestId("batch-start").waitFor({ timeout: 30_000 });
       await page.getByTestId("batch-start").click();
       // The results table is the frame: wait for it, not for a timer.

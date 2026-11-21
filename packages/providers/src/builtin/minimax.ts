@@ -162,6 +162,7 @@ function assertBaseResp(ctx: ProviderContext, value: unknown): void {
       "blocked",
       `MiniMax account has no Coding Plan search entitlement: ${message}. ` +
         "Complete real-name verification (and confirm the plan includes web_search) before retrying.",
+      { details: { permissionDenied: true, vendorCode: code } },
     );
   }
   throw new ProviderError(ctx.config.id, "minimax", "bad_request", `MiniMax error ${code}: ${message}`);

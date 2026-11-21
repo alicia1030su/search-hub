@@ -277,57 +277,110 @@ export function percentile(values: number[], p: number): number | null {
  * quota *before* the generic 429 branch, because both can arrive as HTTP 429.
  */
 export function classifyError(error: unknown): HealthCause {
-  const code = (error as { code?: unknown } | null)?.code;
   const message = String((error as { message?: unknown } | null)?.message ?? error ?? "");
   const lower = message.toLowerCase();
+  const code = structuredErrorCode(error);
 
-  if (
-    /insufficient|quota|余额|balance|credit|billing|exhausted|purchase/.test(lower) &&
-    !/rate limit/.test(lower)
-  ) {
-    return "quota_exceeded";
-  }
-  // A wrapped network error hides the real reason one level down: safe-fetch
-  // reports "Network error requesting <url>" with the socket/OpenSSL error as
-  // `cause`. Classifying on the wrapper alone marked certificate failures as
-  // `network`, which retries in 20 seconds — against a certificate that will
-  // never become valid without an operator.
-  const fromCause = classifyCauseChain(error);
-  if (fromCause) return fromCause;
-
-  if (typeof code === "string") {
+  // Structured transport/auth codes are authoritative. In particular a local
+  // SSRF `blocked` error also carries HTTP 403, but it is not an upstream
+  // permission verdict and must never park an account as forbidden.
+  if (code) {
     switch (code) {
-      case "auth_invalid":
-        return "auth_invalid";
-      case "blocked":
-        return "forbidden";
-      case "rate_limited":
-        return "rate_limited";
-      case "quota_exceeded":
-        return "quota_exceeded";
+      case "cancelled":
+        return "cancelled";
       case "timeout":
         return "timeout";
       case "network":
-        return /getaddrinfo|enotfound|dns/i.test(message) ? "dns" : "network";
-      case "cancelled":
-        return "cancelled";
+        return classifyCauseChain(error) ?? (/getaddrinfo|enotfound|dns/i.test(message) ? "dns" : "network");
+      case "quota_exceeded":
+        return "quota_exceeded";
+      case "rate_limited":
+        // Some vendors put "insufficient balance" in a 429 body. The HTTP code
+        // is rate limiting, but the explicit billing message is more specific.
+        return isQuotaMessage(lower) ? "quota_exceeded" : "rate_limited";
+      case "auth_invalid":
+        return "auth_invalid";
+      case "blocked":
+        return hasTrustedUpstreamStatus(error, 403) || hasVendorPermissionDenied(error)
+          ? "forbidden"
+          : "network";
       case "server_error":
         return "server_error";
       case "bad_request":
+      case "validation_error": {
+        const upstreamStatus = trustedUpstreamStatus(error);
+        if (upstreamStatus !== null && upstreamStatus >= 500) return "server_error";
+        if (upstreamStatus === 403) return "forbidden";
+        if (upstreamStatus === 401) return "auth_invalid";
+        if (upstreamStatus === 429) return "rate_limited";
+        return "bad_response";
+      }
+      case "unsupported":
         return "bad_response";
       default:
         break;
     }
   }
+
+  if (isQuotaMessage(lower)) return "quota_exceeded";
+  const fromCause = classifyCauseChain(error);
+  if (fromCause) return fromCause;
+  if (/private|reserved|allowlist|blocked/i.test(message)) return "network";
   if (/certificate|self signed|tls|ssl/i.test(message)) return "tls";
   if (/getaddrinfo|enotfound|eai_again/i.test(message)) return "dns";
   if (/etimedout|timeout|aborted/i.test(message)) return "timeout";
   if (/econnrefused|econnreset|socket hang up|network/i.test(message)) return "network";
+  if (hasTrustedUpstreamStatus(error, 403)) return "forbidden";
   if (/\b401\b|unauthorized/i.test(message)) return "auth_invalid";
-  if (/\b403\b|forbidden/i.test(message)) return "forbidden";
   if (/\b429\b|too many requests/i.test(message)) return "rate_limited";
   if (/\b5\d\d\b/.test(message)) return "server_error";
   return "server_error";
+}
+
+function isQuotaMessage(lower: string): boolean {
+  return (
+    /insufficient|quota|余额|balance|credit|billing|exhausted|purchase/.test(lower) &&
+    !/rate limit/.test(lower)
+  );
+}
+
+function structuredErrorCode(error: unknown): string | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && code !== "unknown") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+function hasTrustedUpstreamStatus(error: unknown, status: number): boolean {
+  return trustedUpstreamStatus(error) === status;
+}
+
+function hasVendorPermissionDenied(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    const details = (current as { details?: unknown }).details;
+    if (typeof details === "object" && details !== null && (details as { permissionDenied?: unknown }).permissionDenied === true) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+function trustedUpstreamStatus(error: unknown): number | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    const details = (current as { details?: unknown }).details;
+    if (typeof details === "object" && details !== null) {
+      const status = (details as { upstreamStatus?: unknown }).upstreamStatus;
+      if (typeof status === "number") return status;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
 }
 
 /**
@@ -349,9 +402,12 @@ function classifyCauseChain(error: unknown): HealthCause | null {
   return null;
 }
 
-/** Reads `Retry-After` (seconds or HTTP date) into milliseconds. */
-export function parseRetryAfterMs(value: string | null | undefined): number | null {
-  if (!value) return null;
+/** Reads Retry-After into milliseconds; numeric error values are already ms. */
+export function parseRetryAfterMs(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+  }
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
   const date = Date.parse(value);

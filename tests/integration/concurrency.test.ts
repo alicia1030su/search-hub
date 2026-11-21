@@ -1,4 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,6 +15,8 @@ let dir: string;
 let cookie: string;
 let csrf: string;
 let providerId: string;
+let upstream: Server;
+let upstreamBaseUrl: string;
 
 function testConfig(dataDir: string): AppConfig {
   return {
@@ -40,18 +44,51 @@ beforeAll(async () => {
   cookie = setup.cookies.find((item) => item.name === "sh_session")!.value;
   csrf = setup.json().csrfToken as string;
 
+  upstream = createServer((request, response) => {
+    setTimeout(() => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          results: [
+            { title: `Load result ${request.url ?? "/"}`, url: "https://example.com/load", snippet: "ok" },
+            { title: "Second result", url: "https://example.com/second", snippet: "ok" },
+            { title: "Third result", url: "https://example.com/third", snippet: "ok" },
+          ],
+        }),
+      );
+    }, 8);
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", () => resolve()));
+  const address = upstream.address() as AddressInfo;
+  upstreamBaseUrl = `http://127.0.0.1:${address.port}`;
+  await app.inject({
+    method: "PUT",
+    url: "/api/admin/settings",
+    cookies: { sh_session: cookie },
+    headers: { "x-csrf-token": csrf },
+    payload: { security: { privateHostAllowlist: ["127.0.0.1"] } },
+  });
+
   const provider = await app.inject({
     method: "POST",
     url: "/api/admin/providers",
     cookies: { sh_session: cookie },
     headers: { "x-csrf-token": csrf },
     payload: {
-      name: "load-mock",
-      type: "mock",
+      name: "load-keyed",
+      type: "generic-http",
       enabled: true,
+      baseUrl: upstreamBaseUrl,
       maxConcurrency: 2,
+      maxRetries: 0,
       rpmLimit: 10_000,
-      config: { resultCount: 3, latencyMs: 8, namespace: "load" },
+      config: {
+        method: "GET",
+        path: "/search",
+        query: { q: "{{query}}" },
+        keyInjection: { in: "header", name: "x-api-key" },
+        resultsPath: "results",
+      },
     },
   });
   providerId = provider.json().provider.id as string;
@@ -71,6 +108,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
+  await new Promise<void>((resolve) => upstream.close(() => resolve()));
   rmSync(dir, { recursive: true, force: true });
 });
 

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { deleteProvidersByNamePrefix, pinBatchScope } from "./support";
 
 const EMAIL = "admin@example.com";
 /** Test-only password for the throwaway database created by `e2e-server.mjs`. */
@@ -125,6 +126,12 @@ async function openPreview(page: Page, kind: "connect" | "search"): Promise<void
   await expect(page.getByTestId("batch-preview")).toBeVisible();
 }
 
+async function setTaskKeyless(page: Page, enabled: boolean): Promise<void> {
+  const toggle = page.getByTestId("batch-include-keyless").getByRole("switch");
+  if ((await toggle.getAttribute("aria-checked")) !== String(enabled)) await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", String(enabled));
+}
+
 /** Reads the rows of the result table, in render order. */
 async function rowStates(page: Page): Promise<string[]> {
   const rows = page.locator('[data-testid^="batch-row-"]');
@@ -137,6 +144,10 @@ async function rowStates(page: Page): Promise<string[]> {
 test.describe("搜索源批量体检", () => {
   test.beforeEach(async ({ page }) => {
     await ensureSignedIn(page);
+  });
+
+  test.afterEach(async ({ page }) => {
+    await deleteProvidersByNamePrefix(page, "e2e-batch-");
   });
 
   /**
@@ -179,6 +190,25 @@ test.describe("搜索源批量体检", () => {
       body: { health: { paidProbesEnabled: true, maxRequestsPerRun: 10, maxRequestsPerDay: 50 } },
     });
     expect(enabled).toBe(200);
+    // 付费风险只属于真正需要凭据的源；mock 始终是匿名的。
+    expect(
+      await callAdminApi(page, "/api/admin/providers", {
+        method: "POST",
+        body: { name: "e2e-batch-t25-keyed", type: "brave", baseUrl: "http://127.0.0.1:9", enabled: true },
+      }),
+    ).toBe(200);
+    const keyedId = await page.evaluate(async () => {
+      const response = await fetch("/api/admin/providers", { credentials: "include" });
+      const body = (await response.json()) as { providers: Array<{ id: string; name: string }> };
+      return body.providers.find((item) => item.name === "e2e-batch-t25-keyed")?.id ?? null;
+    });
+    expect(keyedId).not.toBeNull();
+    expect(
+      await callAdminApi(page, `/api/admin/providers/${keyedId}/keys`, {
+        method: "POST",
+        body: { label: "e2e", key: "sk-E2E-BATCH-T25-0000000000", weight: 100, enabled: true },
+      }),
+    ).toBe(200);
 
     await openPreview(page, "search");
     await expect(page.getByTestId("batch-paid-risk")).toBeVisible();
@@ -186,6 +216,23 @@ test.describe("搜索源批量体检", () => {
     // With the switch on and eligible sources present, the start button is live.
     await expect(page.getByTestId("batch-start")).toBeEnabled();
     await page.getByRole("dialog").getByRole("button", { name: "取消" }).click();
+    const removed = await page.evaluate(async (id) => {
+      const session = await fetch("/api/auth/session", { credentials: "include" });
+      const csrf = session.ok ? ((await session.json()) as { csrfToken?: string }).csrfToken : undefined;
+      const response = await fetch(`/api/admin/providers/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: csrf ? { "x-csrf-token": csrf } : {},
+      });
+      return { status: response.status, body: await response.text() };
+    }, keyedId);
+    expect(removed.status, removed.body).toBe(200);
+    expect(
+      await callAdminApi(page, "/api/admin/settings", {
+        method: "PUT",
+        body: { health: { paidProbesEnabled: false } },
+      }),
+    ).toBe(200);
   });
 
   /**
@@ -208,6 +255,7 @@ test.describe("搜索源批量体检", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
     await page.getByTestId("batch-start").click();
 
     // Progress is visible, and it is labelled as running rather than finished.
@@ -267,6 +315,7 @@ test.describe("搜索源批量体检", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
     await page.getByTestId("batch-start").click();
     await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
 
@@ -318,9 +367,14 @@ test.describe("搜索源批量体检", () => {
     });
     expect(ids.failed).not.toBeNull();
     expect(ids.limited).not.toBeNull();
+    if (ids.failed === null || ids.limited === null || ids.ok === null) {
+      throw new Error("T28 fixtures were not created");
+    }
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
+    await pinBatchScope(page, [ids.failed, ids.limited, ids.ok]);
     await page.getByTestId("batch-start").click();
     await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
 
@@ -354,17 +408,14 @@ test.describe("搜索源批量体检", () => {
   /**
    * T29 — the detail drawer.
    *
-   * Three claims: the key is shown only as a truncated identifier, the sample is
-   * capped at three, and a missing request count renders as an em dash rather
-   * than a zero. The last one matters because `0` would be a measurement the
-   * probe never made.
+   * 非必需 Key 的源按匿名路径探测，即使池里存了 Key 也不能泄露或假装使用；
+   * 样例仍最多三条，未发请求时 requests 必须显示 em dash 而不是 0。
    */
-  test("T29 抽屉显示脱敏 Key 标签、样例不超过 3 条、requests 缺失显示 —", async ({ page }) => {
+  test("T29 可选 Key 不被匿名探测使用，样例最多 3 条且 requests 缺失显示 —", async ({ page }) => {
     await page.goto("/providers");
     await addMockProvider(page, "e2e-batch-t29", { resultCount: 6, latencyMs: 10, namespace: "t29" });
 
-    // Attach a credential so the drawer has a key id to redact. The mock adapter
-    // does not need one, but the label logic is what is under test.
+    // mock 不需要凭据；可选 Key 池存在也不能让匿名探测自动使用它。
     const providerId = await page.evaluate(async () => {
       const list = await fetch("/api/admin/providers", {
         credentials: "include",
@@ -383,6 +434,7 @@ test.describe("搜索源批量体检", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
     await page.getByTestId("batch-start").click();
     await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
 
@@ -390,12 +442,10 @@ test.describe("搜索源批量体检", () => {
     const drawer = page.getByTestId("batch-detail");
     await expect(drawer).toBeVisible();
 
-    // Redacted identifier: `key_ab…9f` shape — truncated, and not the real id.
+    // 匿名探测没有 keyId，抽屉必须明确说“未使用凭证”。
     const keyLabel = page.getByTestId("batch-detail-key");
     await expect(keyLabel).toBeVisible();
-    const keyText = await keyLabel.innerText();
-    expect(keyText).toContain("…");
-    expect(keyText).not.toBe(providerId);
+    await expect(keyLabel).toHaveText("—");
     // No credential material anywhere in the drawer.
     await expect(drawer).not.toContainText("sk-E2E-BATCH-T29-PLAINTEXT-000000");
     await expect(page.locator("body")).not.toContainText("sk-E2E-BATCH-T29-PLAINTEXT-000000");
@@ -480,6 +530,7 @@ test.describe("搜索源批量体检", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
     await page.getByTestId("batch-start").click();
     await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
     // Rows reached the table before the reload: otherwise the reopened view
@@ -561,6 +612,7 @@ test.describe("搜索源批量体检", () => {
 
     await gotoHealthTab(page);
     await openPreview(page, "connect");
+    await setTaskKeyless(page, true);
     await page.getByTestId("batch-start").click();
     await expect(page.getByTestId("batch-results")).toBeVisible({ timeout: 45_000 });
 

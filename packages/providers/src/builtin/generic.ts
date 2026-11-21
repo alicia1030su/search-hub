@@ -49,6 +49,20 @@ function isSafePath(path: string): boolean {
   return PATH_PATTERN.test(path) && !path.includes("..");
 }
 
+function containsKeyTemplate(value: unknown): boolean {
+  if (typeof value === "string") return /\{\{\s*key\s*\}\}/.test(value);
+  if (Array.isArray(value)) return value.some(containsKeyTemplate);
+  if (isPlainObject(value)) return Object.values(value).some(containsKeyTemplate);
+  return false;
+}
+
+/** generic-http 是否实际消费凭据：显式注入或任一请求模板引用 {{key}}。 */
+export function genericProviderRequiresKey(config: Record<string, unknown>): boolean {
+  if (!isPlainObject(config)) return false;
+  if (config["keyInjection"]) return true;
+  return ["headers", "query", "body"].some((field) => containsKeyTemplate(config[field]));
+}
+
 export function validateGenericConfig(config: unknown): string[] {
   const errors: string[] = [];
   if (config === undefined || config === null) return errors;
@@ -163,7 +177,7 @@ export const genericHttpAdapter: SearchProviderAdapter = {
       headers[key] = renderTemplate(template, vars);
     }
 
-    const needsKey = Boolean(cfg.keyInjection);
+    const needsKey = genericProviderRequiresKey(ctx.config.config ?? {});
     if (needsKey && !ctx.apiKey) {
       throw new ProviderError(
         ctx.config.id,
@@ -233,6 +247,14 @@ export const genericHttpAdapter: SearchProviderAdapter = {
   },
 
   async test(ctx: ProviderContext): Promise<ProviderTestResult> {
+    if (genericProviderRequiresKey(ctx.config.config ?? {})) {
+      throw new ProviderError(
+        ctx.config.id,
+        "generic-http",
+        "unsupported",
+        "Credentialed generic providers require a search probe; a connectivity test cannot safely verify them.",
+      );
+    }
     const started = Date.now();
     const { results } = await genericHttpAdapter.search(
       { query: "test", limit: 1, signal: ctx.signal },

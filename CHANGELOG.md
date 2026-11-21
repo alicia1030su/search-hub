@@ -4,6 +4,86 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.11 (2026-11-21)
+
+Provider health and bulk testing now use one credential and budget model. Keyless
+participation is a task-level choice, anonymous searches have their own durable
+cap, and cancellation is an atomic state transition rather than a status flip
+that a late runner can overwrite.
+
+### Added
+
+- **Task-scoped keyless probing.** `includeKeyless` defaults to `false` on both
+  preview and start, is stored in `provider_test_batches.options_json`, and is
+  returned as a read-only job snapshot. Changing the dialog switch no longer
+  writes global `health.includeUnverified`.
+- **Independent anonymous-search budget** (migration `0009`): the
+  `search_anonymous` ledger bucket has its own per-run and per-UTC-day caps
+  (default 3 / 20). Billing classification records whether a credential was
+  actually used; legacy buckets are archived and recomputed once.
+- **Explicit eligibility codes** for invalid keys, exhausted key quota,
+  exhausted account-group quota and paid probing disabled. Generic HTTP
+  `keyInjection` and `{{key}}` placeholders are treated as credential-required.
+- **Atomic batch cancellation coverage** (H61–H69): normal cancel, cancel after
+  the first item, in-flight cancel, cancel at return, cancel/finalise races,
+  immediate refresh, crash during cancel, restart after cancel and 100 concurrent
+  cancels all run against real SQLite with controlled synchronous interleavings.
+- **Forbidden and quota-exhausted key states** in the web UI and dashboard:
+  vendor 403 and account-quota exhaustion are shown with warning styling, and
+  every dashboard segment is counted so the partition equals the key total.
+- **Real v0.1.10 upgrade coverage** in the CI upgrade matrix, exercising the
+  health-budget migration against published release state.
+
+### Changed
+
+- `ProviderService.keyAvailability(providerIds)` is the single eligibility fact
+  source. It aggregates by provider in one query and applies the same scheduler
+  rules as automatic key selection; the batch pre-flight no longer decrypts the
+  first enabled key.
+- Bulk preview reports `estimatedPaidProbes` and `estimatedAnonymousProbes`
+  separately. A mixed search with paid probing disabled skips credentialed
+  sources and continues anonymous ones; a paid-only scope still returns 409.
+- `HealthService.checkMany` accounts paid and anonymous per-run caps separately.
+  Optional key pools on keyless providers no longer turn an anonymous probe into
+  a paid one.
+- The browser stops polling only when `status !== "running"` **and**
+  `counts.remaining === 0`, and ignores a previous job's cached snapshot when a
+  new job starts.
+- A successful single-source test refreshes the health overview immediately;
+  switching to the health tab no longer requires a full page reload.
+- Provider PATCH requests no longer inherit create-schema defaults, so updating
+  concurrency or RPM cannot silently erase provider/search configuration.
+- Key acquisition waits for the request's remaining deadline instead of failing
+  after an arbitrary two-second queue budget under parallel load.
+
+### Fixed
+
+- Cancel now reads and rewrites items, all counters, `status`, `finishedAt` and
+  `itemsJson` in one immediate transaction, then aborts outside it. Concurrent
+  cancels produce one winner and 409 conflicts for the rest.
+- Runner progress persistence re-reads the current ledger in a transaction and
+  merges only items still `unknown`; finalise only changes a row still `running`.
+- Startup sweep resolves leftover unknown items to `SKIPPED_INTERRUPTED`, writes
+  consistent counters and is idempotent. Terminal reads always report
+  `remaining = 0` and `nextPollAfterMs = null`.
+- Keyless generic connectivity is charged to `search_anonymous`, while a generic
+  provider that actually injects a credential is never misclassified as anonymous.
+- Requests that provably never left the process release both key/account slots and
+  their budget reservation on the original `budget_day`; redirects, retries and
+  pages remain counted, and billing rows persist `spent=false` for zero-request
+  observations.
+- **Credential validity is no longer inferred from transport failures.** A vendor
+  403 is `forbidden` rather than `invalid`; DNS, TLS, timeout, network and 500
+  responses affect only the breaker/backoff, never the credential itself. Explicit
+  cross-provider `keyId` values are rejected before health, budget or upstream work.
+- Observation, billing and scheduler write failures no longer trigger a second
+  health record or a second budget refund; ledger reservation failures return the
+  acquired key/account lease as `notSent`.
+- The health overview uses the same strict decryptable/available facts as key
+  acquisition, so a changed master key cannot leave an unusable pool looking healthy.
+- MiniMax `base_resp.status_code=2038` is classified as a permission/entitlement
+  failure, not a bad credential.
+
 ## v0.1.10 (2026-11-19)
 
 Two strands of work. The evaluation lab could already produce a score; it now

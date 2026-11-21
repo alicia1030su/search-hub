@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import {
   SearchHubError,
@@ -18,7 +18,7 @@ import {
   type ProviderRuntime as EngineProviderRuntime,
   type SchedulerKeySeed,
 } from "@search-hub/core";
-import { getAdapter, getCatalogEntry, buildManifest, resolveSearchConfig } from "@search-hub/providers";
+import { getAdapter, getCatalogEntry, buildManifest, providerRequiresKey, resolveSearchConfig } from "@search-hub/providers";
 import type { SecretBox } from "../security/crypto.js";
 
 interface ProviderRuntimeEntry {
@@ -38,6 +38,48 @@ function parseJson<T>(value: string | null, fallback: T): T {
   }
 }
 
+export interface KeyProbeRelease {
+  ok: boolean;
+  latencyMs?: number;
+  code?: string;
+  message?: string;
+  retryAfterMs?: number;
+  cancelled?: boolean;
+  notSent?: boolean;
+}
+
+export interface KeyAvailability {
+  total: number;
+  enabled: number;
+  decryptable: number;
+  available: number;
+  invalid: number;
+  quotaExhausted: number;
+  coolingUntil: string | null;
+  accountQuotaExhausted: boolean;
+}
+
+export type AcquireKeyResult =
+  | {
+      ok: true;
+      keyId: string;
+      keyLabel: string;
+      secret: string;
+      release(outcome: KeyProbeRelease): Promise<void>;
+    }
+  | {
+      ok: false;
+      reason:
+        | "no_key"
+        | "queue_timeout"
+        | "account_quota"
+        | "key_not_found"
+        | "key_disabled"
+        | "key_undecryptable"
+        | "provider_disabled";
+      message: string;
+    };
+
 /**
  * Owns provider configuration, key schedulers and their persistence.
  * Decrypted keys only exist in memory for the duration of one provider call.
@@ -56,6 +98,8 @@ export class ProviderService {
 
   /** (Re)builds schedulers from the database after any write. */
   reload(): void {
+    // A config reload must not replace newer in-memory outcomes with stale DB rows.
+    this.persistDirty();
     const rows = this.db.select().from(providerInstances).all();
     const keyRows = this.db.select().from(apiKeys).all();
     const next = new Map<string, ProviderRuntimeEntry>();
@@ -64,26 +108,7 @@ export class ProviderService {
       const adapter = getAdapter(row.type);
       if (!adapter) continue;
 
-      const seeds: SchedulerKeySeed[] = keyRows
-        .filter((key) => key.providerId === row.id)
-        .map((key) => ({
-          id: key.id,
-          label: key.label,
-          maskedKey: key.keyHint,
-          weight: key.weight,
-          enabled: key.enabled,
-          status: key.status as KeyStatus,
-          requestCount: key.requestCount,
-          successCount: key.successCount,
-          failureCount: key.failureCount,
-          consecutiveFailures: key.consecutiveFailures,
-          avgLatencyMs: key.avgLatencyMs,
-          quotaUsedToday: key.quotaUsedToday,
-          quotaDate: key.quotaDate,
-          cooldownUntil: key.cooldownUntil,
-          lastErrorCode: key.lastErrorCode,
-          lastErrorMessage: key.lastErrorMessage,
-        }));
+      const seeds = this.seedsFor(row.id, keyRows);
 
       const providerConfig = parseJson<Record<string, unknown>>(row.configJson, {});
       const account = readAccountLimits(providerConfig);
@@ -178,7 +203,9 @@ export class ProviderService {
     }
   > {
     const keyRows = this.db.select().from(apiKeys).all();
-    return this.listRows().map((row) => {
+    const rows = this.listRows();
+    const availability = this.keyAvailability(rows.map((row) => row.id));
+    return rows.map((row) => {
       const entry = this.runtimes.get(row.id);
       const snapshot = entry?.scheduler.snapshot() ?? [];
       const keys = keyRows.filter((key) => key.providerId === row.id);
@@ -208,9 +235,9 @@ export class ProviderService {
           // "Ready" means it can actually answer a search right now. A provider
           // that needs a credential but has none is saved-without-credential,
           // which must never be auto-enabled.
-          const adapter = getAdapter(row.type);
-          const needsKey = adapter?.requiresKey ?? false;
-          const hasUsableKey = keys.some((key) => key.enabled);
+          const config = parseJson<Record<string, unknown>>(row.configJson, {});
+          const needsKey = this.providerRequiresKey(row.type, config);
+          const hasUsableKey = (availability.get(row.id)?.available ?? 0) > 0;
           const ready = row.enabled && (!needsKey || hasUsableKey);
           const reason = !row.enabled
             ? "search source is disabled"
@@ -279,16 +306,142 @@ export class ProviderService {
   resolveKey(id: string): string | undefined {
     const row = this.db.select().from(apiKeys).where(eq(apiKeys.id, id)).get();
     if (!row || !row.enabled) return undefined;
-    try {
-      return this.secrets.decrypt({
-        ciphertext: row.keyCiphertext,
-        iv: row.keyIv,
-        tag: row.keyTag,
-        version: row.keyVersion,
-      });
-    } catch {
-      return undefined;
+    return this.decryptRow(row);
+  }
+
+  providerRequiresKey(type: string, config: Record<string, unknown>): boolean {
+    return providerRequiresKey(type, config);
+  }
+
+  /** 管理端 Key 池事实，以 providerId 为键；available 与自动选择共用规则。 */
+  keyAvailability(ids: string[]): Map<string, KeyAvailability> {
+    this.persistDirty();
+    const result = new Map<string, KeyAvailability>();
+    const providerIds = [...new Set(ids)];
+    if (providerIds.length === 0) return result;
+    const rows = this.db
+      .select()
+      .from(apiKeys)
+      .where(inArray(apiKeys.providerId, providerIds))
+      .all();
+    const rowsByProvider = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = rowsByProvider.get(row.providerId) ?? [];
+      list.push(row);
+      rowsByProvider.set(row.providerId, list);
     }
+    for (const providerId of providerIds) {
+      const providerRows = rowsByProvider.get(providerId) ?? [];
+      const entry = this.syncSchedulerKeys(providerId, providerRows);
+      const snapshots = entry?.scheduler.snapshot() ?? [];
+      const accountParkedUntil = entry?.scheduler.accountParkedUntil() ?? null;
+      const cooling = [
+        ...snapshots.map((key) => key.cooldownUntil),
+        accountParkedUntil,
+      ]
+        .filter((value): value is string => value !== null && Date.parse(value) > Date.now())
+        .sort();
+      result.set(providerId, {
+        total: providerRows.length,
+        enabled: providerRows.filter((key) => key.enabled).length,
+        decryptable: providerRows.filter((key) => this.decryptRow(key) !== undefined).length,
+        available: snapshots.filter((key) => entry?.scheduler.keyAvailable(key.id)).length,
+        invalid: snapshots.filter((key) => key.status === "invalid").length,
+        quotaExhausted: snapshots.filter((key) => key.status === "quota_exhausted").length,
+        coolingUntil: cooling.at(-1) ?? null,
+        accountQuotaExhausted: entry?.scheduler.accountQuotaExhausted() ?? false,
+      });
+    }
+    return result;
+  }
+
+  /** 取一个可执行请求的 Key 租约；release 会等待 dirty 状态落库。 */
+  async acquireKey(
+    providerId: string,
+    options: { keyId?: string; signal?: AbortSignal; maxWaitMs?: number; manual?: boolean } = {},
+  ): Promise<AcquireKeyResult> {
+    const provider = this.getRow(providerId);
+    if (!provider) {
+      return { ok: false, reason: "key_not_found", message: "Provider not found" };
+    }
+    if (!provider.enabled) {
+      return { ok: false, reason: "provider_disabled", message: "Provider is disabled" };
+    }
+    if (options.signal?.aborted) {
+      return { ok: false, reason: "queue_timeout", message: "Key acquisition was cancelled" };
+    }
+    const entry = this.syncSchedulerKeys(providerId);
+    if (!entry) return { ok: false, reason: "key_not_found", message: "Provider not found" };
+
+    if (options.keyId) {
+      const target = this.db.select().from(apiKeys).where(eq(apiKeys.id, options.keyId)).get();
+      if (!target || target.providerId !== providerId) {
+        return { ok: false, reason: "key_not_found", message: "API key not found for this provider" };
+      }
+      if (!target.enabled) {
+        return { ok: false, reason: "key_disabled", message: "API key is disabled" };
+      }
+      if (this.decryptRow(target) === undefined) {
+        return { ok: false, reason: "key_undecryptable", message: "Stored API key could not be decrypted" };
+      }
+    }
+
+    const maxAttempts = options.keyId ? 1 : entry.scheduler.keyCount + 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const acquired = options.keyId
+        ? await entry.scheduler.acquireForKeyWithReason(options.keyId, {
+            manual: options.manual,
+            maxWaitMs: options.maxWaitMs,
+            signal: options.signal,
+          })
+        : await entry.scheduler.acquireWithReason({ maxWaitMs: options.maxWaitMs, signal: options.signal });
+      const lease = acquired.lease;
+      if (!lease) {
+        const reason = acquired.reason ?? "no_key";
+        return {
+          ok: false,
+          reason,
+          message:
+            reason === "account_quota"
+              ? "Account-level quota for this provider is exhausted"
+              : reason === "queue_timeout"
+                ? "All API key slots were busy beyond the queue budget"
+                : "No available API key for this provider",
+        };
+      }
+
+      // The row may have been disabled/deleted/re-encrypted while this caller
+      // waited. Revalidate after the atomic lease, before any budget or request.
+      const row = this.db.select().from(apiKeys).where(eq(apiKeys.id, lease.keyId)).get();
+      const secret = row?.providerId === providerId && row.enabled ? this.decryptRow(row) : undefined;
+      if (row && secret !== undefined) {
+        let released = false;
+        return {
+          ok: true,
+          keyId: lease.keyId,
+          keyLabel: lease.keyLabel,
+          secret,
+          release: async (outcome) => {
+            if (released) return;
+            released = true;
+            lease.release(outcome);
+            await this.flushDirty();
+          },
+        };
+      }
+
+      lease.release({ ok: false, notSent: true });
+      await this.flushDirty();
+      entry.scheduler.setKeyDecryptable(lease.keyId, false);
+      if (options.keyId) {
+        return {
+          ok: false,
+          reason: !row || row.providerId !== providerId ? "key_not_found" : row.enabled ? "key_undecryptable" : "key_disabled",
+          message: "API key changed while the lease was being acquired",
+        };
+      }
+    }
+    return { ok: false, reason: "no_key", message: "No available API key for this provider" };
   }
 
   runtimeSnapshots(): ProviderRuntimeSnapshot[] {
@@ -345,6 +498,7 @@ export class ProviderService {
         adapter: entry.adapter,
         scheduler: entry.scheduler,
         enabled: true,
+        requiresKey: this.providerRequiresKey(entry.config.type, entry.config.config),
         breaker: entry.breaker,
       }));
   }
@@ -369,32 +523,7 @@ export class ProviderService {
   }
 
   async flushDirty(): Promise<void> {
-    if (this.dirtyKeys.size === 0) return;
-    const pending = [...this.dirtyKeys.values()];
-    this.dirtyKeys.clear();
-    const now = new Date().toISOString();
-    this.db.transaction((tx) => {
-      for (const snapshot of pending) {
-        tx.update(apiKeys)
-          .set({
-            status: snapshot.status,
-            requestCount: snapshot.requestCount,
-            successCount: snapshot.successCount,
-            failureCount: snapshot.failureCount,
-            consecutiveFailures: snapshot.consecutiveFailures,
-            lastUsedAt: snapshot.lastUsedAt,
-            lastFailureAt: snapshot.lastFailureAt,
-            avgLatencyMs: snapshot.avgLatencyMs,
-            cooldownUntil: snapshot.cooldownUntil,
-            quotaUsedToday: snapshot.quotaUsedToday,
-            lastErrorCode: snapshot.lastErrorCode,
-            lastErrorMessage: snapshot.lastErrorMessage,
-            updatedAt: now,
-          })
-          .where(eq(apiKeys.id, snapshot.id))
-          .run();
-      }
-    });
+    this.persistDirty();
   }
 
   startFlusher(intervalMs = 1500): void {
@@ -482,6 +611,90 @@ export class ProviderService {
 
   private markDirty(snapshot: KeyRuntimeSnapshot): void {
     this.dirtyKeys.set(snapshot.id, snapshot);
+  }
+
+  private persistDirty(): void {
+    if (this.dirtyKeys.size === 0) return;
+    const pending = [...this.dirtyKeys.values()];
+    this.dirtyKeys.clear();
+    const now = new Date().toISOString();
+    try {
+      this.db.transaction((tx) => {
+        for (const snapshot of pending) {
+          tx.update(apiKeys)
+            .set({
+              status: snapshot.status,
+              requestCount: snapshot.requestCount,
+              successCount: snapshot.successCount,
+              failureCount: snapshot.failureCount,
+              consecutiveFailures: snapshot.consecutiveFailures,
+              lastUsedAt: snapshot.lastUsedAt,
+              lastFailureAt: snapshot.lastFailureAt,
+              avgLatencyMs: snapshot.avgLatencyMs,
+              cooldownUntil: snapshot.cooldownUntil,
+              quotaUsedToday: snapshot.quotaUsedToday,
+              quotaDate: snapshot.quotaDate,
+              lastErrorCode: snapshot.lastErrorCode,
+              lastErrorMessage: snapshot.lastErrorMessage,
+              updatedAt: now,
+            })
+            .where(eq(apiKeys.id, snapshot.id))
+            .run();
+        }
+      });
+    } catch (error) {
+      for (const snapshot of pending) this.dirtyKeys.set(snapshot.id, snapshot);
+      throw error;
+    }
+  }
+
+  private seedsFor(providerId: string, rows: Array<typeof apiKeys.$inferSelect>): SchedulerKeySeed[] {
+    return rows
+      .filter((key) => key.providerId === providerId)
+      .map((key) => ({
+        id: key.id,
+        label: key.label,
+        maskedKey: key.keyHint,
+        weight: key.weight,
+        enabled: key.enabled,
+        status: key.status as KeyStatus,
+        decryptable: this.decryptRow(key) !== undefined,
+        requestCount: key.requestCount,
+        successCount: key.successCount,
+        failureCount: key.failureCount,
+        consecutiveFailures: key.consecutiveFailures,
+        avgLatencyMs: key.avgLatencyMs,
+        quotaUsedToday: key.quotaUsedToday,
+        quotaDate: key.quotaDate,
+        cooldownUntil: key.cooldownUntil,
+        lastErrorCode: key.lastErrorCode,
+        lastErrorMessage: key.lastErrorMessage,
+      }));
+  }
+
+  private syncSchedulerKeys(
+    providerId: string,
+    rows?: Array<typeof apiKeys.$inferSelect>,
+  ): ProviderRuntimeEntry | null {
+    this.persistDirty();
+    const entry = this.runtimes.get(providerId);
+    if (!entry) return null;
+    const keyRows = rows ?? this.db.select().from(apiKeys).where(eq(apiKeys.providerId, providerId)).all();
+    entry.scheduler.syncKeys(this.seedsFor(providerId, keyRows));
+    return entry;
+  }
+
+  private decryptRow(row: typeof apiKeys.$inferSelect): string | undefined {
+    try {
+      return this.secrets.decrypt({
+        ciphertext: row.keyCiphertext,
+        iv: row.keyIv,
+        tag: row.keyTag,
+        version: row.keyVersion,
+      });
+    } catch {
+      return undefined;
+    }
   }
 }
 

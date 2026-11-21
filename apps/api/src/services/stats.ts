@@ -131,13 +131,24 @@ export function dashboardStats(
       .runtimeSnapshots()
       .flatMap((snapshot) => snapshot.keys.map((key) => [key.id, key.status] as const)),
   );
-  const keyStatus = { total: keyRows.length, healthy: 0, rateLimited: 0, cooldown: 0, invalid: 0, disabled: 0 };
+  const keyStatus = {
+    total: keyRows.length,
+    healthy: 0,
+    rateLimited: 0,
+    cooldown: 0,
+    invalid: 0,
+    forbidden: 0,
+    quotaExhausted: 0,
+    disabled: 0,
+  };
   for (const row of keyRows) {
     const status = live.get(row.id) ?? row.status;
     if (status === "healthy" || status === "unknown") keyStatus.healthy += 1;
     else if (status === "rate_limited") keyStatus.rateLimited += 1;
     else if (status === "cooldown") keyStatus.cooldown += 1;
     else if (status === "invalid") keyStatus.invalid += 1;
+    else if (status === "forbidden") keyStatus.forbidden += 1;
+    else if (status === "quota_exhausted") keyStatus.quotaExhausted += 1;
     else if (status === "disabled") keyStatus.disabled += 1;
   }
 

@@ -7,7 +7,7 @@ import {
   startBraveStub,
   startHnStub,
 } from "../helpers/vendor-stubs.js";
-import { rowCount, startBatchHarness, type BatchHarness } from "../helpers/batch-harness.js";
+import { rowCount, startBatchHarness, waitFor, type BatchHarness } from "../helpers/batch-harness.js";
 
 /**
  * The pre-flight confirmation dialog's data source.
@@ -131,16 +131,17 @@ describe("batch test preview", () => {
 
     expect(body.kind).toBe("search");
     expect(body.total).toBe(20);
-    expect(body.counts["eligible"]).toBe(12);
+    // 付费开关关闭时，需凭据源明确进入策略跳过桶，不再冒充可执行项。
+    expect(body.counts["eligible"]).toBe(0);
+    expect(body.counts["coolingSkipped"]).toBe(12);
     expect(body.counts["noKey"]).toBe(3);
     expect(body.counts["noEnabledKey"]).toBe(2);
     expect(body.counts["disabled"]).toBe(3);
     expect(body.counts["configError"]).toBe(0);
-    // `paidProbesEnabled` is false by default, so a paid run cannot start and the
-    // preview must say so rather than implying twelve probes are available.
     expect(body.budget.paidProbesEnabled).toBe(false);
     expect(body.paidRisk).toBe(false);
-    expect(body.estimatedPaidProbes).toBe(0);
+    // 仍报告潜在付费探测数，供前端解释纯付费范围为何不能启动。
+    expect(body.estimatedPaidProbes).toBe(12);
 
     // Flipping the switch on is what turns those 12 testable sources into a
     // reported cost — and that is when the dialog must warn.
@@ -157,6 +158,8 @@ describe("batch test preview", () => {
     });
     expect(paid.json().paidRisk).toBe(true);
     expect(paid.json().estimatedPaidProbes).toBe(12);
+    expect(paid.json().counts.eligible).toBe(12);
+    expect(paid.json().counts.coolingSkipped).toBe(0);
   });
 
   /**
@@ -196,10 +199,8 @@ describe("batch test preview", () => {
     // Nothing is cooling: `coolingSkipped` must reflect cooldown/budget only.
     expect(body.counts["coolingSkipped"]).toBe(0);
 
-    // For contrast, the same scope as a paid search. `paidProbesEnabled` is off,
-    // so `paidRisk` stays false — but the source is still *testable*: the paid
-    // switch refuses the whole run with a 409 that names the setting, instead of
-    // pretending twelve healthy sources are all out of budget.
+    // 同一范围改为真实搜索时，付费开关关闭会使唯一需凭据源明确跳过；
+    // 潜在付费数仍为 1，但 paidRisk 为 false，因为本次不会发出付费请求。
     const paid = await harness.app.inject({
       method: "GET",
       url: "/api/admin/provider-health/batch-test/preview?kind=search",
@@ -211,11 +212,9 @@ describe("batch test preview", () => {
       estimatedPaidProbes: number;
     };
     expect(paidBody.paidRisk).toBe(false);
-    expect(paidBody.counts["eligible"]).toBe(1);
-    expect(paidBody.counts["coolingSkipped"]).toBe(0);
-    // No cost is estimated, because no run can be started: reporting "1 paid
-    // probe" here would warn about a bill that will never exist.
-    expect(paidBody.estimatedPaidProbes).toBe(0);
+    expect(paidBody.counts["eligible"]).toBe(0);
+    expect(paidBody.counts["coolingSkipped"]).toBe(1);
+    expect(paidBody.estimatedPaidProbes).toBe(1);
   });
 
   /**
@@ -367,36 +366,19 @@ describe("batch test preview", () => {
   });
 
   /**
-   * T45 — "include keyless sources" is a policy the preview *and* the runner read.
-   *
-   * The pre-flight toggle writes `includeUnverified`; if either side hardcoded
-   * "keyless sources participate", the dialog and the run would disagree. The
-   * assertions are on the HTTP surface (what the dialog renders) and on the
-   * run's item list (what actually happened), including that a policy skip
-   * writes no health row at all.
+   * T45 — includeKeyless 是任务级参数，preview 与 runner 读取同一请求快照。
+   * 全局 includeUnverified 既不决定默认值，也不会被弹窗切换修改。
    */
-  it("T45 a keyless source is skipped by policy when includeUnverified is off, and probed when it is on", async () => {
+  it("T45 task-level includeKeyless defaults false and does not write global settings", async () => {
     const harness = track(await startBatchHarness());
     await allowLocal(harness);
     const keyless = await addKeyless(harness, "policy-keyless");
     const keyed = await addKeyed(harness, "policy-keyed", "sk-POLICY-KEYED-000000000000");
-
-    const included = await harness.app.inject({
-      method: "GET",
-      url: "/api/admin/provider-health/batch-test/preview?kind=connect",
-      ...harness.read(),
-    });
-    expect(included.statusCode, included.body).toBe(200);
-    const before = included.json() as { counts: Record<string, number> };
-    // `includeUnverified` is on by default: both sources are testable.
-    expect(before.counts["eligible"]).toBe(2);
-    expect(before.counts["keylessSkipped"]).toBe(0);
-
     const patched = await harness.app.inject({
       method: "PUT",
       url: "/api/admin/provider-health/settings",
       ...harness.write(),
-      payload: { includeUnverified: false },
+      payload: { includeUnverified: true },
     });
     expect(patched.statusCode, patched.body).toBe(200);
 
@@ -406,10 +388,19 @@ describe("batch test preview", () => {
       ...harness.read(),
     });
     expect(excluded.statusCode, excluded.body).toBe(200);
-    const after = excluded.json() as { total: number; counts: Record<string, number> };
-    expect(after.counts["keylessSkipped"]).toBe(1);
-    expect(after.counts["eligible"]).toBe(1);
-    // The seven counters still partition the scope exactly.
+    const before = excluded.json() as { total: number; counts: Record<string, number> };
+    expect(before.counts["keylessSkipped"]).toBe(1);
+    expect(before.counts["eligible"]).toBe(1);
+
+    const included = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/provider-health/batch-test/preview?kind=connect&includeKeyless=true",
+      ...harness.read(),
+    });
+    expect(included.statusCode, included.body).toBe(200);
+    const after = included.json() as { total: number; counts: Record<string, number> };
+    expect(after.counts["keylessSkipped"]).toBe(0);
+    expect(after.counts["eligible"]).toBe(2);
     expect(
       after.counts["eligible"]! +
         after.counts["noKey"]! +
@@ -420,18 +411,19 @@ describe("batch test preview", () => {
         after.counts["coolingSkipped"]!,
     ).toBe(after.total);
 
-    // The run applies the same policy, and a skip is not a probe.
     const created = await harness.app.inject({
       method: "POST",
       url: "/api/admin/provider-health/batch-test",
       ...harness.write(),
-      payload: { kind: "connect" },
+      payload: { kind: "connect", includeKeyless: false },
     });
     expect(created.statusCode, created.body).toBe(201);
     const jobId = created.json().jobId as string;
 
     interface JobView {
       status: string;
+      includeKeyless: boolean;
+      counts: { remaining: number };
       items: Array<{ providerId: string; state: string; code: string }>;
     }
     let view = (
@@ -441,24 +433,33 @@ describe("batch test preview", () => {
         ...harness.read(),
       })
     ).json() as JobView;
-    for (let attempt = 0; attempt < 100 && view.status === "running"; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      view = (
-        await harness.app.inject({
-          method: "GET",
-          url: `/api/admin/provider-health/batch-test/${jobId}`,
-          ...harness.read(),
-        })
-      ).json() as JobView;
-    }
+    await waitFor(
+      async () => {
+        view = (
+          await harness.app.inject({
+            method: "GET",
+            url: `/api/admin/provider-health/batch-test/${jobId}`,
+            ...harness.read(),
+          })
+        ).json() as JobView;
+        return view.status !== "running" && view.counts.remaining === 0;
+      },
+      { label: "task-level keyless run to settle" },
+    );
 
     expect(view.status).toBe("completed");
+    expect(view.includeKeyless).toBe(false);
     const keylessItem = view.items.find((item) => item.providerId === keyless);
     expect(keylessItem?.state).toBe("skipped");
     expect(keylessItem?.code).toBe("SKIPPED_KEYLESS_BY_POLICY");
     expect(view.items.find((item) => item.providerId === keyed)?.state).toBe("ok");
 
-    // Exactly one health row: the skipped source was never measured.
+    const settings = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/provider-health/settings",
+      ...harness.read(),
+    });
+    expect(settings.json().policy.includeUnverified).toBe(true);
     const rows = harness.ctx.sqlite
       .prepare("SELECT provider_id FROM provider_health_checks")
       .all() as Array<{ provider_id: string }>;
@@ -478,10 +479,11 @@ describe("batch test preview", () => {
       ...harness.read(),
     });
     expect(single.json().total).toBe(1);
-    // One source, one bucket: the paid switch is off, so the source is testable
-    // but the run would be refused — that is `paidRisk: false`, not "skipped".
-    expect(single.json().counts.eligible).toBe(1);
+    // 纯付费范围在付费开关关闭时明确跳过，但 estimatedPaidProbes 仍报告潜力。
+    expect(single.json().counts.eligible).toBe(0);
+    expect(single.json().counts.coolingSkipped).toBe(1);
     expect(single.json().counts.disabled).toBe(0);
+    expect(single.json().estimatedPaidProbes).toBe(1);
 
     const both = await harness.app.inject({
       method: "GET",

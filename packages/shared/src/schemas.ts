@@ -59,7 +59,7 @@ const httpUrl = z
     }
   }, "must be an http(s) URL");
 
-export const providerCreateSchema = z.object({
+const providerCreateShape = {
   name: z.string().trim().min(1).max(80),
   type: z.string().trim().min(1).max(64),
   enabled: z.boolean().default(true),
@@ -114,9 +114,34 @@ export const providerCreateSchema = z.object({
       enabled: z.boolean().default(true),
     })
     .optional(),
-});
+};
 
-export const providerUpdateSchema = providerCreateSchema.partial().omit({ credential: true });
+export const providerCreateSchema = z.object(providerCreateShape);
+
+// PATCH must not inherit create-time defaults: injecting `config: {}` or
+// `searchConfig: {}` for an omitted field silently erases saved provider setup.
+export const providerUpdateSchema = z.object({
+  name: providerCreateShape.name.optional(),
+  type: providerCreateShape.type.optional(),
+  enabled: providerCreateShape.enabled.removeDefault().optional(),
+  baseUrl: providerCreateShape.baseUrl.optional(),
+  timeoutMs: providerCreateShape.timeoutMs.removeDefault().optional(),
+  maxConcurrency: providerCreateShape.maxConcurrency.removeDefault().optional(),
+  priority: providerCreateShape.priority.removeDefault().optional(),
+  weight: providerCreateShape.weight.removeDefault().optional(),
+  maxRetries: providerCreateShape.maxRetries.removeDefault().optional(),
+  language: providerCreateShape.language.optional(),
+  freshness: providerCreateShape.freshness.optional(),
+  resultsPerPage: providerCreateShape.resultsPerPage.removeDefault().optional(),
+  rpmLimit: providerCreateShape.rpmLimit.removeDefault().optional(),
+  dailyQuota: providerCreateShape.dailyQuota.optional(),
+  keyStrategy: providerCreateShape.keyStrategy.removeDefault().optional(),
+  cooldownMs: providerCreateShape.cooldownMs.removeDefault().optional(),
+  breakerThreshold: providerCreateShape.breakerThreshold.removeDefault().optional(),
+  breakerCooldownMs: providerCreateShape.breakerCooldownMs.removeDefault().optional(),
+  config: providerCreateShape.config.removeDefault().optional(),
+  searchConfig: providerCreateShape.searchConfig.removeDefault().optional(),
+});
 
 /**
  * Marketplace batch install. Each item is a provider type plus an optional name;
@@ -264,7 +289,12 @@ export const healthSettingsPatchSchema = z.object({
   maxRequestsPerRun: z.number().int().min(1).max(200).optional(),
   /** Paid probes per UTC day. Capped, never unbounded. */
   maxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
+  /** Keyless searches per run, counted in their own bucket. */
+  anonymousMaxRequestsPerRun: z.number().int().min(1).max(200).optional(),
+  /** Keyless searches per UTC day, counted in their own bucket. */
+  anonymousMaxRequestsPerDay: z.number().int().min(1).max(2000).optional(),
   paidProbesEnabled: z.boolean().optional(),
+  /** Legacy global field; retained for old clients, not used by batch runs. */
   includeUnverified: z.boolean().optional(),
   concurrency: z.number().int().min(1).max(4).optional(),
 });
@@ -280,6 +310,8 @@ export const healthSettingsPatchSchema = z.object({
 export const batchTestCreateSchema = z.object({
   kind: z.enum(["connect", "search"]).default("search"),
   providerIds: z.array(z.string().min(1)).max(500).nullish(),
+  /** Task-level opt-in for sources that need no credential. */
+  includeKeyless: z.boolean().optional().default(false),
   concurrency: z.number().int().min(1).max(4).optional(),
 });
 
@@ -292,6 +324,11 @@ export const batchTestCreateSchema = z.object({
  */
 export const batchTestPreviewQuerySchema = z.object({
   kind: z.enum(["connect", "search"]).default("search"),
+  includeKeyless: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => value === "true")
+    .default(false),
   providerIds: z
     .union([z.string(), z.array(z.string())])
     .optional()

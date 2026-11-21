@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { ProviderError, SearchHubError } from "@search-hub/shared";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,11 +49,39 @@ describe("health classification", () => {
 
   it("classifies auth, permission and network failures distinctly", () => {
     expect(classifyError(Object.assign(new Error("invalid key"), { code: "auth_invalid" }))).toBe("auth_invalid");
-    expect(classifyError(Object.assign(new Error("no entitlement"), { code: "blocked" }))).toBe("forbidden");
+    expect(
+      classifyError(
+        Object.assign(new Error("no entitlement"), {
+          code: "blocked",
+          details: { upstreamStatus: 403 },
+        }),
+      ),
+    ).toBe("forbidden");
     expect(classifyError(new Error("getaddrinfo ENOTFOUND api.example.com"))).toBe("dns");
     expect(classifyError(new Error("self signed certificate in certificate chain"))).toBe("tls");
     expect(classifyError(new Error("ETIMEDOUT"))).toBe("timeout");
     expect(classifyError(Object.assign(new Error("boom"), { code: "server_error" }))).toBe("server_error");
+  });
+
+  it("prioritizes structured transport codes over misleading status text", () => {
+    expect(classifyError(new SearchHubError("cancelled", "HTTP 403 cancelled", { status: 403 }))).toBe("cancelled");
+    expect(classifyError(new SearchHubError("timeout", "HTTP 403 timeout", { status: 403 }))).toBe("timeout");
+    expect(classifyError(new ProviderError("p", "brave", "network", "HTTP 403 network"))).toBe("network");
+    expect(classifyError(new ProviderError("p", "brave", "auth_invalid", "HTTP 403 invalid"))).toBe("auth_invalid");
+  });
+
+  it("distinguishes local SSRF blocks from trusted upstream permission failures", () => {
+    const local = new ProviderError("p", "brave", "blocked", "private address blocked", { statusCode: 403 });
+    expect(classifyError(local)).toBe("network");
+    const upstream = new ProviderError("p", "brave", "blocked", "No entitlement", {
+      statusCode: 403,
+      details: { upstreamStatus: 403 },
+    });
+    expect(classifyError(upstream)).toBe("forbidden");
+    const vendorPermission = new ProviderError("p", "minimax", "blocked", "No Coding Plan entitlement", {
+      details: { permissionDenied: true, vendorCode: 2038 },
+    });
+    expect(classifyError(vendorPermission)).toBe("forbidden");
   });
 
   it("maps causes onto the API error vocabulary", () => {
@@ -88,6 +117,7 @@ describe("health classification", () => {
 
   it("parses Retry-After as seconds or as an HTTP date", () => {
     expect(parseRetryAfterMs("30")).toBe(30_000);
+    expect(parseRetryAfterMs(120_000)).toBe(120_000);
     expect(parseRetryAfterMs(null)).toBeNull();
     const future = new Date(Date.now() + 10_000).toUTCString();
     expect(parseRetryAfterMs(future)).toBeGreaterThan(8_000);
@@ -521,6 +551,180 @@ describe("probe request accounting", () => {
     expect(result.cause).toBe("no_credential");
     // `0` would claim we know the wire was untouched; `null` says "not measured".
     expect(result.requests).toBeNull();
+  });
+
+  it("H61 refunds a paid reservation when an adapter returns without a physical request", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "zero-wire-paid", {
+      resultCount: 2,
+      accountGroup: "zero-wire-account",
+      accountDailyQuota: 5,
+    });
+    const added = await harness.app.inject({
+      method: "POST",
+      url: `/api/admin/providers/${providerId}/keys`,
+      ...adminHeaders(harness),
+      payload: { label: "zero-wire", key: "sk-HEALTH-ZERO-WIRE-00000000000" },
+    });
+    expect(added.statusCode, added.body).toBe(200);
+    const keyId = (harness.ctx.sqlite.prepare("SELECT id FROM api_keys WHERE provider_id = ?").get(providerId) as { id: string }).id;
+    await harness.app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      ...adminHeaders(harness),
+      payload: { health: { paidProbesEnabled: true, maxRequestsPerRun: 1, maxRequestsPerDay: 1 } },
+    });
+
+    const result = await harness.ctx.health.checkOne(providerId, { kind: "search", keyId, trigger: "manual" });
+    expect(result.requests).toBeNull();
+    expect(result.spent).toBe(false);
+    const key = harness.ctx.providers.listKeys(providerId)[0]!;
+    expect(key).toMatchObject({ requestCount: 0, successCount: 0, failureCount: 0, inFlight: 0 });
+    const account = harness.ctx.providers.runtimesFor([providerId])[0]!.scheduler.accountSnapshot();
+    expect(account).toMatchObject({ group: "zero-wire-account", quotaUsedToday: 0, rpmUsed: 0 });
+    expect(harness.ctx.health.budget()).toMatchObject({
+      usedToday: 0,
+      remainingToday: 1,
+    });
+    expect(
+      harness.ctx.sqlite.prepare("SELECT budget_kind, budget_day, credential_used, spent FROM provider_health_billing WHERE health_check_id = ?").get(result.id),
+    ).toEqual({ budget_kind: "search", budget_day: new Date().toISOString().slice(0, 10), credential_used: 1, spent: 0 });
+  });
+
+  it("H61 zero-request anonymous probes do not consume the run or day allowance", async () => {
+    const harness = await createHarness();
+    const ids = [
+      await addMock(harness, "zero-wire-anonymous-1", { resultCount: 2 }),
+      await addMock(harness, "zero-wire-anonymous-2", { resultCount: 2 }),
+      await addMock(harness, "zero-wire-anonymous-3", { resultCount: 2 }),
+    ];
+    await harness.app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      ...adminHeaders(harness),
+      payload: {
+        health: {
+          paidProbesEnabled: false,
+          anonymousMaxRequestsPerRun: 1,
+          anonymousMaxRequestsPerDay: 1,
+        },
+      },
+    });
+
+    const run = await harness.ctx.health.checkMany(ids, { kind: "search", gapMs: 0, concurrency: 1 });
+    expect(run.results).toHaveLength(3);
+    expect(run.skipped).toEqual([]);
+    expect(run.results.every((item) => item.requests === null)).toBe(true);
+    expect(run.budget).toMatchObject({
+      anonymousSearchUsedToday: 0,
+      anonymousRemainingToday: 1,
+      usedToday: 0,
+    });
+    expect(
+      harness.ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_billing WHERE budget_kind = ? AND spent = 0").get("search_anonymous"),
+    ).toEqual({ n: 3 });
+  });
+
+  it("H64 a scheduler write failure after observation does not refund another probe's slot", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "schedule-write-failure", { resultCount: 2 });
+    const day = harness.ctx.health.budget().day;
+    harness.ctx.sqlite
+      .prepare("INSERT INTO health_probe_budget (day, kind, used, updated_at) VALUES (?,?,?,?) ON CONFLICT(day, kind) DO UPDATE SET used=1, updated_at=excluded.updated_at")
+      .run(day, "search_anonymous", 1, new Date().toISOString());
+    harness.ctx.sqlite.exec(
+      "CREATE TRIGGER fail_probe_schedule BEFORE INSERT ON provider_probe_state BEGIN SELECT RAISE(ABORT, 'schedule blocked'); END",
+    );
+
+    await expect(harness.ctx.health.checkOne(providerId, { kind: "search" })).rejects.toThrow(/schedule blocked/);
+    expect(harness.ctx.health.budget().anonymousSearchUsedToday).toBe(1);
+    expect(
+      harness.ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_checks WHERE provider_id = ?").get(providerId),
+    ).toEqual({ n: 1 });
+    expect(
+      harness.ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_billing WHERE health_check_id IN (SELECT id FROM provider_health_checks WHERE provider_id = ?)").get(providerId),
+    ).toEqual({ n: 1 });
+  });
+
+  it("H64 a billing write failure does not retry the observation or refund another probe's slot", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "billing-write-failure", { resultCount: 2 });
+    const day = harness.ctx.health.budget().day;
+    harness.ctx.sqlite
+      .prepare("INSERT INTO health_probe_budget (day, kind, used, updated_at) VALUES (?,?,?,?) ON CONFLICT(day, kind) DO UPDATE SET used=1, updated_at=excluded.updated_at")
+      .run(day, "search_anonymous", 1, new Date().toISOString());
+    harness.ctx.sqlite.exec(
+      "CREATE TRIGGER fail_probe_billing BEFORE INSERT ON provider_health_billing BEGIN SELECT RAISE(ABORT, 'billing blocked'); END",
+    );
+
+    await expect(harness.ctx.health.checkOne(providerId, { kind: "search" })).rejects.toThrow(/billing blocked/);
+    expect(harness.ctx.health.budget().anonymousSearchUsedToday).toBe(1);
+    expect(
+      harness.ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_checks WHERE provider_id = ?").get(providerId),
+    ).toEqual({ n: 1 });
+    expect(
+      harness.ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_billing").get(),
+    ).toEqual({ n: 0 });
+  });
+
+  it("H65 a ledger reservation failure releases the acquired key as notSent", async () => {
+    const harness = await createHarness();
+    const providerId = await addMock(harness, "reserve-write-failure", {
+      resultCount: 2,
+      accountGroup: "reserve-failure-account",
+      accountDailyQuota: 5,
+    });
+    await addKey(
+      harness.app,
+      adminHeaders(harness),
+      providerId,
+      "sk-HEALTH-RESERVE-FAILURE-00000000",
+    );
+    const keyId = (harness.ctx.sqlite.prepare("SELECT id FROM api_keys WHERE provider_id = ?").get(providerId) as { id: string }).id;
+    await harness.app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      ...adminHeaders(harness),
+      payload: { health: { paidProbesEnabled: true } },
+    });
+    harness.ctx.sqlite.exec(
+      "CREATE TRIGGER fail_probe_reservation BEFORE UPDATE ON health_probe_budget BEGIN SELECT RAISE(ABORT, 'reservation blocked'); END",
+    );
+
+    await expect(
+      harness.ctx.health.checkOne(providerId, { kind: "search", keyId }),
+    ).rejects.toThrow(/reservation blocked/);
+    expect(harness.ctx.providers.listKeys(providerId)[0]).toMatchObject({
+      requestCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      inFlight: 0,
+    });
+    expect(
+      harness.ctx.providers.runtimesFor([providerId])[0]!.scheduler.accountSnapshot(),
+    ).toMatchObject({ group: "reserve-failure-account", quotaUsedToday: 0, rpmUsed: 0 });
+    expect(
+      harness.ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM provider_health_checks").get(),
+    ).toEqual({ n: 0 });
+  });
+
+  it("H66 overview does not report an undecryptable credential pool as healthy", async () => {
+    const harness = await createHarness();
+    const providerId = await addKeyedProvider(harness, "undecryptable-overview");
+    const healthy = await harness.ctx.health.checkOne(providerId, { kind: "connect" });
+    expect(healthy.cause).toBe("ok");
+    expect(harness.ctx.health.overview().providers.find((item) => item.providerId === providerId)).toMatchObject({
+      keyAvailable: 1,
+      runtime: "healthy",
+    });
+
+    harness.ctx.sqlite.prepare("UPDATE api_keys SET key_ciphertext = ? WHERE provider_id = ?").run("broken", providerId);
+    harness.ctx.providers.reload();
+    expect(harness.ctx.health.overview().providers.find((item) => item.providerId === providerId)).toMatchObject({
+      keyTotal: 1,
+      keyAvailable: 0,
+      runtime: "unverified",
+    });
   });
 
   it("stops before the first request when the job is already cancelled", async () => {

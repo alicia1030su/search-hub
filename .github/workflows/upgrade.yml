@@ -118,6 +118,18 @@ jobs:
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.8 --to "$TARGET" --port 8927
 
+      # The immediately previous Stable release. This path also exercises the
+      # v0.1.11 health-budget migration against real v0.1.10 state.
+      - name: Upgrade v0.1.10 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.10 --to "$TARGET" --port 8928
+
       # beta -> stable of the same minor version: the path an operator on the
       # beta channel actually takes, and the one where the updater must accept
       # "release over prerelease".

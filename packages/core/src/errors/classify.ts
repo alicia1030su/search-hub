@@ -25,8 +25,11 @@ export function classifyHttpStatus(
   retryAfterMs?: number,
 ): ErrorClassification {
   const message = extractMessage(body) || `Upstream HTTP ${status}`;
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     return { code: "auth_invalid", retryable: false, message };
+  }
+  if (status === 403) {
+    return { code: "blocked", retryable: false, message };
   }
   if (status === 429) {
     return {

@@ -274,6 +274,15 @@ items=24 skipped=0 failed=0  RESULT: PASS
 
 Trivy 阈值未放宽：仍是 `MAX_HIGH=0`、`MAX_CRITICAL=0`、`ignore-unfixed=1`。
 
+### 3.3 v0.1.11 候选回归（2026-11-21）
+
+产品代码门禁提交 `83557f9`，Docker run [44855897001](https://github.com/alicia1030su/search-hub/actions/runs/44855897001)：
+
+- 24/24 PASS，0 skipped；真实 HN 搜索、MCP/REST 一致、50/50 负载、崩溃恢复均通过。
+- 第 7 项改用真实 HN HTTP 探测：`requests=1`、`connectUsedToday=1`；容器 down/up 后预算仍为 1，健康记录的 `checkedAt` 与请求数逐项不变。
+- Trivy：CRITICAL=0 / HIGH=0，阈值未放宽。
+- 首次候选运行曾因旧脚本要求 mock 探测产生预算消耗而失败；v0.1.11 会正确退还零物理请求的预留，因此这里改为真实 HTTP 证据，而不是删除持久化断言。
+
 ## 4. 静态审查：镜像与编排
 
 ### 4.1 已修正的真实缺陷

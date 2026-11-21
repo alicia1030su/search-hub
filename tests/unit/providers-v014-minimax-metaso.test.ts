@@ -128,7 +128,10 @@ describe("minimax", () => {
     const error = await minimaxAdapter
       .search({ query: "x", limit: 5, signal: ctx.signal }, ctx)
       .catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "blocked" });
+    expect(error).toMatchObject({
+      code: "blocked",
+      details: { permissionDenied: true, vendorCode: 2038 },
+    });
     expect((error as Error).message).toContain("Coding Plan");
   });
 
