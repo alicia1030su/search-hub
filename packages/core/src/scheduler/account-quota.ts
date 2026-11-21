@@ -156,11 +156,40 @@ export class AccountQuotaRegistry {
     return state.parkedUntil;
   }
 
-  snapshot(group: string, now: number = Date.now()): AccountQuotaSnapshot | null {
+  /** Read-only park view for admin GET endpoints; never mutates group state. */
+  parkedUntilReadOnly(group: string, now: number = Date.now()): number | null {
+    if (!group) return null;
     const state = this.groups.get(group);
     if (!state) return null;
-    this.stateFor(group, state.limit, now);
+    return state.parkedUntil !== null && state.parkedUntil > now ? state.parkedUntil : null;
+  }
+
+  snapshot(group: string, now: number = Date.now()): AccountQuotaSnapshot | null {
+    const existing = this.groups.get(group);
+    if (!existing) return null;
+    const state = this.stateFor(group, existing.limit, now);
     this.expirePark(state, now);
+    return this.snapshotState(group, state, now);
+  }
+
+  /** Read-only snapshot: UTC rollover and park expiry are evaluated on a copy. */
+  snapshotReadOnly(group: string, now: number = Date.now()): AccountQuotaSnapshot | null {
+    const state = this.groups.get(group);
+    if (!state) return null;
+    const quotaUsedToday = state.quotaDate === utcDay(now) ? state.quotaUsedToday : 0;
+    const parkedUntil = state.parkedUntil !== null && state.parkedUntil > now ? state.parkedUntil : null;
+    return {
+      group,
+      rpmUsed: state.window.filter((reservation) => reservation.at > now - 60_000).length,
+      rpmLimit: state.limit.rpmLimit,
+      quotaUsedToday,
+      dailyQuota: state.limit.dailyQuota,
+      lastDeniedAt: state.lastDeniedAt === null ? null : new Date(state.lastDeniedAt).toISOString(),
+      parkedUntil: parkedUntil === null ? null : new Date(parkedUntil).toISOString(),
+    };
+  }
+
+  private snapshotState(group: string, state: GroupState, now: number): AccountQuotaSnapshot {
     const cutoff = now - 60_000;
     return {
       group,

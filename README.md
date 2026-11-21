@@ -4,11 +4,11 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.11 · Stable Release（正式发布渠道）。**
+> **状态：v0.1.12 · Stable 候选（最终门禁待复核）。**
 >
-> **发布门禁**：本候选构建实跑 Vitest **1152/1152（88 文件）**、Playwright **42/42**；Stable tag 只在全量门禁转绿后发布。
+> **发布门禁**：本地候选 Vitest **1241 项 / 96 文件**、Playwright **42 项**均已通过；远端 CI、升级矩阵与正式发布结果以 `docs/release-readiness.md` 的最终记录为准。
 >
-> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存、搜索源健康管理中心与搜索质量评测实验室均已实现；自动化套件覆盖单元、集成与浏览器流程，发布门禁结果见 [测试文档](./docs/testing.md)。**Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）真实通过**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）。
+> 核心搜索、Key 池调度、管理后台（中英双语）、REST API、MCP（双协议）、Skills、持久化缓存、搜索源健康管理中心与搜索质量评测实验室均已实现；自动化套件覆盖单元、集成与浏览器流程，发布门禁结果见 [测试文档](./docs/testing.md)。**v0.1.11 的 Docker 镜像与 11 项容器验收已在 GitHub Actions（ubuntu-latest）留下通过记录**（24/24，含 compose 启动、初始化、真实搜索、持久化、崩溃恢复、MCP 与 Trivy 0 HIGH/0 CRITICAL）；该记录不作为 v0.1.12 已通过的证据。
 >
 > **Stable 的含义是「这是维护者当前选择的公开正式发布渠道」，不是「所有外部集成均已通过生产认证」。** 具体说：**Hacker News、Crossref、OpenAlex、PubMed 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**；搜索质量评测目前只有合成基准，**没有真实厂商标注集**。这些缺口在 [Provider 状态矩阵](./docs/provider-matrix.md)、[发布就绪报告](./docs/release-readiness.md) 与 [CHANGELOG](./CHANGELOG.md) 里逐项列明，未联调的能力不会被描述为“已验证”。
 
@@ -42,7 +42,7 @@ Search Hub 把这些做成一个可部署的服务：
 | 结果缓存（SQLite 持久化） | 已实现 | 1–72 小时可配；重启/容器重建后仍有效；容量上限自动 LRU 淘汰，后台每 10 分钟清理过期 |
 | 中英文界面 | 已实现 | zh-CN 为默认，en-US 完整覆盖；语言选择持久化，日期/数字跟随语言 |
 | 搜索质量评测实验室 | 已实现 | 人工相关性标注（四级）+ P@10 / Recall@10 / MRR@10 / nDCG@10；离线基准不联网、可复现；单源/基础/RRF 对比；RRF 参数实验用 development/holdout 隔离；标注不足输出 N/A 与 INSUFFICIENT_EVIDENCE |
-| 搜索源健康管理中心 | 已实现 | 实现验证状态与运行状态分离；连接探测（一次最小请求）/ 真实搜索探测（会消耗额度，默认关闭）；预算持久化且并发安全；指数退避自动恢复；单源开关与重置 |
+| 搜索源健康管理中心 | 已实现 | 实现验证状态与运行状态分离；连接探测按物理 HTTP 跳数计量预算（默认单次 5 / 每日 50）；真实搜索探测会消耗额度，默认关闭；所有探测路径共用同源 in-flight 锁；预算持久化且并发安全；指数退避自动恢复；单源开关与重置 |
 | PostgreSQL | 未实现 | 当前仅 SQLite；接口已隔离，见[已知限制](#已知限制) |
 | Redis 多实例协调 | 未实现 | 单进程额度保证；多实例方案见架构文档 |
 
@@ -55,11 +55,10 @@ Search Hub 把这些做成一个可部署的服务：
 | 实现验证 `documented` / `mock_verified` / `live_tested` / `unverified` | 这个适配器当初怎么被验证的。**一次探测成功不会升级它** |
 | 运行状态 `healthy` / `degraded` / `rate_limited` / `quota_exceeded` / `invalid_credentials` / `permission_denied` / `cooldown` / `unknown` / `unverified` / `disabled` | 这个实例现在能不能用 |
 
-- **两种探测**：连接探测发一次最小请求，只证明端点和凭证能建立会话（对需要凭证的源，
-  这次请求同样带凭证，所以不宣称"一定免费"）；真实搜索探测会调用厂商搜索接口，只有它
-  拿到结果才能说"现在能搜到"。完全无需凭证的源（HN / Crossref / OpenAlex / PubMed /
-  arXiv / Wikipedia）可以不经付费开关直接做真实搜索验证，并单独计数。
-- **预算**：付费真实搜索与匿名真实搜索分别计数、分别设上限（默认均为每轮 3 次、每日 20 次，可调但有硬上限）。计数存在数据库里，重启不重置，并发探测也不会突破；写不进账本就不发请求。
+- **两种探测**：连接探测按解析后的最小搜索计划执行，分页与重定向的每个物理 HTTP 跳都计入独立连接预算；对需要凭证的源，请求同样带凭证，所以不宣称"一定免费"。真实搜索探测会调用厂商搜索接口，只有它拿到结果才能说"现在能搜到"。完全无需凭证的源（HN / Crossref / OpenAlex / PubMed / arXiv / Wikipedia）可以不经付费开关直接做真实搜索验证，并单独计数。
+- **预算**：付费真实搜索、匿名真实搜索与连接探测分别计数。付费/匿名默认均为每轮 3 次、每日 20 次；连接探测默认单次最多 5 个物理 HTTP 跳、每日 50 跳（均可调，有硬上限）。计数存在数据库里，重启不重置，并发探测也不会突破；写不进账本就不发请求。请求数不等于厂商账单，`billingUnit` 明确为 `unknown`。
+- **同源去重**：单源测试、Key 测试、定时巡检、全部测试与批量任务共用同一个 in-flight 锁。重复探测返回 `409 already_running`，批量任务把它记为跳过，不会重复请求或误报源失败。
+- **本地预算拒绝**：连接预算超限返回 `429 quota_exceeded`，不写健康结论、不失效 Key、不停用源；批量任务记 `SKIPPED_BUDGET`。GET 预检、概览、设置与 MCP 健康读取均不写数据库。
 - **自动恢复**：瞬时失败按指数退避尽快重试，终态失败等正常间隔；一次失败永远不会永久
   禁用一个源，恢复后自动回到 `healthy`。
 - **默认关闭**：后台定时探测默认不开启，开启后才按间隔与预算运行。
@@ -149,17 +148,19 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.11）
+## 下载安装（v0.1.12 候选）
 
-三种形态，同一套搜索核心、数据库模型与管理后台。
+三种形态，同一套搜索核心、数据库模型与管理后台。v0.1.12 资产在最终门禁通过后发布；当前已发布稳定版仍为 v0.1.11。
 
 | 平台 | 下载 | 需要什么 |
 |---|---|---|
-| Windows x64 | [`search-hub-v0.1.11-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/search-hub-v0.1.11-windows-x64.zip) | **无**（不需要 Node / pnpm / Git / Docker） |
-| Linux x64 | [`search-hub-v0.1.11-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/search-hub-v0.1.11-linux-x64.tar.gz) | **无**（随包 Node 运行时） |
-| Linux arm64 | [`search-hub-v0.1.11-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/search-hub-v0.1.11-linux-arm64.tar.gz) | **无** |
+| Windows x64 | 发布后：[`search-hub-v0.1.12-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **无**（不需要 Node / pnpm / Git / Docker） |
+| Linux x64 | 发布后：[`search-hub-v0.1.12-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **无**（随包 Node 运行时） |
+| Linux arm64 | 发布后：[`search-hub-v0.1.12-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **无** |
 
-校验：下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/download/v0.1.11/SHA256SUMS) 后执行 `sha256sum -c SHA256SUMS`。
+校验：发布后从同一 Release 下载 [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) 并执行 `sha256sum -c SHA256SUMS`。
+
+> **v0.1.12 收口凭据泄漏与探测计量**：修复 URL query API Key 在 JSON/HTML/编码错误、错误 `details.url`、SQLite 健康历史、Key `last_error`、审计与 MCP 输出中的泄漏；单源、批量、Key 与定时探测统一 in-flight 锁，重复请求为 409 `already_running`；连接探测改为按物理 HTTP 跳计数，默认单次 5 跳、每日 50 跳，`billingUnit=unknown`；本地连接预算拒绝为 429 `quota_exceeded`，批量记 `SKIPPED_BUDGET`；GET 健康预览只读；Key 创建/更新最短 8 字符。新增迁移 `0010`，归档旧连接账本并只增不减、幂等重算。
 
 > **v0.1.11 收口批量检测、凭据安全与预算语义**：免 Key 开关改为任务级参数，默认关闭且不写全局设置；付费与匿名搜索使用独立预算桶；generic-http 的 `keyInjection`/`{{key}}` 正确识别为需凭据；Key 可用性统一走调度器事实，403 显示为独立的「权限受限」状态。批量取消改为事务内结算，取消、崩溃恢复与 100 并发取消都不会把旧快照覆盖回 `completed`；单源测试后健康概览无需整页刷新。新增迁移 `0009`。
 >
@@ -230,7 +231,7 @@ Search Hub 把这些做成一个可部署的服务：
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.11-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.12-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -239,7 +240,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.11    # 或不写 tag，默认取 latest
+docker pull ghcr.io/alicia1030su/search-hub:0.1.12    # 候选 tag；最终发布后可用
 # 镜像当前只构建 linux/amd64；arm64 主机请使用上面的 arm64 独立包
 docker compose up -d                                        # 或从源码构建
 ```
@@ -288,10 +289,10 @@ corepack pnpm start          # 以编译产物运行（生产形态）
 
 每个搜索源可创建多个独立实例（例如 `brave-eu`、`brave-us`），每个实例有自己的地址、Key 池、并发、优先级与调度策略。
 
-- **Key 加密**：AES-256-GCM，主密钥来自 `SEARCH_HUB_ENCRYPTION_KEY` 或自动生成的 `data/master.key`。API 只返回首 4 + 末 4 的掩码（如 `sk-1…abcd`）。
+- **Key 加密**：AES-256-GCM，主密钥来自 `SEARCH_HUB_ENCRYPTION_KEY` 或自动生成的 `data/master.key`。API 只返回首 4 + 末 4 的掩码（如 `sk-1…abcd`）；创建与更新时 Key 去除首尾空白后至少 8 个字符。
 - **调度策略**：`round_robin` / `random` / `weighted_random` / `least_used` / `failover`。
 - **额度**：每 Key 并发上限 + 每分钟请求数 + 每日配额（可选）；超限返回明确错误，不静默丢请求。
-- **健康状态**：`healthy` / `rate_limited` / `cooldown` / `invalid` / `forbidden` / `quota_exhausted` / `disabled` / `unknown`，可在 Key 面板单独测试与重置。
+- **健康状态**：`healthy` / `rate_limited` / `cooldown` / `invalid` / `forbidden` / `quota_exhausted` / `disabled` / `unknown`，可在 Key 面板单独测试与重置；脱敏的 `lastErrorCode` / `lastErrorMessage` 持久化，重测成功后清除。
 
 ## 连接 MCP
 
@@ -364,7 +365,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 - 管理 API 需要 HttpOnly 会话 Cookie，写操作额外校验 CSRF Header；外部集成使用可撤销、带 scope、带限流的 Bearer Token。
 - 所有出站请求经过 SSRF 防护：DNS 解析校验 + 连接期 `lookup` 校验 + 手动重定向逐跳校验；默认拒绝回环、私网、链路本地、CGNAT 与云元数据地址。IPv4-mapped IPv6（`[::ffff:127.0.0.1]`）也在拦截范围内。
 - **代理出网有显式信任边界**：只有 `SEARCH_HUB_OUTBOUND_PROXY` 才会启用代理（不隐式读取 `HTTPS_PROXY`）；`SEARCH_HUB_OUTBOUND_PROXY_TRUST` 默认 `untrusted`，此时即使目标在私网白名单里也会被拒绝。代理模式下应用仍逐跳校验 URL，但目标解析发生在代理端，残余 DNS-rebinding 风险由 `trusted-networks` 声明 + 代理出网策略承担。见 [SECURITY.md](./SECURITY.md)。
-- 日志对 `authorization`、`cookie`、`apiKey`、`password`、`token` 做脱敏；密钥不出现在 API 响应、导出文件或日志中。
+- 日志对 `authorization`、`cookie`、`apiKey`、`password`、`token` 做脱敏；URL query 中的 `api_key`/`apikey`/`key`/`token` 等凭据以及自定义 query 注入值也会在错误正文、诊断 URL、`details.url`、SQLite 历史、Key 错误、审计和 MCP 输出中清洗；密钥不出现在 API 响应、导出文件或日志中。
 - 检索内容始终作为不可信外部数据送入模型；系统提示明确禁止执行其中的指令，并对常见注入模式做检测。
 - 前端生产构建启用 CSP、`X-Frame-Options: DENY`、`nosniff` 等响应头。
 
@@ -374,21 +375,22 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 **已自动化验证（本仓库，可复现）**
 
-- 单元 + 集成测试套件 **1152 项 / 88 文件**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
+- 单元 + 集成测试本地候选 **1241 项 / 96 文件全部通过**，覆盖三重额度（并发/RPM/日配额）与峰值、429/401/5xx/超时/畸形响应故障矩阵（每类 50 次）、去重、RRF 手算、SSRF（直连 + 代理 + IPv4-mapped IPv6）、密钥三重泄漏扫描、Provider 契约、模型链路安全、MCP HTTP/stdio 官方客户端、100 并发搜索、Online Backup 并发一致性、重启持久化。
 - 持久化缓存 **23 项**（`tests/integration/cache.test.ts`）+ 迁移 **3 项**（`tests/unit/cache-migration.test.ts`）：命中/隔离/TTL 过期/自动清理/重启存活/并发/容量淘汰/返回值校验/凭证隔离，TTL 用注入时钟验证，不靠真实等待。
 - 健康管理中心 **35 项**（`tests/integration/provider-health-center.test.ts`）：默认关闭、无 Key 判未验证、两种探测、错误分类、预算并发/重启/超限、退避与恢复、单 Key 失效、in-flight 去重、退出清理、Key 不泄漏、权限、重置、缓存不伪造健康、取消不退款、多 Key 共享账户额度、MCP 与 REST 同一门禁。使用注入时钟与可控调度，无真实等待；「付费」源是本地 Brave 契约服务 + 真实 Key，不调用任何厂商。
 - 凭证类型判断 **6 项**（`tests/integration/credential-classes.test.ts`）：六个公开源声明 `authType: none` 且 `requiresKey: false`；需 Key 无 Key 判 `unverified`；无 Key 源用本地 HN 线格式桩真实探测可判 `healthy`；`/api/health` 不再把无 Key 源算成不可用；需实例地址的源按配置缺失处理。
 - 真实网络故障 **8 项**（`tests/integration/network-failures.test.ts`）：DNS 解析失败、自签证书、明文端口做 TLS、端口关闭、服务端不响应直到 deadline、HTML 冒充 JSON、请求中途取消、重定向进私网。全部经 safe-fetch 真实链路，不开 Mock。
+- **v0.1.12 定向回归**：query Key 在 JSON/HTML/编码错误、`details.url`、历史、Key 错误、审计与 MCP 中的泄漏；连接探测物理跳预算、429 本地拒绝、批量预算跳过；单源/批量/Key/定时探测共用锁；GET 健康预览零写入；迁移 `0010` 归档、只增不减与幂等。
 - 中英文一致性 **5 项**（`tests/unit/i18n-parity.test.ts`）：键全覆盖、英文值无 CJK、占位符一致、无空值、`format.ts` 无硬编码 zh-CN 格式化。
 - 验收矩阵 **16 项**（PASS 11 / PARTIAL 4 / BLOCKED 1），由 `docs/ac-matrix.json` 自动生成，见 [docs/ac-matrix.md](./docs/ac-matrix.md)。
 - 脚本：`smoke.sh`（初始化 → 双源 → 加 Key → 搜索 → 故障隔离 → Token → MCP initialize）、`live-search.mjs`（真实 HN 搜索、REST/MCP 一致性）、`mcp-live.mjs`（官方客户端双传输）、`leak-scan.mjs`（响应/DB/日志三重扫描）、`clean-install.mjs`（干净目录生产安装）。
-- Playwright 浏览器套件：首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注、语言切换后全站无中文残留并在刷新后保持，以及 v0.1.11 搜索源体检（单源测试通过/失败、真实上游请求计数、批量预检与进度、取消、只重测失败项、8 列表格、刷新恢复、重复点击幂等、混合五类统计、免 Key 策略）。
+- Playwright 浏览器套件预期 **42 项（待最终复核）**：首次安装（含 setup token）、登录、添加源、搜索实验室、主题、设置、集成页、目录未实现标注、语言切换后全站无中文残留并在刷新后保持，以及搜索源体检（单源测试通过/失败、真实上游请求计数、批量预检与进度、取消、只重测失败项、8 列表格、刷新恢复、重复点击幂等、混合五类统计、免 Key 策略）。
 
 **未验证（需要真实凭证或环境）**
 
 - Brave：没有订阅 Key，且本机网络到 `api.search.brave.com` 超时，未发起真实请求。
 - SearXNG：没有自建实例；公共实例在本机网络不可达，未联调。
-- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** GitHub Actions 已完成镜像构建与 11 项容器验收（24/24，见 Actions 的 Docker 工作流），两者不要混为一谈。
+- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** GitHub Actions 的通过记录属于 v0.1.11，v0.1.12 必须在候选提交上重新验证，两者不要混为一谈。
 - AI 模型、Embedding、Rerank：没有真实厂商 Key，仅用本地模拟服务验证请求/响应契约。
 - 多实例部署：未实现 Redis 协调，当前仅保证单进程额度。
 
@@ -401,6 +403,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 - **Rerank / Embedding 不做持久索引**：Embedding 仅用于单次请求内的语义重排，没有向量库。
 - **未实现多租户**：单个管理员，无团队权限模型。
 - **速率限制为进程内**：多实例部署时每个实例独立计数。
+- **探测锁与预算为单进程**：同源 in-flight 锁不跨实例；每个实例使用自己的 SQLite 预算账本。连接请求数只是本地安全上限，不代表厂商计费单位。
 
 ## 项目结构
 

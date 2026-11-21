@@ -121,7 +121,13 @@ describe("v0.1.10 to v0.1.11 health billing upgrade", () => {
     const upgraded = track(createDb({ file }));
     const migration = runMigrations(upgraded.sqlite);
     expect(migration.applied).toContain("0009_provider_health_billing.sql");
-    expect(upgraded.sqlite.prepare("SELECT * FROM provider_health_checks ORDER BY id").all()).toEqual(historyBefore);
+    expect(migration.applied).toContain("0011_diagnostic_redaction_markers.sql");
+    const historyAfter = upgraded.sqlite.prepare("SELECT * FROM provider_health_checks ORDER BY id").all() as Array<Record<string, unknown>>;
+    for (const check of historyAfter) {
+      expect(check.diagnostics_sanitized).toBe(0);
+      delete check.diagnostics_sanitized;
+    }
+    expect(historyAfter).toEqual(historyBefore);
     expect(upgraded.sqlite.prepare("SELECT * FROM health_probe_budget_legacy ORDER BY day, kind").all()).toEqual(budgetBefore);
     expect(
       upgraded.sqlite.prepare("SELECT * FROM health_probe_budget WHERE day=? ORDER BY kind").all(YESTERDAY),

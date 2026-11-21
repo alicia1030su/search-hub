@@ -1,7 +1,7 @@
-# Search Hub 架构设计（v0.1.1 基线 + v0.1.8-beta.1 增量）
+# Search Hub 架构设计（v0.1.1 基线 + v0.1.12 增量）
 
 > 本文在 v0.1.1 按**仓库实际代码**重写了对账表。历史版本中的 E-1…E-6 / D-1…D-6 待裁决项均已落地或有结论，不再作为"偏离"保留。
-> v0.1.4–v0.1.8-beta.1 的增量（持久化缓存、健康管理中心、双语界面、发布来源证明、搜索质量评测）见 [§11](#11-v016--v017-增量缓存健康中心与-i18n)。§8 中已被后续版本实现的三项（U8 / U12 / U14）已就地更正，保留原条目编号以便对照。
+> v0.1.4–v0.1.8-beta.1 的增量（持久化缓存、健康管理中心、双语界面、发布来源证明、搜索质量评测）见 [§11](#11-v016--v017-增量缓存健康中心与-i18n)；v0.1.12 的凭据泄漏、统一探测锁、连接物理跳预算与只读预览契约见 [§12](#12-v0112-增量凭据泄漏统一探测锁与连接预算)。§8 中已被后续版本实现的三项（U8 / U12 / U14）已就地更正，保留原条目编号以便对照。
 > 标注约定：`【已实现】`＝仓库内可运行且被测试覆盖；`【未实现】`＝不在本期，不得对外声称支持；`【待联调】`＝代码就绪但缺真实凭证/实例。
 > 版本已与 `pnpm-lock.yaml` 核对：fastify 5.12.8、better-sqlite3 13.1.1、drizzle-orm 0.45.4、vite 8.3.8、react 19.3.1、tailwind 4.3.5、zod 4.6.7、undici 8.12.4、typescript 5.9.3、@modelcontextprotocol/server 2.4.0、node ≥22.12。
 
@@ -10,13 +10,16 @@
 | F-1 | MCP 依赖与协议 | `@modelcontextprotocol/server@2.4.0`（v2 线），现代 2026-07-28 envelope + 2025-11-25 传统握手；`createMcpHandler().fetch(Request)` | `tests/integration/mcp.test.ts`、`mcp-client.test.ts` |
 | F-2 | REST 路径与失败字段 | `POST /api/search`；失败源字段 **`failedSources[{id,code}]`**，另保留 `errors[{providerId,providerName,code,message}]` | OpenAPI + 集成测试 |
 | F-3 | 全源失败 | **HTTP 503** + `status:"failed"` + `failedSources[]`，不用 200 空结果冒充成功 | `search-errors.test.ts` |
-| F-4 | 100 并发与排队 | 原子占额 + **有界等待队列**（最多 1024 个等待者，单次等待预算默认 2s）；等待者由 `release()` 唤醒，不轮询；排队超时返回 `queue_timeout` | `key-limits.test.ts`、`concurrency.test.ts` |
+| F-4 | 100 并发与排队 | 原子占额 + **有界等待队列**（最多 1024 个等待者）；等待者等待本次请求的剩余 deadline，由 `release()` 唤醒，不轮询；排队超时返回 `queue_timeout` | `key-limits.test.ts`、`concurrency.test.ts` |
 | F-5 | 模型能力 | Chat / Embedding / Rerank 为**真实适配器、默认关闭**；可选阶段失败时响应 `stats.degraded=true`，基础结果照常返回 | `model-degradation.test.ts` |
-| F-6 | 能力目录 | `catalog.ts` **28** 条元数据 = 7 个已实现适配器（Tavily / Bocha / Brave / SearXNG / Hacker News / Generic HTTP / Mock）+ 12 planned + 2 unavailable + 7 generic 入口 | `node --import tsx` 统计 + `providers.test.ts` |
+| F-6 | 能力目录 | `catalog.ts` **58** 条元数据 = **50 个 builtin 适配器** + 7 个 generic 入口 + 1 个无官方接口；`live_tested` 为 Hacker News / Crossref / OpenAlex / PubMed 4 个 | `pnpm check:matrix` + `providers.test.ts` |
 | F-7 | 超时默认值 | 全局 15s、单源 12s、`maxRetries=1`；全局 deadline 优先 | `settings.ts` / 集成测试 |
 | F-8 | 首次初始化 | 未初始化时自动生成一次性 setup token（`data/setup-token`，0600；或 `SEARCH_HUB_SETUP_TOKEN`），`POST /api/setup` 必须携带；事务内二次校验，防抢占与并发双管理员 | `security-hardening.test.ts` |
 | F-9 | Host / 代理边界 | 所有非健康检查路由校验 Host（IP 字面量、localhost、`SEARCH_HUB_ALLOWED_HOSTS`/`PUBLIC_URL`）；`SEARCH_HUB_TRUST_PROXY=true` 只信任回环代理，跨网段需显式 CIDR | `security-hardening.test.ts`、`mcp-client.test.ts` |
 | F-10 | 生产运行形态 | `scripts/build-server.mjs` 用 esbuild 产出 `apps/api/dist/server.mjs` 与 `packages/mcp/dist/stdio.mjs`；运行时不再依赖 tsx/TypeScript | 干净目录 `pnpm install --prod` 后启动验证 |
+| F-11 | URL query 凭据泄漏边界 | 敏感参数名与本次请求精确 Key 值统一清洗；覆盖 JSON/HTML/编码错误、诊断 URL、错误 `details.url`、SQLite 历史、Key 错误、审计与 MCP | `provider-query-key-redaction.test.ts`、`safe-fetch.test.ts` |
+| F-12 | 连接探测预算 | 每个物理 HTTP 跳在 fetch 边界预留 `connect` 桶；默认单次 5 / 每日 50，本地拒绝 429 `quota_exceeded`，`billingUnit="unknown"` | `health-connect-budget.test.ts`、`connect-budget-migration.test.ts` |
+| F-13 | 探测互斥与只读预览 | 所有探测路径共用一个 `probeWithLock`；重复为 409 `already_running` / 批量跳过。健康 GET 与 MCP 读取零写入 | `health-probe-lock.test.ts`、`provider-preview-readonly.test.ts` |
 
 ## 1. 架构总览
 
@@ -54,7 +57,7 @@ graph TB
     FUSE["归一化・去重・RRF"]
     ERR["错误分类・重试预算"]
   end
-  PR["packages/providers 7 个适配器・注册表・Catalog 28 条"]
+  PR["packages/providers 50 个 builtin 适配器・注册表・Catalog 58 条"]
   MD["packages/models Chat/Embedding/Rerank・注入防护"]
   MC["packages/mcp v2 SDK・createMcpHandler・9 工具"]
   DB["packages/db Drizzle 0.45 + better-sqlite3 13・迁移"]
@@ -166,7 +169,7 @@ erDiagram
 | `admin_users` | id, username, passwordHash(scrypt), role, createdAt | uniq(username) | 永久 |
 | `sessions` | id, userId, tokenHash(sha256), csrfSecret, expiresAt, lastSeenAt | `idx_sessions_expires` | 会话 TTL 默认 168h |
 | `provider_instances` | id, type, name, baseUrl, configJson, enabled, timeoutMs, maxConcurrency, priority, weight, maxRetries, resultsPerPage, rpmLimit, dailyQuota, keyStrategy, cooldownMs | `idx_provider_instances_type` | 永久 |
-| `api_keys` | id, providerId, label, ciphertext, iv, authTag, keyVersionHint, maskedKey, status, weight, cooldownUntil, consecutiveFailures, quotaUsedToday, quotaDate | `idx_api_keys_provider` | 永久 |
+| `api_keys` | id, providerId, label, ciphertext, iv, authTag, keyVersionHint, maskedKey, status, weight, cooldownUntil, consecutiveFailures, quotaUsedToday, quotaDate, lastErrorCode, lastErrorMessage | `idx_api_keys_provider` | 永久；错误信息脱敏，重测成功清除 |
 | `model_configs` | id, kind(chat/embedding/rerank), baseUrl, ciphertext, model, enabled, createdAt | `idx_model_configs_kind` | 已实现；默认不启用 |
 | `search_groups` | id, name, description, providerIdsJson, createdAt | uniq(name)=`idx_search_groups_name` | 永久 |
 | `search_tasks` | id, query, mode, status, providersJson, requestJson, responseJson, actor, createdAt, completedAt | `idx_search_tasks_created`, `idx_search_tasks_status` | `taskRetentionDays` 默认 30 |
@@ -177,7 +180,10 @@ erDiagram
 | `search_cache_metrics` | bucket(UTC 小时, pk), hits, misses, expiredRemoved, evicted, updatedAt | pk(bucket) | 31 天 |
 | `search_cache_state` | key(pk), value, updatedAt | pk(key) | 永久（lastSweepAt 等） |
 | `provider_probe_state` | providerId(pk), autoProbeEnabled, consecutiveFailures, backoffLevel, nextProbeAt, resetAt, updatedAt | `idx_probe_state_next` | 永久（每源的探测排期） |
-| `health_probe_budget` | day+kind(pk), used, updatedAt | pk(day, kind) | 按 UTC 日；旧行可清理 |
+| `health_probe_budget` | day+kind(pk), used, updatedAt | pk(day, kind) | 按 UTC 日；`connect` 按物理跳计量，旧行可清理 |
+| `health_probe_budget_connect_legacy` | day+kind(pk), used, updatedAt | pk(day, kind) | 0010 归档的旧连接计数，永久保留供审计 |
+| `provider_health_billing` | healthCheckId(pk), budgetKind, budgetDay, classification, providerTypeSnapshot, credentialUsed, spent, createdAt | pk(health_check_id) | 精确分类；连接用量关联 `detail_json.requests` 汇总 |
+| `provider_test_batches` | id(pk), kind, status, total, done, okCount, failedCount, pendingCount, skippedCount, concurrency, optionsJson, itemsJson, budgetJson, createdBy, createdAt, startedAt, finishedAt | idx(status, createdAt) | 任务台账，不替代健康事实 |
 | `audit_logs` | id, actorType, actorId, action, targetType, targetId, ipHash, detailJson(脱敏), createdAt | `idx_audit_logs_created` | `logRetentionDays` 默认 14 |
 | `_migrations` | name(pk), applied_at | pk(name) | 永久（**无 checksum 校验**，见 U13） |
 
@@ -239,7 +245,10 @@ export interface SearchProviderAdapter {
 
 > 注意：`inFlight` 在 `release()` 里用 `Math.max(0, n-1)` 兜底，`KeyLease.release` 有 `released` 幂等标志——**双保险防重复释放导致额度放大**。
 
-**契约测试（当前缺失，Phase 1 必须补，见 U14）**
+**契约测试（v0.1.1 基线时缺失，v0.1.4 起已实现，见 U14）**
+
+下面保留基线设计目标；当前 50 个适配器的契约测试位于 `tests/unit/providers*.test.ts`，
+`packages/providers/testing` 公共测试包仍未创建。
 
 ```ts
 // packages/providers/testing/runProviderContract.ts —— 待创建
@@ -256,7 +265,7 @@ runProviderContract(makeAdapter, {
 });
 ```
 
-**能力目录边界**：`packages/providers/src/catalog.ts` 有 **28** 条声明式元数据，已实现适配器 **7** 个：Tavily / Bocha / Brave / SearXNG / **Hacker News（Algolia 官方 API，已真实联调）** / Generic HTTP / Mock。其余 12 planned、2 unavailable、7 generic 入口。**目录条目 ≠ 可用适配器**，UI 与文档必须区分「已实现」与「仅目录条目」，不得用 28 暗示源数量。逐源联调状态见 `docs/provider-matrix.md`。
+**能力目录边界**：`packages/providers/src/catalog.ts` 有 **58** 条声明式元数据，已实现适配器 **50** 个，另有 7 个 generic 入口与 1 个无官方接口条目。**目录条目 ≠ 可用适配器**，UI 与文档必须区分「已实现」与「仅目录条目」，不得用 58 暗示源数量。逐源联调状态见 `docs/provider-matrix.md`。
 
 ## 5. KeyScheduler 并发正确性论证
 
@@ -457,8 +466,10 @@ v0.1.1 的调度分两步：
 | 项 | 事实 |
 |---|---|
 | 账本表 | `health_probe_budget(day, kind, used, updated_at)`，`kind` ∈ `connect` / `search` / `search_anonymous`；主键 `(day, kind)`，UTC 日界 |
+| 连接预算 | `connect` 按物理 HTTP 跳预留，默认单次 5 / 每日 50；本地拒绝 429 `quota_exceeded`，不写健康结论、不失效 Key |
 | 扣减 | `UPDATE ... SET used = used + 1 WHERE used < :max`，受影响行数为 0 即拒绝；写不进账本就不发请求 |
-| 回填 | `0009` 归档旧桶后，从 `provider_health_billing.budget_day/spent` 一次性重算；只统计 `spent=true`，匿名历史需精确分类，其余保守计入付费 |
+| 只读快照 | 账本行缺失时从 `spent=true` 计费行在内存计算；GET 预览/概览/设置与 MCP 读取不物化账本 |
+| 回填 | `0009` 归档旧桶后，从 `provider_health_billing.budget_day/spent` 一次性重算；只统计 `spent=true`，匿名历史需精确分类，其余保守计入付费。`0010` 对连接桶按 `detail_json.requests` 做只增不减、幂等重算 |
 | 调度状态 | `provider_probe_state(auto_probe_enabled, consecutive_failures, backoff_level, next_probe_at, reset_at)` |
 | 退避 | 瞬时失败 `min(interval, 60s × 2^(level-1))` + ±20% 抖动，下限 15 秒；终态失败等正常间隔；成功清零 |
 | 生命周期 | 调度器有 `ticking` / `stopped` 守卫，`unref()` 不阻止进程退出，关机时先停调度再关数据库 |
@@ -509,3 +520,64 @@ v0.1.1 的调度分两步：
 
 表结构见 `packages/db/migrations/0006_search_quality.sql`，语义见
 [docs/search-quality.md](./search-quality.md)。
+
+## 12. v0.1.12 增量：凭据泄漏、统一探测锁与连接预算
+
+### 12.1 URL query 凭据清洗链路
+
+`packages/shared/src/url-redaction.ts` 是唯一清洗入口，`safe-fetch.ts` 在四个边界调用它：
+无效 URL、网络错误、上游 HTTP 错误与成功响应的诊断 URL。错误 `details.url` 与返回的
+`response.url` 都只保留非敏感参数；厂商 JSON/HTML 正文中的敏感参数及本次请求的精确 Key
+值另行清洗，覆盖百分号编码、form 编码与双重编码。
+
+清洗后的值继续沿同一条持久化链路传播：`provider_health_checks.detail_json` →
+Key `last_error_code/last_error_message` → `audit_logs.detail_json` → REST/MCP 健康视图。
+因此修复不是"响应层遮一下"，而是所有诊断出口共享同一事实。Key 创建/更新 schema 的最短
+长度同步收紧为 8，避免无效短凭据进入池子。
+
+### 12.2 一个锁、三种预算
+
+`HealthService.inFlight` 是唯一同源互斥集合，`checkOne`、`checkMany`、定时巡检和
+`ProviderBatchService` 都通过 `probeWithLock` 获取。重复探测不会经过资格、预算或上游工作：
+单源/Key/定时入口抛 `409 already_running`，批量 runner 落为 skipped。
+
+| 桶 | 计量单位 | 默认上限 | 本地拒绝 |
+|---|---|---|---|
+| `search` | 带凭据的真实搜索 | 3/轮、20/日 | 429 `quota_exceeded`；批量 `SKIPPED_BUDGET` |
+| `search_anonymous` | 免 Key 真实搜索 | 3/轮、20/日 | 429 `quota_exceeded`；批量 `SKIPPED_BUDGET` |
+| `connect` | 物理 HTTP 跳（分页/重定向逐跳） | 5/次、50/日 | 429 `quota_exceeded`；批量 `SKIPPED_BUDGET` |
+
+`connect` 在 `SafeFetchInit.onRequest` 内、请求实际发出前条件预留。预算拒绝是本地事实，
+不写 `provider_health_checks`、不改 Key 失败计数、不 park Provider。所有探测结果和健康
+`detail_json` 都写 `billingUnit:"unknown"`，避免把 HTTP 跳数伪装成厂商账单。
+
+### 12.3 只读快照与迁移 0010–0011
+
+`ProbeBudget.snapshot()` 只读：账本行存在时读 `health_probe_budget`，缺失时从
+`provider_health_billing` 的 `spent=true` 行在内存计算。只有 `reserve()` 可以物化账本行。
+因此批量 GET 预检、健康概览、设置 GET 与 MCP `get_provider_health` 都是零写入。
+
+`0010_connect_request_budget.sql` 先把所有旧 `connect` 行原样复制到
+`health_probe_budget_connect_legacy`，再按计费侧表关联健康行的 `detail_json.requests` 重算。
+缺失、0、非法 JSON 或非法请求数保守按 1 跳；更新使用
+`used=max(current,recomputed)`，所以迁移只增不减，手动重放也不会膨胀或回退。该迁移不删除
+旧健康/计费记录，也不修改 `search` / `search_anonymous` 桶。
+
+`0011_diagnostic_redaction_markers.sql` 给 Key 错误、健康记录、搜索任务、搜索事件与批量
+条目增加 `sanitized` 标记，旧行默认 false。v0.1.12 之后写入的诊断显式标记为 true；旧行原文
+保留供审计，但所有读取面把未标记的自由文本显示为 `[redacted: legacy diagnostic]`。这样即使
+旧 Key 已轮换、删除或主密钥已变化，也不会把不可恢复的自定义 token 回显给客户端。
+
+### 12.4 验证入口
+
+- `tests/integration/provider-query-key-redaction.test.ts`：JSON/HTML/编码错误、自定义
+  query 注入、响应/历史/Key 错误/审计零泄漏。
+- `tests/integration/provider-query-key-surfaces.test.ts`：REST/MCP、HTTP 200 错误信封、
+  8192 字符混合 Key、任务/事件/Key/日志持久化零泄漏。
+- `tests/integration/provider-historical-redaction.test.ts`：升级前泄漏行在健康、Key、任务、
+  日志与 MCP 读取时 withheld，数据库原行不变。
+- `tests/integration/health-connect-budget.test.ts`：物理跳、分页/重定向拒绝、每日上限、
+  100 并发只有一个请求、`billingUnit:"unknown"`。
+- `tests/integration/health-probe-lock.test.ts`：单源、批量、Key、定时路径共用锁。
+- `tests/integration/provider-preview-readonly.test.ts`：REST/MCP 健康 GET 零写入。
+- `tests/unit/connect-budget-migration.test.ts`：0010 归档、保守重算、只增不减、幂等。

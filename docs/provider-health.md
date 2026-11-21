@@ -62,11 +62,12 @@ runtime                     = healthy        # 上一次探测确实成功了
 
 | 模式 | `kind` | 请求特征 | 检查内容 | 默认 |
 |---|---|---|---|---|
-| 连接探测 | `connect` | 一次最小请求（limit=1），**对需要凭证的源也会带上凭证** | DNS、TCP/TLS、鉴权、响应、延迟 | 允许 |
+| 连接探测 | `connect` | 解析后的最小搜索计划；分页/重定向按**物理 HTTP 跳**计量 | DNS、TCP/TLS、鉴权、响应、延迟 | 允许，受连接预算约束 |
 | 真实搜索探测 | `search` | 一次真实搜索（limit=3） | 鉴权、搜索接口、返回结构、是否有真实结果、额度/频率 | 需显式开启 |
 
-**不要把这个页面上的"连接探测"理解成"一定免费"**：它会带着该源的凭证向厂商端点发一次真实请求。
+**不要把这个页面上的"连接探测"理解成"一定免费"**：它会带着该源的凭证向厂商端点发真实请求。
 对按请求计费的厂商，这一次也可能计费；本代码无法得知每家厂商的计费口径，所以不宣称免费。
+结果与 `detail_json` 明确返回 `billingUnit:"unknown"`，物理跳数只是本地安全预算单位。
 只有**完全不需要凭证**的源（HN / Crossref / OpenAlex / PubMed / arXiv / Wikipedia），连接探测
 才确定不会消耗任何账户额度。
 
@@ -86,14 +87,17 @@ runtime                     = healthy        # 上一次探测确实成功了
 | 每日付费真实搜索探测 | 20 | 2000 |
 | 每轮匿名真实搜索探测 | 3 | 200 |
 | 每日匿名真实搜索探测 | 20 | 2000 |
+| 单次连接探测物理 HTTP 跳 | 5 | 20 |
+| 每日连接探测物理 HTTP 跳 | 50 | 2000 |
 | 探测间隔 | 360 分钟 | 5 – 10080 分钟 |
 | 并发探测 | 1 | 4 |
 
 - **每日边界是 UTC 00:00**，不是本地时区；接口返回 `budget.day` 让界面直接显示，
   避免"今天"在跨时区部署里产生歧义。
-- 连接探测**单独计数**（`connectUsedToday`），不占付费预算。它不设每日上限（设上限会让
-  页面无法解释"这个源为什么不可用"），但受两个约束：调度器每 60 秒才 tick 一次，且并发
-  上限为 4；手动"检测全部"一次最多触发与源数量相同的请求。
+- **连接探测按物理 HTTP 跳单独计数**（`connectUsedToday`），不占付费搜索预算。
+  每次分页、重试或重定向在实际发出前于 fetch 边界条件预留一跳，默认单次最多 5 跳、
+  每日最多 50 跳（UTC）。本地预算不足返回 `429 quota_exceeded`，不写健康/计费行、
+  不失效 Key、不停用源；批量任务记 `SKIPPED_BUDGET`。这是 v0.1.12 起生效的硬上限。
 - **无凭证源的真实搜索**单独计数（`anonymousSearchUsedToday`），使用独立的
   `anonymousMaxRequestsPerRun/Day`（默认 3 / 20），既不占用付费预算，也不需要打开付费开关。
   之所以单独计数而不是标成"免费"：代码无法知道厂商是否按 IP 计量，所以只记录事实。
@@ -111,10 +115,13 @@ runtime                     = healthy        # 上一次探测确实成功了
   新的一天。`requests>0` 时取消或失败都不退款，因为厂商可能已经计费。
 - **精确计费侧表**：`provider_health_billing` 记录 `budget_kind`、`budget_day`、
   `classification`、`credential_used` 与 `spent`。升级回填只统计 `spent=true` 的记录；旧的匿名
-  桶只有在历史分类可证明时才计入匿名，其余保守计入付费。
+  桶只有在历史分类可证明时才计入匿名，其余保守计入付费。连接桶按健康行
+  `detail_json.requests` 汇总物理跳数；结果中的 `billingUnit` 始终为 `unknown`。
+- **GET 健康读取只读**：批量预检、概览、设置与 MCP 健康读取不写健康、计费、预算、任务、
+  设置或审计表。账本行缺失时只在内存中从 `spent=true` 的计费行计算，不物化账本。
 - **多实例不共享预算**：计数在各自进程的 SQLite 文件里，横向扩容时每个实例都有独立的
   每日额度。这是已知限制，不是"全局预算"。
-- 每次预留/拒绝都写审计日志（`provider_health.probe`）与结构化日志。
+- 管理端探测请求的成功/拒绝会写审计日志（`provider_health.probe`）与结构化日志；健康 GET 读取不写审计。
 
 ## 五、自动探测与恢复
 
@@ -129,8 +136,11 @@ runtime                     = healthy        # 上一次探测确实成功了
   - 终态失败（额度、凭证）→ 等正常间隔，提前重试只会再失败一次。
 - **恢复**：下一次探测成功即回到 `healthy`，连续失败计数与退避级别清零。
 - **单次失败永不永久禁用**；永久移除只有管理员能做的 `disabled`。
-- 同一 provider 同时只允许一个探测在飞（`inFlight` 集合），调度与手动检查不会重复打
-  同一个源。
+- **每个源在同一进程内同时只允许一个探测在飞**。单源测试、Key 测试、`checkMany`、定时巡检与
+  批量 runner 全部经过同一个 `HealthService.probeWithLock`，不存在第二套 `inFlight` 集合。
+  手动/单源重复请求得到 `409 already_running`；`checkMany` 与批量 runner 把它记为跳过
+  （`code:"already_running"`、`checkId:null`），不重复请求、不算失败。100 个并发单源调用只能有
+  一个拿到锁，其余 99 个在预算与上游工作之前被拒。
 - 进程退出时先停调度器、再关数据库；定时器 `unref()`，不会阻止 Node 退出（Windows 上
   这正是服务停不下来的原因）。
 
@@ -152,6 +162,10 @@ runtime                     = healthy        # 上一次探测确实成功了
 
 全部要求 `admin` scope；写操作额外要求 CSRF。`search` scope 的 Token 一律 403——健康
 页会暴露"你配了哪些厂商、它们的 Key 还有效吗"。
+
+所有 GET 路由（批量预检、概览、设置、历史）以及 MCP `get_provider_health` 都是只读的：
+不创建预算、计费、健康、任务或审计行。设置 PUT 的
+`connectMaxRequestsPerProbe/Day` 越界返回 400，不做静默夹取。
 
 `/api/admin/health*` 保留为兼容接口，行为不变。
 
@@ -185,7 +199,9 @@ runtime                     = healthy        # 上一次探测确实成功了
   只有纯付费范围才在创建任务时返回 409 `validation_error`。仅匿名范围始终允许启动。
 - **预算按真实类别分开。** 需凭据源看付费额度，免 Key 源看匿名额度；无 Key 的需凭据源先报
   `SKIPPED_NO_KEY`，不会被笼统报成预算耗尽。
-- `kind=connect` 不看搜索额度；generic-http 的匿名连接探测执行真实搜索，仍计入匿名桶。
+- `kind=connect` 不看付费/匿名**搜索**额度；generic-http 的匿名连接探测执行真实搜索，仍计入匿名桶。
+  内建连接探测在 fetch 边界检查单次/每日物理跳预算；本地拒绝在 runner 中落为 `SKIPPED_BUDGET`，
+  而不是 `CONFIG_ERROR` 或厂商失败。批量预检不会为连接任务预留或写入预算。
 
 ### 统计口径
 
@@ -198,9 +214,11 @@ runtime                     = healthy        # 上一次探测确实成功了
 - 预检的 7 个计数之和 **等于** `total`：冷却、额度、账户配额与付费策略跳过共用
   `coolingSkipped` 一列，逐条 `code` 仍然区分具体原因。
 
-### 错误分类（对外 12 个规范名）
+### 错误分类（对外 14 个规范名）
 
-存储层沿用既有 `HealthCause`，对外经一张固定映射表转换，**不新增枚举值**：
+存储层沿用既有 `HealthCause`，对外经一张固定映射表转换，**不新增枚举值**。
+`already_running` 是批量 runner 的跳过码，不是 `HealthCause`，因为它表示"另一条路径正在测"，
+本次运行没有得出任何健康结论。
 
 | 对外 | 存储 `cause` | 算失败 |
 |---|---|---|
@@ -301,14 +319,27 @@ runtime                     = healthy        # 上一次探测确实成功了
 `GET /api/health` 的 `providers.healthy` 统计的是"启用且可用"，不是"有健康 Key"：后者会把
 每一个公开源都算成不可用。实现验证状态仍是另一条轴，一次成功的探测不会改变它。
 
-## 十、数据与迁移
+## 十、凭据泄漏边界（v0.1.12）
+
+URL query 中的 API Key 曾通过厂商错误正文、HTML 错误页、编码回显、错误 `details.url`、
+SQLite 健康历史、Key `last_error_message`、审计详情与 MCP 健康输出泄漏。现在统一规则是：
+
+- 已知敏感参数名（`api_key`、`apikey`、`key`、`token`、`access_token`、
+  `client_secret`）按字面量与百分号编码匹配并替换为 `[redacted]`。
+- 自定义 generic-http query 注入名按本次请求的精确 Key 值清洗，覆盖 URL 编码、form
+  编码与双重编码；不依赖参数名恰好叫 `key`。
+- `q`、`engine`、`page` 等非敏感参数保留，便于排障；诊断 URL 与错误 `details.url`
+  使用同一清洗器。健康 GET 读取不会把旧账本物化或产生新审计记录。
+
+## 十一、数据与迁移
 
 | 表 | 用途 | 迁移 |
 |---|---|---|
 | `provider_health_checks` | 追加式探测日志（历史）；`batch_id` 指向产生它的批量任务 | 0003 / 0008 |
 | `provider_probe_state` | 每源排期：自动开关、连续失败、退避级别、下次探测时间、重置标记 | 0005 |
-| `health_probe_budget` | 每日每类探测的持久计数（`connect` / `search` / `search_anonymous`） | 0005 / 0009 |
-| `provider_health_billing` | 每次真实搜索的精确计费分类、是否使用凭据、是否实际发出请求 | 0009 |
+| `health_probe_budget` | 每日每类探测的持久计数（`connect` / `search` / `search_anonymous`） | 0005 / 0009 / 0010 |
+| `health_probe_budget_connect_legacy` | v0.1.11 及更早的原始 `connect` 计数归档，供审计与恢复 | 0010 |
+| `provider_health_billing` | 每次真实搜索/连接探测的精确计费分类、是否使用凭据、是否实际发出请求 | 0009 |
 | `provider_test_batches` | 批量检测**任务台账**：进度、逐源状态、起始预算与任务级策略快照 | 0008 |
 
 **`provider_test_batches` 不是第二套健康表。** 健康事实只有 `provider_health_checks`
@@ -320,6 +351,13 @@ runtime                     = healthy        # 上一次探测确实成功了
 迁移 `0005` **只建新表**，不改任何既有表与数据。迁移 `0008` 给
 `provider_health_checks` 加可空 `batch_id` 并新建台账表。迁移 `0009` 新增精确计费分类表与
 `spent` 事实，把旧预算桶归档后按可审计记录一次性重算，之后的新预留直接写独立账本桶。
-升级兼容性由 `tests/unit/cache-migration.test.ts`、`tests/unit/quality-migration.test.ts`
-与 `tests/unit/batch-migration.test.ts` 用真实 SQLite 文件验证：先按旧迁移集建库并写入
-管理员、Provider、Key、探测记录与设置，再跑完整迁移，断言逐项不变。
+迁移 `0010` 把原始 `connect` 桶复制到 `health_probe_budget_connect_legacy`，再从
+`provider_health_billing`（`spent=1`）关联 `detail_json.requests` 重算：缺失、0 或非法值
+保守按 1 跳，`max(current,recomputed)` 保证只增不减，重复执行不会改变结果。
+迁移 `0011` 给诊断增加 sanitized 标记：旧行默认 false，读取时 withheld；新行显式 true，
+继续做精确 Key 脱敏。旧诊断原文不修改、不删除。
+升级兼容性由 `tests/unit/cache-migration.test.ts`、`tests/unit/quality-migration.test.ts`、
+`tests/unit/batch-migration.test.ts` 与 `tests/unit/connect-budget-migration.test.ts` 用真实
+SQLite 文件验证；v0.1.12 的运行时契约另由 `health-connect-budget.test.ts`、
+`health-probe-lock.test.ts`、`provider-query-key-redaction.test.ts` 与
+`provider-preview-readonly.test.ts` 覆盖。

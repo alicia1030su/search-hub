@@ -3,6 +3,7 @@ import {
   SearchHubError,
   errorMessage,
   isAbortError,
+  redactSecrets,
   type Freshness,
   type Logger,
   type ProviderAttemptStat,
@@ -246,6 +247,7 @@ export async function runProvider(
       const gatedFetch: SafeFetch = (url, init) =>
         options.fetch(url, {
           ...init,
+          secrets: [...(init?.secrets ?? []), ...(apiKey ? [apiKey] : [])],
           onRequest: (target) => {
             try {
               options.beforeRequest?.(config.id, target);
@@ -300,7 +302,12 @@ export async function runProvider(
           resultCount: output.results.length,
           ...(usedKeyId === undefined ? {} : { keyId: usedKeyId }),
           ...(output.warnings && output.warnings.length > 0
-            ? { warning: output.warnings.join("; ").slice(0, 500) }
+            ? {
+                warning: redactSecrets(
+                  output.warnings.join("; "),
+                  apiKey ? [apiKey] : [],
+                ).slice(0, 500),
+              }
             : {}),
           attempts,
           httpRequests: counted.requests,
@@ -318,7 +325,13 @@ export async function runProvider(
         timedOutByProvider || (timedOutByDeadline && classified.code === "unknown")
           ? "timeout"
           : classified.code;
-      lastMessage = timedOutByProvider ? "Provider exceeded its timeout budget" : classified.message;
+      // Adapters can surface an upstream HTTP-200 error envelope verbatim. The
+      // fetch boundary only sees non-2xx responses, so sanitize again here with
+      // the exact credential before the message reaches a lease, API response,
+      // task row, event row or log.
+      lastMessage = timedOutByProvider
+        ? "Provider exceeded its timeout budget"
+        : redactSecrets(classified.message, apiKey ? [apiKey] : []);
       statusCode = error instanceof ProviderError ? error.statusCode : undefined;
 
       // Two cancellation paths reach this catch:
@@ -437,6 +450,7 @@ export async function fanoutProviders(
       return await runProvider(runtime, options);
     } catch (error) {
       const code: ProviderErrorCode = isAbortError(error) ? "cancelled" : "unknown";
+      const message = redactSecrets(errorMessage(error));
       return {
         providerId: runtime.config.id,
         providerName: runtime.config.name,
@@ -451,14 +465,14 @@ export async function fanoutProviders(
           latencyMs: 0,
           resultCount: 0,
           errorCode: code,
-          errorMessage: errorMessage(error),
+          errorMessage: message,
           attempts: 0,
         },
         error: {
           providerId: runtime.config.id,
           providerName: runtime.config.name,
           code,
-          message: errorMessage(error),
+          message,
         },
       } satisfies FanoutResult;
     }

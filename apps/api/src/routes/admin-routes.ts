@@ -216,11 +216,15 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
       const limit = Math.min(500, Math.max(1, Number(query.limit ?? 100)));
       const offset = Math.max(0, Number(query.offset ?? 0));
       return {
-        events: recentEvents(ctx.db, {
-          limit,
-          offset,
-          ...(query.providerId ? { providerId: query.providerId } : {}),
-        }),
+        events: recentEvents(
+          ctx.db,
+          {
+            limit,
+            offset,
+            ...(query.providerId ? { providerId: query.providerId } : {}),
+          },
+          (providerId, message) => ctx.providers.redactProviderMessage(providerId, message) ?? message,
+        ),
       };
     }),
   );

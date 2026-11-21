@@ -108,6 +108,51 @@ describe("KeyScheduler three-tier limits (AC-05)", () => {
     expect(snapshot[0]!.status).toBe("healthy");
   });
 
+  it("manual recovery cannot bypass the per-key RPM window", async () => {
+    const scheduler = new KeyScheduler({
+      providerId: "p",
+      strategy: "round_robin",
+      perKeyConcurrency: 8,
+      rpmLimit: 2,
+      dailyQuota: null,
+      cooldownMs: 30_000,
+      breakerThreshold: 5,
+      keys: [seed("k1")],
+    });
+    const first = scheduler.tryAcquire();
+    expect(first).not.toBeNull();
+    first?.release({ ok: false, code: "auth_invalid", message: "rejected" });
+
+    const recovered = await scheduler.acquireForKeyWithReason("k1", { manual: true, maxWaitMs: 0 });
+    expect(recovered.lease).not.toBeNull();
+    recovered.lease?.release({ ok: true, latencyMs: 1 });
+
+    const blocked = await scheduler.acquireForKeyWithReason("k1", { manual: true, maxWaitMs: 0 });
+    expect(blocked.lease).toBeNull();
+    expect(blocked.reason).toBe("no_key");
+  });
+
+  it("manual recovery cannot bypass the per-key daily quota", async () => {
+    const scheduler = new KeyScheduler({
+      providerId: "p",
+      strategy: "round_robin",
+      perKeyConcurrency: 8,
+      rpmLimit: 0,
+      dailyQuota: 1,
+      cooldownMs: 30_000,
+      breakerThreshold: 5,
+      keys: [seed("k1")],
+    });
+    const first = scheduler.tryAcquire();
+    expect(first).not.toBeNull();
+    first?.release({ ok: true, latencyMs: 1 });
+
+    const blocked = await scheduler.acquireForKeyWithReason("k1", { manual: true, maxWaitMs: 0 });
+    expect(blocked.lease).toBeNull();
+    expect(blocked.reason).toBe("no_key");
+    expect(scheduler.snapshotReadOnly()[0]?.quotaUsedToday).toBe(1);
+  });
+
   it("distinguishes a saturated pool (queue_timeout) from an unusable one (no_key)", async () => {
     const scheduler = new KeyScheduler({
       providerId: "p",

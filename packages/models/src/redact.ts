@@ -1,4 +1,4 @@
-import type { SafeFetch } from "@search-hub/shared";
+import type { SafeFetch, SafeFetchInit } from "@search-hub/shared";
 
 /**
  * Credential scrubbing for model traffic.
@@ -74,9 +74,9 @@ export function scrubError(error: unknown, secrets: Array<string | undefined | n
  */
 export function scrubbingFetch(fetchImpl: SafeFetch, apiKey?: string): SafeFetch {
   if (!apiKey) return fetchImpl;
-  return async <T>(url: string, init?: RequestInit & { timeoutMs?: number; maxBytes?: number }) => {
+  return async <T>(url: string, init?: SafeFetchInit) => {
     try {
-      return await fetchImpl<T>(url, init);
+      return await fetchImpl<T>(url, { ...init, secrets: [...(init?.secrets ?? []), apiKey] });
     } catch (error) {
       throw scrubError(error, [apiKey]);
     }

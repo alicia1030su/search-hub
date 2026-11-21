@@ -1,6 +1,6 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import type { SearchHubDb } from "@search-hub/db";
-import { healthProbeBudget, providerHealthBilling } from "@search-hub/db";
+import { healthProbeBudget, providerHealthBilling, providerHealthChecks } from "@search-hub/db";
 import { decideBudget, type HealthProbeKind } from "./health-classify.js";
 
 /**
@@ -16,10 +16,10 @@ import { decideBudget, type HealthProbeKind } from "./health-classify.js";
  *     UPDATE ... SET used = used + 1 WHERE used < max
  *
  * A zero row-count means the reservation lost the race (or the day is full) and
- * nothing was spent. Free `connect` probes are counted in their own row so the
- * two kinds can be reported separately, but they are not capped by the paid
- * budget — capping connectivity checks would make the page unable to explain
- * why a source looks dead.
+ * nothing was spent. `connect` probes are counted by physical HTTP hop in their
+ * own row and capped by a dedicated daily safety budget. They never consume the
+ * paid-search budget, but they are not assumed to be free or unlimited: a
+ * redirect or pagination can issue several upstream requests.
  */
 
 /**
@@ -39,6 +39,10 @@ export interface BudgetOptions {
   /** Independent anonymous limits; omitted values inherit the paid limits. */
   anonymousMaxPerRun?: number;
   anonymousMaxPerDay?: number;
+  /** Physical HTTP hops allowed for one connectivity probe. */
+  connectMaxPerProbe?: number;
+  /** Physical HTTP hops allowed for connectivity probes per UTC day. */
+  connectMaxPerDay?: number;
 }
 
 export interface BudgetSnapshot {
@@ -52,14 +56,19 @@ export interface BudgetSnapshot {
   anonymousMaxPerRun: number;
   /** Anonymous searches allowed per UTC day. */
   anonymousMaxPerDay: number;
+  /** Physical HTTP hops allowed for one connectivity probe. */
+  connectMaxPerProbe: number;
+  /** Physical HTTP hops allowed for connectivity probes per UTC day. */
+  connectMaxPerDay: number;
   /** Paid searches already reserved today. */
   searchUsedToday: number;
-  /** Free connectivity probes reserved today (counted, not capped). */
+  /** Physical connectivity request hops already reserved today. */
   connectUsedToday: number;
   /** Real searches against keyless sources today. */
   anonymousSearchUsedToday: number;
   remainingToday: number;
   anonymousRemainingToday: number;
+  connectRemainingToday: number;
   paidProbesEnabled: boolean;
 }
 
@@ -92,13 +101,52 @@ export class ProbeBudget {
     return new Date(nowMs).toISOString().slice(0, 10);
   }
 
+  private billedUsage(kind: LedgerKind, day: string): number {
+    if (kind === "connect") {
+      const row = this.db
+        .select({
+          used: sql<number>`coalesce(sum(case
+            when json_valid(${providerHealthChecks.detailJson}) then
+              max(1, coalesce(cast(json_extract(${providerHealthChecks.detailJson}, '$.requests') as integer), 1))
+            else 1 end), 0)`,
+        })
+        .from(providerHealthBilling)
+        .innerJoin(providerHealthChecks, eq(providerHealthChecks.id, providerHealthBilling.healthCheckId))
+        .where(and(
+          eq(providerHealthBilling.budgetDay, day),
+          eq(providerHealthBilling.spent, true),
+          or(
+            eq(providerHealthBilling.budgetKind, "connect"),
+            eq(providerHealthChecks.kind, "connect"),
+          ),
+        ))
+        .get();
+      return Number(row?.used ?? 0);
+    }
+    const filters = [
+      eq(providerHealthBilling.budgetKind, kind),
+      eq(providerHealthBilling.budgetDay, day),
+      eq(providerHealthBilling.spent, true),
+    ];
+    if (kind === "search_anonymous") filters.push(eq(providerHealthBilling.classification, "exact"));
+    const rows = this.db
+      .select({ id: providerHealthBilling.healthCheckId })
+      .from(providerHealthBilling)
+      .where(and(...filters))
+      .all();
+    return rows.length;
+  }
+
   private raw(kind: LedgerKind, day: string): number {
     const row = this.db
       .select()
       .from(healthProbeBudget)
       .where(and(eq(healthProbeBudget.day, day), eq(healthProbeBudget.kind, kind)))
       .get();
-    return row?.used ?? 0;
+    if (row) return row.used;
+    // Read-only fallback for a ledger row that has not been materialized yet.
+    // Snapshot/preview must never write; only reserve() may seed the row.
+    return this.billedUsage(kind, day);
   }
 
   /**
@@ -120,26 +168,12 @@ export class ProbeBudget {
       .get();
     if (existing) return;
 
-    const filters = [
-      eq(providerHealthBilling.budgetKind, kind),
-      eq(providerHealthBilling.budgetDay, day),
-      eq(providerHealthBilling.spent, true),
-    ];
-    if (kind === "search_anonymous") {
-      filters.push(eq(providerHealthBilling.classification, "exact"));
-    }
-    const rows = this.db
-      .select({ id: providerHealthBilling.healthCheckId })
-      .from(providerHealthBilling)
-      .where(and(...filters))
-      .all();
-
     this.db
       .insert(healthProbeBudget)
       .values({
         day,
         kind,
-        used: rows.length,
+        used: this.billedUsage(kind, day),
         updatedAt: new Date(nowMs).toISOString(),
       })
       .onConflictDoNothing()
@@ -148,24 +182,27 @@ export class ProbeBudget {
 
   private snapshotAt(options: BudgetOptions, nowMs: number): BudgetSnapshot {
     const day = ProbeBudget.utcDay(nowMs);
-    this.ensureSeed("search", day, nowMs);
-    this.ensureSeed("connect", day, nowMs);
-    this.ensureSeed("search_anonymous", day, nowMs);
     const searchUsed = this.raw("search", day);
     const anonymousUsed = this.raw("search_anonymous", day);
+    const connectUsed = this.raw("connect", day);
     const anonymousMaxPerRun = options.anonymousMaxPerRun ?? options.maxPerRun;
     const anonymousMaxPerDay = options.anonymousMaxPerDay ?? options.maxPerDay;
+    const connectMaxPerProbe = options.connectMaxPerProbe ?? 5;
+    const connectMaxPerDay = options.connectMaxPerDay ?? 50;
     return {
       day,
       maxPerRun: options.maxPerRun,
       maxPerDay: options.maxPerDay,
       anonymousMaxPerRun,
       anonymousMaxPerDay,
+      connectMaxPerProbe,
+      connectMaxPerDay,
       searchUsedToday: searchUsed,
-      connectUsedToday: this.raw("connect", day),
+      connectUsedToday: connectUsed,
       anonymousSearchUsedToday: anonymousUsed,
       remainingToday: Math.max(0, options.maxPerDay - searchUsed),
       anonymousRemainingToday: Math.max(0, anonymousMaxPerDay - anonymousUsed),
+      connectRemainingToday: Math.max(0, connectMaxPerDay - connectUsed),
       paidProbesEnabled: options.paidProbesEnabled,
     };
   }
@@ -208,7 +245,11 @@ export class ProbeBudget {
     const snapshot = this.snapshotAt(input, nowMs);
     const day = snapshot.day;
 
-    if (input.kind !== "connect") {
+    if (input.kind === "connect") {
+      if (snapshot.connectUsedToday >= snapshot.connectMaxPerDay) {
+        return { ok: false, reason: "day_limit", snapshot };
+      }
+    } else {
       if (input.kind === "search" && !input.paidProbesEnabled) {
         return { ok: false, reason: "paid_disabled", snapshot };
       }
@@ -224,7 +265,7 @@ export class ProbeBudget {
     this.ensureSeed(input.kind, day, nowMs);
     const cap =
       input.kind === "connect"
-        ? Number.MAX_SAFE_INTEGER
+        ? snapshot.connectMaxPerDay
         : input.kind === "search"
           ? input.maxPerDay
           : (input.anonymousMaxPerDay ?? input.maxPerDay);
@@ -249,7 +290,7 @@ export class ProbeBudget {
       // the row disappeared. Either way nothing was spent.
       return {
         ok: false,
-        reason: input.kind === "connect" ? "ledger_unavailable" : "day_limit",
+        reason: input.kind === "connect" ? "day_limit" : "day_limit",
         snapshot: this.snapshotAt(input, nowMs),
       };
     }

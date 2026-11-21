@@ -165,7 +165,9 @@ describe("batch test preview", () => {
   /**
    * T06 — a connectivity preview must never claim a paid risk.
    *
-   * `connect` probes are free, so the paid switch is irrelevant to them. The
+   * `connect` probes do not consume the paid-search bucket, so the paid switch
+   * is irrelevant to them (they still consume the physical-hop safety budget).
+   * The
    * bucket split also has to stay honest: a source that needs a key still needs
    * one for a connectivity probe.
    */

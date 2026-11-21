@@ -20,7 +20,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 
 ## What is covered
 
-冻结候选构建实跑：Vitest **1152 passed / 88 files**，Playwright **42 passed**。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
+当前 v0.1.12 本地候选已通过 Vitest **1241 项 / 96 文件**与 Playwright **42 项**。本文件不把本地结果写成远端 CI 或正式发布 PASS；远端证据另见 `docs/release-readiness.md`。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
 
 ### v0.1.11 bulk provider test (T01–T46, H61–H66)
 
@@ -82,6 +82,25 @@ real SQLite database. **No real vendor is contacted.**
 The E2E suite seeds only the built-in `mock` adapter and `http.createServer`
 stubs on 127.0.0.1; `paidProbesEnabled` is switched on only for cases that need a
 credentialed Brave path, which is safe precisely because no vendor is reachable.
+
+### v0.1.12 credential redaction, probe locking and connect budgets
+
+These suites pin the release's security and accounting contracts against real
+Fastify routes, real SQLite and loopback HTTP servers. They do not call vendors.
+
+| File | What it proves |
+|---|---|
+| `tests/integration/provider-query-key-redaction.test.ts` | Query API keys do not leak through JSON 401/403/429/500 errors, HTML error pages, literal/URI/lowercase-percent/form/double-encoded echoes, a 200 error envelope, custom generic-http query injection, error `details.url`, SQLite health history, Key `last_error_message` or audit detail. Error classification and actual upstream requests are preserved. |
+| `tests/integration/provider-query-key-surfaces.test.ts` | REST and MCP search failures, Firecrawl HTTP 200 envelopes, mixed encoding, an 8192-character credential, task/event/Key persistence and provider-failure logs remain classified and credential-free. |
+| `tests/integration/provider-historical-redaction.test.ts` | Pre-v0.1.12 diagnostics are withheld on every read surface without rewriting the original audit rows, including after credential rotation/deletion. |
+| `tests/integration/health-connect-budget.test.ts` | Connect probes reserve one unit per physical hop, pagination/redirects stop at the local cap, the refusal is 429 `quota_exceeded` with no health/billing row and no Key failure, the daily cap survives reopen, batch work records `SKIPPED_BUDGET`, and `billingUnit` is `unknown`. One hundred concurrent `checkOne` calls yield one hop and 99 `already_running` refusals. |
+| `tests/integration/health-probe-lock.test.ts` | Single-source, bulk, Key and scheduled paths cannot probe one provider concurrently; duplicates return/record `already_running` and do not double-spend. |
+| `tests/integration/provider-preview-readonly.test.ts` | Batch preview, overview, settings GET and MCP health leave complete rows (including `api_keys` and `updated_at`) unchanged, even with dirty scheduler state; UTC rollover/cooldown recovery is evaluated on copies; old budget snapshots are normalized; a missing ledger is computed without materializing it. |
+| `tests/unit/connect-budget-migration.test.ts` | Migration 0010 archives the old connect ledger, conservatively counts missing/zero/invalid request counts as one hop, never lowers a counter, inserts missing recomputed days and is idempotent. Migration 0011 adds sanitized markers defaulting to false without changing legacy bytes. |
+
+Key create/update schemas require at least 8 trimmed characters. The candidate
+Vitest total above includes these fixes but remains subject to the release
+owner's final full-suite verification.
 
 ### Key safety and billing classification (H46–H62)
 
@@ -356,7 +375,7 @@ still equals the counts derived from the JSON, so the two files cannot drift.
 | Soak / memory-leak testing | No soak harness yet | Planned |
 | Browser matrix | Chromium only | Firefox/WebKit not run |
 
-**Never** treat a green mock-backed suite as evidence that a real vendor integration works. Hacker News is the only provider in this repository with a recorded live run.
+**Never** treat a green mock-backed suite as evidence that a real vendor integration works. Hacker News, Crossref, OpenAlex and PubMed have recorded live runs; the other adapters do not.
 
 ## Running the smoke script
 
@@ -415,6 +434,16 @@ Exit codes: `0` every fused query returned a usable result set; `2` configuratio
 - web build, artifact presence checks, production-only (`--prod`) install and boot;
 - Playwright E2E;
 - `pnpm audit --audit-level high`.
+
+Local documentation gates are `pnpm check:docs` and `pnpm check:matrix`; they
+validate README/catalog/version consistency and the generated provider matrix.
+They are not substitutes for the full test suite or remote CI.
+
+`.github/workflows/upgrade.yml` builds the current package on Windows and Linux
+and upgrades published packages in place. For v0.1.12 it adds the real
+`v0.1.11 → current` path on port 8929, exercising migration 0010 against
+published-release state. This is configured coverage until the candidate CI
+run is observed and recorded; no PASS is claimed here.
 
 `.github/workflows/docker.yml` runs the container acceptance: image build with layer
 cache, `docker compose config`, the 10-item `scripts/docker-verify.sh`

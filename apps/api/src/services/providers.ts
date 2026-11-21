@@ -2,6 +2,7 @@ import { asc, eq, inArray } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import {
   SearchHubError,
+  redactSecrets,
   type ApiKeySummary,
   type Freshness,
   type KeyStatus,
@@ -207,7 +208,7 @@ export class ProviderService {
     const availability = this.keyAvailability(rows.map((row) => row.id));
     return rows.map((row) => {
       const entry = this.runtimes.get(row.id);
-      const snapshot = entry?.scheduler.snapshot() ?? [];
+      const snapshot = entry?.scheduler.snapshotReadOnly() ?? [];
       const keys = keyRows.filter((key) => key.providerId === row.id);
       return {
         id: row.id,
@@ -268,7 +269,7 @@ export class ProviderService {
 
   listKeys(providerId: string): ApiKeySummary[] {
     const entry = this.runtimes.get(providerId);
-    const live = new Map(entry?.scheduler.snapshot().map((key) => [key.id, key] as const) ?? []);
+    const live = new Map(entry?.scheduler.snapshotReadOnly().map((key) => [key.id, key] as const) ?? []);
     return this.db
       .select()
       .from(apiKeys)
@@ -276,6 +277,7 @@ export class ProviderService {
       .all()
       .map((row) => {
         const snapshot = live.get(row.id);
+        const lastErrorMessage = snapshot?.lastErrorMessage ?? row.lastErrorMessage;
         return {
           id: row.id,
           providerId: row.providerId,
@@ -289,17 +291,49 @@ export class ProviderService {
           failureCount: snapshot?.failureCount ?? row.failureCount,
           consecutiveFailures: snapshot?.consecutiveFailures ?? row.consecutiveFailures,
           lastUsedAt: snapshot?.lastUsedAt ?? row.lastUsedAt,
-          lastFailureAt: row.lastFailureAt,
+          lastFailureAt: snapshot?.lastFailureAt ?? row.lastFailureAt,
           avgLatencyMs:
             snapshot?.avgLatencyMs ?? (row.avgLatencyMs === null ? null : Math.round(row.avgLatencyMs)),
           inFlight: snapshot?.inFlight ?? 0,
           cooldownUntil: snapshot?.cooldownUntil ?? row.cooldownUntil,
           quotaUsedToday: snapshot?.quotaUsedToday ?? row.quotaUsedToday,
           lastErrorCode: snapshot?.lastErrorCode ?? row.lastErrorCode,
-          lastErrorMessage: snapshot?.lastErrorMessage ?? row.lastErrorMessage,
+          lastErrorMessage: row.lastErrorSanitized
+            ? this.redactKeyMessage(row.id, lastErrorMessage)
+            : lastErrorMessage === null
+              ? null
+              : "[redacted: legacy diagnostic]",
           createdAt: row.createdAt,
         };
       });
+  }
+
+  /**
+   * Redacts a diagnostic with the current credential for a specific key.
+   *
+   * Older releases could persist an upstream echo before it was sanitized. The
+   * plaintext is still in the encrypted key row, so reads can protect clients
+   * without rewriting audit history. If the key was deleted or cannot be
+   * decrypted, the shared query-name and token-shape filters still apply.
+   */
+  redactKeyMessage(keyId: string | null | undefined, message: string | null | undefined): string | null {
+    if (message == null) return null;
+    const row = keyId ? this.db.select().from(apiKeys).where(eq(apiKeys.id, keyId)).get() : undefined;
+    const secret = row ? this.decryptRow(row) : undefined;
+    return redactSecrets(message, secret ? [secret] : []);
+  }
+
+  /** Redacts a diagnostic with every current credential belonging to a provider. */
+  redactProviderMessage(providerId: string, message: string | null | undefined): string | null {
+    if (message == null) return null;
+    const secrets = this.db
+      .select()
+      .from(apiKeys)
+      .where(eq(apiKeys.providerId, providerId))
+      .all()
+      .map((row) => this.decryptRow(row))
+      .filter((secret): secret is string => secret !== undefined);
+    return redactSecrets(message, secrets);
   }
 
   /** Decrypts a key for an in-flight provider call. Never leaves the server. */
@@ -313,9 +347,14 @@ export class ProviderService {
     return providerRequiresKey(type, config);
   }
 
-  /** 管理端 Key 池事实，以 providerId 为键；available 与自动选择共用规则。 */
+  /**
+   * 管理端 Key 池事实，以 providerId 为键；available 与自动选择共用规则。
+   *
+   * Strictly read-only: GET/preview paths must not flush dirty scheduler state,
+   * sync stale DB rows over live counters, or create UTC-rollover dirty writes.
+   * Write paths reload the scheduler after committing configuration changes.
+   */
   keyAvailability(ids: string[]): Map<string, KeyAvailability> {
-    this.persistDirty();
     const result = new Map<string, KeyAvailability>();
     const providerIds = [...new Set(ids)];
     if (providerIds.length === 0) return result;
@@ -330,26 +369,44 @@ export class ProviderService {
       list.push(row);
       rowsByProvider.set(row.providerId, list);
     }
+    const now = Date.now();
     for (const providerId of providerIds) {
       const providerRows = rowsByProvider.get(providerId) ?? [];
-      const entry = this.syncSchedulerKeys(providerId, providerRows);
-      const snapshots = entry?.scheduler.snapshot() ?? [];
-      const accountParkedUntil = entry?.scheduler.accountParkedUntil() ?? null;
+      const provider = this.getRow(providerId);
+      const entry = this.runtimes.get(providerId);
+      const snapshots = entry?.scheduler.snapshotReadOnly(now) ?? [];
+      const liveById = new Map(snapshots.map((key) => [key.id, key] as const));
+      const rowById = new Map(providerRows.map((row) => [row.id, row] as const));
+      const accountParkedUntil = entry?.scheduler.accountParkedUntilReadOnly(now) ?? null;
       const cooling = [
-        ...snapshots.map((key) => key.cooldownUntil),
+        ...providerRows.map((row) => liveById.get(row.id)?.cooldownUntil ?? row.cooldownUntil),
         accountParkedUntil,
       ]
-        .filter((value): value is string => value !== null && Date.parse(value) > Date.now())
+        .filter((value): value is string => value !== null && Date.parse(value) > now)
         .sort();
+      const statusOf = (row: typeof providerRows[number]): KeyStatus =>
+        liveById.get(row.id)?.status ?? (row.enabled ? row.status : "disabled") as KeyStatus;
       result.set(providerId, {
         total: providerRows.length,
         enabled: providerRows.filter((key) => key.enabled).length,
         decryptable: providerRows.filter((key) => this.decryptRow(key) !== undefined).length,
-        available: snapshots.filter((key) => entry?.scheduler.keyAvailable(key.id)).length,
-        invalid: snapshots.filter((key) => key.status === "invalid").length,
-        quotaExhausted: snapshots.filter((key) => key.status === "quota_exhausted").length,
+        available: snapshots.filter((key) => {
+          const row = rowById.get(key.id);
+          if (!row) return false;
+          const status = statusOf(row);
+          if (status === "invalid" || status === "disabled" || status === "forbidden" || status === "quota_exhausted") return false;
+          if ((liveById.get(key.id)?.cooldownUntil ?? row.cooldownUntil) &&
+              Date.parse(liveById.get(key.id)?.cooldownUntil ?? row.cooldownUntil!) > now) return false;
+          // Legacy rows without a quota date cannot prove today's counter rolled
+          // over; keep their persisted usage as a conservative lower bound.
+          if (provider?.dailyQuota !== null && provider?.dailyQuota !== undefined &&
+              row.quotaDate === null && row.quotaUsedToday >= provider.dailyQuota) return false;
+          return entry?.scheduler.keyAvailableReadOnly(key.id, now) ?? false;
+        }).length,
+        invalid: providerRows.filter((row) => statusOf(row) === "invalid").length,
+        quotaExhausted: providerRows.filter((row) => statusOf(row) === "quota_exhausted").length,
         coolingUntil: cooling.at(-1) ?? null,
-        accountQuotaExhausted: entry?.scheduler.accountQuotaExhausted() ?? false,
+        accountQuotaExhausted: entry?.scheduler.accountQuotaExhaustedReadOnly(now) ?? false,
       });
     }
     return result;
@@ -447,7 +504,7 @@ export class ProviderService {
   runtimeSnapshots(): ProviderRuntimeSnapshot[] {
     return this.listRows().map((row) => {
       const entry = this.runtimes.get(row.id);
-      const keys = entry?.scheduler.snapshot() ?? [];
+      const keys = entry?.scheduler.snapshotReadOnly() ?? [];
       return {
         providerId: row.id,
         providerName: row.name,
@@ -462,7 +519,7 @@ export class ProviderService {
           entry && entry.breaker.openUntilMs !== null
             ? new Date(entry.breaker.openUntilMs).toISOString()
             : null,
-        account: entry?.scheduler.accountSnapshot() ?? null,
+        account: entry?.scheduler.accountSnapshotReadOnly() ?? null,
         keys: keys.map((key) => ({
           id: key.id,
           label: key.label,
@@ -636,6 +693,7 @@ export class ProviderService {
               quotaDate: snapshot.quotaDate,
               lastErrorCode: snapshot.lastErrorCode,
               lastErrorMessage: snapshot.lastErrorMessage,
+              lastErrorSanitized: true,
               updatedAt: now,
             })
             .where(eq(apiKeys.id, snapshot.id))
@@ -668,7 +726,9 @@ export class ProviderService {
         quotaDate: key.quotaDate,
         cooldownUntil: key.cooldownUntil,
         lastErrorCode: key.lastErrorCode,
-        lastErrorMessage: key.lastErrorMessage,
+        // Never load pre-v0.1.12 free-form diagnostics into the live scheduler:
+        // a later dirty flush must not relabel an old leaked message as safe.
+        lastErrorMessage: key.lastErrorSanitized ? key.lastErrorMessage : null,
       }));
   }
 

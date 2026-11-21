@@ -264,6 +264,8 @@ export interface ProviderTestResult {
    * The UI renders it as an em dash and never estimates it from a page count.
    */
   requests?: number | null;
+  /** Vendor billing unit is unknown; HTTP hops are not billed-call counts. */
+  billingUnit?: "unknown";
   kind?: HealthProbeKindValue;
   keyId?: string | null;
   checkedAt?: string;
@@ -722,6 +724,8 @@ export interface ProviderHealthPolicy {
   maxRequestsPerDay: number;
   anonymousMaxRequestsPerRun: number;
   anonymousMaxRequestsPerDay: number;
+  connectMaxRequestsPerProbe: number;
+  connectMaxRequestsPerDay: number;
   paidProbesEnabled: boolean;
   includeUnverified: boolean;
   concurrency: number;
@@ -746,6 +750,8 @@ export interface HealthCheckResult {
   cooldownUntil: string | null;
   /** Physical upstream requests, or `null` when none was sent (v0.1.10). */
   requests?: number | null;
+  /** Vendor billing unit is unknown; HTTP hops are not billed-call counts. */
+  billingUnit?: "unknown";
   /** Up to three captured rows, already capped and validated by the server. */
   sample?: Array<{ title: string; url: string }>;
 }
@@ -847,6 +853,8 @@ export interface BatchItem {
   resultCount: number | null;
   /** Physical upstream requests, or `null` when none was sent. Never estimated. */
   requests: number | null;
+  /** Vendor billing unit is unknown; HTTP hops are not billed-call counts. */
+  billingUnit?: "unknown";
   /** Health-row id this item produced, or `null` if no conclusion was written. */
   checkId: string | null;
   reason: string | null;

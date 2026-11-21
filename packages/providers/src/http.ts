@@ -74,6 +74,7 @@ export async function callJson(
       headers,
       ...(body === undefined ? {} : { body }),
       signal: ctx.signal,
+      secrets: ctx.apiKey ? [ctx.apiKey] : [],
       ...(spec.timeoutMs === undefined ? {} : { timeoutMs: spec.timeoutMs }),
     });
   } catch (error) {
@@ -116,6 +117,18 @@ export async function callJson(
         }
         if (error.code === "cancelled") {
           throw new ProviderError(ctx.config.id, ctx.config.type, "cancelled", error.message, {
+            cause: error,
+          });
+        }
+        if (error.code === "quota_exceeded") {
+          // A local budget refusal is not an upstream HTTP 429. Preserve the
+          // distinction so health runs skip the item instead of blaming the
+          // provider or parking its credential.
+          throw new ProviderError(ctx.config.id, ctx.config.type, "quota_exceeded", error.message, {
+            statusCode: error.status,
+            retryable: error.retryable,
+            retryAfterMs: error.retryAfterMs,
+            details: error.details,
             cause: error,
           });
         }

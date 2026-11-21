@@ -6,6 +6,7 @@ export type SearchHubErrorCode =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "already_running"
   | "validation_error"
   | "rate_limited"
   | "setup_required"
@@ -18,6 +19,7 @@ const STATUS_BY_CODE: Record<SearchHubErrorCode, number> = {
   forbidden: 403,
   not_found: 404,
   conflict: 409,
+  already_running: 409,
   validation_error: 400,
   rate_limited: 429,
   setup_required: 428,

@@ -1,6 +1,7 @@
 import { and, eq, lt } from "drizzle-orm";
 import {
   SearchHubError,
+  redactSecrets,
   type Freshness,
   type ProviderErrorCode,
   type SearchErrorSummary,
@@ -342,7 +343,8 @@ export class SearchService {
             rawCount: cached.stats.rawCount,
             durationMs: 0,
             requestJson: JSON.stringify(request),
-            responseJson: JSON.stringify(cached),
+            responseJson: JSON.stringify(this.redactStoredResponse(cached)),
+            diagnosticsSanitized: true,
             actor: options.actor ?? null,
             createdAt: new Date().toISOString(),
             finishedAt: new Date().toISOString(),
@@ -410,7 +412,11 @@ export class SearchService {
       }
       return response;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const message = runtimes.reduce(
+        (output, runtime) => this.redactForProvider(runtime.config.id, output),
+        redactSecrets(rawMessage),
+      );
       const status = controller.signal.aborted ? "cancelled" : "failed";
       if (options.evaluate !== true) {
         this.deps.db
@@ -419,6 +425,7 @@ export class SearchService {
             status,
             durationMs: Date.now() - startedAt,
             errorsJson: JSON.stringify([{ providerId: "engine", code: "unknown", message }]),
+            diagnosticsSanitized: true,
             finishedAt: new Date().toISOString(),
           })
           .where(eq(searchTasks.id, taskId))
@@ -463,7 +470,10 @@ export class SearchService {
     let response: SearchResponse | null = null;
     if (row.responseJson) {
       try {
-        response = JSON.parse(row.responseJson) as SearchResponse;
+        response = this.redactStoredResponse(
+          JSON.parse(row.responseJson) as SearchResponse,
+          !row.diagnosticsSanitized,
+        );
       } catch {
         response = null;
       }
@@ -479,6 +489,45 @@ export class SearchService {
       response,
       actor: row.actor,
     };
+  }
+
+  /** Protects task reads from diagnostics persisted before v0.1.12. */
+  private redactStoredResponse(response: SearchResponse, legacy = false): SearchResponse {
+    const message = (providerId: string, value: string): string => legacy
+      ? "[redacted: legacy diagnostic]"
+      : this.redactForProvider(providerId, value);
+    return {
+      ...response,
+      errors: response.errors.map((error) => ({
+        ...error,
+        message: message(error.providerId, error.message),
+      })),
+      stats: {
+        ...response.stats,
+        providers: response.stats.providers.map((stat) => ({
+          ...stat,
+          ...(stat.errorMessage === undefined
+            ? {}
+            : {
+                errorMessage: this.redactForProvider(
+                  stat.providerId,
+                  legacy
+                    ? "[redacted: legacy diagnostic]"
+                    : stat.keyId
+                      ? this.deps.providers.redactKeyMessage(stat.keyId, stat.errorMessage) ?? stat.errorMessage
+                      : stat.errorMessage,
+                ),
+              }),
+          ...(stat.warning === undefined
+            ? {}
+            : { warning: message(stat.providerId, stat.warning) }),
+        })),
+      },
+    };
+  }
+
+  private redactForProvider(providerId: string, message: string): string {
+    return this.deps.providers.redactProviderMessage(providerId, message) ?? redactSecrets(message);
   }
 
   /** Applies the configured retention window to tasks, events and audit logs. */
@@ -1000,6 +1049,7 @@ export class SearchService {
           durationMs: response.stats.timing.totalMs,
           requestJson: JSON.stringify(request),
           responseJson: serialized,
+          diagnosticsSanitized: true,
           actor: actor ?? null,
           createdAt: now,
           finishedAt: now,
@@ -1032,6 +1082,7 @@ export class SearchService {
         durationMs: response.stats.timing.totalMs,
         errorsJson: JSON.stringify(response.errors),
         responseJson: serialized,
+        diagnosticsSanitized: true,
         finishedAt: now,
       })
       .where(eq(searchTasks.id, taskId))
@@ -1053,6 +1104,7 @@ export class SearchService {
             resultCount: stat.resultCount,
             errorCode: stat.errorCode ?? null,
             errorMessage: stat.errorMessage?.slice(0, 500) ?? null,
+            diagnosticsSanitized: true,
             createdAt: now,
           })),
         )

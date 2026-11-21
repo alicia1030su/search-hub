@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSafeFetch, redactSecrets, type SsrfPolicy } from "../../packages/shared/src/index.js";
+import { createSafeFetch, redactSecrets, sanitizeUrl, type SsrfPolicy } from "../../packages/shared/src/index.js";
 
 let server: Server;
 let port = 0;
@@ -113,6 +113,100 @@ describe("upstream error redaction", () => {
     expect(text).toContain("sk-[redacted]");
     expect(text).toContain("tvly-[redacted]");
     expect(text).toContain("sh_[redacted]");
+  });
+
+  it("redacts literal, URI, query-form, lowercase-percent and double-encoded credentials", () => {
+    const secret = "TEST_SECRET +/=&";
+    const encoded = encodeURIComponent(secret);
+    const queryForm = encoded.replace(/%20/g, "+");
+    const variants = [
+      secret,
+      encoded,
+      encoded.replace(/%[0-9A-F]{2}/g, (part) => part.toLowerCase()),
+      queryForm,
+      encodeURIComponent(encoded),
+      encodeURIComponent(queryForm),
+    ];
+    for (const variant of variants) {
+      const output = redactSecrets(`credential=${variant}`, [secret]);
+      expect(output).not.toContain(variant);
+      expect(output).toContain("[redacted]");
+    }
+  });
+
+  it("redacts mixed literal/percent encoding and mixed-case double encoding", () => {
+    const secret = "TEST_SECRET +/=&";
+    const mixed = "TEST_SECRET%20+/%3d&";
+    const doubleMixed = "TEST_SECRET%2520%2B/%253D%26";
+    for (const variant of [mixed, doubleMixed]) {
+      const output = redactSecrets(`credential=${variant}`, [secret]);
+      expect(output).not.toContain(variant);
+      expect(output).toContain("[redacted]");
+    }
+  });
+
+  it("redacts non-BMP credentials in literal, encoded, query-form and double-encoded echoes", () => {
+    const secret = "KEY_🔑/中 +&=";
+    const encoded = encodeURIComponent(secret);
+    const variants = [
+      secret,
+      encoded,
+      encoded.replace(/%[0-9A-F]{2}/g, (part) => part.toLowerCase()),
+      encoded.replace(/%20/g, "+"),
+      encodeURIComponent(encoded),
+    ];
+    for (const variant of variants) {
+      for (const text of [`credential=${variant};tail=ok`, `prefix=${variant}`, variant]) {
+        const output = redactSecrets(text, [secret]);
+        expect(output).not.toContain(variant);
+        expect(output).toContain("[redacted]");
+      }
+    }
+  });
+
+  it("redacts an 8192-character mixed credential without throwing", () => {
+    const secret = `A${" +/=&%".repeat(1365)}B`;
+    expect(secret.length).toBe(8192);
+    const mixed = [...secret]
+      .map((character, index) => index % 3 === 0 ? encodeURIComponent(character) : character)
+      .join("");
+    for (const variant of [secret, mixed, encodeURIComponent(secret), encodeURIComponent(encodeURIComponent(secret))]) {
+      let output = "";
+      expect(() => { output = redactSecrets(`credential=${variant};tail=ok`, [secret]); }).not.toThrow();
+      expect(output).not.toContain(variant);
+      expect(output).toContain("[redacted];tail=ok");
+    }
+  });
+
+  it("redacts credentials in non-2xx details.url while preserving diagnostic parameters", async () => {
+    const safeFetch = createSafeFetch({ policy, timeoutMs: 5_000 });
+    const secret = "TEST_DETAILS_SECRET +/=&";
+    const url = `http://127.0.0.1:${port}/missing?api_key=${encodeURIComponent(secret)}&engine=google&page=2`;
+    await expect(safeFetch(url, { secrets: [secret] })).rejects.toMatchObject({
+      code: "bad_request",
+      details: {
+        upstreamStatus: 404,
+        url: expect.stringContaining("api_key=%5Bredacted%5D"),
+      },
+    });
+    try {
+      await safeFetch(url, { secrets: [secret] });
+      throw new Error("expected safeFetch to reject");
+    } catch (error) {
+      const details = (error as { details?: { url?: string } }).details;
+      expect(details?.url).toContain("engine=google");
+      expect(details?.url).toContain("page=2");
+      expect(details?.url).not.toContain(secret);
+      expect(details?.url).not.toContain(encodeURIComponent(secret));
+    }
+  });
+
+  it("keeps non-sensitive query parameters in diagnostic URLs", () => {
+    const output = sanitizeUrl("https://example.test/search?engine=google&q=typescript&api_key=secret-value&page=2");
+    expect(output).toContain("engine=google");
+    expect(output).toContain("q=typescript");
+    expect(output).toContain("page=2");
+    expect(output).not.toContain("secret-value");
   });
 
   it("does not alter a message with no credential material", () => {

@@ -12,6 +12,12 @@ import {
   type ResolvedProxy,
 } from "./outbound-proxy.js";
 import type { SafeFetch, SafeFetchInit, SafeFetchResponse } from "./types.js";
+import {
+  redactExactSecrets,
+  redactSensitiveQueryParams,
+  sanitizeUrl,
+  sensitiveQueryValues,
+} from "./url-redaction.js";
 
 export interface SsrfPolicy {
   /** Exact hostnames or suffix patterns beginning with a dot (".internal"). */
@@ -143,12 +149,13 @@ export async function validateOutboundUrl(
   rawUrl: string,
   policy: SsrfPolicy = DEFAULT_SSRF_POLICY,
   deps: SsrfDeps = {},
+  diagnosticSecrets: string[] = [],
 ): Promise<ValidatedTarget> {
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new SearchHubError("bad_request", `Invalid URL: ${rawUrl}`);
+    throw new SearchHubError("bad_request", `Invalid URL: ${sanitizeUrl(rawUrl, diagnosticSecrets)}`);
   }
 
   if (url.protocol !== "https:" && url.protocol !== "http:") {
@@ -429,13 +436,13 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
     let currentUrl = rawUrl;
     const timeoutMs = init.timeoutMs ?? defaultTimeout;
     const limit = init.maxBytes ?? maxBytes;
-    const { onRequest, ...requestInit } = init;
+    const { onRequest, secrets: requestSecrets = [], ...requestInit } = init;
 
     for (let hop = 0; hop <= policy.maxRedirects; hop += 1) {
       const hopProxy = proxyForUrl(proxyConfig, currentUrl);
       // Validate with the policy that matches how this hop will actually be
       // carried. A proxied hop can never satisfy a private-host allowlist.
-      await validateOutboundUrl(currentUrl, hopProxy ? proxiedPolicy : policy, { resolveHost });
+      await validateOutboundUrl(currentUrl, hopProxy ? proxiedPolicy : policy, { resolveHost }, requestSecrets);
       const dispatcher: Dispatcher = hopProxy && proxyDispatcher ? proxyDispatcher : directDispatcher;
 
       // Counted per *hop*, not per call, and only after this hop passed the
@@ -491,9 +498,9 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
           });
         }
         if (error instanceof SearchHubError) throw error;
-        const mapped = hopProxy ? proxyFailure(hopProxy, error, currentUrl) : null;
+        const mapped = hopProxy ? proxyFailure(hopProxy, error, sanitizeUrl(currentUrl, requestSecrets)) : null;
         if (mapped) throw mapped;
-        throw new SearchHubError("network", `Network error requesting ${currentUrl}`, {
+        throw new SearchHubError("network", `Network error requesting ${sanitizeUrl(currentUrl, requestSecrets)}`, {
           cause: error,
           retryable: true,
           status: 502,
@@ -550,12 +557,13 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
             headers.get("x-api-key"),
             headers.get("x-subscription-token"),
             headers.get("proxy-authorization"),
+            ...sensitiveQueryValues(currentUrl),
+            ...requestSecrets,
           ],
         );
-        // A proxy error page may echo a request URI that carries userinfo; the
-        // proxy endpoint itself is never sent with credentials, but scrub the
-        // shape anyway so a future refactor cannot leak it.
-        const message = hopProxy ? stripUrlCredentials(upstreamMessage) : upstreamMessage;
+        const message = redactSensitiveQueryParams(
+          hopProxy ? stripUrlCredentials(upstreamMessage) : upstreamMessage,
+        );
         // A 502/503 through a forward proxy usually means the proxy could not
         // reach the destination. Say so, so operators do not debug providers.
         const proxyGateway =
@@ -567,7 +575,7 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
           status: response.status,
           details: {
             upstreamStatus: response.status,
-            url: currentUrl,
+            url: sanitizeUrl(currentUrl, requestSecrets),
             ...(hopProxy ? { proxy: hopProxy.display } : {}),
           },
           retryable: response.status >= 500 || response.status === 429,
@@ -579,7 +587,7 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
         status: response.status,
         headers: response.headers,
         data: data as T,
-        url: currentUrl,
+        url: sanitizeUrl(currentUrl, requestSecrets),
       };
     }
 
@@ -614,16 +622,8 @@ export function redactSecrets(
   text: string,
   secrets: Array<string | null | undefined> = [],
 ): string {
-  let output = text;
-  for (const secret of secrets) {
-    if (!secret || secret.length < 8) continue;
-    const bare = secret.replace(/^bearer\s+/i, "");
-    for (const variant of new Set([secret, bare])) {
-      if (variant.length < 8) continue;
-      output = output.split(variant).join("[redacted]");
-    }
-  }
-  return output
+  let output = redactExactSecrets(text, secrets.filter((value): value is string => Boolean(value)));
+  return redactSensitiveQueryParams(output)
     .replace(/bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
     .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
     .replace(/\btvly-[A-Za-z0-9_-]{8,}/g, "tvly-[redacted]")

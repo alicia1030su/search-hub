@@ -7,13 +7,16 @@ name: Upgrade and update fault injection
 # It downloads published packages from GitHub Releases, so the upgrade paths are
 # the ones a user actually faces:
 #   v0.1.4-beta.6 -> current      (oldest package still installable)
+#   v0.1.5-beta.1 -> current
 #   v0.1.7-beta.3 -> current      (the release before the v0.1.8 stable)
 #   v0.1.8-beta.1 -> current      (beta to stable of the v0.1.8 line)
-#   v0.1.8        -> current      (the previous stable; the path a user takes)
+#   v0.1.8        -> current
+#   v0.1.10       -> current      (health-budget migration)
+#   v0.1.11       -> current      (previous Stable; exercises migrations 0010-0011)
 #
-# The last two are the ones that matter for a stable release: an operator on the
-# beta channel must be able to install the stable package over the same data
-# directory without losing keys, cache or evaluation datasets.
+# The immediately previous Stable path is the one most users take. It must
+# upgrade the same data directory without losing keys, cache or evaluation
+# datasets, including the v0.1.12 connect-ledger migration.
 
 on:
   workflow_dispatch:
@@ -70,9 +73,9 @@ jobs:
         shell: bash
         env:
           PACKAGE_TARGET: ${{ matrix.os == 'windows-latest' && 'windows-x64' || 'linux-x64' }}
-          # Stamp a version ahead of the old releases so the upgrade is a real
-          # forward move, and so the asset name matches what the updater installs.
-          SEARCH_HUB_VERSION: 0.9.0-ci
+          # Stamp the current candidate ahead of the published releases so the
+          # updater performs a real forward move and the asset name matches.
+          SEARCH_HUB_VERSION: 0.1.12-ci
         run: node packaging/build-package.mjs
 
       - name: Upgrade v0.1.4-beta.6 → current
@@ -129,6 +132,18 @@ jobs:
           test -n "$TARGET" || { echo "no package was built"; exit 1; }
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.10 --to "$TARGET" --port 8928
+
+      # The immediately previous Stable release. This real published-package
+      # upgrade also exercises migrations 0010-0011 against v0.1.11 state.
+      - name: Upgrade v0.1.11 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.11 --to "$TARGET" --port 8929
 
       # beta -> stable of the same minor version: the path an operator on the
       # beta channel actually takes, and the one where the updater must accept
