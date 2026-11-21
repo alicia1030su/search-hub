@@ -30,6 +30,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -259,6 +260,24 @@ function hasFlag(name) {
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+/** Read-only cache-row evidence that works across old and new API shapes. */
+function readCacheHitCounts(dataDir) {
+  const path = join(dataDir, "search-hub.db");
+  if (!existsSync(path)) return null;
+  let db;
+  try {
+    const localRequire = createRequire(join(REPO, "apps", "api", "package.json"));
+    const Database = localRequire("better-sqlite3");
+    db = new Database(path, { readonly: true, fileMustExist: true });
+    const rows = db.prepare("SELECT cache_key, hit_count FROM search_cache").all();
+    return new Map(rows.map((row) => [row.cache_key, Number(row.hit_count)]));
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
 }
 
 function installedVersion(root) {
@@ -536,6 +555,7 @@ async function populate(base) {
     : null;
   const cachedBody = cachedSearch ? await cachedSearch.json().catch(() => ({})) : {};
   const cacheStats = await (await fetch(`${base}/api/admin/cache`, { headers: { cookie } })).json().catch(() => ({}));
+  const cacheHitCounts = readCacheHitCounts(dataDir);
 
   const mcpToken = await fetch(`${base}/api/admin/tokens`, {
     method: "POST",
@@ -561,6 +581,7 @@ async function populate(base) {
     batchCounts: batchJob?.counts ?? null,
     cacheEntries: cacheEnabled ? (cacheStats.entries ?? null) : null,
     cacheHits: cacheEnabled ? (cacheStats.hits24h ?? cacheStats.hits ?? null) : null,
+    cacheHitCounts,
     cachedSearchHit: cacheEnabled && cachedBody.stats?.cached === true,
     bearer,
     admin: setup.ok,
@@ -678,10 +699,14 @@ async function verify(base, state) {
     const cachedBody = await cached.json().catch(() => ({}));
     const cacheAfter = await (await fetch(`${base}/api/admin/cache`, { headers: { cookie: state.cookie } })).json().catch(() => ({}));
     const hitsAfter = cacheAfter.hits24h ?? cacheAfter.hits ?? 0;
+    const hitCountsAfter = readCacheHitCounts(dataDir);
+    const rowHitsGrew = state.cacheHitCounts && hitCountsAfter
+      ? [...hitCountsAfter.entries()].some(([key, count]) => count > (state.cacheHitCounts.get(key) ?? 0))
+      : false;
     const cachedFlag = cachedBody.stats?.cached === true;
     const hitsGrew = typeof state.cacheHits === "number" && hitsAfter > state.cacheHits;
-    out.cacheHit = cached.ok && (cachedFlag || hitsGrew);
-    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} hits=${state.cacheHits ?? "?"}->${hitsAfter}`;
+    out.cacheHit = cached.ok && (cachedFlag || hitsGrew || rowHitsGrew);
+    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} hits=${state.cacheHits ?? "?"}->${hitsAfter} rowHitsGrew=${rowHitsGrew}`;
   }
 
   return out;
