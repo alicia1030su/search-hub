@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AccountQuotaRegistry,
   KeyScheduler,
@@ -141,13 +141,22 @@ describe("key scheduler safety state machine", () => {
       accountLimits: { rpmLimit: 0, dailyQuota: 10 },
       registry,
     });
-    const lease = value.tryAcquire(now)!;
-    lease.release({ ok: false, code: "quota_exceeded", message: "insufficient balance" });
-    const snapshot = value.snapshot(now + 1)[0]!;
-    expect(snapshot.status).toBe("quota_exhausted");
-    expect(Date.parse(snapshot.cooldownUntil!)).toBeGreaterThanOrEqual(Date.UTC(2026, 10, 21));
-    expect(Date.parse(snapshot.cooldownUntil!)).toBeLessThan(Date.UTC(2026, 10, 21) + 2_000);
-    expect(value.tryAcquire(now + 2)).toBeNull();
+    // tryAcquire accepts an explicit clock, but KeyLease.release intentionally
+    // uses the real completion time. Pin both ends so this unit test proves the
+    // UTC-midnight rule without depending on the calendar day CI happens to run.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(now);
+      const lease = value.tryAcquire(now)!;
+      lease.release({ ok: false, code: "quota_exceeded", message: "insufficient balance" });
+      const snapshot = value.snapshot(now + 1)[0]!;
+      expect(snapshot.status).toBe("quota_exhausted");
+      expect(Date.parse(snapshot.cooldownUntil!)).toBeGreaterThanOrEqual(Date.UTC(2026, 10, 21));
+      expect(Date.parse(snapshot.cooldownUntil!)).toBeLessThan(Date.UTC(2026, 10, 21) + 2_000);
+      expect(value.tryAcquire(now + 2)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("H54 forbidden and undecryptable keys are filtered from automatic selection", async () => {
