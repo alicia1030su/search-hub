@@ -16,7 +16,7 @@
 | 故障注入 | launcher lifecycle、updater install/rollback、updater fault injection 全部 PASS |
 | Docker | **PASS（CI）**：24/24、0 skipped；真实 HN 探测 `requests=1`，down/up 后预算 `1→1`、健康记录时间与请求数不变；Trivy CRITICAL=0 / HIGH=0 |
 | systemd | **PASS（CI）**：真实 HN 计划探测 `requests=1`；重启、停止 70 秒、升级失败回滚后预算始终 `1→1`，健康记录与 `nextProbeAt` 不变 |
-| 三平台正式发布包 | **待 tag Release CI**；Windows x64 / Linux x64 候选包已在升级矩阵中真实构建并启动，Linux arm64 正式资产随 tag 工作流验收 |
+| 三平台正式发布包 | **PASS（tag CI）**：Windows x64 / Linux x64 / Linux arm64 均在对应 runner 构建、启动并通过 REST/MCP 验收；资产与 SHA256SUMS 已发布 |
 | 真实 v0.1.10 → current 升级 | **PASS（CI）**：Windows 与 Linux 均下载真实 v0.1.10 发布包，对当前候选包就地升级；管理员、会话、Provider、Key 解密、搜索参数、REST/MCP 均保留 |
 | 真实厂商联调 | **4 个源**：Hacker News、Crossref、OpenAlex、PubMed；其余未联调 |
 | 多实例 | **NOT_IMPLEMENTED**：单进程额度、SQLite 预算与批量任务协调 |
@@ -42,11 +42,19 @@
 
 Docker 首次候选运行在第 7 项失败，原因是旧脚本要求 mock 探测产生预算消耗；v0.1.11 对零物理请求正确退款。验收脚本已改用真实 HTTP 探测，未放宽预算、漏洞或测试门禁。H49 的固定时间单测也补齐了租约释放时钟，避免跨 UTC 日时依赖 CI 运行日期。
 
+### 发布事实
+
+- annotated tag `v0.1.11` → `178483ee515283c229f6aa352b47d589129da75c`；Release `prerelease=false`、`isDraft=false`，并已由 `/releases/latest` 确认为 GitHub Latest。
+- 发布工作流 [44858434072](https://github.com/alicia1030su/search-hub/actions/runs/44858434072) **PASS**：三平台包各自实机启动、REST/MCP 验收；发布后重新下载全部资产并执行 `sha256sum -c`，四份资产逐一通过 `gh attestation verify`。
+- 资产 4 个：Windows x64 74,146,603 bytes / Linux x64 49,644,568 bytes / Linux arm64 49,481,962 bytes / SHA256SUMS 307 bytes。`SHA256SUMS` 三条摘要与 GitHub API 返回的资产 digest 逐条一致。
+- 四份资产均存在于同一份 SLSA Provenance 的 subject 中；构建器为 `alicia1030su/search-hub/.github/workflows/release.yml@refs/tags/v0.1.11`，invocation 为 run `44858434072`。
+- GHCR `0.1.11`、`v0.1.11`、`latest` 三个标签均指向 `sha256:7c765e35e217c4d6008b6b7222159e72fe1422118ef6d2afa442a06b19721315`，registry manifest 平台为 `linux/amd64`。
+
 ### 未通过 / 受限
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 三平台正式发布资产 | **待 tag Release CI** | Windows x64 / Linux x64 / Linux arm64 正式包、SHA256SUMS、Provenance 与 GHCR 在 tag 发布后核验 |
+| 本机完整资产下载 | **BLOCKED（宿主网络）** | Release 下载与资产 API 均在大文件传输中超时；未把本地截断文件当作校验依据。发布 CI 已完整下载并做字节级 SHA256 与密码学 Provenance 验证，本机另做 API digest / attestation subject 交叉核验 |
 | 真实厂商联调 | **受限** | 仅 4 个源有真实网络证据 |
 | 质量评测数据 | **受限** | 只有合成基准，无厂商标注集 |
 | 多实例 | **NOT_IMPLEMENTED** | 无跨进程协调者 |
