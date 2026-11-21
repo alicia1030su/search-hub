@@ -1,27 +1,38 @@
 # 发布就绪报告
 
-## v0.1.12 Stable 候选（2026-11-21）
+## v0.1.12 Stable（2026-11-21）
 
-> **口径**：本节是候选就绪记录，不是发布完成报告。Vitest 总数、Playwright 结果、远端 CI、
-> 三平台实机验收、升级矩阵与正式 Release 均须由发布负责人在最终提交上核验；未观察到结果
-> 的项目明确写为待验证，不沿用 v0.1.11 的通过记录。
+> **口径**：v0.1.12 已正式发布。以下结果均对应最终 `main` 提交
+> `caa5e1164aabe4ec86b42d1348a3f68baad32988`（PR #36 的 merge commit）；本地测试对应
+> 候选提交 `7a17c7713c40a5c635fb1a9f384daff3cafa2786`。未执行或环境受限的项目单独标记，
+> 不沿用旧版本记录，也不以静态检查替代实跑。
 
-| 项 | 候选状态 |
+| 项 | 最终状态 |
 |---|---|
-| 目标版本 | **v0.1.12（Stable 候选）**，前序 Stable 为 v0.1.11 |
-| 自动化测试 | **PASS（本地）**：1241 项 / 96 文件，`vitest run --maxWorkers=2` exit 0 |
-| 浏览器 E2E | **PASS（本地）**：Playwright 42/42，最终构建上实跑确认 |
-| 文档 / Provider 矩阵门禁 | **PASS（本地）**：`pnpm check:docs` / `pnpm check:matrix` 均 exit 0 |
-| 类型检查 | **PASS（本地）**：`pnpm typecheck` exit 0（服务端 + Web） |
-| 迁移 | 0001–0011；0010 归档并保守重算 `connect` 物理跳账本；0011 增加诊断 sanitized 标记，旧行默认 false、原文不改，读取时 withheld |
-| 真实 v0.1.11 → current 升级 | 已在 `upgrade.yml` 配置 Windows/Linux、端口 8929；**远端结果未验证，不得记 PASS** |
-| 远端 CI | **PENDING（未验证）**：候选提交的正确 SHA 与全部 required checks 待观察 |
-| 三平台发布包 / Docker / systemd | **PENDING（v0.1.12 未验证）**：v0.1.11 的历史通过记录不作为本轮证据 |
-| 正式 Release / GHCR / Provenance | **PENDING（未验证）**：未观察到本候选的 tag、Release 或镜像发布证据 |
+| 目标版本 | **v0.1.12（Stable）**，前序 Stable 为 v0.1.11 |
+| 发布源提交 | **PASS**：`caa5e1164aabe4ec86b42d1348a3f68baad32988`，PR [#36](https://github.com/alicia1030su/search-hub/pull/36) 已正常合并 |
+| 自动化测试 | **PASS（本地 + main CI）**：1241 项 / 96 文件，`vitest run --maxWorkers=2` 与远端 CI 均 exit 0 |
+| 浏览器 E2E | **PASS（本地 + main CI + Docker CI）**：Playwright 42/42 |
+| 类型 / Lint / 构建 | **PASS**：typecheck 0 error；oxlint 0 warning / 0 error；Web、server、MCP 构建成功 |
+| 文档 / Provider 矩阵 / 质量门禁 | **PASS**：`check:docs`、`check:matrix` 均 exit 0；质量自检 11/11（合成数据，不代表厂商优胜） |
+| 迁移 | 0001–0011；0010 归档并保守重算 `connect` 物理跳账本，只增不减、幂等；0011 增加诊断 sanitized 标记，旧行默认 false、原文不改，读取时 withheld |
+| main CI | **PASS**：[44894690489](https://github.com/alicia1030su/search-hub/actions/runs/44894690489)，6/6 jobs |
+| main Docker | **PASS**：[44894690454](https://github.com/alicia1030su/search-hub/actions/runs/44894690454)，3/3 jobs；容器验收 24/24、0 skipped，真实 HN 搜索与预算 `1→1`，Trivy CRITICAL=0 / HIGH=0 |
+| main systemd | **PASS**：[44894690461](https://github.com/alicia1030su/search-hub/actions/runs/44894690461)，启动 / 重启 / 停止 / 升级 / 回滚通过 |
+| 真实 v0.1.11 → current 升级 | **PASS（远端）**：[44894690455](https://github.com/alicia1030su/search-hub/actions/runs/44894690455)，Windows/Linux 对应 runner 实跑；供应链审计通过 |
+| 依赖审计 / Secret Scan | **PASS**：无已知 HIGH/CRITICAL；本地 434 个文本文件 / 74 refs，0 violation；未修改白名单 |
+| 正式发布工作流 | **PASS**：[44895493016](https://github.com/alicia1030su/search-hub/actions/runs/44895493016)，Gate、三平台包、Stable Release、GHCR 6/6 jobs |
+| annotated Tag | **PASS**：`v0.1.12` → 标签对象 `3307de9c01d94b157b6d0b2a2accb747522788a1` → `caa5e11` |
+| GitHub Release | **PASS**：`prerelease=false`、`draft=false`，`/releases/latest` 返回 v0.1.12 |
+| 三平台资产 / SHA256SUMS | **PASS（tag CI + API 交叉核验）**：4 个资产均 `uploaded`；三条摘要与 GitHub API digest 逐条一致，`SHA256SUMS` 自身 digest 一致 |
+| Provenance | **PASS**：4 个资产共享同一 SLSA bundle；签名身份为 `release.yml@refs/tags/v0.1.12`，源提交 `caa5e11`，invocation 为 run `44895493016` |
+| GHCR | **PASS（发布 job 已认证核验）**：`0.1.12`、`v0.1.12`、`latest` 同 digest `sha256:49270daeb47effb1c0d197b9cf31c090e453d4541af1f47fef1689cd7c7469b9`，平台 `linux/amd64` |
+| 本机完整资产下载 | **BLOCKED（宿主网络）**：大文件传输 `unexpected EOF`；未把截断文件当作校验依据。tag CI 已完整下载并执行 `sha256sum -c`，本机另做 API digest / attestation subject 交叉核验 |
+| 最终独立复审代理 | **BLOCKED（运行环境内存不足）**：恢复后再次失败，未伪造其结论；此前审查发现已修复，最终门禁证据见上 |
 | 真实厂商联调 | 仍为 Hacker News、Crossref、OpenAlex、PubMed 4 个源；其余未联调 |
 | 多实例 | **NOT_IMPLEMENTED**：同源探测锁与 SQLite 预算均为单进程 |
 
-### v0.1.12 候选修复范围
+### v0.1.12 修复范围
 
 1. 修复 URL query API Key 在 JSON/HTML/编码错误、错误 `details.url`、SQLite 健康历史、
    Key `last_error_message`、审计详情与 MCP 健康输出中的泄漏；非敏感查询参数保留用于排障。
@@ -34,29 +45,53 @@
    `spent=true` 计费行计算，不物化预算、不写审计。
 6. Key 创建/更新最短 8 字符；脱敏的 `lastErrorCode` / `lastErrorMessage` 持久化，
    重测成功后清除。迁移 0011 让旧诊断在 Key 轮换/删除后仍安全 withheld。
+7. URL 脱敏覆盖 literal、URI/query-form、双重/三重百分号编码、混合编码、Unicode/emoji
+   与 8192 字符超长 Key；使用 token 偏移映射，避免超长正则异常。
 
-### 候选验证记录
+### 最终验证记录
 
 | 命令 / 检查 | 执行环境 | 结果 |
 |---|---|---|
-| `pnpm check:docs` | 本地候选工作树 | **PASS**，exit 0；catalog 58 / builtin 50 / live_tested 4 |
-| `pnpm check:matrix` | 本地候选工作树 | **PASS**，exit 0；生成矩阵与 catalog 一致 |
-| `pnpm typecheck` | 本地候选工作树 | **PASS**，exit 0；`tsconfig.node.json` 与 Web tsconfig 均通过 |
-| `pnpm test` | 本地候选工作树 | **PASS**：1241/96，exit 0 |
-| `pnpm test:e2e` | 本地候选构建 | **PASS**：42/42，exit 0 |
-| `pnpm build` / typecheck / lint | 本地候选工作树 | **PASS**：构建成功；类型 0 error；lint 0 warning / 0 error |
-| `pnpm audit --audit-level high` | 本地候选工作树 | **PASS**：无已知漏洞 |
-| `node scripts/secret-scan.mjs` | 本地候选工作树 | **PASS**：434 个文本文件 / 71 refs，0 violation；未修改白名单 |
-| launcher / updater / fault injection | 本地 Windows | **PASS**：生命周期、安装回滚、下载/校验/架构/迁移回滚故障注入全部通过 |
-| Upgrade / Docker / systemd / Release | GitHub Actions | **PENDING（未验证）** |
+| `pnpm check:docs` / `pnpm check:matrix` | 本地候选工作树 | **PASS**，exit 0；catalog 58 / builtin 50 / live_tested 4 |
+| `pnpm typecheck` / `pnpm lint` / `pnpm build` | 本地候选工作树 + main CI | **PASS**；类型 0 error、lint 0 warning / 0 error、构建成功 |
+| `pnpm test` | 本地候选工作树 + main CI | **PASS**：1241/96，exit 0 |
+| `pnpm test:e2e` | 本地构建 + main CI + Docker CI | **PASS**：42/42，exit 0 |
+| `pnpm audit --audit-level high` | 本地候选工作树 + main CI | **PASS**：无已知漏洞 |
+| `node scripts/secret-scan.mjs` | 本地候选工作树 + main CI | **PASS**：434 个文本文件 / 74 refs，0 violation；未修改白名单 |
+| launcher / updater / fault injection | 本地 Windows + main CI | **PASS**：生命周期、安装回滚、下载/校验/架构/迁移回滚故障注入全部通过 |
+| Windows x64 候选包 | 本地 Windows | **PASS**：构建、启动、REST/MCP、重启持久化 |
+| Upgrade / Docker / systemd | GitHub Actions `main` | **PASS**：三条流水线全部 success |
+| 三平台发布包 | tag CI | **PASS**：Windows x64 / Linux x64 / Linux arm64 均在对应 runner 构建、启动并通过 REST/MCP 验收 |
+| Release 资产校验 | tag CI + 本机 API | **PASS**：CI 完整下载后 `sha256sum -c` 三条全 OK；4 个资产均通过 Provenance 验证 |
+| GHCR 三标签 | tag CI | **PASS**：三次 push digest 一致，push 后 imagetools inspect 再次读到同一 digest |
 
-### 已知限制与发布阻断口径
+### 发布事实
 
-- 探测锁、Key 额度与预算仍不跨进程；多实例部署没有协调者。
-- 连接 HTTP 跳数是本地安全预算，不是厂商计费单位；`billingUnit` 保持 `unknown`。
-- 只有 4 个搜索源有真实网络证据，质量评测仍只有合成基准。
-- **在此节所有“待验证”项得到正确 SHA 的真实结果之前，不得把 v0.1.12 标记为已发布或
-  全部门禁 PASS。** 本地文档检查通过也不能替代测试、打包实机验收与资产校验。
+- Release：<https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12>，发布于
+  `2026-11-21T10:43:54Z`，并已由 `/releases/latest` 确认为 GitHub Latest。
+- 资产 4 个：Windows x64 74,154,467 bytes / Linux x64 49,651,434 bytes /
+  Linux arm64 49,491,170 bytes / SHA256SUMS 307 bytes。
+- 资产摘要：
+  - Windows x64：`747e0cc7420b2ed62d787ed579a92f0fa15d589776d080d1554b953a81024f61`
+  - Linux x64：`27d393265809fd5be6db2126629ef907706c4954537b53e024ab12b56cb483d1`
+  - Linux arm64：`a86f62c386b739f22b687b931524c7792fc6b08717f07f987931d0e8fff394b8`
+  - SHA256SUMS：`819ef563cfb26a72e440d8be7389f3f7abdc68673abe58c519cbb643501e3003`
+- 四份资产均在同一份 SLSA Provenance 的 subject 中；bundle 为
+  `attestations/1457501833/2026/11/21/70503594.json.sn`，builder 为
+  `alicia1030su/search-hub/.github/workflows/release.yml@refs/tags/v0.1.12`。
+- GHCR `ghcr.io/alicia1030su/search-hub` 的 `0.1.12`、`v0.1.12`、`latest` 三个标签均指向
+  `sha256:49270daeb47effb1c0d197b9cf31c090e453d4541af1f47fef1689cd7c7469b9`。
+
+### 未通过 / 受限
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 本机完整资产下载 | **BLOCKED（宿主网络）** | 大文件传输 `unexpected EOF`；tag CI 已完整下载并做字节级 SHA256 与密码学 Provenance 验证，本机另做 API digest / attestation subject 交叉核验 |
+| 本机独立读取 GHCR manifests | **BLOCKED（凭证可见性）** | 当前 GitHub 凭证无 `read:packages`，匿名 manifest 请求 404；发布 job 使用已认证 `docker buildx imagetools inspect` 完成 push 后复核 |
+| 最终独立复审代理 | **BLOCKED（环境内存不足）** | 两次运行均未产出可送达的详细结论；不将代理复审记为 PASS |
+| 真实厂商联调 | **受限** | 仅 4 个源有真实网络证据 |
+| 质量评测数据 | **受限** | 只有合成基准，无厂商标注集 |
+| 多实例 | **NOT_IMPLEMENTED** | 无跨进程协调者 |
 
 ---
 
