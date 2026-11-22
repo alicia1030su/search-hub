@@ -93,6 +93,19 @@ Koffi DLL/函数失败必须返回 `unavailable + reason`，不能猜 0。Window
 - 击穿：100 并发冷启动、固定 fixture、唯一临时 DB，比较真实 Stub upstream 次数；未复现不实现 Singleflight。
 - 存储：RSS、DB、WAL、OS cache、维护耗时分开报告；不做每次 `VACUUM`。
 
-## 9. 内存术语停止线
+## 9. 服务端 RuntimeMonitor
+
+`GET /api/admin/resources` 是管理员 session 专用的只读快照，仪表盘只提供手动刷新，不引入轮询。
+
+- 认证：任何 `Authorization` header 在 Token 验证前返回 403；无 cookie/无效/过期 session 返回 401。session lookup 使用 `{readOnly:true}`，不更新 `lastSeenAt`，过期分支不 DELETE。
+- 进程：RSS 来自 Node 进程内存口径；heapUsed/heapTotal/external/arrayBuffers 来自 V8；uptime 来自 `process.uptime()`。字段来源写入 `process.sources`。
+- 活动：`activeSearches = SearchService.controllers.size`；`activeProbes = HealthService.inFlight.size`；`queue.total = providerKey + health + singleflightFollowers`。Singleflight 只计显式 follower，不计物理执行 leader。
+- Provider Key 队列：KeyScheduler 在进入/离开等待时发送 ±1，ProviderService 聚合为 O(1) `queueDepth`；scheduler reload 保留旧实例，因此旧 waiter 完成仍能精确递减。
+- Health 队列：每次 checkMany 增加本地待处理数量，worker shift 时减 1；`Promise.allSettled` 等待全部 worker 结束后只扣一次剩余 `queue.length`，再重抛首个 rejection。并发 checkMany 的队列数相加，取消/异常最终归零。
+- 缓存：`cache.totals()` 只读 `search_cache_state` 主键；缺失/损坏返回 null+reason。RuntimeMonitor 严禁调用 `cache.stats()` 或全表聚合。
+- 磁盘：DB/WAL 分别 `statSync`，口径是 `whole_sqlite_database`，不是 cache-only。ENOENT、权限、内存 DB、其他 stat 错误逐字段返回 null 与枚举 reason，不返回路径或原始错误消息。
+- 生命周期：RuntimeMonitor 不持 timer/listener，不写 task/audit/health/budget/cache metrics，不触发 kill/restart/prune/并发或 Swap 修改。
+
+## 10. 内存术语停止线
 
 `NODE_OPTIONS=--max-old-space-size` 只限制 V8 old space，**不等于 RSS**，也不限制 external、ArrayBuffer、native 插件、浏览器或进程树。不得通过随意加大该值掩盖资源不足；设置必须来自冻结预算并在证据中记录。总内存、可用内存、Swap、Node heap、OS RSS、DB/WAL 与 page cache 是不同口径，不能相互替代或重复扣除。

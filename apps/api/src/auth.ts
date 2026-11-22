@@ -74,7 +74,7 @@ export class SessionService {
     return { token, csrfToken, expiresAt };
   }
 
-  lookup(token: string): { session: SessionInfo; actor: AdminActor } | null {
+  lookup(token: string, options: { readOnly?: boolean } = {}): { session: SessionInfo; actor: AdminActor } | null {
     const row = this.db
       .select()
       .from(sessions)
@@ -82,7 +82,7 @@ export class SessionService {
       .get();
     if (!row) return null;
     if (new Date(row.expiresAt).getTime() <= Date.now()) {
-      this.db.delete(sessions).where(eq(sessions.id, row.id)).run();
+      if (!options.readOnly) this.db.delete(sessions).where(eq(sessions.id, row.id)).run();
       return null;
     }
     const user = this.db.select().from(adminUsers).where(eq(adminUsers.id, row.userId)).get();
@@ -90,7 +90,7 @@ export class SessionService {
 
     // Throttle lastSeenAt writes to at most once per minute.
     const lastSeen = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
-    if (Date.now() - lastSeen > 60_000) {
+    if (!options.readOnly && Date.now() - lastSeen > 60_000) {
       this.db
         .update(sessions)
         .set({ lastSeenAt: new Date().toISOString() })
@@ -305,6 +305,18 @@ export function authenticate(
       throw new SearchHubError("forbidden", "Missing or invalid CSRF token");
     }
   }
+  return found.actor;
+}
+
+/** Admin-session-only authentication for read-only endpoints; never verifies Bearer tokens. */
+export function authenticateAdminSessionReadOnly(request: RequestLike, deps: AuthDependencies): AdminActor {
+  if (headerValue(request, "authorization") !== undefined) {
+    throw new SearchHubError("forbidden", "Authorization headers are not accepted for this endpoint");
+  }
+  const cookieToken = request.cookies[SESSION_COOKIE];
+  if (!cookieToken) throw new SearchHubError("unauthorized", "Authentication required");
+  const found = deps.sessions.lookup(cookieToken, { readOnly: true });
+  if (!found) throw new SearchHubError("unauthorized", "Session expired or invalid");
   return found.actor;
 }
 

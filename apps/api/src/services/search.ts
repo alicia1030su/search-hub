@@ -483,6 +483,10 @@ export class SearchService {
     return this.flights.queuedFollowerCount;
   }
 
+  get activeSearchCount(): number {
+    return this.controllers.size;
+  }
+
   /**
    * Cancels a running task. `actor` is optional only for internal callers; the
    * HTTP route always passes it so one token cannot abort another's search.

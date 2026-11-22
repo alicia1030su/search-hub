@@ -700,6 +700,23 @@ else
   record FAIL "11a. mcp token" "POST /api/admin/tokens = $tok_code"
 fi
 
+resources_code=$(curl -s -b "$COOKIES" -o "$WORK/resources.json" -w '%{http_code}' --max-time 15 "$BASE/api/admin/resources")
+RESOURCES_SCHEMA=$(jget "$WORK/resources.json" schemaVersion)
+RESOURCES_SCOPE=$(jget "$WORK/resources.json" cache.diskScope)
+if [ "$resources_code" = "200" ] && [ "$RESOURCES_SCHEMA" = "1" ] && [ "$RESOURCES_SCOPE" = "whole_sqlite_database" ]; then
+  record PASS "11g. resources session" "session GET 200, schemaVersion=1, whole SQLite disk scope"
+else
+  record FAIL "11g. resources session" "HTTP=$resources_code schema=${RESOURCES_SCHEMA:-none} scope=${RESOURCES_SCOPE:-none}"
+fi
+if [ -n "$MCP_TOKEN" ]; then
+  resources_bearer_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "authorization: Bearer $MCP_TOKEN" "$BASE/api/admin/resources")
+  if [ "$resources_bearer_code" = "403" ]; then
+    record PASS "11h. resources bearer rejected" "Bearer GET 403 before token verification"
+  else
+    record FAIL "11h. resources bearer rejected" "HTTP=$resources_bearer_code (expected 403)"
+  fi
+fi
+
 mcp_rpc() { # mcp_rpc <outfile> <payload>
   curl -s --max-time 60 -o "$1" \
     -H "authorization: Bearer $MCP_TOKEN" \

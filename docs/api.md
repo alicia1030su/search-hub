@@ -58,6 +58,55 @@ GET  /api/health
 
 `GET /api/admin/outbound` (admin session, read-only) returns the full outbound policy: redacted proxy endpoint (`scheme://host:port`, never userinfo), the full `NO_PROXY` list and count, whether the private host allowlist is honoured for proxied requests, the one-line `residualRisk`, the controls the application performs and the ones only the proxy can provide. Configure it with `SEARCH_HUB_PROXY` / `SEARCH_HUB_NO_PROXY` / `SEARCH_HUB_PROXY_TRUST` — it is intentionally not mutable through the API.
 
+## Runtime resources
+
+```http
+GET /api/admin/resources
+```
+
+This endpoint accepts **only an administrator `sh_session` cookie**. It does not
+require CSRF because it is read-only. Any `Authorization` header returns `403`
+before token verification; a missing, invalid, or expired session returns `401`.
+The lookup never updates `lastSeenAt`, and an expired session is not deleted.
+
+```json
+{
+  "schemaVersion": 1,
+  "sampledAt": "2026-11-22T00:00:00.000Z",
+  "process": {
+    "platform": "win32",
+    "nodeVersion": "v22.22.2",
+    "uptimeSeconds": 1234,
+    "memory": { "rssBytes": 123456789, "heapUsedBytes": 45678901, "heapTotalBytes": 98765432, "externalBytes": 1234567, "arrayBuffersBytes": 234567 },
+    "sources": { "rss": "node_process", "heapUsed": "v8", "heapTotal": "v8", "external": "v8", "arrayBuffers": "v8", "uptime": "node_process" }
+  },
+  "activity": {
+    "activeSearches": 2,
+    "activeProbes": 1,
+    "queue": { "total": 4, "providerKey": 2, "health": 1, "singleflightFollowers": 1 }
+  },
+  "cache": {
+    "entries": 5000,
+    "bytes": 268435456,
+    "totalsUpdatedAt": "2026-11-22T00:00:00.000Z",
+    "totalsSource": "search_cache_state",
+    "totalsReason": null,
+    "dbFileBytes": 300000000,
+    "walFileBytes": 4194304,
+    "dbFileSource": "fs.stat",
+    "walFileSource": "fs.stat",
+    "diskScope": "whole_sqlite_database"
+  },
+  "unavailable": []
+}
+```
+
+The snapshot is bounded and read-only: it performs primary-key cache totals and
+file `stat` calls, never `cache.stats()`, provider row scans, or database writes.
+`dbFileBytes` and `walFileBytes` describe the **whole SQLite database**, not only
+cached responses. Unknown values are `null` and include a machine-readable reason
+in `unavailable`; no filesystem path or raw error message is returned.
+
 ## Search
 
 ```http

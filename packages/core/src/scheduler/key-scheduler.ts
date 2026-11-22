@@ -96,6 +96,8 @@ export interface KeySchedulerOptions {
   breakerThreshold: number;
   keys: SchedulerKeySeed[];
   onDirty?: (snapshot: KeyRuntimeSnapshot) => void;
+  /** Reports an O(1) change in callers parked waiting for a key slot. */
+  onWaitingChange?: (delta: -1 | 1) => void;
   /**
    * Account group shared by every provider instance that bills the same vendor
    * account. When set, per-key limits still apply **and** the group budget is
@@ -146,6 +148,7 @@ export class KeyScheduler {
   private cooldownMs: number;
   private breakerThreshold: number;
   private readonly onDirty?: (snapshot: KeyRuntimeSnapshot) => void;
+  private readonly onWaitingChange?: (delta: -1 | 1) => void;
   /** Number of requests currently parked waiting for a slot (bounded). */
   private waiting = 0;
   private waiters: Waiter[] = [];
@@ -159,6 +162,7 @@ export class KeyScheduler {
     this.cooldownMs = options.cooldownMs;
     this.breakerThreshold = Math.max(1, options.breakerThreshold);
     this.onDirty = options.onDirty;
+    this.onWaitingChange = options.onWaitingChange;
     this.accountGroup = options.accountGroup ?? null;
     this.accountLimits = options.accountLimits ?? null;
     this.registry = options.registry ?? accountQuotaRegistry;
@@ -301,6 +305,7 @@ export class KeyScheduler {
     const waitBudget = Math.max(0, options.maxWaitMs ?? 2_000);
     const deadline = Date.now() + waitBudget;
     this.waiting += 1;
+    this.onWaitingChange?.(1);
     try {
       while (Date.now() < deadline) {
         if (options.signal?.aborted) return { lease: null, reason: "queue_timeout" };
@@ -314,6 +319,7 @@ export class KeyScheduler {
       return { lease: null, reason: "queue_timeout" };
     } finally {
       this.waiting -= 1;
+      this.onWaitingChange?.(-1);
     }
   }
 
@@ -336,6 +342,7 @@ export class KeyScheduler {
     const waitBudget = Math.max(0, options.maxWaitMs ?? 2_000);
     const deadline = Date.now() + waitBudget;
     this.waiting += 1;
+    this.onWaitingChange?.(1);
     try {
       while (Date.now() < deadline) {
         if (options.signal?.aborted) return { lease: null, reason: "queue_timeout" };
@@ -350,6 +357,7 @@ export class KeyScheduler {
       return { lease: null, reason: "queue_timeout" };
     } finally {
       this.waiting -= 1;
+      this.onWaitingChange?.(-1);
     }
   }
 

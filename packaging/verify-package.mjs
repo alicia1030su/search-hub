@@ -65,6 +65,8 @@ if (first.healthy) {
   step("MCP initialize", results.mcpInit);
   step("MCP tools/list", results.mcpList);
   step("MCP tools/call", results.mcpCall);
+  step("资源端点 session 200", results.resourcesSession, results.resourcesDetail);
+  step("资源端点 Bearer 403", results.resourcesBearer);
   // The database file is `search-hub.db` (config.ts), not `search.db`.
   step("数据库文件已落盘", existsSync(join(dataDir, "search-hub.db")));
   step("主密钥已落盘", existsSync(join(dataDir, "master.key")));
@@ -159,7 +161,7 @@ async function launch(executable) {
 
 async function drive(port) {
   const base = `http://127.0.0.1:${port}`;
-  const out = { setup: false, setupDetail: "", search: false, searchDetail: "", mcpInit: false, mcpList: false, mcpCall: false };
+  const out = { setup: false, setupDetail: "", search: false, searchDetail: "", mcpInit: false, mcpList: false, mcpCall: false, resourcesSession: false, resourcesBearer: false, resourcesDetail: "" };
 
   const tokenPath = join(dataDir, "setup-token");
   if (!existsSync(tokenPath)) {
@@ -224,6 +226,22 @@ async function drive(port) {
     out.searchDetail += "; token creation failed";
     return out;
   }
+
+  const resources = await fetch(`${base}/api/admin/resources`, { headers: { cookie } });
+  const resourcesBody = await resources.json();
+  const memory = resourcesBody.process?.memory ?? {};
+  const activity = resourcesBody.activity ?? {};
+  const cache = resourcesBody.cache ?? {};
+  out.resourcesSession = resources.status === 200 && resourcesBody.schemaVersion === 1 &&
+    ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"].every((field) => typeof memory[field] === "number") &&
+    typeof activity.activeSearches === "number" && typeof activity.activeProbes === "number" &&
+    typeof activity.queue?.total === "number" && typeof activity.queue?.providerKey === "number" &&
+    typeof activity.queue?.health === "number" && typeof activity.queue?.singleflightFollowers === "number" &&
+    ["entries", "bytes", "dbFileBytes", "walFileBytes"].every((field) => typeof cache[field] === "number") &&
+    cache.diskScope === "whole_sqlite_database";
+  out.resourcesDetail = `HTTP ${resources.status}`;
+  const forbiddenResources = await fetch(`${base}/api/admin/resources`, { headers: { authorization: `Bearer ${bearer}` } });
+  out.resourcesBearer = forbiddenResources.status === 403;
 
   const mcp = async (payload) => {
     const response = await fetch(`${base}/mcp`, {

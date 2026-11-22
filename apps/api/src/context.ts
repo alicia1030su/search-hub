@@ -21,6 +21,7 @@ import { HealthService } from "./services/health.js";
 import { ProviderBatchService } from "./services/provider-batch.js";
 import { SearchService } from "./services/search.js";
 import { CacheService } from "./services/cache.js";
+import { RuntimeMonitor } from "./services/runtime-monitor.js";
 import { QualityService } from "./services/quality.js";
 import { SessionService, TokenService, type AuthDependencies } from "./auth.js";
 
@@ -114,6 +115,7 @@ export interface AppContext {
   providers: ProviderService;
   models: ModelService;
   search: SearchService;
+  runtimeMonitor: RuntimeMonitor;
   /** Persistent search-response cache; shared by REST, MCP and Skills. */
   /**
    * Persistent search-response cache.
@@ -308,6 +310,14 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     cache,
   });
 
+  const runtimeMonitor = new RuntimeMonitor({
+    cache,
+    search,
+    providers,
+    health,
+    dbPath: config.dbPath,
+  });
+
   const quality = new QualityService({
     db: handle.db,
     settings,
@@ -412,6 +422,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     providers,
     models,
     search,
+    runtimeMonitor,
     cache,
     health,
     batch,
