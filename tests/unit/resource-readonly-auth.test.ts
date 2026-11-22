@@ -23,7 +23,7 @@ function fixture() {
   const now = new Date().toISOString();
   handle.db.insert(adminUsers).values({ id: "admin", email: "admin@example.com", name: "Admin", passwordHash: "hash", role: "admin", createdAt: now }).run();
   const config = { ...loadConfig(), dataDir: dir, dbPath: join(dir, "auth.db"), cookieSecure: false };
-  const sessionService = new SessionService(handle.db, config);
+  const sessionService = new SessionService(handle.db, config, handle.sqlite);
   const tokens = new TokenService(handle.db);
   const deps: AuthDependencies = { db: handle.db, sessions: sessionService, tokens, settings: {} as SettingsService };
   const created = sessionService.create("admin", { ttlHours: 1 });

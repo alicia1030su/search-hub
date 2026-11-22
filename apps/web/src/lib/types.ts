@@ -606,7 +606,7 @@ export interface RuntimeResourceSnapshot {
   process: {
     platform: string;
     nodeVersion: string;
-    uptimeSeconds: number;
+    uptimeSeconds: number | null;
     memory: {
       rssBytes: number | null;
       heapUsedBytes: number | null;

@@ -4,7 +4,7 @@ import type { CacheTotalsResult } from "./cache.js";
 export interface RuntimeUnavailable {
   field: string;
   source: string;
-  reason: "totals_missing" | "memory_database" | "not_found" | "permission_denied" | "stat_failed" | "memory_unavailable";
+  reason: "totals_missing" | "totals_unavailable" | "memory_database" | "not_found" | "permission_denied" | "stat_failed" | "memory_unavailable" | "uptime_unavailable" | "invalid_value";
 }
 
 export interface RuntimeResourceSnapshot {
@@ -13,7 +13,7 @@ export interface RuntimeResourceSnapshot {
   process: {
     platform: string;
     nodeVersion: string;
-    uptimeSeconds: number;
+    uptimeSeconds: number | null;
     memory: {
       rssBytes: number | null;
       heapUsedBytes: number | null;
@@ -91,22 +91,31 @@ export class RuntimeMonitor {
     };
     try {
       const usage = memoryUsage();
+      const bytes = (value: number): number | null => Number.isSafeInteger(value) && value >= 0 ? value : null;
       memory = {
-        rssBytes: usage.rss,
-        heapUsedBytes: usage.heapUsed,
-        heapTotalBytes: usage.heapTotal,
-        externalBytes: usage.external,
-        arrayBuffersBytes: usage.arrayBuffers,
+        rssBytes: bytes(usage.rss),
+        heapUsedBytes: bytes(usage.heapUsed),
+        heapTotalBytes: bytes(usage.heapTotal),
+        externalBytes: bytes(usage.external),
+        arrayBuffersBytes: bytes(usage.arrayBuffers),
       };
+      for (const field of ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const) {
+        if (memory[field] === null) unavailable.push({ field: `process.memory.${field}`, source: "node_process", reason: "invalid_value" });
+      }
     } catch {
       for (const field of ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const) {
         unavailable.push({ field: `process.memory.${field}`, source: "node_process", reason: "memory_unavailable" });
       }
     }
 
-    const totals = this.deps.cache.totals();
+    let totals: CacheTotalsResult;
+    try {
+      totals = this.deps.cache.totals();
+    } catch {
+      totals = { entries: null, bytes: null, updatedAt: null, source: "search_cache_state", reason: "totals_unavailable" };
+    }
     if (totals.entries === null || totals.bytes === null) {
-      unavailable.push({ field: "cache.totals", source: totals.source, reason: "totals_missing" });
+      unavailable.push({ field: "cache.totals", source: totals.source, reason: totals.reason === "totals_missing" ? "totals_missing" : "totals_unavailable" });
     }
     const dbPath = this.deps.dbPath;
     const readDisk = (suffix: "" | "-wal"): { bytes: number | null; source: string } => {
@@ -117,6 +126,10 @@ export class RuntimeMonitor {
       }
       try {
         const stat = (this.deps.statFile ?? statSync)(`${dbPath}${suffix}`);
+        if (!Number.isSafeInteger(stat.size) || stat.size < 0) {
+          unavailable.push({ field: suffix ? "cache.walFileBytes" : "cache.dbFileBytes", source: "fs.stat", reason: "invalid_value" });
+          return { bytes: null, source: "unavailable" };
+        }
         return { bytes: stat.size, source: "fs.stat" };
       } catch (error) {
         const code = (error as { code?: string } | null)?.code;
@@ -130,13 +143,21 @@ export class RuntimeMonitor {
     const providerKey = this.deps.providers.queueDepth;
     const health = this.deps.health.queueDepth;
     const singleflightFollowers = this.deps.search.queuedFollowerCount;
+    let uptimeSeconds: number | null = null;
+    try {
+      const value = this.deps.uptime?.() ?? process.uptime();
+      if (Number.isFinite(value) && value >= 0) uptimeSeconds = value;
+      else unavailable.push({ field: "process.uptimeSeconds", source: "node_process", reason: "invalid_value" });
+    } catch {
+      unavailable.push({ field: "process.uptimeSeconds", source: "node_process", reason: "uptime_unavailable" });
+    }
     return {
       schemaVersion: 1,
       sampledAt: new Date(now()).toISOString(),
       process: {
         platform: this.deps.platform ?? process.platform,
         nodeVersion: this.deps.nodeVersion ?? process.version,
-        uptimeSeconds: this.deps.uptime?.() ?? process.uptime(),
+        uptimeSeconds,
         memory,
         sources: PROCESS_SOURCES,
       },

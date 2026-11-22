@@ -277,7 +277,7 @@ export const openApiDocument = {
             properties: {
               platform: { type: "string" },
               nodeVersion: { type: "string" },
-              uptimeSeconds: { type: "number" },
+              uptimeSeconds: { type: ["number", "null"] },
               memory: {
                 type: "object",
                 required: ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"],

@@ -57,6 +57,23 @@ describe("RuntimeMonitor", () => {
     expect(snapshot.unavailable.map((item) => item.reason)).toEqual(["memory_database", "memory_database"]);
   });
 
+  it("degrades invalid memory/stat/uptime and thrown totals locally", () => {
+    const snapshot = new RuntimeMonitor(deps({
+      cache: { totals: () => { throw new Error("database unavailable"); } },
+      memoryUsage: () => ({ rss: Number.NaN, heapUsed: -1, heapTotal: Number.POSITIVE_INFINITY, external: 1, arrayBuffers: 2 }),
+      uptime: () => { throw new Error("uptime unavailable"); },
+      statFile: () => ({ size: Number.NaN }),
+    })).snapshot();
+    expect(snapshot.process.memory.rssBytes).toBeNull();
+    expect(snapshot.process.memory.heapUsedBytes).toBeNull();
+    expect(snapshot.process.memory.heapTotalBytes).toBeNull();
+    expect(snapshot.process.uptimeSeconds).toBeNull();
+    expect(snapshot.cache.entries).toBeNull();
+    expect(snapshot.cache.dbFileBytes).toBeNull();
+    expect(snapshot.unavailable.map((item) => item.reason)).toEqual(expect.arrayContaining(["invalid_value", "uptime_unavailable", "totals_unavailable"]));
+    expect(JSON.stringify(snapshot)).not.toContain("database unavailable");
+  });
+
   it("never calls stats, listRows, or activeRuntimes and creates no timer", () => {
     const setInterval = vi.spyOn(globalThis, "setInterval");
     const forbidden = () => { throw new Error("forbidden full scan"); };
