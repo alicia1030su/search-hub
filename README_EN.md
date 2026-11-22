@@ -275,7 +275,7 @@ Tokens are read only from the environment or `--token-stdin`; they are never wri
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.12-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.13-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
@@ -284,7 +284,7 @@ For long-running use, the package ships `search-hub.service` (non-root, `Protect
 **Docker**:
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.12    # candidate tag; available after publication
+docker pull ghcr.io/alicia1030su/search-hub:0.1.13    # candidate tag; available after publication
 # The image is built for linux/amd64 only; use the arm64 package above on arm64 hosts
 docker compose up -d                                        # or build from source
 ```

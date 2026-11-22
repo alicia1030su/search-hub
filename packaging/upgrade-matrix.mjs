@@ -268,9 +268,35 @@ function readCacheHitCounts(dataDir) {
   if (!existsSync(path)) return null;
   let db;
   try {
-    const db = new DatabaseSync(path, { readOnly: true });
+    db = new DatabaseSync(path, { readOnly: true });
     const rows = db.prepare("SELECT cache_key, hit_count FROM search_cache").all();
     return new Map(rows.map((row) => [row.cache_key, Number(row.hit_count)]));
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * Inputs that deliberately invalidate a cached response. If these are unchanged,
+ * the upgrade must reuse the old row; if they changed, a new key is legitimate but
+ * the new row still has to produce a real cache hit after warmup.
+ */
+function readCacheFingerprintInputs(dataDir, providerId) {
+  if (!providerId) return null;
+  const path = join(dataDir, "search-hub.db");
+  if (!existsSync(path)) return null;
+  let db;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    const provider = db.prepare(
+      "SELECT id, type, base_url, results_per_page, language, freshness, config_json, search_config_json FROM provider_instances WHERE id = ?",
+    ).get(providerId);
+    const keys = db.prepare(
+      "SELECT id, enabled, key_version, updated_at FROM api_keys WHERE provider_id = ? ORDER BY id",
+    ).all(providerId);
+    return provider ? { provider, keys } : null;
   } catch {
     return null;
   } finally {
@@ -554,6 +580,7 @@ async function populate(base) {
   const cachedBody = cachedSearch ? await cachedSearch.json().catch(() => ({})) : {};
   const cacheStats = await (await fetch(`${base}/api/admin/cache`, { headers: { cookie } })).json().catch(() => ({}));
   const cacheHitCounts = readCacheHitCounts(dataDir);
+  const cacheFingerprintInputs = readCacheFingerprintInputs(dataDir, providerId);
 
   const mcpToken = await fetch(`${base}/api/admin/tokens`, {
     method: "POST",
@@ -580,6 +607,7 @@ async function populate(base) {
     cacheEntries: cacheEnabled ? (cacheStats.entries ?? null) : null,
     cacheHits: cacheEnabled ? (cacheStats.hits24h ?? cacheStats.hits ?? null) : null,
     cacheHitCounts,
+    cacheFingerprintInputs,
     cachedSearchHit: cacheEnabled && cachedBody.stats?.cached === true,
     bearer,
     admin: setup.ok,
@@ -705,12 +733,23 @@ async function verify(base, state) {
     const cacheAfter = await (await fetch(`${base}/api/admin/cache`, { headers: { cookie: state.cookie } })).json().catch(() => ({}));
     const hitsAfter = cacheAfter.hits24h ?? cacheAfter.hits ?? 0;
     const hitCountsAfter = readCacheHitCounts(dataDir);
-    const rowHitsGrew = hitCountsAfterWarmup && hitCountsAfter
-      ? [...hitCountsAfter.entries()].some(([key, count]) => count > (hitCountsAfterWarmup.get(key) ?? 0))
+    const fingerprintInputsAfter = readCacheFingerprintInputs(dataDir, state.providerId);
+    const fingerprintUnchanged = Boolean(
+      state.cacheFingerprintInputs && fingerprintInputsAfter
+      && JSON.stringify(state.cacheFingerprintInputs) === JSON.stringify(fingerprintInputsAfter),
+    );
+    const legacyRowReused = state.cacheHitCounts && hitCountsAfterWarmup && hitCountsAfter
+      ? [...state.cacheHitCounts.keys()].some((key) => (hitCountsAfter.get(key) ?? 0) > (hitCountsAfterWarmup.get(key) ?? 0))
+      : false;
+    const newRowReused = state.cacheHitCounts && hitCountsAfterWarmup && hitCountsAfter
+      ? [...hitCountsAfter.keys()].some((key) => !state.cacheHitCounts.has(key) && (hitCountsAfter.get(key) ?? 0) > (hitCountsAfterWarmup.get(key) ?? 0))
       : false;
     const cachedFlag = cachedBody.stats?.cached === true;
-    out.cacheHit = cached.ok && (cachedFlag || rowHitsGrew);
-    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} rowHitsGrew=${rowHitsGrew} rows=${hitCountsAfterWarmup ? JSON.stringify([...hitCountsAfterWarmup.values()]) : "unavailable"}->${hitCountsAfter ? JSON.stringify([...hitCountsAfter.values()]) : "unavailable"}`;
+    const rowEvidence = state.cacheHitCounts
+      ? (fingerprintUnchanged ? legacyRowReused : legacyRowReused || newRowReused)
+      : cachedFlag;
+    out.cacheHit = cached.ok && rowEvidence;
+    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} fingerprintUnchanged=${fingerprintUnchanged} legacyRowReused=${legacyRowReused} newRowReused=${newRowReused} rows=${hitCountsAfterWarmup ? JSON.stringify([...hitCountsAfterWarmup.values()]) : "unavailable"}->${hitCountsAfter ? JSON.stringify([...hitCountsAfter.values()]) : "unavailable"}`;
   }
 
   return out;

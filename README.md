@@ -256,7 +256,7 @@ Token 只从环境变量或 `--token-stdin` 读取，不写入明文配置。完
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.12-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.13-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -265,7 +265,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.12    # 候选 tag；最终发布后可用
+docker pull ghcr.io/alicia1030su/search-hub:0.1.13    # 候选 tag；最终发布后可用
 # 镜像当前只构建 linux/amd64；arm64 主机请使用上面的 arm64 独立包
 docker compose up -d                                        # 或从源码构建
 ```

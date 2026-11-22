@@ -456,9 +456,9 @@ validate README/catalog/version consistency and the generated provider matrix.
 They are not substitutes for the full test suite or remote CI.
 
 `.github/workflows/upgrade.yml` builds the current package on Windows and Linux
-and upgrades published packages in place. For v0.1.12 it adds the real
-`v0.1.11 → current` path on port 8929, exercising migration 0010 against
-published-release state. This is configured coverage until the candidate CI
+and upgrades published packages in place. For v0.1.13 it adds the real
+`v0.1.12 → current` path on port 8931, exercising cache reuse and data preservation
+against published-release state. This is configured coverage until the candidate CI
 run is observed and recorded; no PASS is claimed here.
 
 `.github/workflows/docker.yml` runs the container acceptance: image build with layer
