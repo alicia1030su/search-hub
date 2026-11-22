@@ -2,10 +2,10 @@
 
 Target: a 2-core / 2 GB Linux host can run basic search comfortably. No Redis, vector database, GPU, or external model is required.
 
-## Published images and packages (v0.1.13 candidate)
+## Published images and packages (v0.1.13)
 
-v0.1.12 is the current published Stable. The v0.1.13 Release will add standalone
-CLI assets alongside the existing server packages:
+v0.1.13 is the current published Stable. It includes standalone CLI assets
+alongside the server packages:
 
 | Artefact | Asset |
 |---|---|

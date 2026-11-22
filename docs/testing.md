@@ -456,10 +456,14 @@ validate README/catalog/version consistency and the generated provider matrix.
 They are not substitutes for the full test suite or remote CI.
 
 `.github/workflows/upgrade.yml` builds the current package on Windows and Linux
-and upgrades published packages in place. For v0.1.13 it adds the real
-`v0.1.12 → current` path on port 8931, exercising cache reuse and data preservation
-against published-release state. This is configured coverage until the candidate CI
-run is observed and recorded; no PASS is claimed here.
+and upgrades published packages in place. The v0.1.13 PR and main runs
+passed on both runners: [PR run 44997781914](https://github.com/alicia1030su/search-hub/actions/runs/44997781914)
+and [main run 44998417741](https://github.com/alicia1030su/search-hub/actions/runs/44998417741).
+The matrix covers v0.1.4-beta.6, v0.1.5-beta.1, v0.1.7-beta.3, v0.1.8,
+v0.1.10, v0.1.11, v0.1.12 and v0.1.8-beta.1. Cache evidence is fail-closed:
+persistent-cache versions must reuse the old row when the fingerprint is unchanged;
+legacy memory-only versions must establish a new persistent row and prove a real
+cache hit after warmup. Missing or ambiguous evidence fails the upgrade.
 
 `.github/workflows/docker.yml` runs the container acceptance: image build with layer
 cache, `docker compose config`, the 10-item `scripts/docker-verify.sh`

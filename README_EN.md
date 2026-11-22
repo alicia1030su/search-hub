@@ -4,9 +4,9 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.12 · Stable published; v0.1.13 in development (CLI).**
+> **Status: v0.1.13 · Stable published.**
 >
-> **Release gate:** v0.1.13 local full-suite Vitest **1299 cases / 100 files**, Playwright **42 cases**, and **58 CLI-specific cases** pass. Remote CI, upgrade-matrix and formal-release results are recorded in `docs/release-readiness.md`.
+> **Release gate:** local Vitest **1299 cases / 100 files**, Playwright **42 cases**, and **58 CLI-specific cases** pass. Remote PR/main CI, Docker, systemd, eight cross-version upgrades and three-platform CLI acceptance all pass. Formal Release, asset verification, Provenance and GHCR evidence are recorded in `docs/release-readiness.md`.
 >
 > **v0.1.13 theme:** a standalone `shub` command-line client for search, deep search, sources, status, diagnostics, configuration and provider health probes. The CLI only calls REST API; it does not reimplement the search core.
 >
@@ -38,7 +38,7 @@ Search Hub packages that as a deployable service:
 | REST + OpenAPI 3.1 | Implemented | `/api/openapi.json`, `/api/docs` |
 | MCP server | Implemented | 2026-07-28 modern envelope + 2025-11-25 handshake; Streamable HTTP and stdio |
 | Agent Skills | Implemented | Three `SKILL.md` packages |
-| CLI `shub` | v0.1.13 in development | Standalone Windows/Linux executables; search, deep search, sources, status, doctor, config and health probes; clean JSON/NDJSON output |
+| CLI `shub` | Implemented | Standalone Windows/Linux executables and Node 22 portable package; search, deep search, sources, status, doctor, config and health probes; clean JSON/NDJSON output |
 | AI summary / embedding / rerank | Implemented, optional | OpenAI-compatible, Anthropic, Gemini, Cohere/Jina-compatible, custom HTTP |
 | Result cache (SQLite, persistent) | Implemented | 1–72 h TTL; survives restart and container rebuild; LRU eviction at a byte cap; expired rows swept every 10 minutes |
 | Search quality lab | Implemented | Four-grade human relevance judgments + P@10 / Recall@10 / MRR@10 / nDCG@10; offline baseline with no network and reproducible numbers; single / base / RRF comparison; RRF sweep with a development/holdout split; incomplete qrels produce N/A and INSUFFICIENT_EVIDENCE |
@@ -127,9 +127,9 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.13 candidate)
+## Download (v0.1.13 Stable)
 
-v0.1.12 is published. v0.1.13 adds the standalone CLI and will ship server and CLI assets after its release gates pass.
+v0.1.13 is published and includes the standalone CLI plus Windows/Linux server and CLI assets.
 
 | Platform | Server | CLI `shub` | Requirements |
 |---|---|---|---|
@@ -138,7 +138,7 @@ v0.1.12 is published. v0.1.13 adds the standalone CLI and will ship server and C
 | Linux arm64 | `search-hub-v0.1.13-linux-arm64.tar.gz` | `shub-v0.1.13-linux-arm64.tar.gz` | **None** |
 | Node.js 22+ | — | `shub-v0.1.13-node22.tar.gz` | Node.js 22+ |
 
-After publication, download `SHA256SUMS` from the [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) and run `sha256sum -c SHA256SUMS`. Every asset also carries build provenance. The CLI does not require a local server; it can connect to a local or remote Search Hub instance.
+Download `SHA256SUMS` from the [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) and run `sha256sum -c SHA256SUMS`. Every asset also carries build provenance. The CLI does not require a local server; it can connect to a local or remote Search Hub instance.
 
 ### CLI quick start
 
@@ -445,7 +445,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 - Brave: no subscription key; no live call to `api.search.brave.com`.
 - SearXNG: no self-hosted instance.
-- Docker: **locally** the Docker engine is unavailable (WSL is blocked by policy); the remote v0.1.12 GitHub Actions evidence is in `docs/release-readiness.md`. v0.1.13 must be re-verified on its candidate commit; the two are not interchangeable.
+- Docker: **locally** the Docker engine is unavailable (WSL is blocked by policy); the **remote** v0.1.13 GitHub Actions run passed the Docker build, browser E2E, container acceptance and Trivy gate. See `docs/release-readiness.md`.
 - AI / embedding / rerank: no vendor keys; request/response contracts tested against local mock servers only.
 - Multi-instance: Redis coordination is not implemented; quotas are guaranteed per process.
 
