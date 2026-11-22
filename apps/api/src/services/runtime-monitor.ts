@@ -50,6 +50,16 @@ export interface RuntimeResourceSnapshot {
   unavailable: RuntimeUnavailable[];
 }
 
+const PROCESS_SOURCES: RuntimeResourceSnapshot["process"]["sources"] = Object.freeze({
+  rss: "node_process",
+  heapUsed: "v8",
+  heapTotal: "v8",
+  external: "v8",
+  arrayBuffers: "v8",
+  uptime: "node_process",
+});
+const EMPTY_UNAVAILABLE: RuntimeUnavailable[] = [];
+
 export interface RuntimeMonitorDeps {
   cache: { totals(): CacheTotalsResult };
   search: { activeSearchCount: number; queuedFollowerCount: number };
@@ -128,14 +138,7 @@ export class RuntimeMonitor {
         nodeVersion: this.deps.nodeVersion ?? process.version,
         uptimeSeconds: this.deps.uptime?.() ?? process.uptime(),
         memory,
-        sources: {
-          rss: "node_process",
-          heapUsed: "v8",
-          heapTotal: "v8",
-          external: "v8",
-          arrayBuffers: "v8",
-          uptime: "node_process",
-        },
+        sources: PROCESS_SOURCES,
       },
       activity: {
         activeSearches: this.deps.search.activeSearchCount,
@@ -154,7 +157,7 @@ export class RuntimeMonitor {
         walFileSource: wal.source,
         diskScope: "whole_sqlite_database",
       },
-      unavailable,
+      unavailable: unavailable.length === 0 ? EMPTY_UNAVAILABLE : unavailable,
     };
   }
 }
