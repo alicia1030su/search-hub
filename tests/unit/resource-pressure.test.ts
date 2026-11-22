@@ -48,9 +48,31 @@ describe("D02 owned process identity and telemetry", () => {
       killProcess: async (pid: number) => { signals.push(pid); },
     };
     const tree = new OwnedProcessTree(42, "old", { io });
+    expect(await tree.sample()).toEqual([]);
+    expect(tree.rootIdentityChanged).toBe(true);
+    expect(tree.rootIdentityState).toBe("changed");
     const result = await tree.cleanup();
     expect(signals).toEqual([]);
     expect(result.residuals).toEqual([]);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.reason).toBe("root_identity_changed");
+  });
+
+  it("skips Windows console TERM without group ownership and KILLs only the verified owned PID", async () => {
+    const signals: string[] = [];
+    let alive = true;
+    const identity = { pid: 43, ppid: 1, startTime: "stable", owned: false, role: "node", executableName: "node" };
+    const entry = { identity, rssBytes: { value: 10, source: "test", reason: null } };
+    const io = {
+      listProcesses: async () => alive ? [entry] : [],
+      readProcess: async () => alive ? entry : null,
+      terminateProcess: async () => { signals.push("term"); },
+      killProcess: async () => { signals.push("kill"); alive = false; },
+    };
+    const tree = new OwnedProcessTree(43, "stable", { platform: "win32", io, consoleCtrlOwned: false, termGraceMs: 10 });
+    const result = await tree.cleanup();
+    expect(signals).toEqual(["kill"]);
+    expect(result.ok).toBe(true);
   });
 
   it("samples Node telemetry over authenticated loopback and rejects a bad token", async () => {

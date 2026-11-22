@@ -16,6 +16,12 @@ async function fileAttributes(filePath) {
   return loaded.get(filePath);
 }
 
+export async function hasReparsePoint(filePath) {
+  if (process.platform !== "win32") return false;
+  const attributes = await fileAttributes(filePath);
+  return attributes !== null && (attributes & 0x400) !== 0;
+}
+
 function inside(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
@@ -46,10 +52,7 @@ async function validatePath(candidate, repoRoot) {
     try {
       const info = await lstat(current);
       if (info.isSymbolicLink()) return { ok: false, reason: "symbolic_link" };
-      if (process.platform === "win32") {
-        const attributes = await fileAttributes(current);
-        if ((attributes & 0x400) !== 0) return { ok: false, reason: "reparse_point" };
-      }
+      if (await hasReparsePoint(current)) return { ok: false, reason: "reparse_point" };
     } catch (error) {
       if (error?.code === "ENOENT") break;
       return { ok: false, reason: "lstat_failed" };

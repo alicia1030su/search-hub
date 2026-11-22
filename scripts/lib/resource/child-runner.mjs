@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
+import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { collectSnapshot } from "./snapshot.mjs";
 import { OwnedProcessTree, adapter } from "./process-tree.mjs";
 import { createTelemetryServer } from "./telemetry-server.mjs";
 import { classifyPressure } from "./pressure.mjs";
-import { sanitizeLog } from "./report.mjs";
+import { createLogSanitizer, sanitizeLog } from "./report.mjs";
 import { classifyOom } from "./oom.mjs";
 
 function pnpmInvocation(args) {
@@ -39,6 +42,63 @@ function unknownReading(source, reason) {
   return { value: null, source, reason };
 }
 
+function createArtifactLogWriter(artifactRun, logName) {
+  const filePath = path.join(artifactRun.rootPath, logName);
+  const stream = createWriteStream(filePath, { flags: "w", mode: 0o600 });
+  const sanitizer = createLogSanitizer();
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
+  let evidenceTail = "";
+  let streamError = null;
+  let stdoutPaused = false;
+  let stderrPaused = false;
+  stream.on("error", (error) => { streamError = error; });
+  stream.on("drain", () => {
+    if (stdoutPaused) { stdoutPaused = false; childStdout?.resume(); }
+    if (stderrPaused) { stderrPaused = false; childStderr?.resume(); }
+  });
+  let childStdout = null;
+  let childStderr = null;
+
+  const append = (text) => {
+    if (!text) return true;
+    evidenceTail = `${evidenceTail}${text}`.slice(-16 * 1024);
+    return stream.write(text);
+  };
+  return {
+    attach(stdout, stderr) {
+      childStdout = stdout;
+      childStderr = stderr;
+    },
+    writeStdout(chunk) {
+      const accepted = append(sanitizer.write(stdoutDecoder.write(chunk)));
+      if (!accepted) { stdoutPaused = true; childStdout?.pause(); }
+    },
+    writeStderr(chunk) {
+      const accepted = append(sanitizer.write(stderrDecoder.write(chunk)));
+      if (!accepted) { stderrPaused = true; childStderr?.pause(); }
+    },
+    writeText(text) {
+      append(sanitizer.write(text));
+    },
+    tail() {
+      return evidenceTail;
+    },
+    async close() {
+      append(sanitizer.write(stdoutDecoder.end()));
+      append(sanitizer.write(stderrDecoder.end()));
+      append(sanitizer.end());
+      await new Promise((resolve, reject) => {
+        if (streamError) { reject(streamError); return; }
+        stream.once("finish", resolve);
+        stream.once("error", reject);
+        stream.end();
+      });
+      await artifactRun.appendLog(logName, "");
+    },
+  };
+}
+
 /**
  * Spawn and sample one stage attempt. Every return path closes telemetry and
  * cleans only the identity-verified owned process tree.
@@ -64,8 +124,7 @@ export async function runChildAttempt(options) {
   let tree = options.tree ?? null;
   let sampler = null;
   let sampling = Promise.resolve();
-  let stdout = "";
-  let stderr = "";
+  let logWriter = null;
   let rssPeakBytes = 0;
   let heapPeakBytes = 0;
   let hasRss = false;
@@ -113,6 +172,7 @@ export async function runChildAttempt(options) {
   };
 
   try {
+    logWriter = createArtifactLogWriter(options.artifactRun, logName);
     before = await collect({ includeProcesses: false, platform });
     if (!telemetry) {
       telemetry = await createTelemetryServer();
@@ -126,12 +186,13 @@ export async function runChildAttempt(options) {
       windowsHide: true,
       detached: platform === "win32",
     });
-    child.stdout?.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr?.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
     outcomePromise = new Promise((resolve) => {
       child.once("error", (error) => { spawnError = error; resolve({ code: null, signal: null }); });
       child.once("close", (code, signal) => resolve({ code, signal }));
     });
+    logWriter.attach(child.stdout, child.stderr);
+    child.stdout?.on("data", (chunk) => logWriter.writeStdout(chunk));
+    child.stderr?.on("data", (chunk) => logWriter.writeStderr(chunk));
     if (!tree && child.pid) {
       const io = adapter(platform);
       const root = await (options.readProcess ?? io.readProcess)(child.pid);
@@ -166,9 +227,7 @@ export async function runChildAttempt(options) {
     const beforeOom = before.cgroup?.oomKills?.value;
     const afterOom = after.cgroup?.oomKills?.value;
     const cgroupOomDelta = Number.isSafeInteger(beforeOom) && Number.isSafeInteger(afterOom) ? Math.max(0, afterOom - beforeOom) : 0;
-    const rawLog = `${stdout}${stdout && stderr ? "\n" : ""}${stderr}`;
-    const log = sanitizeLog(rawLog);
-    await options.artifactRun.appendLog(logName, log);
+    const log = logWriter.tail();
     const cleanup = tree ? await tree.cleanup() : { ok: true, residuals: [], errors: [] };
     const durationMs = Math.max(0, Math.trunc(Date.now() - startedMs));
     const attemptResult = {
@@ -214,8 +273,8 @@ export async function runChildAttempt(options) {
       void closed;
     }
     const reason = error instanceof Error ? error.message : String(error);
-    const log = sanitizeLog(`${stdout}${stderr ? `\n${stderr}` : ""}\n${reason}\n`);
-    await options.artifactRun.appendLog(logName, log);
+    logWriter?.writeText(`\n${reason}\n`);
+    const log = logWriter?.tail() ?? sanitizeLog(reason);
     const result = {
       stage,
       attempt,
@@ -241,6 +300,10 @@ export async function runChildAttempt(options) {
   } finally {
     if (sampler) clearInterval(sampler);
     await sampling;
-    if (ownsTelemetry && telemetry) await telemetry.close();
+    try {
+      if (logWriter) await logWriter.close();
+    } finally {
+      if (ownsTelemetry && telemetry) await telemetry.close();
+    }
   }
 }

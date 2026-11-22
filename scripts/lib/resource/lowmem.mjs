@@ -1,6 +1,15 @@
+function isVitestSuitePlaceholder(entry) {
+  if (typeof entry === "string" || !entry || typeof entry.name !== "string") return false;
+  if (entry.type === "suite" || entry.kind === "suite") return true;
+  // Vitest 5.1.0 static collection emits synthetic `dir` suite rows in addition
+  // to assertion rows. Filter only this documented placeholder shape; all real
+  // missing test identities remain visible in the comparison.
+  return entry.name === "dir" || entry.name.endsWith(" > dir");
+}
+
 /** Normalize Vitest list output to sorted file::fullName identities. */
 export function normalizeList(value) {
-  const entries = Array.isArray(value) ? value : value?.tests ?? value?.testResults ?? [];
+  const entries = (Array.isArray(value) ? value : value?.tests ?? value?.testResults ?? []).filter((entry) => !isVitestSuitePlaceholder(entry));
   return entries.map((entry) => {
     const file = typeof entry === "string" ? entry : entry.file ?? entry.filePath ?? entry.name;
     const name = typeof entry === "string" ? entry : entry.fullName ?? entry.name ?? "";

@@ -13,7 +13,8 @@ export function classifyOom(attempt, evidence = {}) {
   const ownedRootDied = Boolean(attempt.ownedRootDied ?? evidence.injectedEvidence?.ownedRootDied);
   const ownedPeakBytes = attempt.ownedPeakBytes ?? evidence.injectedEvidence?.ownedPeakBytes ?? 0;
   const cgroupOomDelta = evidence.cgroupOomDelta ?? 0;
-  const windowsCode = attempt.windowsExitCode ?? evidence.injectedEvidence?.windowsCode ?? null;
+  const rawWindowsCode = attempt.windowsExitCode ?? evidence.injectedEvidence?.windowsCode ?? attempt.exitCode ?? null;
+  const windowsCode = typeof rawWindowsCode === "number" && Number.isInteger(rawWindowsCode) ? rawWindowsCode >>> 0 : null;
   const v8Fatal = evidence.injectedEvidence?.v8Fatal ?? /FATAL ERROR:\s*(?:Reached heap limit|JavaScript heap out of memory|Allocation failed)/i.test(log);
   const reasons = [];
   if (cgroupOomDelta > 0 && ownedRootDied) reasons.push("cgroup_oom_kill_with_owned_root_death");

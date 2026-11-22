@@ -275,10 +275,33 @@ async function readWindowsProcess(pid, suppliedApi = null) {
   }
 }
 
+async function findToolhelpIdentity(pid, suppliedApi = null) {
+  const win = suppliedApi ?? await api();
+  const snapshot = win.createToolhelp32Snapshot(0x2, 0);
+  if (!snapshot || snapshot === -1 || snapshot === -1n) return null;
+  const pointer = win.koffi.alloc(win.PROCESSENTRY32W, 1);
+  try {
+    win.koffi.encode(pointer, win.PROCESSENTRY32W, { dwSize: win.koffi.sizeof(win.PROCESSENTRY32W) });
+    let ok = win.process32FirstW(snapshot, pointer);
+    while (ok) {
+      const value = win.koffi.decode(pointer, win.PROCESSENTRY32W);
+      if (Number(value.th32ProcessID) === pid) {
+        const executableName = safeName(value.szExeFile);
+        return { ppid: Number(value.th32ParentProcessID), executableName, role: roleFor(executableName) };
+      }
+      ok = win.process32NextW(snapshot, pointer);
+    }
+    return null;
+  } finally {
+    win.koffi.free(pointer);
+    win.closeHandle(snapshot);
+  }
+}
+
 export async function readProcess(pid) {
-  const details = await readWindowsProcess(pid);
-  if (!details) return null;
-  return { identity: { pid, ppid: 0, startTime: details.startTime, owned: false, role: "unknown", executableName: "unknown" }, rssBytes: details.rssBytes };
+  const [details, identity] = await Promise.all([readWindowsProcess(pid), findToolhelpIdentity(pid)]);
+  if (!details || !identity) return null;
+  return { identity: { pid, ppid: identity.ppid, startTime: details.startTime, owned: false, role: identity.role, executableName: identity.executableName }, rssBytes: details.rssBytes };
 }
 
 export async function terminateProcess(pid) {

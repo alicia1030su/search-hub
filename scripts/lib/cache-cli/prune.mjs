@@ -1,10 +1,10 @@
 import { lstat, readFile, readdir, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { createCachePlan, planExpired, plansMatch } from "./plan.mjs";
-import { isProtected, validatePath } from "./allowlist.mjs";
+import { hasReparsePoint, isProtected, validatePath } from "./allowlist.mjs";
 
 async function removeEmptyDirectories(root, repoRoot) {
-  if (!(await validatePath(root, repoRoot)).ok) return;
+  if (!(await validatePath(root, repoRoot)).ok || await hasReparsePoint(root)) return;
   let entries = [];
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -14,7 +14,7 @@ async function removeEmptyDirectories(root, repoRoot) {
   for (const entry of entries) {
     const child = path.join(root, entry.name);
     const info = await lstat(child);
-    if (info.isDirectory() && !info.isSymbolicLink() && !isProtected(child, repoRoot) && (await validatePath(child, repoRoot)).ok) await removeEmptyDirectories(child, repoRoot);
+    if (info.isDirectory() && !info.isSymbolicLink() && !isProtected(child, repoRoot) && !(await hasReparsePoint(child)) && (await validatePath(child, repoRoot)).ok) await removeEmptyDirectories(child, repoRoot);
   }
   try {
     await rmdir(root);

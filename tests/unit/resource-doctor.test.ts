@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM resource module; contracts are declared in JSDoc
 import { collectSnapshot, largestProcesses } from "../../scripts/lib/resource/snapshot.mjs";
 // @ts-expect-error -- plain ESM resource module
-import { collectMemory as collectWindowsMemory, collectCpu as collectWindowsCpu } from "../../scripts/lib/resource/windows.mjs";
+import { collectMemory as collectWindowsMemory, collectCpu as collectWindowsCpu, readProcess as readWindowsProcess } from "../../scripts/lib/resource/windows.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { freezeBudget, headroomMiB } from "../../scripts/lib/resource/budget.mjs";
 // @ts-expect-error -- plain ESM resource module
@@ -10,7 +10,9 @@ import { classifyPressure } from "../../scripts/lib/resource/pressure.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { classifyOom } from "../../scripts/lib/resource/oom.mjs";
 // @ts-expect-error -- plain ESM resource module
-import { sanitizeLog } from "../../scripts/lib/resource/report.mjs";
+import { createLogSanitizer, sanitizeLog } from "../../scripts/lib/resource/report.mjs";
+// @ts-expect-error -- plain ESM resource module
+import { parseCgroupRoot } from "../../scripts/lib/resource/linux.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { compareLowmem, normalizeList } from "../../scripts/lib/resource/lowmem.mjs";
 
@@ -77,6 +79,18 @@ describe("D01 resource snapshots", () => {
     const cpu = await collectWindowsCpu(20);
     expect(cpu.utilizationPercent.value).toBeGreaterThanOrEqual(0);
     expect(cpu.utilizationPercent.value).toBeLessThanOrEqual(100);
+    const identity = await readWindowsProcess(process.pid);
+    expect(identity?.identity.ppid).toBeGreaterThan(0);
+    expect(identity?.identity.startTime).toBeTruthy();
+  });
+
+  it("recognizes cgroup v1 cgroup mounts and keeps v2 distinct", () => {
+    const v1 = "31 22 0:27 / /sys/fs/cgroup/memory rw,nosuid,nodev,noexec,relatime master:2 - cgroup cgroup rw,memory";
+    const v2 = "30 22 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw";
+    expect(parseCgroupRoot(v1, "1")).toBe("/sys/fs/cgroup/memory");
+    expect(parseCgroupRoot(v1, "2")).toBeNull();
+    expect(parseCgroupRoot(v2, "2")).toBe("/sys/fs/cgroup");
+    expect(parseCgroupRoot(v2, "1")).toBeNull();
   });
 });
 
@@ -113,7 +127,8 @@ describe("D01/D07 budget and pressure", () => {
 
 describe("D04 low-memory complete-suite comparison", () => {
   it("compares file and fullName unions and rejects skip/todo/scope differences", () => {
-    const listed = normalizeList([{ file: "C:/repo/a.test.ts", name: "suite > one" }, { file: "C:/repo/a.test.ts", name: "suite > two" }]);
+    const listed = normalizeList([{ file: "C:/repo/a.test.ts", name: "dir" }, { file: "C:/repo/a.test.ts", name: "suite > dir" }, { file: "C:/repo/a.test.ts", name: "suite > one" }, { file: "C:/repo/a.test.ts", name: "suite > two" }]);
+    expect(listed).toHaveLength(2);
     const passed = { testResults: [{ name: "C:/repo/a.test.ts", assertionResults: [{ fullName: "suite > two", status: "passed" }, { fullName: "suite > one", status: "passed" }] }] };
     expect(compareLowmem(listed, passed, { runExitCode: 0 }).passed).toBe(true);
     expect(compareLowmem(listed, { testResults: [{ name: "C:/repo/a.test.ts", assertionResults: [{ fullName: "suite > one", status: "passed" }] }] }, { runExitCode: 0 }).missing).toHaveLength(1);
@@ -134,7 +149,19 @@ describe("D08 OOM evidence and redaction", () => {
     expect(classifyOom({ exitCode: 137, ownedRootDied: true }, { cgroupOomDelta: 1 }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 134, signal: "SIGABRT", log: "FATAL ERROR: Reached heap limit" }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 5, ownedRootDied: true, ownedPeakBytes: 100 }, { injectedEvidence: { windowsCode: 0xC0000017 } }).confirmed).toBe(true);
+    expect(classifyOom({ exitCode: -1073741801, ownedRootDied: true, ownedPeakBytes: 100 }).confirmed).toBe(true);
+    expect(classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: 100 }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 5, ownedRootDied: false }, { cgroupOomDelta: 1 }).confirmed).toBe(false);
+  });
+
+  it("redacts secrets across streaming chunk boundaries with bounded lookbehind", () => {
+    const sanitizer = createLogSanitizer();
+    const chunks = ["start Authorization: Bear", "er secret\nCookie: ses", "sion=secret\napi_", "key=secret\n{\"token\":\"sec", "ret\"}\nexit=137\n"];
+    const output = chunks.map((chunk) => sanitizer.write(chunk)).join("") + sanitizer.end();
+    expect(output).not.toContain("secret");
+    expect(output).not.toContain("session");
+    expect(output).toContain("start");
+    expect(output).toContain("exit=137");
   });
 
   it("redacts credentials without changing failure facts", () => {

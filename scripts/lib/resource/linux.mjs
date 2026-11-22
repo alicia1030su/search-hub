@@ -101,17 +101,23 @@ function unescapeMount(value) {
   return value.replaceAll("\\040", " ").replaceAll("\\011", "\t").replaceAll("\\134", "\\");
 }
 
-async function findCgroupRoot(version) {
-  const mountinfo = await readText("/proc/self/mountinfo");
-  if (mountinfo !== null) {
-    for (const line of mountinfo.split("\n")) {
-      const fields = line.split(" ");
-      const separator = fields.indexOf("-");
-      if (separator >= 0 && fields[separator + 1] === `cgroup${version}` && fields[4]) {
-        return unescapeMount(fields[4]);
-      }
+export function parseCgroupRoot(mountinfo, version) {
+  if (typeof mountinfo !== "string") return null;
+  const filesystems = version === "2" ? new Set(["cgroup2"]) : version === "1" ? new Set(["cgroup", "cgroup1"]) : new Set();
+  for (const line of mountinfo.split("\n")) {
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-");
+    if (separator >= 0 && filesystems.has(fields[separator + 1]) && fields[4]) {
+      return unescapeMount(fields[4]);
     }
   }
+  return null;
+}
+
+async function findCgroupRoot(version) {
+  const mountinfo = await readText("/proc/self/mountinfo");
+  const mounted = parseCgroupRoot(mountinfo, version);
+  if (mounted) return mounted;
   const fallback = version === "2" ? "/sys/fs/cgroup" : "/sys/fs/cgroup/memory";
   try {
     if ((await stat(fallback)).isDirectory()) return fallback;
