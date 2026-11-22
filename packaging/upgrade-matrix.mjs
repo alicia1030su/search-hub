@@ -689,6 +689,13 @@ async function verify(base, state) {
     const cache = cacheRes.ok ? await cacheRes.json().catch(() => ({})) : {};
     out.cache = settingsRes.ok && settings.cache?.enabled === true && cacheRes.ok && (cache.entries ?? 0) >= state.cacheEntries && state.cacheEntries > 0;
     out.cacheDetail = `${cache.entries ?? 0} entries (was ${state.cacheEntries})`;
+    const cacheWarmup = await fetch(`${base}/api/search`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: state.cookie, "x-csrf-token": state.csrf },
+      body: JSON.stringify({ query: "upgrade cache probe", mode: "basic", limit: 3 }),
+    });
+    await cacheWarmup.json().catch(() => ({}));
+    const hitCountsAfterWarmup = readCacheHitCounts(dataDir);
     const cached = await fetch(`${base}/api/search`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie: state.cookie, "x-csrf-token": state.csrf },
@@ -698,13 +705,12 @@ async function verify(base, state) {
     const cacheAfter = await (await fetch(`${base}/api/admin/cache`, { headers: { cookie: state.cookie } })).json().catch(() => ({}));
     const hitsAfter = cacheAfter.hits24h ?? cacheAfter.hits ?? 0;
     const hitCountsAfter = readCacheHitCounts(dataDir);
-    const rowHitsGrew = state.cacheHitCounts && hitCountsAfter
-      ? [...hitCountsAfter.entries()].some(([key, count]) => count > (state.cacheHitCounts.get(key) ?? 0))
+    const rowHitsGrew = hitCountsAfterWarmup && hitCountsAfter
+      ? [...hitCountsAfter.entries()].some(([key, count]) => count > (hitCountsAfterWarmup.get(key) ?? 0))
       : false;
     const cachedFlag = cachedBody.stats?.cached === true;
-    const hitsGrew = typeof state.cacheHits === "number" && hitsAfter > state.cacheHits;
-    out.cacheHit = cached.ok && (cachedFlag || hitsGrew || rowHitsGrew);
-    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} hits=${state.cacheHits ?? "?"}->${hitsAfter} rowHitsGrew=${rowHitsGrew} rows=${state.cacheHitCounts ? JSON.stringify([...state.cacheHitCounts.values()]) : "unavailable"}->${hitCountsAfter ? JSON.stringify([...hitCountsAfter.values()]) : "unavailable"}`;
+    out.cacheHit = cached.ok && (cachedFlag || rowHitsGrew);
+    out.cacheHitDetail = `cached=${cachedBody.stats?.cached ?? "unsupported"} rowHitsGrew=${rowHitsGrew} rows=${hitCountsAfterWarmup ? JSON.stringify([...hitCountsAfterWarmup.values()]) : "unavailable"}->${hitCountsAfter ? JSON.stringify([...hitCountsAfter.values()]) : "unavailable"}`;
   }
 
   return out;
