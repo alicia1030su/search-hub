@@ -2,7 +2,7 @@ import { and, asc, eq, lte, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import type { Logger, SearchResponse } from "@search-hub/shared";
-import type { SearchHubDb } from "@search-hub/db";
+import type { SearchHubDb, DbHandle } from "@search-hub/db";
 import { searchCache, searchCacheMetrics, searchCacheState } from "@search-hub/db";
 import {
   CacheDiagnostics,
@@ -89,6 +89,8 @@ export interface CacheServiceDeps {
   now?: () => number;
   /** File path enables DB/WAL byte diagnostics; absent in isolated unit fixtures. */
   dbPath?: string;
+  /** Optional raw handle for an allocation-light prepared totals lookup. */
+  sqlite?: DbHandle["sqlite"];
   /** Optional read-only OS page-cache collector; unknown values stay null. */
   osPageCache?: () => { value: number | null; source: string; reason: string | null };
 }
@@ -189,12 +191,16 @@ export class CacheService {
   private readonly limits: CacheLimits;
   private readonly now: () => number;
   private readonly diagnostics = new CacheDiagnostics();
+  private readonly totalsStatement: { get(key: string): { value: string } | undefined } | null;
   private sweeping = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly deps: CacheServiceDeps) {
     this.limits = validateLimits(deps.limits ?? DEFAULT_CACHE_LIMITS);
     this.now = deps.now ?? (() => Date.now());
+    this.totalsStatement = deps.sqlite
+      ? deps.sqlite.prepare("SELECT value FROM search_cache_state WHERE key = ?") as unknown as { get(key: string): { value: string } | undefined }
+      : null;
   }
 
   /** Stable v1 request-fingerprint key; never contains query text or credentials. */
@@ -219,11 +225,13 @@ export class CacheService {
 
   /** O(1) primary-key read for runtime monitoring; never scans or repairs. */
   totals(): CacheTotalsResult {
-    const row = this.deps.db
-      .select({ value: searchCacheState.value })
-      .from(searchCacheState)
-      .where(eq(searchCacheState.key, TOTALS_KEY))
-      .get();
+    const row = this.totalsStatement
+      ? this.totalsStatement.get(TOTALS_KEY)
+      : this.deps.db
+        .select({ value: searchCacheState.value })
+        .from(searchCacheState)
+        .where(eq(searchCacheState.key, TOTALS_KEY))
+        .get();
     const totals = parseTotals(row?.value);
     return totals
       ? { ...totals, source: "search_cache_state", reason: null }

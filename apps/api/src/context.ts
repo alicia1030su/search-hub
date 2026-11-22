@@ -222,7 +222,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
   };
   const settings = new SettingsService(handle.db, config);
   const secrets = SecretBox.fromEnvOrFile(config.dataDir, config.encryptionKey);
-  const sessions = new SessionService(handle.db, config);
+  const sessions = new SessionService(handle.db, config, handle.sqlite);
   const tokens = new TokenService(handle.db);
   const providers = new ProviderService(handle.db, secrets);
   const models = new ModelService(handle.db, secrets);
@@ -294,6 +294,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     db: handle.db,
     logger: appLogger,
     dbPath: config.dbPath,
+    sqlite: handle.sqlite,
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.cacheLimits === undefined ? {} : { limits: options.cacheLimits }),
   });

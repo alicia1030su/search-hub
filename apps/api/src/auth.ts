@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { SearchHubError } from "@search-hub/shared";
-import type { SearchHubDb } from "@search-hub/db";
+import type { SearchHubDb, DbHandle } from "@search-hub/db";
 import { accessTokens, adminUsers, sessions } from "@search-hub/db";
 import type { AppConfig } from "./config.js";
 import type { SettingsService } from "./services/settings.js";
@@ -31,6 +31,18 @@ export interface SessionInfo {
   expiresAt: string;
 }
 
+interface ReadOnlySessionRow {
+  id: string;
+  user_id: string;
+  csrf_token: string;
+  expires_at: string;
+}
+interface ReadOnlyUserRow {
+  id: string;
+  name: string;
+  email: string;
+}
+
 export interface RequestLike {
   headers: Record<string, string | string[] | undefined>;
   cookies: Record<string, string | undefined>;
@@ -44,10 +56,21 @@ function headerValue(request: RequestLike, name: string): string | undefined {
 }
 
 export class SessionService {
+  private readonly readOnlySessionStatement: { get(tokenHash: string): ReadOnlySessionRow | undefined } | null;
+  private readonly readOnlyUserStatement: { get(userId: string): ReadOnlyUserRow | undefined } | null;
+
   constructor(
     private readonly db: SearchHubDb,
     private readonly config: AppConfig,
-  ) {}
+    sqlite?: DbHandle["sqlite"],
+  ) {
+    this.readOnlySessionStatement = sqlite
+      ? sqlite.prepare("SELECT id, user_id, csrf_token, expires_at FROM sessions WHERE token_hash = ?") as unknown as { get(tokenHash: string): ReadOnlySessionRow | undefined }
+      : null;
+    this.readOnlyUserStatement = sqlite
+      ? sqlite.prepare("SELECT id, name, email FROM admin_users WHERE id = ?") as unknown as { get(userId: string): ReadOnlyUserRow | undefined }
+      : null;
+  }
 
   create(
     userId: string,
@@ -75,6 +98,16 @@ export class SessionService {
   }
 
   lookup(token: string, options: { readOnly?: boolean } = {}): { session: SessionInfo; actor: AdminActor } | null {
+    if (options.readOnly && this.readOnlySessionStatement && this.readOnlyUserStatement) {
+      const row = this.readOnlySessionStatement.get(sha256Hex(token));
+      if (!row || new Date(row.expires_at).getTime() <= Date.now()) return null;
+      const user = this.readOnlyUserStatement.get(row.user_id);
+      if (!user) return null;
+      return {
+        session: { id: row.id, userId: row.user_id, csrfToken: row.csrf_token, expiresAt: row.expires_at },
+        actor: { type: "admin", id: user.id, name: user.name, email: user.email },
+      };
+    }
     const row = this.db
       .select()
       .from(sessions)
