@@ -60,12 +60,13 @@ await app.ready();
 await app.listen({ port:0, host:"127.0.0.1" });
 process.send?.({ type:"ready", port:app.server.address().port });
 process.on("message", async (message) => {
+  if (message.type === "gc") { global.gc?.(); process.send?.({ type:"gc", value:true }); }
   if (message.type === "total_changes") process.send?.({ type:"changes", value:ctx.sqlite.prepare("SELECT total_changes() AS n").get().n });
   if (message.type === "shutdown") { await app.close(); process.disconnect?.(); }
 });
 `;
   await writeFile(harnessPath, harness, "utf8");
-  child = spawn(process.execPath, ["--import", "tsx", harnessPath, directory, dbPath], { cwd: REPO_ROOT, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  child = spawn(process.execPath, ["--expose-gc", "--import", "tsx", harnessPath, directory, dbPath], { cwd: REPO_ROOT, stdio: ["ignore", "ignore", "pipe", "ipc"] });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
   const ready = await new Promise((resolve, reject) => {
@@ -83,12 +84,21 @@ process.on("message", async (message) => {
     await response.arrayBuffer();
     if (response.status !== 200) throw new Error(`resources HTTP ${response.status}`);
   };
+  const ipc = (type) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`ipc timeout:${type}`)), 5000);
+    child.once("message", (message) => { clearTimeout(timer); resolve(message); });
+    child.send({ type });
+  });
   for (let index = 0; index < options.warmup; index += 1) await get();
   const io = adapter(process.platform);
   const identity = await io.readProcess(child.pid);
   if (!identity) throw new Error("child process identity unavailable");
   let rssBaseline = 0;
   let rssPeak = 0;
+  const beforeGc = await io.readProcess(child.pid);
+  const rssBeforeGcBytes = beforeGc?.rssBytes.value ?? 0;
+  await ipc("gc");
+  await new Promise((resolve) => setImmediate(resolve));
   sampler = setInterval(async () => {
     const current = await io.readProcess(child.pid);
     if (current?.identity.startTime !== identity.identity.startTime) return;
@@ -96,11 +106,6 @@ process.on("message", async (message) => {
   }, 25);
   const initial = await io.readProcess(child.pid);
   rssBaseline = initial?.rssBytes.value ?? 0;
-  const ipc = (type) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`ipc timeout:${type}`)), 5000);
-    child.once("message", (message) => { clearTimeout(timer); resolve(message); });
-    child.send({ type });
-  });
   const changesBefore = (await ipc("total_changes")).value;
   const samples = [];
   const wallStarted = performance.now();
@@ -122,9 +127,10 @@ process.on("message", async (message) => {
     schemaVersion: 1,
     benchmark: "resources",
     sourceCommit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" }).trim(),
-    metadata: { platform: process.platform, arch: process.arch, node: process.version, rows: options.rows, requests: options.requests, warmup: options.warmup, concurrency: 1 },
+    metadata: { platform: process.platform, arch: process.arch, node: process.version, rows: options.rows, requests: options.requests, warmup: options.warmup, concurrency: 1, gcBeforeBaseline: true },
     wallMs, p50Ms, p95Ms, latencySamplesMs: samples,
-    rssBaselineBytes: rssBaseline, rssPeakBytes: rssPeak, rssDeltaBytes,
+    rssBeforeGcBytes, rssBaselineBytes: rssBaseline, rssPeakBytes: rssPeak, rssDeltaBytes,
+    rssDeltaBeforeGcBytes: Math.max(0, rssPeak - rssBeforeGcBytes),
     sqliteTotalChangesBefore: changesBefore, sqliteTotalChangesAfter: changesAfter, sqliteTotalChangesDelta: changesAfter - changesBefore,
     queryPlans: plans,
     thresholds: { p95Ms: 10, rssDeltaBytes: 2 * 1024 * 1024 },
