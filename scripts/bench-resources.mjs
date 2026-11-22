@@ -54,7 +54,7 @@ try {
 import { createContext } from ${JSON.stringify(pathToFileURL(path.join(REPO_ROOT, "apps/api/src/context.ts")).href)};
 import { buildApp } from ${JSON.stringify(pathToFileURL(path.join(REPO_ROOT, "apps/api/src/app.ts")).href)};
 import { loadConfig } from ${JSON.stringify(pathToFileURL(path.join(REPO_ROOT, "apps/api/src/config.ts")).href)};
-const ctx = createContext({ ...loadConfig(), nodeEnv:"test", dataDir:process.argv[2], dbPath:process.argv[2], staticDir:null, cookieSecure:false, setupToken:"resources-bench-token", logLevel:"silent", corsOrigins:[], rateLimitPerMin:100000, host:"127.0.0.1", port:0 });
+const ctx = createContext({ ...loadConfig(), nodeEnv:"test", dataDir:process.argv[2], dbPath:process.argv[3], staticDir:null, cookieSecure:false, setupToken:"resources-bench-token", logLevel:"silent", corsOrigins:[], rateLimitPerMin:100000, host:"127.0.0.1", port:0 });
 const app = await buildApp(ctx);
 await app.ready();
 await app.listen({ port:0, host:"127.0.0.1" });
@@ -65,7 +65,7 @@ process.on("message", async (message) => {
 });
 `;
   await writeFile(harnessPath, harness, "utf8");
-  child = spawn(process.execPath, ["--import", "tsx", harnessPath, dbPath], { cwd: REPO_ROOT, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  child = spawn(process.execPath, ["--import", "tsx", harnessPath, directory, dbPath], { cwd: REPO_ROOT, stdio: ["ignore", "ignore", "pipe", "ipc"] });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
   const ready = await new Promise((resolve, reject) => {
