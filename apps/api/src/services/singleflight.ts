@@ -4,6 +4,7 @@ interface Waiter {
   resolve: (response: SearchResponse) => void;
   reject: (reason: unknown) => void;
   signal: AbortSignal;
+  follower: boolean;
   onAbort: () => void;
 }
 
@@ -32,6 +33,7 @@ export class SearchFlightService {
   readonly maxTotalWaiters: number;
   private readonly flights = new Map<string, Flight>();
   private totalWaiters = 0;
+  private totalFollowers = 0;
   private shutDown = false;
 
   constructor(options: { maxFlights?: number; maxWaitersPerFlight?: number; maxTotalWaiters?: number } = {}) {
@@ -49,6 +51,11 @@ export class SearchFlightService {
     return this.totalWaiters;
   }
 
+  /** O(1) count of callers waiting behind an existing physical execution. */
+  get queuedFollowerCount(): number {
+    return this.totalFollowers;
+  }
+
   run(
     key: string,
     signal: AbortSignal,
@@ -61,7 +68,7 @@ export class SearchFlightService {
     if (existing && !existing.settled &&
         existing.waiters.size < this.maxWaitersPerFlight &&
         this.totalWaiters < this.maxTotalWaiters) {
-      return this.addWaiter(existing, signal);
+      return this.addWaiter(existing, signal, true);
     }
     if (existing || this.flights.size >= this.maxFlights || this.totalWaiters >= this.maxTotalWaiters) {
       return this.runUnshared(signal, factory);
@@ -91,7 +98,7 @@ export class SearchFlightService {
       (response) => this.settle(flight, { response }),
       (error: unknown) => this.settle(flight, { error }),
     );
-    return this.addWaiter(flight, signal);
+    return this.addWaiter(flight, signal, false);
   }
 
   /** Abort all upstream work and remove every listener/timer before DB close. */
@@ -106,6 +113,7 @@ export class SearchFlightService {
     }
     this.flights.clear();
     this.totalWaiters = 0;
+    this.totalFollowers = 0;
   }
 
   private runUnshared(
@@ -121,12 +129,13 @@ export class SearchFlightService {
       .finally(() => signal.removeEventListener("abort", onAbort));
   }
 
-  private addWaiter(flight: Flight, signal: AbortSignal): Promise<SearchResponse> {
+  private addWaiter(flight: Flight, signal: AbortSignal, follower: boolean): Promise<SearchResponse> {
     return new Promise<SearchResponse>((resolve, reject) => {
-      const waiter: Waiter = { resolve, reject, signal, onAbort: () => {} };
+      const waiter: Waiter = { resolve, reject, signal, follower, onAbort: () => {} };
       waiter.onAbort = (): void => {
         if (flight.settled || !flight.waiters.delete(waiter)) return;
         this.totalWaiters = Math.max(0, this.totalWaiters - 1);
+        if (waiter.follower) this.totalFollowers = Math.max(0, this.totalFollowers - 1);
         signal.removeEventListener("abort", waiter.onAbort);
         reject(abortReason(signal));
         if (flight.waiters.size === 0) {
@@ -136,6 +145,7 @@ export class SearchFlightService {
       };
       flight.waiters.add(waiter);
       this.totalWaiters += 1;
+      if (follower) this.totalFollowers += 1;
       signal.addEventListener("abort", waiter.onAbort, { once: true });
       if (signal.aborted) waiter.onAbort();
     });
@@ -155,6 +165,7 @@ export class SearchFlightService {
     for (const waiter of flight.waiters) {
       waiter.signal.removeEventListener("abort", waiter.onAbort);
       this.totalWaiters = Math.max(0, this.totalWaiters - 1);
+      if (waiter.follower) this.totalFollowers = Math.max(0, this.totalFollowers - 1);
       if ("response" in outcome) {
         try {
           waiter.resolve(structuredClone(outcome.response));

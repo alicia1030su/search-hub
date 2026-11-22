@@ -32,6 +32,48 @@ describe("C10 singleflight boundaries", () => {
     expect(flights.waitingCount).toBe(0);
   });
 
+  it("counts only explicit followers and keeps the count when the leader cancels", async () => {
+    const flights = new SearchFlightService();
+    let release: ((value: SearchResponse) => void) | null = null;
+    const factory = () => new Promise<SearchResponse>((resolve) => { release = resolve; });
+    const controllers = Array.from({ length: 100 }, () => new AbortController());
+    const leader = flights.run("followers", controllers[0]!.signal, factory);
+    const followers = controllers.slice(1).map((controller) => flights.run("followers", controller.signal, factory));
+    expect(flights.waitingCount).toBe(100);
+    expect(flights.queuedFollowerCount).toBe(99);
+    controllers[0]!.abort(new Error("leader cancelled"));
+    await expect(leader).rejects.toThrow("leader cancelled");
+    expect(flights.waitingCount).toBe(99);
+    expect(flights.queuedFollowerCount).toBe(99);
+    expect(flights.size).toBe(1);
+    (release as ((value: SearchResponse) => void) | null)!(response());
+    await Promise.all(followers);
+    expect(flights.waitingCount).toBe(0);
+    expect(flights.queuedFollowerCount).toBe(0);
+  });
+
+  it("decrements followers precisely on individual cancellation and shutdown", async () => {
+    const flights = new SearchFlightService();
+    const factory = () => new Promise<SearchResponse>(() => {});
+    const controllers = Array.from({ length: 4 }, () => new AbortController());
+    const pending = [
+      flights.run("cancel-followers", controllers[0]!.signal, factory),
+      ...controllers.slice(1).map((controller) => flights.run("cancel-followers", controller.signal, factory)),
+    ];
+    expect(flights.queuedFollowerCount).toBe(3);
+    controllers[1]!.abort(new Error("cancel follower one"));
+    await expect(pending[1]).rejects.toThrow("cancel follower one");
+    expect(flights.queuedFollowerCount).toBe(2);
+    controllers[2]!.abort(new Error("cancel follower two"));
+    await expect(pending[2]).rejects.toThrow("cancel follower two");
+    expect(flights.queuedFollowerCount).toBe(1);
+    flights.shutdown();
+    await expect(pending[0]).rejects.toThrow("shut down");
+    await expect(pending[3]).rejects.toThrow("shut down");
+    expect(flights.waitingCount).toBe(0);
+    expect(flights.queuedFollowerCount).toBe(0);
+  });
+
   it("removes a flight immediately when its last waiter cancels even if the factory ignores abort", async () => {
     const flights = new SearchFlightService();
     let calls = 0;
