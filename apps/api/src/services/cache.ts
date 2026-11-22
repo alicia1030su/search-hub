@@ -1,4 +1,4 @@
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, eq, lte, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import type { Logger, SearchResponse } from "@search-hub/shared";
@@ -169,14 +169,18 @@ function writeCacheTotals(tx: SearchHubDb, entries: number, bytes: number, updat
     .run();
 }
 
-function ensureCacheTotals(tx: SearchHubDb, now: () => number): CacheTotals {
-  const existing = readTotals(tx);
-  if (existing) return existing;
+function aggregateCacheTotals(tx: SearchHubDb, now: () => number): CacheTotals {
   const aggregate = tx.select({
     entries: sql<number>`count(*)`,
     bytes: sql<number>`coalesce(sum(${searchCache.sizeBytes}), 0)`,
   }).from(searchCache).all()[0] ?? { entries: 0, bytes: 0 };
-  const totals = { entries: Number(aggregate.entries), bytes: Number(aggregate.bytes), updatedAt: new Date(now()).toISOString() };
+  return { entries: Number(aggregate.entries), bytes: Number(aggregate.bytes), updatedAt: new Date(now()).toISOString() };
+}
+
+function ensureCacheTotals(tx: SearchHubDb, now: () => number): CacheTotals {
+  const existing = readTotals(tx);
+  if (existing) return existing;
+  const totals = aggregateCacheTotals(tx, now);
   writeCacheTotals(tx, totals.entries, totals.bytes, totals.updatedAt);
   return totals;
 }
@@ -199,12 +203,19 @@ export class CacheService {
   }
 
   /**
-   * Rebuild missing/corrupt totals once at startup. The existence check and
-   * COUNT/SUM are in one IMMEDIATE transaction so concurrent boot cannot install
-   * stale totals after another writer has already changed the cache.
+   * Validate totals against COUNT/SUM once at startup and rebuild missing,
+   * corrupt, or stale values. The comparison and repair share one IMMEDIATE
+   * transaction so concurrent boot cannot install stale totals.
    */
   initialize(): CacheTotals {
-    return withBusyRetry(() => this.deps.db.transaction((tx) => this.ensureTotals(tx), { behavior: "immediate" }));
+    return withBusyRetry(() => this.deps.db.transaction((tx) => {
+      const existing = readTotals(tx);
+      const actual = aggregateCacheTotals(tx, this.now);
+      if (!existing || existing.entries !== actual.entries || existing.bytes !== actual.bytes) {
+        writeCacheTotals(tx, actual.entries, actual.bytes, actual.updatedAt);
+      }
+      return actual;
+    }, { behavior: "immediate" }));
   }
 
   /** O(1) primary-key read for runtime monitoring; never scans or repairs. */
@@ -305,7 +316,7 @@ export class CacheService {
           })
           .onConflictDoUpdate({
             target: searchCache.cacheKey,
-            set: { responseJson, status: response.status, mode, createdAt, expiresAt, sizeBytes },
+            set: { responseJson, status: response.status, mode, createdAt, expiresAt, lastAccessedAt: createdAt, sizeBytes },
           })
           .run();
 
@@ -317,10 +328,11 @@ export class CacheService {
           const batch = tx
             .select({ key: searchCache.cacheKey, sizeBytes: searchCache.sizeBytes })
             .from(searchCache)
+            .where(ne(searchCache.cacheKey, key))
             .orderBy(asc(searchCache.lastAccessedAt), asc(searchCache.createdAt), asc(searchCache.cacheKey))
             .limit(Math.min(256, Math.max(entries, 1)))
             .all();
-          if (batch.length === 0) throw new CacheInvariantError("Capacity eviction made no progress");
+          if (batch.length === 0) throw new CacheInvariantError("Capacity eviction cannot remove the current write or make progress");
           for (const row of batch) {
             if (entries <= this.limits.maxEntries && bytes <= this.limits.maxBytes) break;
             tx.delete(searchCache).where(eq(searchCache.cacheKey, row.key)).run();

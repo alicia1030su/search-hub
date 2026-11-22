@@ -129,7 +129,10 @@ export class SearchFlightService {
         this.totalWaiters = Math.max(0, this.totalWaiters - 1);
         signal.removeEventListener("abort", waiter.onAbort);
         reject(abortReason(signal));
-        if (flight.waiters.size === 0) flight.controller.abort(abortReason(signal));
+        if (flight.waiters.size === 0) {
+          flight.controller.abort(abortReason(signal));
+          this.settle(flight, { error: abortReason(signal) });
+        }
       };
       flight.waiters.add(waiter);
       this.totalWaiters += 1;

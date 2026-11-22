@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -152,6 +153,12 @@ export async function writeBenchmarkReport(label, report) {
 }
 
 export function benchmarkMetadata(extra = {}) {
+  let sourceCommit = "unknown";
+  try {
+    sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+  } catch {
+    sourceCommit = "unknown";
+  }
   let pnpmVersion = "unknown";
   try {
     pnpmVersion = process.env["npm_config_user_agent"]?.match(/pnpm\/([^\s]+)/)?.[1] ??
@@ -163,6 +170,7 @@ export function benchmarkMetadata(extra = {}) {
     machine: { platform: process.platform, arch: process.arch, cpus: os.cpus().length, totalMemoryBytes: os.totalmem(), hostname: os.hostname() },
     node: process.version,
     pnpm: pnpmVersion,
+    sourceCommit,
     testConcurrency: 1,
     fixture: "fixed-local-no-paid-vendor",
     ...extra,

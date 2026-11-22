@@ -32,6 +32,28 @@ describe("C10 singleflight boundaries", () => {
     expect(flights.waitingCount).toBe(0);
   });
 
+  it("removes a flight immediately when its last waiter cancels even if the factory ignores abort", async () => {
+    const flights = new SearchFlightService();
+    let calls = 0;
+    const factory = () => {
+      calls += 1;
+      return new Promise<SearchResponse>(() => {});
+    };
+    const controller = new AbortController();
+    const pending = flights.run("reusable", controller.signal, factory);
+    await Promise.resolve();
+    controller.abort(new Error("last waiter left"));
+    await expect(pending).rejects.toThrow("last waiter left");
+    expect(flights.size).toBe(0);
+    expect(flights.waitingCount).toBe(0);
+    const replacement = await flights.run("reusable", new AbortController().signal, () => {
+      calls += 1;
+      return Promise.resolve(response("replacement"));
+    });
+    expect(replacement.taskId).toBe("replacement");
+    expect(calls).toBe(2);
+  });
+
   it("propagates failures, removes the flight, and does not retain failed results", async () => {
     const flights = new SearchFlightService();
     await expect(flights.run("failed", new AbortController().signal, async () => { throw new Error("upstream failed"); })).rejects.toThrow("upstream failed");

@@ -74,6 +74,31 @@ describe("C01-C05 cache capacity and concurrency", () => {
     assertExactTotals(handle);
   });
 
+  it("rebuilds parseable but incorrect totals during initialize", () => {
+    const { handle, cache } = fixture();
+    cache.put("valid", response(10), 3600, "basic");
+    const actual = actualTotals(handle);
+    const wrong = JSON.stringify({ entries: 999, bytes: 999_999, updatedAt: "2026-01-01T00:00:00.000Z" });
+    handle.sqlite.prepare("INSERT INTO search_cache_state (key,value,updated_at) VALUES ('cache:totals',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
+      .run(wrong, "2026-01-01T00:00:00.000Z");
+    expect(cache.initialize()).toEqual({ ...actual, updatedAt: expect.any(String) });
+    assertExactTotals(handle);
+  });
+
+  it("refreshes replace LRU and never evicts the current write under byte pressure", () => {
+    const large = response(2000, "current replacement");
+    const maxBytes = Buffer.byteLength(JSON.stringify(large), "utf8");
+    const { handle, cache, now } = fixture({ maxEntries: 10, maxBytes });
+    cache.initialize();
+    cache.put("other", response(1, "other"), 3600, "basic");
+    cache.put("current", response(1, "old current"), 3600, "basic");
+    now.value += 1000;
+    cache.put("current", large, 3600, "basic");
+    const rows = handle.sqlite.prepare("SELECT cache_key,size_bytes,created_at,last_accessed_at FROM search_cache").all();
+    expect(rows).toEqual([{ cache_key: "current", size_bytes: maxBytes, created_at: new Date(now.value).toISOString(), last_accessed_at: new Date(now.value).toISOString() }]);
+    assertExactTotals(handle);
+  });
+
   it("evicts in bounded LRU batches without over-evicting the entry cap", () => {
     const { handle, cache, now } = fixture({ maxEntries: 3, maxBytes: 8 * 1024 * 1024 });
     cache.initialize();
