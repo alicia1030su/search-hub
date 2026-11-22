@@ -74,6 +74,17 @@ describe("C01-C05 cache capacity and concurrency", () => {
     assertExactTotals(handle);
   });
 
+  it("preserves the persisted updatedAt when initialize finds consistent totals", () => {
+    const { cache } = fixture();
+    cache.put("valid", response(10), 3600, "basic");
+    const before = cache.totals();
+    const initialized = cache.initialize();
+    expect(initialized.entries).toBe(before.entries);
+    expect(initialized.bytes).toBe(before.bytes);
+    expect(initialized.updatedAt).toBe(before.updatedAt);
+    expect(cache.totals()).toEqual(before);
+  });
+
   it("rebuilds parseable but incorrect totals during initialize", () => {
     const { handle, cache } = fixture();
     cache.put("valid", response(10), 3600, "basic");

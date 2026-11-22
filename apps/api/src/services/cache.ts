@@ -211,9 +211,8 @@ export class CacheService {
     return withBusyRetry(() => this.deps.db.transaction((tx) => {
       const existing = readTotals(tx);
       const actual = aggregateCacheTotals(tx, this.now);
-      if (!existing || existing.entries !== actual.entries || existing.bytes !== actual.bytes) {
-        writeCacheTotals(tx, actual.entries, actual.bytes, actual.updatedAt);
-      }
+      if (existing && existing.entries === actual.entries && existing.bytes === actual.bytes) return existing;
+      writeCacheTotals(tx, actual.entries, actual.bytes, actual.updatedAt);
       return actual;
     }, { behavior: "immediate" }));
   }
