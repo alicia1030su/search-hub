@@ -157,7 +157,7 @@ export async function createArtifactRun(options = {}) {
     /**
      * Persist the terminal summary. Repeated calls are rejected so an early
      * success cannot silently overwrite a later failure.
-     * @param {{exitCode: number, stages?: import("./types.mjs").StageResult[], reason?: string, now?: Date}} result
+     * @param {{exitCode: number, stages?: import("./types.mjs").StageResult[], reason?: string, details?: Record<string, unknown>, now?: Date}} result
      */
     async finish(result) {
       if (summary.finishedAt !== null) {
@@ -170,6 +170,7 @@ export async function createArtifactRun(options = {}) {
       const status = statusForExitCode(result.exitCode);
       summary = {
         ...summary,
+        ...result.details,
         finishedAt,
         status,
         exitCode: result.exitCode,
