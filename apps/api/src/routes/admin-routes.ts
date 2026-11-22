@@ -27,7 +27,6 @@ import { newId } from "../security/crypto.js";
 import { validateAllSkills } from "../services/skills.js";
 import { existsSync as fileExists, readFileSync as readFile } from "node:fs";
 import { REPO_ROOT } from "../config.js";
-import { openApiDocument } from "./openapi-routes.js";
 
 function actorOf(request: FastifyRequest, ctx: AppContext, mutation = false): Actor {
   return authenticate(
@@ -89,9 +88,6 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
   // ---- read-only runtime resources --------------------------------------
   app.get(
     "/api/admin/resources",
-    {
-      schema: { response: { 200: openApiDocument.components.schemas.RuntimeResourceSnapshot } },
-    },
     jsonFor(app, async (request) => {
       authenticateAdminSessionReadOnly(
         { headers: request.headers as Record<string, string | string[] | undefined>, cookies: request.cookies, ip: request.ip },
