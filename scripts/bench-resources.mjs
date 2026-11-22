@@ -10,7 +10,7 @@ import { adapter } from "./lib/resource/process-tree.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 function parseArgs(args) {
-  const options = { rows: 100_000, requests: 1000, warmup: 100, output: "artifacts/v0.1.14/resources-benchmark.json" };
+  const options = { rows: 100_000, requests: 1000, warmup: 100, output: "artifacts/v0.1.14/resources/resources-benchmark.json" };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--rows") options.rows = Number(args[++index]);
