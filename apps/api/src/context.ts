@@ -291,9 +291,11 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
   const cache = new CacheService({
     db: handle.db,
     logger: appLogger,
+    dbPath: config.dbPath,
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.cacheLimits === undefined ? {} : { limits: options.cacheLimits }),
   });
+  cache.initialize();
 
   const search = new SearchService({
     db: handle.db,

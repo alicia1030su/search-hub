@@ -19,6 +19,7 @@ import type { ProviderService } from "./providers.js";
 import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
 import { CacheService } from "./cache.js";
+import { SearchFlightService } from "./singleflight.js";
 
 export interface SearchServiceDeps {
   db: SearchHubDb;
@@ -106,6 +107,7 @@ function modelFingerprint(
 
 export class SearchService {
   private readonly controllers = new Map<string, AbortController>();
+  private readonly flights = new SearchFlightService();
 
   constructor(private readonly deps: SearchServiceDeps) {}
 
@@ -378,38 +380,56 @@ export class SearchService {
 
     try {
       const beforeRequest = options.beforeRequest;
-      let response =
-        mode === "deep"
-          ? await this.runDeep(request, runtimes, controller.signal, taskId, skippedByHealth, beforeRequest)
-          : await this.runStandard(request, runtimes, controller.signal, taskId, skippedByHealth, beforeRequest);
+      const performPhysical = async (sharedSignal: AbortSignal, leaderTaskId: string): Promise<SearchResponse> => {
+        let response =
+          mode === "deep"
+            ? await this.runDeep(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest)
+            : await this.runStandard(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest);
 
-      if (wantsEmbedding && mode !== "deep") {
-        response = await this.applyEmbedding(response, request, controller.signal);
-      }
-      if (wantsRerank && mode !== "deep") {
-        response = await this.applyRerank(response, request, controller.signal);
-      }
-      // A failed response has no results to summarize; calling the model would
-      // add a second, misleading error on top of the real provider failure.
-      if ((wantsSummary || mode === "deep") && response.status !== "failed") {
-        response = await this.applySummary(response, request, controller.signal);
-      }
+        if (wantsEmbedding && mode !== "deep") {
+          response = await this.applyEmbedding(response, request, sharedSignal);
+        }
+        if (wantsRerank && mode !== "deep") {
+          response = await this.applyRerank(response, request, sharedSignal);
+        }
+        // A failed response has no results to summarize; calling the model would
+        // add a second, misleading error on top of the real provider failure.
+        if ((wantsSummary || mode === "deep") && response.status !== "failed") {
+          response = await this.applySummary(response, request, sharedSignal);
+        }
 
-      response.stats.timing.totalMs = Date.now() - startedAt;
-      const cancelled = controller.signal.aborted && options.signal?.aborted === true;
+        response.stats.timing.totalMs = Date.now() - startedAt;
+        response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
+        const cancelled = sharedSignal.aborted;
+        if (cacheUsable && cacheKey && this.isCacheable(response, cancelled)) {
+          try {
+            this.deps.cache.put(cacheKey, response, cacheConfig.ttlSeconds, mode);
+          } catch (error) {
+            // A cache write must never fail the search that produced it.
+            this.deps.logger.warn({ err: error }, "could not persist the search response cache");
+          }
+        }
+        return response;
+      };
+
+      const canShare = cacheUsable && cacheKey !== null && beforeRequest === undefined;
+      const deadlineMs = request.timeoutMs ?? settings.defaults.timeoutMs;
+      const shared = canShare
+        ? await this.flights.run(cacheKey, controller.signal, (sharedSignal) => performPhysical(sharedSignal, taskId), { deadlineAtMs: startedAt + deadlineMs })
+        : await performPhysical(controller.signal, taskId);
+      const response: SearchResponse = {
+        ...structuredClone(shared),
+        taskId,
+        stats: {
+          ...shared.stats,
+          timing: { ...shared.stats.timing, totalMs: Date.now() - startedAt },
+        },
+      };
 
       const persistStarted = performance.now();
-      if (options.evaluate !== true) this.persistTask(taskId, response, cancelled ? "cancelled" : null);
+      if (options.evaluate !== true) this.persistTask(taskId, response, controller.signal.aborted ? "cancelled" : null);
       dbWriteMs += performance.now() - persistStarted;
       response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
-      if (cacheUsable && cacheKey && this.isCacheable(response, cancelled)) {
-        try {
-          this.deps.cache.put(cacheKey, response, cacheConfig.ttlSeconds, mode);
-        } catch (error) {
-          // A cache write must never fail the search that produced it.
-          this.deps.logger.warn({ err: error }, "could not persist the search response cache");
-        }
-      }
       return response;
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
@@ -431,11 +451,32 @@ export class SearchService {
           .where(eq(searchTasks.id, taskId))
           .run();
       }
+      if (controller.signal.aborted && options.signal?.aborted) {
+        const response = this.failedResponse(request, mode, taskId, [], "Search cancelled by caller");
+        response.errors = [{
+          providerId: "engine",
+          providerName: "Search Hub",
+          code: "cancelled",
+          message: "Search cancelled by caller",
+        }];
+        response.failedSources = [];
+        return response;
+      }
       throw error;
     } finally {
       options.signal?.removeEventListener("abort", onExternalAbort);
       this.controllers.delete(taskId);
     }
+  }
+
+  /** Abort shared physical searches and callers before the database is closed. */
+  shutdown(): void {
+    this.flights.shutdown();
+    for (const controller of this.controllers.values()) controller.abort(new Error("service shutdown"));
+  }
+
+  get flightWaitingCount(): number {
+    return this.flights.waitingCount;
   }
 
   /**
