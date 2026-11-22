@@ -1,0 +1,64 @@
+name: CLI packages
+
+on:
+  pull_request:
+    paths:
+      - "packages/cli/**"
+      - "packaging/*cli*.mjs"
+      - ".github/workflows/cli.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: cli-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.22.2"
+  PNPM_VERSION: "12.18.0"
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: CLI ${{ matrix.target }} standalone acceptance
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: windows-latest
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: node22
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and verify standalone CLI
+        shell: bash
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+        run: |
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+          node packaging/build-cli-package.mjs
+          node packaging/verify-cli-package.mjs ${{ matrix.target }}

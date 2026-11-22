@@ -4,6 +4,57 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.13 (2026-11-21) — Stable candidate
+
+This release adds the independently installable `shub` CLI. The CLI is a remote
+REST client only: provider adapters, key scheduling, fusion, caching, health
+probes and model execution remain on the server.
+
+### Added
+
+- **`packages/cli` and the `shub` command.** `search` (including deep search),
+  `sources`, `status`, `doctor`, `config`, and `providers test` for single,
+  bulk, poll and cancel workflows.
+- **Clean machine-readable output.** JSON writes one valid value to stdout;
+  diagnostics go to stderr. NDJSON emits `metadata`, `result`, and `complete`
+  records with `streaming:false` because the REST search endpoint is synchronous.
+- **Stable exit codes.** 0 success, 2 arguments, 3 authentication, 4 permission,
+  5 network/TLS/redirect, 6 server/search/probe failure, 7 timeout, 8 incompatible
+  server, 130 Ctrl+C. `partial` returns 0 unless `--strict` is set.
+- **Safe configuration.** `--url` > `SEARCH_HUB_URL` > non-sensitive local config
+  > loopback default. Tokens are read only from `SEARCH_HUB_TOKEN` or
+  `--token-stdin` and are never persisted by config commands.
+- **Standalone CLI packages.** Node SEA executables for Windows x64, Linux x64 and
+  Linux arm64, plus a Node.js 22+ portable package. They do not bundle a server.
+- **Provider summary availability count.** `/api/providers` now includes
+  `availableKeyCount`, computed from the same scheduler facts as search.
+- **CLI acceptance matrix C01–C50.** Loopback HTTP/TLS stubs cover commands,
+  JSON/NDJSON, credentials, redirects, timeouts, cancellation, health workflows,
+  cost confirmation, permissions, compatibility and platform packaging.
+
+### Security
+
+- Remote URLs require HTTPS; plain HTTP is restricted to loopback hosts.
+- URL userinfo, query strings and fragments are rejected.
+- Cross-origin redirects are refused and mutating requests are never redirected.
+- Bearer tokens are redacted from error output and are not sent to `/api/health`.
+- Billable search POSTs are never automatically retried.
+- Provider probes use the existing admin scope, server-side preview, budget,
+  eligibility and per-provider lock; the CLI cannot raise or bypass limits.
+
+### Compatibility
+
+- The CLI accepts server `0.1.12` and later within `0.1.x`.
+- No database migration is introduced by the CLI. Existing REST/MCP/Skills
+  behavior and the v0.1.12 schema remain unchanged.
+
+### Known limitations
+
+- `shub` does not provide real-time streaming because the server does not.
+- Token storage is environment/stdin only; no OS keyring is implemented.
+- Multi-instance probe coordination remains not implemented.
+- Real vendor coverage remains Hacker News, Crossref, OpenAlex and PubMed only.
+
 ## v0.1.12 (2026-11-21) — Stable
 
 This release closes credential-leak and probe-accounting gaps. URL query

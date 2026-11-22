@@ -1,5 +1,73 @@
 # 发布就绪报告
 
+## v0.1.13 Stable 候选（2026-11-21）
+
+> **口径**：本节是候选就绪记录，不是发布完成报告。CLI 源码、本地全量测试、Windows/Node
+> 便携包实机验收与本地 v0.1.12 升级已执行；Linux x64/arm64、远端 CI、真实 Release 资产升级、
+> 正式 Release 与 GHCR 必须在最终提交上取得证据后才能记为 PASS。
+
+| 项 | 候选状态 |
+|---|---|
+| 目标版本 | **v0.1.13（Stable 候选）**，前序 Stable 为 v0.1.12 |
+| 主题 | 独立远程 CLI `shub`：搜索/深度搜索、来源、状态、诊断、配置、Provider 单源/批量检测 |
+| 自动化测试 | **PASS（本地）**：1299 项 / 100 文件；其中 CLI 专项 58 项 |
+| 浏览器 E2E | **PASS（本地）**：Playwright 42/42 |
+| 类型 / Lint / 构建 | **PASS**：typecheck 0 error；oxlint 0 warning / 0 error；Web/server/MCP/CLI 构建成功 |
+| 文档 / 矩阵 / 质量 | **PASS**：`check:docs`、`check:matrix` exit 0；质量自检 11/11（合成数据） |
+| 安全 | **PASS**：依赖审计无已知漏洞；Secret Scan 0 violation，未扩大白名单 |
+| Windows 服务端候选包 | **PASS（本地）**：构建、启动、REST/MCP、重启持久化 16/16 |
+| Windows CLI SEA | **PASS（本地）**：`shub.exe --version/--help/status/sources/doctor` 与真实 REST 搜索 9/9 |
+| Node 22 便携 CLI | **PASS（本地）**：真实服务端验收 9/9 |
+| Linux x64 / arm64 CLI | **PENDING**：由 `CLI packages` 与 Release 工作流在对应 runner 验收 |
+| launcher / updater / 故障注入 | **PASS（本地 Windows）**：生命周期、安装回滚、下载/校验/架构/迁移回滚全部通过 |
+| v0.1.12 → current 升级 | **PASS（本地源码构建旧包）**：管理员、Provider、Key 解密、master.key、会话、搜索任务、健康历史、预算账本、批量任务、缓存命中全部保留 |
+| 真实 v0.1.12 Release 资产升级 | **PENDING（远端）**：本机下载速度受限；`upgrade.yml` 已增加 Windows/Linux 真实资产路径 |
+| 远端 CI / Docker / systemd | **PENDING**：最终提交的正确 SHA 待观察 |
+| 正式 Release / Provenance / GHCR | **PENDING**：未观察到 v0.1.13 tag、Release 或镜像证据 |
+| 真实厂商联调 | 仍为 Hacker News、Crossref、OpenAlex、PubMed 4 个源 |
+| 多实例 | **NOT_IMPLEMENTED**：探测锁与预算仍为单进程/SQLite 单机 |
+
+### v0.1.13 CLI 安全与兼容边界
+
+- CLI 只调用 REST API，不打包服务端、SQLite、Redis、Docker、Provider、KeyScheduler、RRF、缓存、健康检测或模型调用。
+- URL 优先级为 `--url` > `SEARCH_HUB_URL` > 非敏感本地配置 > loopback 默认值；远程 HTTP、userinfo、query、fragment 均拒绝。
+- Token 仅从 `SEARCH_HUB_TOKEN` 或 `--token-stdin` 读取，不写明文配置；错误输出精确脱敏。
+- 重定向仅允许同源 GET；跨域重定向与变更请求重定向均拒绝，不转发 Authorization。
+- JSON stdout 只有一个合法 JSON 值；NDJSON 明确 `streaming:false`，不伪装实时流。
+- 退出码：0 成功、2 参数、3 认证、4 权限、5 网络/TLS/重定向、6 服务/搜索/检测失败、7 超时、8 版本不兼容、130 Ctrl+C。
+- `partial` 默认保留结果并返回 0，`--strict` 返回非零；计费搜索 POST 不自动重试。
+- Provider 检测先读服务端预检，缺 Key/禁用 Key 跳过，免 Key 需显式开启，付费风险在无人值守模式必须 `--confirm-cost`。
+- CLI 接受服务端 `0.1.12` 至 `0.1.x`；不支持的端点明确失败，不把错误当空结果。
+
+### 候选验证记录
+
+| 命令 / 检查 | 执行环境 | 结果 |
+|---|---|---|
+| `pnpm test --maxWorkers=2` | 本地候选工作树 | **PASS**：1299/100，exit 0 |
+| `pnpm test:cli` | 本地候选工作树 | **PASS**：58/58，exit 0 |
+| `pnpm test:e2e` | 本地构建 | **PASS**：42/42，exit 0 |
+| `pnpm typecheck` / `pnpm lint` / `pnpm build` | 本地候选工作树 | **PASS** |
+| `pnpm audit --audit-level high` | 本地候选工作树 | **PASS**：无已知漏洞 |
+| `node scripts/secret-scan.mjs` | 本地候选工作树 | **PASS**：0 violation |
+| `pnpm check:docs` / `pnpm check:matrix` / `pnpm quality:eval` | 本地候选工作树 | **PASS** |
+| Windows 服务端候选包 | 本地 Windows | **PASS**：16/16 |
+| Windows CLI SEA / Node 22 CLI | 本地 Windows | **PASS**：各 9/9 |
+| launcher / updater / fault injection | 本地 Windows | **PASS** |
+| v0.1.12 → current | 本地 Windows，v0.1.12 Tag 源码构建旧包 | **PASS**：全部数据保留断言通过 |
+| CLI 三平台 / 远端门禁 / 正式发布 | GitHub Actions | **PENDING** |
+
+### 已知限制与发布阻断口径
+
+- 本机下载 v0.1.12 已发布 Windows 资产速度约 366 KB/分钟，未把截断文件当作升级依据；远端 CI 必须完成真实 Release 资产升级。
+- Linux x64/arm64 CLI 尚未在本机执行，必须由对应 runner 的真实 SEA 验收兜底。
+- 探测锁、Key 额度与预算仍不跨进程；多实例部署没有协调者。
+- CLI 不提供实时流，因为当前 REST 搜索 API 不同步流式返回。
+- Token 存储仅环境变量/stdin，未实现 OS keyring。
+- 只有 4 个搜索源有真实网络证据，质量评测仍只有合成基准。
+- 在所有 PENDING 项取得正确 SHA 的真实结果前，不得把 v0.1.13 标记为已发布或全部门禁 PASS。
+
+---
+
 ## v0.1.12 Stable（2026-11-21）
 
 > **口径**：v0.1.12 已正式发布。以下结果均对应最终 `main` 提交

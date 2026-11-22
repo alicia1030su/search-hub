@@ -4,6 +4,7 @@ The suite is split by what it can prove. Mock-backed tests prove control flow an
 
 ```bash
 pnpm test                     # Vitest: unit + integration
+pnpm test:cli                 # CLI-only unit + integration
 pnpm build && pnpm test:e2e   # Playwright (needs a browser)
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 ```
@@ -20,7 +21,7 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 
 ## What is covered
 
-当前 v0.1.12 本地候选已通过 Vitest **1241 项 / 96 文件**与 Playwright **42 项**。本文件不把本地结果写成远端 CI 或正式发布 PASS；远端证据另见 `docs/release-readiness.md`。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
+v0.1.13 本地全量已通过 Vitest **1299 项 / 100 文件**、Playwright **42 项**与 CLI 专项 **58 项**。本文件不把本地结果写成远端 CI 或正式发布 PASS；远端证据见 `docs/release-readiness.md`。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
 
 ### v0.1.11 bulk provider test (T01–T46, H61–H66)
 
@@ -82,6 +83,21 @@ real SQLite database. **No real vendor is contacted.**
 The E2E suite seeds only the built-in `mock` adapter and `http.createServer`
 stubs on 127.0.0.1; `paidProbesEnabled` is switched on only for cases that need a
 credentialed Brave path, which is safe precisely because no vendor is reachable.
+
+### v0.1.13 CLI (C01–C50)
+
+The CLI suite spawns the real TypeScript entrypoint and uses loopback HTTP/TLS
+servers. It never calls a paid vendor.
+
+| Area | Evidence |
+|---|---|
+| C01–C10 | help/version, normal/Chinese/Unicode search, provider/group/options, deep route, partial and failed responses |
+| C11–C16 | JSON-only stdout, jq on Linux, PowerShell `ConvertFrom-Json` on Windows, complete errors/failedSources, strict partial, honest NDJSON |
+| C17–C24 | token redaction, no plaintext token config, 401/403 mapping, cross-origin redirect refusal, remote HTTP rejection, self-signed TLS rejection, no shell invocation, stdin token |
+| C25–C35 | single probe, missing/disabled key skips, keyless opt-in, cost confirmation, admin scope, batch polling/cancel, budget refusal, no retry on `already_running` |
+| C36–C43 | unreachable, DNS, TLS, 429 `Retry-After`, 503, timeout, Ctrl+C, no billable POST retry |
+| C44–C47 | real Windows/Linux x64/Linux arm64 SEA acceptance plus Node 22 portable package; each connects to a real Search Hub server and performs REST search |
+| C48–C50 | v0.1.12 server compatibility, unchanged REST/MCP/Skills gates, release checksum/provenance verification |
 
 ### v0.1.12 credential redaction, probe locking and connect budgets
 
@@ -440,9 +456,9 @@ validate README/catalog/version consistency and the generated provider matrix.
 They are not substitutes for the full test suite or remote CI.
 
 `.github/workflows/upgrade.yml` builds the current package on Windows and Linux
-and upgrades published packages in place. For v0.1.12 it adds the real
-`v0.1.11 → current` path on port 8929, exercising migration 0010 against
-published-release state. This is configured coverage until the candidate CI
+and upgrades published packages in place. For v0.1.13 it adds the real
+`v0.1.12 → current` path on port 8931, exercising cache reuse and data preservation
+against published-release state. This is configured coverage until the candidate CI
 run is observed and recorded; no PASS is claimed here.
 
 `.github/workflows/docker.yml` runs the container acceptance: image build with layer

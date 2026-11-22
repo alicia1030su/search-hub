@@ -99,6 +99,9 @@ jobs:
           test -f apps/api/dist/server.mjs
           test -f apps/api/migrations/0001_init.sql
           test -f packages/mcp/dist/stdio.mjs
+          test -f packages/cli/dist/index.mjs
+          test -f packages/cli/dist/index.cjs
+          node packages/cli/dist/index.mjs --version | grep -qx "0.1.13"
 
       - name: Production-only install and boot
         run: |

@@ -79,10 +79,16 @@ try {
 }
 
 const PLATFORM_PATTERNS = [/linux-arm64\.tar\.gz$/, /linux-x64\.tar\.gz$/, /windows-x64\.zip$/];
+const CLI_PATTERNS = [/shub-.*linux-arm64\.tar\.gz$/, /shub-.*linux-x64\.tar\.gz$/, /shub-.*windows-x64\.zip$/, /shub-.*node22\.tar\.gz$/];
 const EXPECTED = assets
   .map((asset) => asset.name)
   .filter((name) => name.startsWith("search-hub-") && PLATFORM_PATTERNS.some((re) => re.test(name)))
   .sort();
+const EXPECTED_CLI = assets
+  .map((asset) => asset.name)
+  .filter((name) => name.startsWith("shub-") && CLI_PATTERNS.some((re) => re.test(name)))
+  .sort();
+const ALL_EXPECTED = [...EXPECTED, ...EXPECTED_CLI].sort();
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -195,7 +201,7 @@ if (downloadFailures.length > 0) {
 
 const publishedSizes = new Map(assets.map((asset) => [asset.name, asset.size]));
 
-for (const name of ["SHA256SUMS", ...EXPECTED]) {
+for (const name of ["SHA256SUMS", ...ALL_EXPECTED]) {
   const path = join(DIR, name);
   const present = existsSync(path);
   const size = present ? statSync(path).size : 0;
@@ -260,7 +266,13 @@ try {
 // version the tag claims. An asset named 0.1.6 inside a v0.1.6-beta.1 release is
 // a real supply-chain smell: a beta package becomes indistinguishable from the
 // final 0.1.6 by filename alone.
-check("three platform assets are published", EXPECTED.length === 3, `${EXPECTED.length}: ${EXPECTED.join(", ")}`);
+check("three server platform assets are published", EXPECTED.length === 3, `${EXPECTED.length}: ${EXPECTED.join(", ")}`);
+if (EXPECTED_CLI.length > 0) {
+  check("four CLI assets are published", EXPECTED_CLI.length === 4, `${EXPECTED_CLI.length}: ${EXPECTED_CLI.join(", ")}`);
+  for (const pattern of CLI_PATTERNS) {
+    check(`exactly one CLI asset matches ${String(pattern)}`, EXPECTED_CLI.filter((name) => pattern.test(name)).length === 1);
+  }
+}
 for (const pattern of PLATFORM_PATTERNS) {
   check(
     `exactly one asset matches ${String(pattern)}`,
@@ -269,7 +281,7 @@ for (const pattern of PLATFORM_PATTERNS) {
 }
 /** The version the tag claims, without a leading `v` (e.g. `0.1.7-beta.1`). */
 const bareVersion = VERSION.replace(/-(alpha|beta|rc)\.\d+$/, "");
-for (const asset of EXPECTED) {
+for (const asset of ALL_EXPECTED) {
   const carriesFull = asset.includes(`v${VERSION}-`);
   const carriesBare = new RegExp(`v${bareVersion.replace(/\./g, "\\.")}-(windows|linux)-`).test(asset);
   check(`asset name carries a version: ${asset}`, carriesFull || carriesBare);
@@ -279,11 +291,11 @@ for (const asset of EXPECTED) {
         "a beta package is indistinguishable from a final release by filename alone",
     );
   }
-  check(`asset name carries a platform: ${asset}`, /-(windows|linux)-(x64|arm64)\./.test(asset));
+  check(`asset name carries a platform: ${asset}`, /-(windows|linux)-(x64|arm64)\.|-(node22)\./.test(asset));
 }
 
 // ---- 6. archive contents: no traversal, sane modes --------------------
-for (const asset of EXPECTED) {
+for (const asset of ALL_EXPECTED) {
   const path = join(DIR, asset);
   if (!existsSync(path)) continue;
   try {
@@ -332,6 +344,22 @@ if (tarList) {
       check("no setuid/setgid files in the package", setuid.length === 0, setuid.slice(0, 1).join(""));
     } catch (error) {
       check("linux archive modes readable", false, String(error).slice(0, 120));
+    }
+  }
+}
+
+const cliTarList = EXPECTED_CLI.find((name) => name.includes("linux-x64"));
+if (cliTarList) {
+  const path = join(DIR, cliTarList);
+  if (existsSync(path)) {
+    try {
+      const verbose = execFileSync("tar", ["-tvzf", path], { encoding: "utf8" });
+      const executable = verbose.split("\n").find((line) => /(?:^|\s)\.\/shub$/.test(line.trim()));
+      check("linux CLI is executable", Boolean(executable && executable.startsWith("-rwx")), executable?.slice(0, 40) ?? "not found");
+      const setuid = verbose.split("\n").filter((line) => /^-...s|^-......s/.test(line) || line.includes(" SUID "));
+      check("no setuid/setgid files in the CLI package", setuid.length === 0, setuid.slice(0, 1).join(""));
+    } catch (error) {
+      check("CLI archive modes readable", false, String(error).slice(0, 120));
     }
   }
 }

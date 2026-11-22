@@ -2,21 +2,25 @@
 
 Target: a 2-core / 2 GB Linux host can run basic search comfortably. No Redis, vector database, GPU, or external model is required.
 
-## Published images and packages (v0.1.8)
+## Published images and packages (v0.1.13 candidate)
 
-Stable release assets:
+v0.1.12 is the current published Stable. The v0.1.13 Release will add standalone
+CLI assets alongside the existing server packages:
 
-| Artefact | Where |
+| Artefact | Asset |
 |---|---|
-| Windows x64 | `search-hub-v0.1.8-windows-x64.zip` on the `v0.1.8` Release |
-| Linux x64 | `search-hub-v0.1.8-linux-x64.tar.gz` |
-| Linux arm64 | `search-hub-v0.1.8-linux-arm64.tar.gz` |
-| Container | `ghcr.io/alicia1030su/search-hub:0.1.8` (also `v0.1.8`, `latest`) |
+| Windows x64 server | `search-hub-v0.1.13-windows-x64.zip` |
+| Linux x64 server | `search-hub-v0.1.13-linux-x64.tar.gz` |
+| Linux arm64 server | `search-hub-v0.1.13-linux-arm64.tar.gz` |
+| Windows x64 CLI | `shub-v0.1.13-windows-x64.zip` |
+| Linux x64 CLI | `shub-v0.1.13-linux-x64.tar.gz` |
+| Linux arm64 CLI | `shub-v0.1.13-linux-arm64.tar.gz` |
+| Node.js 22+ CLI | `shub-v0.1.13-node22.tar.gz` |
+| Container | `ghcr.io/alicia1030su/search-hub:0.1.13` (also `v0.1.13`, `latest`) |
 
-```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.8
-SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.8 docker compose up -d
-```
+The CLI can be installed on a machine without a Search Hub server. Configure
+`SEARCH_HUB_URL` and `SEARCH_HUB_TOKEN`, then run `shub status`. See
+[CLI documentation](./cli.md) for PowerShell and Bash examples.
 
 **The image is built for `linux/amd64` only.** On an arm64 host use the arm64 package in
 [standalone-packages.md](./standalone-packages.md); Docker on arm64 would run the amd64 image
@@ -26,7 +30,7 @@ Verify a download before running it:
 
 ```bash
 sha256sum -c SHA256SUMS
-gh attestation verify search-hub-v0.1.8-linux-x64.tar.gz --repo alicia1030su/search-hub
+gh attestation verify shub-v0.1.13-linux-x64.tar.gz --repo alicia1030su/search-hub
 ```
 
 The two checks are independent: SHA256 proves the bytes match what was published, the

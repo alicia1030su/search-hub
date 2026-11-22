@@ -8,7 +8,7 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "Search Hub API",
-    version: "0.1.0",
+    version: "0.1.13",
     description:
       "Self-hosted multi-provider search infrastructure. Search endpoints accept either an admin session cookie + CSRF header or a Bearer access token.",
     license: { name: "MIT" },
@@ -124,6 +124,21 @@ export const openApiDocument = {
     },
     "/api/admin/providers/{id}/test": {
       post: { tags: ["admin"], summary: "Live-test a provider", responses: { "200": { description: "Test result" } } },
+    },
+    "/api/admin/provider-health/{id}/probe": {
+      post: { tags: ["admin"], summary: "Probe one provider through HealthService", responses: { "200": { description: "Probe result and budget" }, "403": { description: "Admin scope required" }, "409": { description: "Probe already running" }, "429": { description: "Local probe budget exhausted" } } },
+    },
+    "/api/admin/provider-health/batch-test/preview": {
+      get: { tags: ["admin"], summary: "Read-only bulk provider test preview", responses: { "200": { description: "Eligibility counts, budget and paid risk" } } },
+    },
+    "/api/admin/provider-health/batch-test": {
+      post: { tags: ["admin"], summary: "Create a bulk provider test job", responses: { "201": { description: "Job created" }, "403": { description: "Admin scope required" }, "409": { description: "Run refused by policy or budget" } } },
+    },
+    "/api/admin/provider-health/batch-test/{jobId}": {
+      get: { tags: ["admin"], summary: "Read bulk provider test progress", responses: { "200": { description: "Durable job snapshot" } } },
+    },
+    "/api/admin/provider-health/batch-test/{jobId}/cancel": {
+      post: { tags: ["admin"], summary: "Cancel a bulk provider test job", responses: { "200": { description: "Cancellation result" } } },
     },
     "/api/admin/providers/{id}/keys": {
       get: { tags: ["admin"], summary: "List masked keys", responses: { "200": { description: "Keys" } } },
@@ -266,7 +281,7 @@ export const openApiDocument = {
           freshness: { type: "string", enum: ["day", "week", "month", "year", "all"] },
           mode: {
             type: "string",
-            enum: ["basic", "rrf", "rerank", "embedding", "embedding_rerank", "rerank_summary", "deep"],
+            enum: ["basic", "rrf", "rerank", "embedding", "embedding_rerank", "rerank_summary", "deep", "web", "grounded", "research"],
             default: "basic",
           },
           rerank: { type: "boolean" },
@@ -306,6 +321,7 @@ export const openApiDocument = {
           results: { type: "array", items: { $ref: "#/components/schemas/SearchResult" } },
           stats: { type: "object" },
           errors: { type: "array", items: { type: "object" } },
+          failedSources: { type: "array", items: { type: "object" } },
           summary: { type: "object" },
         },
       },

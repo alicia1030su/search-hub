@@ -1,14 +1,14 @@
 # Search Hub
 
-**Self-hosted AI search infrastructure.** One service that aggregates multiple search providers, manages pools of API keys, normalizes and fuses results, and exposes the same engine over REST, MCP, and Agent Skills.
+**Self-hosted AI search infrastructure.** One service that aggregates multiple search providers, manages pools of API keys, normalizes and fuses results, and exposes the same engine over REST API, MCP, Agent Skills, and the standalone `shub` CLI.
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.12 · Stable candidate (final gates pending verification).**
+> **Status: v0.1.12 · Stable published; v0.1.13 in development (CLI).**
 >
-> **Release gate:** the local candidate passes Vitest **1241 cases / 96 files** and Playwright **42 cases**. Remote CI, upgrade-matrix and formal-release results are recorded in `docs/release-readiness.md`.
+> **Release gate:** v0.1.13 local full-suite Vitest **1299 cases / 100 files**, Playwright **42 cases**, and **58 CLI-specific cases** pass. Remote CI, upgrade-matrix and formal-release results are recorded in `docs/release-readiness.md`.
 >
-> Core search, key scheduling, the admin UI (Chinese and English), REST, MCP (both protocol eras), Skills, the persistent result cache, the provider health centre and the search quality lab are implemented; the automated suite covers unit, integration and browser flows. See the [testing guide](./docs/testing.md) for release-gate status. **The v0.1.11 Docker image and 11-item container acceptance have a recorded GitHub Actions pass (ubuntu-latest)** — 24/24, including compose start, initialisation, a real search, persistence, crash recovery, MCP and Trivy (0 HIGH / 0 CRITICAL). That record is not evidence that v0.1.12 has passed.
+> **v0.1.13 theme:** a standalone `shub` command-line client for search, deep search, sources, status, diagnostics, configuration and provider health probes. The CLI only calls REST API; it does not reimplement the search core.
 >
 > **Stable means "this is the public release channel the maintainer ships", not "every third-party integration is production-certified".** Concretely: **Hacker News, Crossref, OpenAlex and PubMed are verified against the real network**; Tavily, Bocha, Brave, SearXNG and the rest are implemented from their official docs and are **not yet verified against real search results**; the quality lab currently has synthetic fixtures only, with **no vendor-labelled qrel set**. Those gaps are listed per provider in the [provider matrix](./docs/provider-matrix.md), the [release readiness report](./docs/release-readiness.md) and the [CHANGELOG](./CHANGELOG.md). Nothing untested is described as verified.
 
@@ -23,7 +23,7 @@ Search Hub packages that as a deployable service:
 - **Multi-provider fan-out** — one query hits several providers concurrently; a failing provider never fails the whole search, and partial results carry explicit failure reasons.
 - **Key pools** — any number of keys per provider, with round-robin, random, weighted-random, least-used, and failover strategies. Per-key concurrency, RPM, daily quota, cooldown, and circuit breaking.
 - **One result shape** — URL canonicalization, exact and near-duplicate merging, RRF fusion, and full source attribution with original ranks.
-- **Three entry points, one engine** — REST, MCP, and Skills all call the same `executeSearch`.
+- **Four entry points, one engine** — REST, MCP, Skills and CLI all use the same server-side search core; the CLI is only a remote HTTP client.
 - **Optional intelligence** — cited AI summaries, embedding-based semantic re-scoring, and reranking. All optional; basic search works with no model configured.
 
 ## Capabilities
@@ -38,6 +38,7 @@ Search Hub packages that as a deployable service:
 | REST + OpenAPI 3.1 | Implemented | `/api/openapi.json`, `/api/docs` |
 | MCP server | Implemented | 2026-07-28 modern envelope + 2025-11-25 handshake; Streamable HTTP and stdio |
 | Agent Skills | Implemented | Three `SKILL.md` packages |
+| CLI `shub` | v0.1.13 in development | Standalone Windows/Linux executables; search, deep search, sources, status, doctor, config and health probes; clean JSON/NDJSON output |
 | AI summary / embedding / rerank | Implemented, optional | OpenAI-compatible, Anthropic, Gemini, Cohere/Jina-compatible, custom HTTP |
 | Result cache (SQLite, persistent) | Implemented | 1–72 h TTL; survives restart and container rebuild; LRU eviction at a byte cap; expired rows swept every 10 minutes |
 | Search quality lab | Implemented | Four-grade human relevance judgments + P@10 / Recall@10 / MRR@10 / nDCG@10; offline baseline with no network and reproducible numbers; single / base / RRF comparison; RRF sweep with a development/holdout split; incomplete qrels produce N/A and INSUFFICIENT_EVIDENCE |
@@ -126,17 +127,41 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.12 candidate)
+## Download (v0.1.13 candidate)
 
-Three shapes, one search core, one database model, one admin UI. The v0.1.12 assets will be published after the final gates pass; v0.1.11 remains the current published Stable release.
+v0.1.12 is published. v0.1.13 adds the standalone CLI and will ship server and CLI assets after its release gates pass.
 
-| Platform | Download | Requirements |
-|---|---|---|
-| Windows x64 | After publication: [`search-hub-v0.1.12-windows-x64.zip`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **None** (no Node / pnpm / Git / Docker) |
-| Linux x64 | After publication: [`search-hub-v0.1.12-linux-x64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **None** (Node runtime bundled) |
-| Linux arm64 | After publication: [`search-hub-v0.1.12-linux-arm64.tar.gz`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) | **None** |
+| Platform | Server | CLI `shub` | Requirements |
+|---|---|---|---|
+| Windows x64 | `search-hub-v0.1.13-windows-x64.zip` | `shub-v0.1.13-windows-x64.zip` | **None** |
+| Linux x64 | `search-hub-v0.1.13-linux-x64.tar.gz` | `shub-v0.1.13-linux-x64.tar.gz` | **None** |
+| Linux arm64 | `search-hub-v0.1.13-linux-arm64.tar.gz` | `shub-v0.1.13-linux-arm64.tar.gz` | **None** |
+| Node.js 22+ | — | `shub-v0.1.13-node22.tar.gz` | Node.js 22+ |
 
-Verify after publication: download [`SHA256SUMS`](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.12) from the same Release and run `sha256sum -c SHA256SUMS`. Each release asset also carries **build provenance**; check it with `gh attestation verify <asset> --repo alicia1030su/search-hub`. The two checks answer different questions: SHA256 proves the bytes, provenance proves which workflow and commit produced them.
+After publication, download `SHA256SUMS` from the [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) and run `sha256sum -c SHA256SUMS`. Every asset also carries build provenance. The CLI does not require a local server; it can connect to a local or remote Search Hub instance.
+
+### CLI quick start
+
+```bash
+export SEARCH_HUB_URL="https://search.example.com"
+export SEARCH_HUB_TOKEN="sh_..."
+shub search "Linux"
+shub search "AI" --json
+shub sources
+shub status
+shub doctor
+```
+
+PowerShell:
+
+```powershell
+$env:SEARCH_HUB_URL = "https://search.example.com"
+$env:SEARCH_HUB_TOKEN = "sh_..."
+.\shub.exe search "Linux"
+.\shub.exe sources
+```
+
+Tokens are read only from the environment or `--token-stdin`; they are never written to plaintext config. See [docs/cli.md](./docs/cli.md).
 
 > **v0.1.12 closes credential-leak and probe-accounting gaps.** URL query API
 > keys are redacted from JSON/HTML/encoded errors, error `details.url`, SQLite
@@ -250,7 +275,7 @@ Verify after publication: download [`SHA256SUMS`](https://github.com/alicia1030s
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.12-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.13-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
@@ -259,7 +284,7 @@ For long-running use, the package ships `search-hub.service` (non-root, `Protect
 **Docker**:
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.12    # candidate tag; available after publication
+docker pull ghcr.io/alicia1030su/search-hub:0.1.13    # candidate tag; available after publication
 # The image is built for linux/amd64 only; use the arm64 package above on arm64 hosts
 docker compose up -d                                        # or build from source
 ```
@@ -310,6 +335,22 @@ Each provider can have multiple independent instances (`brave-eu`, `brave-us`) w
 - **Strategies**: `round_robin`, `random`, `weighted_random`, `least_used`, `failover`.
 - **Quota**: per-key concurrency + requests per minute + optional daily quota; exceeding it returns an explicit error rather than dropping requests.
 - **Health**: `healthy`, `rate_limited`, `cooldown`, `invalid`, `forbidden`, `quota_exhausted`, `disabled`, `unknown`; each key can be tested or reset individually. Redacted `lastErrorCode` / `lastErrorMessage` values persist and clear after a successful retest.
+
+## CLI `shub`
+
+The CLI is a standalone remote HTTP client. It needs no Node.js, SQLite, Redis, Docker or vendor API keys. It reuses REST API and does not reimplement providers, key scheduling, RRF, caching, health probes or model calls.
+
+```bash
+shub search "Linux kernel changes"
+shub search "AI search" --mode deep
+shub sources --enabled --json
+shub status
+shub doctor --verbose
+shub providers test --all --kind connect
+shub providers test --all --kind search --confirm-cost
+```
+
+JSON mode writes only valid JSON to stdout. NDJSON explicitly records `streaming:false`; it does not pretend to be a live stream. `partial` keeps results and returns 0 unless `--strict` is set. Tokens come only from `SEARCH_HUB_TOKEN` or `--token-stdin`. See [docs/cli.md](./docs/cli.md).
 
 ## MCP
 
@@ -389,7 +430,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 **Automated (reproducible in this repo)**
 
-- **Unit and integration local candidate — 1241 cases / 96 files passed**, covering the three quota tiers (concurrency/RPM/daily) and their peaks, a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
+- **Unit and integration local candidate — 1299 cases / 100 files passed**, including **58 CLI-specific cases**, covering the three quota tiers (concurrency/RPM/daily) and their peaks, a 429/401/5xx/timeout/malformed matrix (50 runs each), dedupe, hand-computed RRF, SSRF (direct, proxied, and IPv4-mapped IPv6), a three-way secret leak scan, provider contracts, model chain security, MCP over both transports with the official client, 100 concurrent searches, online-backup consistency under writes, and restart persistence.
 - **Persistent cache — 23 cases** (`tests/integration/cache.test.ts`) **plus 3 migration cases** (`tests/unit/cache-migration.test.ts`): hits, isolation, TTL expiry, automatic sweep, survival across restart, concurrency, capacity eviction, response validation, credential isolation. TTL is checked with an injected clock, not by sleeping.
 - **Provider health centre — 35 cases** (`tests/integration/provider-health-center.test.ts`): off by default, no-key ⇒ `unverified`, both probe kinds, cause classification, budget concurrency/restart/overrun, backoff and recovery, one dead key, in-flight de-duplication, shutdown cleanup, no key leakage, permissions, reset, the cache never faking health, cancel not refunding, multiple keys on one shared account quota, and MCP/REST sharing the same gate. Injected clocks and controlled scheduling; no real waiting. The "paid" source in these tests is a local Brave contract server with a real key — no vendor is ever called.
 - **Credential classes — 6 cases** (`tests/integration/credential-classes.test.ts`): the catalogue and adapters agree on which sources take a key; a key-required source with no key is `unverified`; a keyless source probed against a local HN-wire-format stub can report `healthy`; `/api/health` stops counting keyless sources as unusable; a source needing its own instance URL is a configuration problem.
@@ -404,7 +445,7 @@ See [SECURITY.md](./SECURITY.md). Report vulnerabilities privately.
 
 - Brave: no subscription key; no live call to `api.search.brave.com`.
 - SearXNG: no self-hosted instance.
-- Docker: **locally** the Docker engine is unavailable (WSL is blocked by policy); the **remote** GitHub Actions pass belongs to v0.1.11. v0.1.12 must be re-verified on its candidate commit; the two are not interchangeable.
+- Docker: **locally** the Docker engine is unavailable (WSL is blocked by policy); the remote v0.1.12 GitHub Actions evidence is in `docs/release-readiness.md`. v0.1.13 must be re-verified on its candidate commit; the two are not interchangeable.
 - AI / embedding / rerank: no vendor keys; request/response contracts tested against local mock servers only.
 - Multi-instance: Redis coordination is not implemented; quotas are guaranteed per process.
 

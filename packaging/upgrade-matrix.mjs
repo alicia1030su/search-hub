@@ -30,6 +30,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -216,6 +217,12 @@ try {
   check("master.key unchanged", after.masterKey, after.masterKeyDetail);
   check("database grew but kept its identity", after.db, after.dbDetail);
   check("no new migration was left unapplied", after.migrations, after.migrationsDetail);
+  if (after.searchTask !== undefined) check("search task record survived", after.searchTask, after.searchTaskDetail);
+  if (after.healthHistory !== undefined) check("health history survived", after.healthHistory, after.healthHistoryDetail);
+  if (after.healthBudget !== undefined) check("health budget ledger survived", after.healthBudget, after.healthBudgetDetail);
+  if (after.batchJob !== undefined) check("provider batch task survived", after.batchJob, after.batchJobDetail);
+  if (after.cache !== undefined) check("cache entries survived", after.cache, after.cacheDetail);
+  if (after.cacheHit !== undefined) check("cache remained usable after upgrade", after.cacheHit, after.cacheHitDetail);
   // The upgrade must add the catalogue entries that beta.1 shipped without.
   check(
     "catalogue now contains minimax/metaso",
@@ -253,6 +260,67 @@ function hasFlag(name) {
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+/** Distinguishes a real schema absence from an unreadable database. */
+function readSearchCacheTableState(dataDir) {
+  const path = join(dataDir, "search-hub.db");
+  if (!existsSync(path)) return "unavailable";
+  let db;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'search_cache'",
+    ).get();
+    return row ? "present" : "absent";
+  } catch {
+    return "unavailable";
+  } finally {
+    db?.close();
+  }
+}
+
+/** Read-only cache-row evidence that works across old and new API shapes. */
+function readCacheHitCounts(dataDir) {
+  const path = join(dataDir, "search-hub.db");
+  if (!existsSync(path)) return null;
+  let db;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    const rows = db.prepare("SELECT cache_key, hit_count FROM search_cache").all();
+    if (!rows.every((row) => typeof row.cache_key === "string" && Number.isFinite(row.hit_count))) return null;
+    return new Map(rows.map((row) => [row.cache_key, row.hit_count]));
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * Inputs that deliberately invalidate a cached response. If these are unchanged,
+ * the upgrade must reuse the old row; if they changed, a new key is legitimate but
+ * the new row still has to produce a real cache hit after warmup.
+ */
+function readCacheFingerprintInputs(dataDir, providerId) {
+  if (!providerId) return null;
+  const path = join(dataDir, "search-hub.db");
+  if (!existsSync(path)) return null;
+  let db;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    const provider = db.prepare(
+      "SELECT id, type, base_url, results_per_page, language, freshness, config_json, search_config_json FROM provider_instances WHERE id = ?",
+    ).get(providerId);
+    const keys = db.prepare(
+      "SELECT id, enabled, key_version, updated_at FROM api_keys WHERE provider_id = ? ORDER BY id",
+    ).all(providerId);
+    return provider ? { provider, keys } : null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
 }
 
 function installedVersion(root) {
@@ -483,6 +551,86 @@ async function populate(base) {
   });
   const searchBody = await search.json().catch(() => ({}));
 
+  // v0.1.12+ state that the CLI release must preserve. Older matrix entries may
+  // not expose these endpoints; record only what the old version really created.
+  const healthProbe = await fetch(`${base}/api/admin/provider-health/${providerId}/probe`, {
+    method: "POST",
+    headers: h,
+    body: JSON.stringify({ kind: "connect" }),
+  });
+  const healthBody = healthProbe.ok ? await healthProbe.json().catch(() => ({})) : {};
+  const healthHistory = await fetch(`${base}/api/admin/provider-health/history?providerId=${providerId}&limit=100`, { headers: { cookie } });
+  const historyBody = healthHistory.ok ? await healthHistory.json().catch(() => ({ checks: [] })) : { checks: [] };
+  const healthSettings = await fetch(`${base}/api/admin/provider-health/settings`, { headers: { cookie } });
+  const settingsBody = healthSettings.ok ? await healthSettings.json().catch(() => ({})) : {};
+
+  let batchJob = null;
+  if (providerId) {
+    const started = await fetch(`${base}/api/admin/provider-health/batch-test`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ kind: "connect", providerIds: [providerId], includeKeyless: true }),
+    });
+    const startedBody = started.ok ? await started.json().catch(() => ({})) : {};
+    if (startedBody.jobId) {
+      for (let i = 0; i < 40; i += 1) {
+        const poll = await fetch(`${base}/api/admin/provider-health/batch-test/${startedBody.jobId}`, { headers: { cookie } });
+        const body = poll.ok ? await poll.json().catch(() => ({})) : {};
+        if (body.status && body.status !== "running") { batchJob = body; break; }
+        await sleep(100);
+      }
+    }
+  }
+
+  const cacheQuery = "upgrade cache probe";
+  const cacheSettings = await fetch(`${base}/api/admin/settings`, {
+    method: "PUT",
+    headers: h,
+    body: JSON.stringify({ cache: { enabled: true, ttlSeconds: 3600 } }),
+  });
+  const cacheSettingsBody = cacheSettings.ok ? await cacheSettings.json().catch(() => null) : null;
+  const cacheSetupOk = cacheSettings.ok && cacheSettingsBody?.cache?.enabled === true;
+  // Probe even when setup failed so legacy in-memory hits remain observable and
+  // persistent cache failures cannot be hidden by an unsupported API response.
+  await fetch(`${base}/api/search`, { method: "POST", headers: h, body: JSON.stringify({ query: cacheQuery, mode: "basic", limit: 3 }) });
+  await fetch(`${base}/api/search`, { method: "POST", headers: h, body: JSON.stringify({ query: cacheQuery, mode: "basic", limit: 3 }) });
+  const cachedSearch = await fetch(`${base}/api/search`, { method: "POST", headers: h, body: JSON.stringify({ query: cacheQuery, mode: "basic", limit: 3 }) });
+  const cachedBody = cachedSearch.ok ? await cachedSearch.json().catch(() => ({})) : {};
+  let cacheStatsRes = null;
+  let cacheApiStatus = "unavailable";
+  let cacheApiErrorCode = null;
+  let cacheStats = null;
+  try {
+    cacheStatsRes = await fetch(`${base}/api/admin/cache`, { headers: { cookie } });
+    cacheApiStatus = cacheStatsRes.status;
+    const cacheApiBody = await cacheStatsRes.json().catch(() => null);
+    cacheApiErrorCode = cacheApiBody?.error?.code ?? null;
+    cacheStats = cacheStatsRes.ok ? cacheApiBody : null;
+  } catch {
+    // Network failures are unavailable evidence, never proof of no cache API.
+  }
+  const cacheApiExplicitlyUnsupported = cacheApiStatus === 404
+    || (typeof cacheApiStatus === "number" && cacheApiStatus < 500 && cacheApiErrorCode === "not_implemented");
+  const cacheTableStatus = readSearchCacheTableState(dataDir);
+  const cacheHitCounts = readCacheHitCounts(dataDir);
+  const cacheFingerprintInputs = readCacheFingerprintInputs(dataDir, providerId);
+  const cachedSearchHit = cachedSearch.ok && cachedBody.stats?.cached === true;
+  const cacheEntries = cacheStatsRes?.ok && Number.isFinite(cacheStats?.entries) ? cacheStats.entries : null;
+  const cacheMode = cacheTableStatus === "unavailable"
+    ? "unavailable"
+    : cacheTableStatus === "present"
+      ? "persistent"
+      : cacheApiExplicitlyUnsupported
+        ? "legacy-memory-only"
+        : "ambiguous";
+  const cacheRequiredReason = cacheMode === "persistent"
+    ? "persistent cache requires strict fingerprint and old-row reuse evidence"
+    : cacheMode === "legacy-memory-only"
+      ? "legacy memory cache has no persistent rows; post-upgrade persistent warmup and hit growth are still required"
+      : cacheMode === "ambiguous"
+        ? "search_cache is absent but the cache API did not explicitly report 404/not_implemented"
+        : "search_cache table state is unavailable";
+
   const mcpToken = await fetch(`${base}/api/admin/tokens`, {
     method: "POST",
     headers: h,
@@ -498,6 +646,25 @@ async function populate(base) {
     providerId,
     keyId: keyBody?.key?.id ?? keyBody?.id ?? null,
     searchResultCount: (searchBody.results ?? []).length,
+    searchTaskId: searchBody.taskId ?? null,
+    healthCheckId: healthBody.result?.checkId ?? null,
+    healthHistoryCount: Array.isArray(historyBody.checks) ? historyBody.checks.length : null,
+    healthBudget: settingsBody.budget ?? null,
+    batchJobId: batchJob?.jobId ?? null,
+    batchStatus: batchJob?.status ?? null,
+    batchCounts: batchJob?.counts ?? null,
+    cacheEntries,
+    cacheHits: cacheStats?.hits24h ?? cacheStats?.hits ?? null,
+    cacheHitCounts,
+    cacheFingerprintInputs,
+    cachedSearchHit,
+    cacheSetupOk,
+    cacheMode,
+    cacheTableStatus,
+    cacheApiStatus,
+    cacheApiErrorCode,
+    cacheRequired: true,
+    cacheRequiredReason,
     bearer,
     admin: setup.ok,
     adminDetail: `HTTP ${setup.status}`,
@@ -569,6 +736,125 @@ async function verify(base, state) {
   const health = await fetch(`${base}/api/health`);
   out.migrations = health.ok;
   out.migrationsDetail = `health ${health.status}`;
+
+  if (state.searchTaskId) {
+    const taskRes = await fetch(`${base}/api/search/tasks/${state.searchTaskId}`, { headers: { cookie: state.cookie } });
+    const task = taskRes.ok ? await taskRes.json().catch(() => ({})) : {};
+    out.searchTask = taskRes.ok && task.id === state.searchTaskId;
+    out.searchTaskDetail = `HTTP ${taskRes.status}, id=${task.id ?? "missing"}`;
+  }
+  if (state.healthHistoryCount !== null) {
+    const historyRes = await fetch(`${base}/api/admin/provider-health/history?providerId=${state.providerId}&limit=100`, { headers: { cookie: state.cookie } });
+    const history = historyRes.ok ? await historyRes.json().catch(() => ({ checks: [] })) : { checks: [] };
+    out.healthHistory = historyRes.ok && (history.checks?.length ?? 0) >= state.healthHistoryCount;
+    out.healthHistoryDetail = `${history.checks?.length ?? 0} checks (was ${state.healthHistoryCount})`;
+  }
+  if (state.healthBudget) {
+    const settingsRes = await fetch(`${base}/api/admin/provider-health/settings`, { headers: { cookie: state.cookie } });
+    const settings = settingsRes.ok ? await settingsRes.json().catch(() => ({})) : {};
+    const before = state.healthBudget;
+    const after = settings.budget ?? {};
+    const preserved = (after.usedToday ?? 0) >= (before.usedToday ?? 0)
+      && (after.connectUsedToday ?? 0) >= (before.connectUsedToday ?? 0)
+      && (after.anonymousSearchUsedToday ?? 0) >= (before.anonymousSearchUsedToday ?? 0);
+    out.healthBudget = settingsRes.ok && preserved;
+    out.healthBudgetDetail = `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`;
+  }
+  if (state.batchJobId) {
+    const batchRes = await fetch(`${base}/api/admin/provider-health/batch-test/${state.batchJobId}`, { headers: { cookie: state.cookie } });
+    const batch = batchRes.ok ? await batchRes.json().catch(() => ({})) : {};
+    out.batchJob = batchRes.ok && batch.jobId === state.batchJobId && batch.status === state.batchStatus;
+    out.batchJobDetail = `HTTP ${batchRes.status}, status=${batch.status ?? "missing"}`;
+  }
+  const settingsRes = await fetch(`${base}/api/admin/settings`, { headers: { cookie: state.cookie } });
+  const settings = settingsRes.ok ? await settingsRes.json().catch(() => null) : null;
+  const cacheRes = await fetch(`${base}/api/admin/cache`, { headers: { cookie: state.cookie } });
+  const cache = cacheRes.ok ? await cacheRes.json().catch(() => null) : null;
+  const cacheEntriesBeforeWarmup = cacheRes.ok && Number.isFinite(cache?.entries) ? cache.entries : null;
+  const cacheApiReady = settingsRes.ok && settings?.cache?.enabled === true && cacheRes.ok;
+  const persistentRowsPreserved = state.cacheSetupOk
+    && Number.isFinite(state.cacheEntries)
+    && state.cacheEntries > 0
+    && cacheApiReady
+    && cacheEntriesBeforeWarmup !== null
+    && cacheEntriesBeforeWarmup >= state.cacheEntries;
+  const cacheWarmup = await fetch(`${base}/api/search`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: state.cookie, "x-csrf-token": state.csrf },
+    body: JSON.stringify({ query: "upgrade cache probe", mode: "basic", limit: 3 }),
+  });
+  await cacheWarmup.json().catch(() => ({}));
+  let cacheEntriesAfterWarmup = null;
+  let cacheAfterWarmupStatus = "not-read";
+  if (state.cacheMode === "legacy-memory-only") {
+    try {
+      const cacheAfterWarmupRes = await fetch(`${base}/api/admin/cache`, { headers: { cookie: state.cookie } });
+      cacheAfterWarmupStatus = cacheAfterWarmupRes.status;
+      const cacheAfterWarmup = cacheAfterWarmupRes.ok ? await cacheAfterWarmupRes.json().catch(() => null) : null;
+      cacheEntriesAfterWarmup = cacheAfterWarmupRes.ok && Number.isFinite(cacheAfterWarmup?.entries)
+        ? cacheAfterWarmup.entries
+        : null;
+    } catch {
+      cacheAfterWarmupStatus = "unavailable";
+    }
+  }
+  const legacyPersistentCacheReady = cacheApiReady
+    && cacheAfterWarmupStatus === 200
+    && cacheEntriesAfterWarmup !== null
+    && cacheEntriesAfterWarmup > 0;
+  out.cache = state.cacheMode === "persistent"
+    ? persistentRowsPreserved
+    : state.cacheMode === "legacy-memory-only"
+      ? legacyPersistentCacheReady
+      : false;
+  out.cacheDetail = `cacheMode=${state.cacheMode} table=${state.cacheTableStatus} api=${state.cacheApiStatus}${state.cacheApiErrorCode ? `,${state.cacheApiErrorCode}` : ""} afterApi=${cacheRes.status} afterWarmupApi=${cacheAfterWarmupStatus} setupOk=${state.cacheSetupOk} entriesBeforeWarmup=${cacheEntriesBeforeWarmup ?? "unavailable"} entriesAfterWarmup=${cacheEntriesAfterWarmup ?? "unavailable"} (was ${state.cacheEntries ?? "unavailable"}) cacheRequired=true`;
+  const hitCountsAfterWarmup = readCacheHitCounts(dataDir);
+  const cached = await fetch(`${base}/api/search`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: state.cookie, "x-csrf-token": state.csrf },
+    body: JSON.stringify({ query: "upgrade cache probe", mode: "basic", limit: 3 }),
+  });
+  const cachedBody = cached.ok ? await cached.json().catch(() => ({})) : {};
+  const hitCountsAfter = readCacheHitCounts(dataDir);
+  const fingerprintInputsAfter = readCacheFingerprintInputs(dataDir, state.providerId);
+  const fingerprint = !state.cacheFingerprintInputs || !fingerprintInputsAfter
+    ? "unavailable"
+    : JSON.stringify(state.cacheFingerprintInputs) === JSON.stringify(fingerprintInputsAfter)
+      ? "unchanged"
+      : "changed";
+  const rowEvidenceAvailable = state.cacheMode === "persistent"
+    ? Boolean(state.cacheHitCounts && hitCountsAfterWarmup && hitCountsAfter)
+    : state.cacheMode === "legacy-memory-only"
+      ? Boolean(hitCountsAfterWarmup && hitCountsAfter)
+      : false;
+  const legacyRowReused = state.cacheMode === "persistent" && rowEvidenceAvailable
+    ? [...state.cacheHitCounts.keys()].some((key) => (hitCountsAfter.get(key) ?? 0) > (hitCountsAfterWarmup.get(key) ?? 0))
+    : false;
+  const newRowReused = rowEvidenceAvailable
+    ? [...hitCountsAfter.keys()].some((key) => (
+      (state.cacheMode !== "persistent" || !state.cacheHitCounts.has(key))
+      && (hitCountsAfter.get(key) ?? 0) > (hitCountsAfterWarmup.get(key) ?? 0)
+    ))
+    : false;
+  const cachedFlag = cachedBody.stats?.cached === true;
+  const rowEvidence = state.cacheMode === "persistent"
+    ? fingerprint === "unchanged"
+      ? legacyRowReused
+      : fingerprint === "changed"
+        ? legacyRowReused || newRowReused
+        : false
+    : state.cacheMode === "legacy-memory-only"
+      ? newRowReused
+      : false;
+  out.cacheHit = out.cache
+    && state.cachedSearchHit === true
+    && rowEvidenceAvailable
+    && rowEvidence
+    && (state.cacheMode !== "persistent" || fingerprint !== "unavailable")
+    && cacheWarmup.ok
+    && cached.ok
+    && cachedFlag;
+  out.cacheHitDetail = `cacheMode=${state.cacheMode} table=${state.cacheTableStatus} api=${state.cacheApiStatus}${state.cacheApiErrorCode ? `,${state.cacheApiErrorCode}` : ""} cached=${cachedBody.stats?.cached ?? "unsupported"} cachedOk=${cached.ok} beforeCached=${state.cachedSearchHit} fingerprint=${fingerprint} legacyRowReused=${legacyRowReused} newRowReused=${newRowReused} rowEvidenceAvailable=${rowEvidenceAvailable} rows=${state.cacheHitCounts ? JSON.stringify([...state.cacheHitCounts.values()]) : "unavailable"}->${hitCountsAfterWarmup ? JSON.stringify([...hitCountsAfterWarmup.values()]) : "unavailable"}->${hitCountsAfter ? JSON.stringify([...hitCountsAfter.values()]) : "unavailable"} cacheRequired=true reason=${state.cacheRequiredReason}`;
 
   return out;
 }
