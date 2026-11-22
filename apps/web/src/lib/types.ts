@@ -599,7 +599,7 @@ export interface AppSettings {
   initializedAt: string | null;
 }
 
-/** Live cache usage, counters and capacity (GET /api/admin/cache). */
+/** Read-only process, activity, queue, and cache disk snapshot (GET /api/admin/resources). */
 export interface RuntimeResourceSnapshot {
   schemaVersion: 1;
   sampledAt: string;
@@ -636,6 +636,7 @@ export interface RuntimeResourceSnapshot {
   unavailable: Array<{ field: string; source: string; reason: string }>;
 }
 
+/** Live cache usage, counters and capacity (GET /api/admin/cache). */
 export interface CacheStats {
   enabled: boolean;
   ttlSeconds: number;

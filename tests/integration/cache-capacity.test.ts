@@ -96,6 +96,19 @@ describe("C01-C05 cache capacity and concurrency", () => {
     assertExactTotals(handle);
   });
 
+  it("rebuilds totals with a malformed updatedAt timestamp", () => {
+    const { handle, cache } = fixture();
+    cache.put("valid", response(10), 3600, "basic");
+    const wrong = JSON.stringify({ entries: 1, bytes: Buffer.byteLength(JSON.stringify(response(10))), updatedAt: "not-a-date" });
+    handle.sqlite.prepare("INSERT INTO search_cache_state (key,value,updated_at) VALUES ('cache:totals',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
+      .run(wrong, "2026-01-01T00:00:00.000Z");
+    const beforeRead = (handle.sqlite.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    expect(cache.totals()).toEqual({ entries: null, bytes: null, updatedAt: null, source: "search_cache_state", reason: "totals_missing" });
+    expect((handle.sqlite.prepare("SELECT total_changes() AS n").get() as { n: number }).n).toBe(beforeRead);
+    expect(cache.initialize().updatedAt).not.toBe("not-a-date");
+    assertExactTotals(handle);
+  });
+
   it("refreshes replace LRU and never evicts the current write under byte pressure", () => {
     const large = response(2000, "current replacement");
     const maxBytes = Buffer.byteLength(JSON.stringify(large), "utf8");

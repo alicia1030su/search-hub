@@ -24,6 +24,11 @@ function nullable(value: number | null, formatter: (value: number) => string, re
   return value === null ? { value: "—", hint: reason ?? t("resources.unavailable") } : { value: formatter(value) };
 }
 
+function withHint(value: { value: string; hint?: string }, hint: string | undefined): { value: string; hint?: string } {
+  if (value.hint || !hint) return value;
+  return { ...value, hint };
+}
+
 export function ResourceMonitorPanel() {
   const { data, error, loading, reload } = useAsyncData((signal) => api.resources(signal), []);
 
@@ -59,12 +64,22 @@ export function ResourceMonitorPanel() {
                 <Metric label={t("resources.rss")} {...nullable(data.process.memory.rssBytes, formatBytes, reasonFor(data, "process.memory.rssBytes"))} />
                 <Metric
                   label={t("resources.heap")}
-                  {...nullable(data.process.memory.heapUsedBytes, formatBytes, reasonFor(data, "process.memory.heapUsedBytes"))}
-                  hint={data.process.memory.heapTotalBytes === null ? (reasonFor(data, "process.memory.heapTotalBytes") ?? undefined) : `${t("resources.total")} ${formatBytes(data.process.memory.heapTotalBytes)}`}
+                  {...withHint(
+                    nullable(data.process.memory.heapUsedBytes, formatBytes, reasonFor(data, "process.memory.heapUsedBytes")),
+                    data.process.memory.heapTotalBytes === null
+                      ? reasonFor(data, "process.memory.heapTotalBytes") ?? undefined
+                      : `${t("resources.total")} ${formatBytes(data.process.memory.heapTotalBytes)}`,
+                  )}
                 />
                 <Metric label={t("resources.external")} {...nullable(data.process.memory.externalBytes, formatBytes, reasonFor(data, "process.memory.externalBytes"))} />
                 <Metric label={t("resources.arrayBuffers")} {...nullable(data.process.memory.arrayBuffersBytes, formatBytes, reasonFor(data, "process.memory.arrayBuffersBytes"))} />
-                <Metric label={t("resources.uptime")} value={formatUptime(data.process.uptimeSeconds)} hint={`${data.process.platform} · ${data.process.nodeVersion}`} />
+                <Metric
+                  label={t("resources.uptime")}
+                  {...withHint(
+                    nullable(data.process.uptimeSeconds, formatUptime, reasonFor(data, "process.uptimeSeconds")),
+                    `${data.process.platform} · ${data.process.nodeVersion}`,
+                  )}
+                />
                 <Metric label={t("resources.sampledAt")} value={formatDateTime(data.sampledAt)} />
               </div>
             </section>
@@ -91,8 +106,20 @@ export function ResourceMonitorPanel() {
               <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 <Metric label={t("resources.entries")} {...nullable(data.cache.entries, formatNumber, reasonFor(data, "cache.totals", data.cache.totalsReason))} />
                 <Metric label={t("resources.logicalBytes")} {...nullable(data.cache.bytes, formatBytes, reasonFor(data, "cache.totals", data.cache.totalsReason))} />
-                <Metric label={t("resources.dbFile")} {...nullable(data.cache.dbFileBytes, formatBytes, reasonFor(data, "cache.dbFileBytes"))} hint={data.cache.diskScope} />
-                <Metric label={t("resources.walFile")} {...nullable(data.cache.walFileBytes, formatBytes, reasonFor(data, "cache.walFileBytes"))} hint={data.cache.diskScope} />
+                <Metric
+                  label={t("resources.dbFile")}
+                  {...withHint(
+                    nullable(data.cache.dbFileBytes, formatBytes, reasonFor(data, "cache.dbFileBytes")),
+                    data.cache.diskScope,
+                  )}
+                />
+                <Metric
+                  label={t("resources.walFile")}
+                  {...withHint(
+                    nullable(data.cache.walFileBytes, formatBytes, reasonFor(data, "cache.walFileBytes")),
+                    data.cache.diskScope,
+                  )}
+                />
                 <Metric label={t("resources.totalsUpdatedAt")} value={data.cache.totalsUpdatedAt ? formatDateTime(data.cache.totalsUpdatedAt) : "—"} hint={data.cache.totalsReason ?? data.cache.totalsSource} />
                 <Metric label={t("resources.diskScope")} value={t("resources.wholeDatabase")} hint={`${data.cache.dbFileSource} · ${data.cache.walFileSource}`} />
               </div>

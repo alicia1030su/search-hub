@@ -67,7 +67,8 @@ GET /api/admin/resources
 This endpoint accepts **only an administrator `sh_session` cookie**. It does not
 require CSRF because it is read-only. Any `Authorization` header returns `403`
 before token verification; a missing, invalid, or expired session returns `401`.
-The lookup never updates `lastSeenAt`, and an expired session is not deleted.
+The lookup never updates `lastSeenAt`, and an expired or malformed-expiry session is not deleted.
+`process.uptimeSeconds` is nullable when the uptime source fails; the reason appears in `unavailable`.
 
 ```json
 {
@@ -105,7 +106,8 @@ The snapshot is bounded and read-only: it performs primary-key cache totals and
 file `stat` calls, never `cache.stats()`, provider row scans, or database writes.
 `dbFileBytes` and `walFileBytes` describe the **whole SQLite database**, not only
 cached responses. Unknown values are `null` and include a machine-readable reason
-in `unavailable`; no filesystem path or raw error message is returned.
+in `unavailable`; no filesystem path or raw error message is returned. A cache totals row with a malformed
+`updatedAt` is treated as unavailable for this read-only endpoint (`totals_missing`/`invalid_value`) and is not repaired by the GET.
 
 ## Search
 

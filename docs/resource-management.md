@@ -97,14 +97,15 @@ Koffi DLL/函数失败必须返回 `unavailable + reason`，不能猜 0。Window
 
 `GET /api/admin/resources` 是管理员 session 专用的只读快照，仪表盘只提供手动刷新，不引入轮询。
 
-- 认证：任何 `Authorization` header 在 Token 验证前返回 403；无 cookie/无效/过期 session 返回 401。session lookup 使用 `{readOnly:true}`，不更新 `lastSeenAt`，过期分支不 DELETE。
-- 进程：RSS 来自 Node 进程内存口径；heapUsed/heapTotal/external/arrayBuffers 来自 V8；uptime 来自 `process.uptime()`。字段来源写入 `process.sources`。
+- 认证：任何 `Authorization` header 在 Token 验证前返回 403；无 cookie/无效/过期/畸形 expiry session 返回 401。session lookup 使用 `{readOnly:true}`，不更新 `lastSeenAt`，过期或畸形 expiry 分支不 DELETE。
+- 进程：RSS 来自 Node 进程内存口径；heapUsed/heapTotal/external/arrayBuffers 来自 V8；uptime 来自 `process.uptime()`，失败时为 null + unavailable。字段来源写入 `process.sources`；非有限/负字节值不进入响应。
 - 活动：`activeSearches = SearchService.controllers.size`；`activeProbes = HealthService.inFlight.size`；`queue.total = providerKey + health + singleflightFollowers`。Singleflight 只计显式 follower，不计物理执行 leader。
 - Provider Key 队列：KeyScheduler 在进入/离开等待时发送 ±1，ProviderService 聚合为 O(1) `queueDepth`；scheduler reload 保留旧实例，因此旧 waiter 完成仍能精确递减。
 - Health 队列：每次 checkMany 增加本地待处理数量，worker shift 时减 1；`Promise.allSettled` 等待全部 worker 结束后只扣一次剩余 `queue.length`，再重抛首个 rejection。并发 checkMany 的队列数相加，取消/异常最终归零。
-- 缓存：`cache.totals()` 只读 `search_cache_state` 主键；缺失/损坏返回 null+reason。RuntimeMonitor 严禁调用 `cache.stats()` 或全表聚合。
+- 缓存：`cache.totals()` 只读 `search_cache_state` 主键；缺失、损坏时间戳、非法数值或读取异常返回 null+reason，不修复、不写 DB。RuntimeMonitor 严禁调用 `cache.stats()` 或全表聚合。
 - 磁盘：DB/WAL 分别 `statSync`，口径是 `whole_sqlite_database`，不是 cache-only。ENOENT、权限、内存 DB、其他 stat 错误逐字段返回 null 与枚举 reason，不返回路径或原始错误消息。
 - 生命周期：RuntimeMonitor 不持 timer/listener，不写 task/audit/health/budget/cache metrics，不触发 kill/restart/prune/并发或 Swap 修改。
+- benchmark 安全：仅 clean HEAD 可运行，dirty worktree 直接 internal/worktree_dirty；SIGINT/SIGTERM 通过 AbortController 中断 HTTP/IPC，HTTP 固定 30 秒超时。warmup 前后与测量前后都记录 total_changes，warmup delta 必须为 0。采样不重叠；child 使用 OwnedProcessTree 身份绑定清理，stderr 有界脱敏，残留写完整 pid/ppid/startTime。DB、临时目录或 artifact 收尾失败进入 terminal failure；cgroup OOM 计数未知时记录 null+unavailable，不伪造 0。
 
 ## 10. 内存术语停止线
 

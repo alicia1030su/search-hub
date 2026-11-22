@@ -55,6 +55,11 @@ function headerValue(request: RequestLike, name: string): string | undefined {
   return value;
 }
 
+function sessionExpiryValid(value: string, nowMs = Date.now()): boolean {
+  const expiresAtMs = Date.parse(value);
+  return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
+}
+
 export class SessionService {
   private readonly readOnlySessionStatement: { get(tokenHash: string): ReadOnlySessionRow | undefined } | null;
   private readonly readOnlyUserStatement: { get(userId: string): ReadOnlyUserRow | undefined } | null;
@@ -100,7 +105,7 @@ export class SessionService {
   lookup(token: string, options: { readOnly?: boolean } = {}): { session: SessionInfo; actor: AdminActor } | null {
     if (options.readOnly && this.readOnlySessionStatement && this.readOnlyUserStatement) {
       const row = this.readOnlySessionStatement.get(sha256Hex(token));
-      if (!row || new Date(row.expires_at).getTime() <= Date.now()) return null;
+      if (!row || !sessionExpiryValid(row.expires_at)) return null;
       const user = this.readOnlyUserStatement.get(row.user_id);
       if (!user) return null;
       return {
@@ -114,7 +119,7 @@ export class SessionService {
       .where(eq(sessions.tokenHash, sha256Hex(token)))
       .get();
     if (!row) return null;
-    if (new Date(row.expiresAt).getTime() <= Date.now()) {
+    if (!sessionExpiryValid(row.expiresAt)) {
       if (!options.readOnly) this.db.delete(sessions).where(eq(sessions.id, row.id)).run();
       return null;
     }

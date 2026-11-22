@@ -187,6 +187,30 @@ async function drive(port) {
   const session = await fetch(`${base}/api/auth/session`, { headers: { cookie } });
   const { csrfToken } = await session.json();
 
+  const resources = await fetch(`${base}/api/admin/resources`, { headers: { cookie } });
+  const resourcesBody = await resources.json();
+  const memory = resourcesBody.process?.memory ?? {};
+  const activity = resourcesBody.activity ?? {};
+  const cache = resourcesBody.cache ?? {};
+  const unavailable = new Set((resourcesBody.unavailable ?? []).map((item) => item.field));
+  const reading = (field, value) => typeof value === "number" || (value === null && unavailable.has(field));
+  out.resourcesSession = resources.status === 200 && resourcesBody.schemaVersion === 1 &&
+    reading("process.memory.rssBytes", memory.rssBytes) &&
+    reading("process.memory.heapUsedBytes", memory.heapUsedBytes) &&
+    reading("process.memory.heapTotalBytes", memory.heapTotalBytes) &&
+    reading("process.memory.externalBytes", memory.externalBytes) &&
+    reading("process.memory.arrayBuffersBytes", memory.arrayBuffersBytes) &&
+    reading("process.uptimeSeconds", resourcesBody.process?.uptimeSeconds) &&
+    typeof activity.activeSearches === "number" && typeof activity.activeProbes === "number" &&
+    typeof activity.queue?.total === "number" && typeof activity.queue?.providerKey === "number" &&
+    typeof activity.queue?.health === "number" && typeof activity.queue?.singleflightFollowers === "number" &&
+    reading("cache.totals", cache.entries) && reading("cache.totals", cache.bytes) &&
+    reading("cache.dbFileBytes", cache.dbFileBytes) && reading("cache.walFileBytes", cache.walFileBytes) &&
+    cache.diskScope === "whole_sqlite_database";
+  out.resourcesDetail = `HTTP ${resources.status}`;
+  const invalidBearerResources = await fetch(`${base}/api/admin/resources`, { headers: { authorization: "Bearer invalid-resource-probe" } });
+  out.resourcesBearer = invalidBearerResources.status === 403;
+
   const provider = await fetch(`${base}/api/admin/providers`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie, "x-csrf-token": csrfToken },
@@ -227,21 +251,8 @@ async function drive(port) {
     return out;
   }
 
-  const resources = await fetch(`${base}/api/admin/resources`, { headers: { cookie } });
-  const resourcesBody = await resources.json();
-  const memory = resourcesBody.process?.memory ?? {};
-  const activity = resourcesBody.activity ?? {};
-  const cache = resourcesBody.cache ?? {};
-  out.resourcesSession = resources.status === 200 && resourcesBody.schemaVersion === 1 &&
-    ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"].every((field) => typeof memory[field] === "number") &&
-    typeof activity.activeSearches === "number" && typeof activity.activeProbes === "number" &&
-    typeof activity.queue?.total === "number" && typeof activity.queue?.providerKey === "number" &&
-    typeof activity.queue?.health === "number" && typeof activity.queue?.singleflightFollowers === "number" &&
-    ["entries", "bytes", "dbFileBytes", "walFileBytes"].every((field) => typeof cache[field] === "number") &&
-    cache.diskScope === "whole_sqlite_database";
-  out.resourcesDetail = `HTTP ${resources.status}`;
   const forbiddenResources = await fetch(`${base}/api/admin/resources`, { headers: { authorization: `Bearer ${bearer}` } });
-  out.resourcesBearer = forbiddenResources.status === 403;
+  out.resourcesBearer = out.resourcesBearer && forbiddenResources.status === 403;
 
   const mcp = async (payload) => {
     const response = await fetch(`${base}/mcp`, {

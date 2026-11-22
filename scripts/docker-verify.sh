@@ -708,12 +708,18 @@ if [ "$resources_code" = "200" ] && [ "$RESOURCES_SCHEMA" = "1" ] && [ "$RESOURC
 else
   record FAIL "11g. resources session" "HTTP=$resources_code schema=${RESOURCES_SCHEMA:-none} scope=${RESOURCES_SCOPE:-none}"
 fi
+resources_bearer_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "authorization: Bearer invalid-resource-probe" "$BASE/api/admin/resources")
+if [ "$resources_bearer_code" = "403" ]; then
+  record PASS "11h. resources bearer rejected" "Bearer GET 403 before token verification"
+else
+  record FAIL "11h. resources bearer rejected" "HTTP=$resources_bearer_code (expected 403)"
+fi
 if [ -n "$MCP_TOKEN" ]; then
-  resources_bearer_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "authorization: Bearer $MCP_TOKEN" "$BASE/api/admin/resources")
-  if [ "$resources_bearer_code" = "403" ]; then
-    record PASS "11h. resources bearer rejected" "Bearer GET 403 before token verification"
+  resources_valid_bearer_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "authorization: Bearer $MCP_TOKEN" "$BASE/api/admin/resources")
+  if [ "$resources_valid_bearer_code" = "403" ]; then
+    record PASS "11i. resources valid bearer rejected" "valid Bearer GET 403 before token verification"
   else
-    record FAIL "11h. resources bearer rejected" "HTTP=$resources_bearer_code (expected 403)"
+    record FAIL "11i. resources valid bearer rejected" "HTTP=$resources_valid_bearer_code (expected 403)"
   fi
 fi
 

@@ -45,6 +45,14 @@ async function mockResources(page: Page, body: unknown): Promise<() => number> {
 }
 
 test.describe("runtime resource panel", () => {
+  test("redirects an unauthenticated context to login", async ({ browser }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/login$/);
+    await context.close();
+  });
+
   test("renders zero values in Chinese and English without polling", async ({ page }) => {
     const calls = await mockResources(page, fixture());
     await completeSetup(page);
@@ -57,15 +65,20 @@ test.describe("runtime resource panel", () => {
     await expect(panel.getByText("Runtime resources", { exact: true })).toBeVisible();
     await expect(panel.getByText("Manual refresh only; no automatic polling.")).toBeVisible();
     expect(calls()).toBe(1);
-    await panel.getByRole("button", { name: "Refresh runtime resources" }).click();
+    const refresh = panel.getByRole("button", { name: "Refresh runtime resources" });
+    await refresh.click();
     await expect.poll(calls).toBe(2);
+    await expect(refresh).toBeEnabled();
   });
 
   test("shows partial unavailable reasons and fits a narrow viewport", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockResources(page, fixture({
+      process: { ...fixture().process, uptimeSeconds: null, memory: { ...fixture().process.memory, rssBytes: null } },
       cache: { ...fixture().cache, entries: null, bytes: null, dbFileBytes: null, walFileBytes: null, totalsReason: "totals_missing", dbFileSource: "unavailable", walFileSource: "unavailable" },
       unavailable: [
+        { field: "process.uptimeSeconds", source: "node_process", reason: "uptime_unavailable" },
+        { field: "process.memory.rssBytes", source: "node_process", reason: "memory_unavailable" },
         { field: "cache.totals", source: "search_cache_state", reason: "totals_missing" },
         { field: "cache.dbFileBytes", source: "fs.stat", reason: "not_found" },
         { field: "cache.walFileBytes", source: "fs.stat", reason: "not_found" },
@@ -75,6 +88,9 @@ test.describe("runtime resource panel", () => {
     const panel = page.locator('[aria-labelledby="resources-title"]');
     await expect(panel.getByText("totals_missing", { exact: true }).first()).toBeVisible();
     await expect(panel.getByText("not_found", { exact: true }).first()).toBeVisible();
+    await expect(panel.getByText("uptime_unavailable", { exact: true })).toBeVisible();
+    await expect(panel.getByText("memory_unavailable", { exact: true })).toBeVisible();
+    await expect(panel.getByText("—", { exact: true }).first()).toBeVisible();
     expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   });
 

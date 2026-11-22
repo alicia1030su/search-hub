@@ -45,11 +45,27 @@ describe("read-only admin session authentication", () => {
     expect(handle.db.select().from(sessions).all()).toHaveLength(1);
   });
 
+  it("rejects malformed expiry without deleting the session", () => {
+    const { handle, sessionService, token } = fixture();
+    handle.db.update(sessions).set({ expiresAt: "not-a-date" }).run();
+    expect(sessionService.lookup(token, { readOnly: true })).toBeNull();
+    expect(handle.db.select().from(sessions).all()).toHaveLength(1);
+  });
+
   it("rejects any Authorization header before TokenService.verify", () => {
     const { deps, tokens, token } = fixture();
     const verify = vi.spyOn(tokens, "verify");
     expect(() => authenticateAdminSessionReadOnly({ headers: { authorization: "Bearer anything" }, cookies: { sh_session: token }, ip: "127.0.0.1" }, deps)).toThrow(/Authorization headers/);
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("rejects Authorization before an expired cookie and leaves the session row untouched", () => {
+    const { handle, deps, tokens, token } = fixture();
+    handle.db.update(sessions).set({ expiresAt: "2020-01-01T00:00:00.000Z" }).run();
+    const verify = vi.spyOn(tokens, "verify");
+    expect(() => authenticateAdminSessionReadOnly({ headers: { authorization: "Bearer anything" }, cookies: { sh_session: token }, ip: "127.0.0.1" }, deps)).toThrow(/Authorization headers/);
+    expect(verify).not.toHaveBeenCalled();
+    expect(handle.db.select().from(sessions).all()).toHaveLength(1);
   });
 
   it("returns 401-style errors for missing or invalid cookies and accepts a valid session", () => {

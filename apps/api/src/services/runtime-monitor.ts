@@ -58,7 +58,9 @@ const PROCESS_SOURCES: RuntimeResourceSnapshot["process"]["sources"] = Object.fr
   arrayBuffers: "v8",
   uptime: "node_process",
 });
-const EMPTY_UNAVAILABLE: RuntimeUnavailable[] = [];
+function memorySource(field: "rssBytes" | "heapUsedBytes" | "heapTotalBytes" | "externalBytes" | "arrayBuffersBytes"): string {
+  return field === "rssBytes" ? "node_process" : "v8";
+}
 
 export interface RuntimeMonitorDeps {
   cache: { totals(): CacheTotalsResult };
@@ -100,22 +102,32 @@ export class RuntimeMonitor {
         arrayBuffersBytes: bytes(usage.arrayBuffers),
       };
       for (const field of ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const) {
-        if (memory[field] === null) unavailable.push({ field: `process.memory.${field}`, source: field === "rssBytes" ? "node_process" : "v8", reason: "invalid_value" });
+        if (memory[field] === null) unavailable.push({ field: `process.memory.${field}`, source: memorySource(field), reason: "invalid_value" });
       }
     } catch {
       for (const field of ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const) {
-        unavailable.push({ field: `process.memory.${field}`, source: "node_process", reason: "memory_unavailable" });
+        unavailable.push({ field: `process.memory.${field}`, source: memorySource(field), reason: "memory_unavailable" });
       }
     }
 
     let totals: CacheTotalsResult;
     try {
-      totals = this.deps.cache.totals();
+      const value = this.deps.cache.totals();
+      const validEntries = value.entries === null || (Number.isSafeInteger(value.entries) && value.entries >= 0);
+      const validBytes = value.bytes === null || (Number.isSafeInteger(value.bytes) && value.bytes >= 0);
+      const updatedAtMs = typeof value.updatedAt === "string" ? Date.parse(value.updatedAt) : Number.NaN;
+      const validUpdatedAt = Number.isFinite(updatedAtMs) && new Date(updatedAtMs).toISOString() === value.updatedAt;
+      totals = validEntries && validBytes && validUpdatedAt
+        ? value
+        : { entries: null, bytes: null, updatedAt: null, source: value.source, reason: "invalid_value" };
     } catch {
       totals = { entries: null, bytes: null, updatedAt: null, source: "search_cache_state", reason: "totals_unavailable" };
     }
     if (totals.entries === null || totals.bytes === null) {
-      unavailable.push({ field: "cache.totals", source: totals.source, reason: totals.reason === "totals_missing" ? "totals_missing" : "totals_unavailable" });
+      const reason: RuntimeUnavailable["reason"] = totals.reason === "totals_missing" || totals.reason === "invalid_value" || totals.reason === "totals_unavailable"
+        ? totals.reason
+        : "totals_unavailable";
+      unavailable.push({ field: "cache.totals", source: totals.source, reason });
     }
     const dbPath = this.deps.dbPath;
     const readDisk = (suffix: "" | "-wal"): { bytes: number | null; source: string } => {
@@ -151,9 +163,16 @@ export class RuntimeMonitor {
     } catch {
       unavailable.push({ field: "process.uptimeSeconds", source: "node_process", reason: "uptime_unavailable" });
     }
+    let sampledAt: string;
+    try {
+      const value = now();
+      sampledAt = Number.isFinite(value) ? new Date(value).toISOString() : new Date().toISOString();
+    } catch {
+      sampledAt = new Date().toISOString();
+    }
     return {
       schemaVersion: 1,
-      sampledAt: new Date(now()).toISOString(),
+      sampledAt,
       process: {
         platform: this.deps.platform ?? process.platform,
         nodeVersion: this.deps.nodeVersion ?? process.version,
@@ -178,7 +197,7 @@ export class RuntimeMonitor {
         walFileSource: wal.source,
         diskScope: "whole_sqlite_database",
       },
-      unavailable: unavailable.length === 0 ? EMPTY_UNAVAILABLE : unavailable,
+      unavailable,
     };
   }
 }

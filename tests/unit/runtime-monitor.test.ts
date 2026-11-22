@@ -74,16 +74,37 @@ describe("RuntimeMonitor", () => {
     expect(JSON.stringify(snapshot)).not.toContain("database unavailable");
   });
 
-  it("never calls stats, listRows, or activeRuntimes and creates no timer", () => {
-    const setInterval = vi.spyOn(globalThis, "setInterval");
-    const forbidden = () => { throw new Error("forbidden full scan"); };
+  it("keeps invalid sampledAt and totals local without leaking raw values", () => {
     const snapshot = new RuntimeMonitor(deps({
-      cache: { totals: () => ({ entries: 1, bytes: 2, updatedAt: null, source: "search_cache_state", reason: null }), stats: forbidden } as never,
-      providers: { queueDepth: 0, listRows: forbidden } as never,
-      search: { activeSearchCount: 0, queuedFollowerCount: 0, activeRuntimes: forbidden } as never,
+      now: () => { throw new Error("clock unavailable"); },
+      cache: { totals: () => ({ entries: -1, bytes: Number.NaN, updatedAt: "not-a-date", source: "search_cache_state", reason: null }) },
     })).snapshot();
-    expect(snapshot.cache.entries).toBe(1);
-    expect(setInterval).not.toHaveBeenCalled();
-    setInterval.mockRestore();
+    expect(Number.isNaN(Date.parse(snapshot.sampledAt))).toBe(false);
+    expect(snapshot.cache.entries).toBeNull();
+    expect(snapshot.cache.bytes).toBeNull();
+    expect(snapshot.unavailable).toContainEqual({ field: "cache.totals", source: "search_cache_state", reason: "invalid_value" });
+    expect(JSON.stringify(snapshot)).not.toContain("clock unavailable");
+  });
+
+  it("never calls stats, listRows, or activeRuntimes and creates no timer or listener", () => {
+    const setInterval = vi.spyOn(globalThis, "setInterval");
+    const setTimeout = vi.spyOn(globalThis, "setTimeout");
+    const addListener = vi.spyOn(process, "addListener");
+    const forbidden = () => { throw new Error("forbidden full scan"); };
+    try {
+      const snapshot = new RuntimeMonitor(deps({
+        cache: { totals: () => ({ entries: 1, bytes: 2, updatedAt: null, source: "search_cache_state", reason: null }), stats: forbidden } as never,
+        providers: { queueDepth: 0, listRows: forbidden, activeRuntimes: forbidden } as never,
+        search: { activeSearchCount: 0, queuedFollowerCount: 0 },
+      })).snapshot();
+      expect(snapshot.cache.entries).toBe(1);
+      expect(setInterval).not.toHaveBeenCalled();
+      expect(setTimeout).not.toHaveBeenCalled();
+      expect(addListener).not.toHaveBeenCalled();
+    } finally {
+      setInterval.mockRestore();
+      setTimeout.mockRestore();
+      addListener.mockRestore();
+    }
   });
 });

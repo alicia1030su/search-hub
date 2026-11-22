@@ -40,6 +40,59 @@ describe("D06 finally cleanup", () => {
     expect(result.cleanup.residuals).toEqual([]);
   });
 
+  it("reports and cleans an identity-stable descendant after the owned root exits", async () => {
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      readProcess: async (pid: number) => pid === 222 ? entry : null,
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    tree.records.set(222, { ...descendant, owned: true });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.residuals).toEqual([expect.objectContaining({ pid: 222, ppid: 111, startTime: "descendant-stable" })]);
+    expect(signalled).toContain(222);
+    expect(signalled).not.toContain(111);
+  });
+
+  it("never signals a descendant whose PID was reused", async () => {
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-reused", owned: false, role: "node", executableName: "node" };
+    const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      readProcess: async (pid: number) => pid === 222 ? entry : null,
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    tree.records.set(222, { ...descendant, startTime: "descendant-old", owned: true });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.residuals).toEqual([]);
+    expect(signalled).toEqual([]);
+  });
+
+  it("fails on a reused root identity without signalling the reused root", async () => {
+    const reusedRoot = { pid: 111, ppid: 1, startTime: "root-reused", owned: false, role: "node", executableName: "node" };
+    const entry = { identity: reusedRoot, rssBytes: { value: 1, source: "test", reason: null } };
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      readProcess: async () => entry,
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-original", { io, termGraceMs: 1 });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 111, reason: "root_identity_changed" }));
+    expect(signalled).toEqual([]);
+  });
+
   it("writes residual evidence when an owned process cannot be removed", async () => {
     const repoRoot = await temporaryDirectory();
     const run = await createArtifactRun({ command: "test", repoRoot });

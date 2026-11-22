@@ -149,6 +149,8 @@ function parseTotals(value: string | undefined): CacheTotals | null {
     if (!Number.isSafeInteger(parsed.entries) || (parsed.entries ?? -1) < 0 ||
         !Number.isSafeInteger(parsed.bytes) || (parsed.bytes ?? -1) < 0 ||
         typeof parsed.updatedAt !== "string") return null;
+    const updatedAtMs = Date.parse(parsed.updatedAt);
+    if (!Number.isFinite(updatedAtMs) || new Date(updatedAtMs).toISOString() !== parsed.updatedAt) return null;
     return { entries: parsed.entries!, bytes: parsed.bytes!, updatedAt: parsed.updatedAt };
   } catch {
     return null;

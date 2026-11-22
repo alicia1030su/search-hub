@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { apiKeys, createDb, providerInstances, resolveMigrationsDir, runMigrations, type DbHandle } from "@search-hub/db";
 import { KeyScheduler, type SchedulerKeySeed } from "@search-hub/core";
 import { ProviderService } from "../../apps/api/src/services/providers.js";
@@ -93,6 +94,47 @@ describe("O(1) resource queue counters", () => {
     const second = await pending;
     expect(second).not.toBeNull();
     second!.release({ ok: true });
+    expect(providers.queueDepth).toBe(0);
+  });
+
+  it("aggregates two providers and survives abort, timeout, and deleted-provider reload", async () => {
+    const { dir, handle } = database();
+    addProvider(handle, "p1");
+    addProvider(handle, "p2");
+    const secrets = SecretBox.fromEnvOrFile(dir);
+    const now = new Date().toISOString();
+    for (const [id, providerId] of [["key1", "p1"], ["key2", "p2"]]) {
+      const encrypted = secrets.encrypt(`sk-${id}`);
+      handle.db.insert(apiKeys).values({ id, providerId, label: id, keyCiphertext: encrypted.ciphertext, keyIv: encrypted.iv, keyTag: encrypted.tag, keyVersion: 1, keyHint: "sk-***", weight: 1, enabled: true, status: "healthy", createdAt: now, updatedAt: now }).run();
+    }
+    const providers = new ProviderService(handle.db, secrets);
+    const firstKeys = providers.activeRuntimes().find((entry) => entry.config.id === "p1")!.scheduler;
+    const secondKeys = providers.activeRuntimes().find((entry) => entry.config.id === "p2")!.scheduler;
+    const firstHeld = await firstKeys.acquire();
+    const secondHeld = await secondKeys.acquire();
+    const aborter = new AbortController();
+    const firstWaiter = firstKeys.acquire({ signal: aborter.signal, maxWaitMs: 1000 });
+    const secondWaiter = secondKeys.acquire({ maxWaitMs: 1000 });
+    await Promise.resolve();
+    expect(providers.queueDepth).toBe(2);
+    aborter.abort(new Error("abort provider waiter"));
+    expect(await firstWaiter).toBeNull();
+    expect(providers.queueDepth).toBe(1);
+    firstHeld!.release({ ok: true });
+
+    const firstHeldAgain = await firstKeys.acquire();
+    const timedOut = firstKeys.acquire({ maxWaitMs: 15 });
+    expect(await timedOut).toBeNull();
+    expect(providers.queueDepth).toBe(1);
+    firstHeldAgain!.release({ ok: true });
+
+    handle.db.delete(providerInstances).where(eq(providerInstances.id, "p2")).run();
+    providers.reload();
+    expect(providers.queueDepth).toBe(1);
+    secondHeld!.release({ ok: true });
+    const secondAcquired = await secondWaiter;
+    expect(secondAcquired).not.toBeNull();
+    secondAcquired!.release({ ok: true });
     expect(providers.queueDepth).toBe(0);
   });
 

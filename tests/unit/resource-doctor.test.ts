@@ -152,6 +152,10 @@ describe("D08 OOM evidence and redaction", () => {
     expect(classifyOom({ exitCode: -1073741801, ownedRootDied: true, ownedPeakBytes: 100 }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: 100 }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 5, ownedRootDied: false }, { cgroupOomDelta: 1 }).confirmed).toBe(false);
+    const unknown = classifyOom({ exitCode: 5, ownedRootDied: true }, { cgroupOomDelta: null });
+    expect(unknown.confirmed).toBe(false);
+    expect(unknown.reason).toBe("cgroup_oom_unknown");
+    expect(unknown.cgroupOomDelta).toBeNull();
   });
 
   it("redacts secrets across streaming chunk boundaries with bounded lookbehind", () => {
