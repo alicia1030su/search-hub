@@ -100,7 +100,7 @@ export class RuntimeMonitor {
         arrayBuffersBytes: bytes(usage.arrayBuffers),
       };
       for (const field of ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const) {
-        if (memory[field] === null) unavailable.push({ field: `process.memory.${field}`, source: "node_process", reason: "invalid_value" });
+        if (memory[field] === null) unavailable.push({ field: `process.memory.${field}`, source: field === "rssBytes" ? "node_process" : "v8", reason: "invalid_value" });
       }
     } catch {
       for (const field of ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const) {
