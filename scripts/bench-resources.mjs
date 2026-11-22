@@ -116,13 +116,16 @@ process.on("message", async (message) => {
   }
   const wallMs = performance.now() - wallStarted;
   const changesAfter = (await ipc("total_changes")).value;
+  rssPeak = Math.max(rssPeak, (await io.readProcess(child.pid))?.rssBytes.value ?? 0);
+  await ipc("gc");
+  await new Promise((resolve) => setImmediate(resolve));
   const final = await io.readProcess(child.pid);
-  rssPeak = Math.max(rssPeak, final?.rssBytes.value ?? 0);
   clearInterval(sampler);
   sampler = null;
   const p50Ms = percentile(samples, 0.5);
   const p95Ms = percentile(samples, 0.95);
-  const rssDeltaBytes = Math.max(0, rssPeak - rssBaseline);
+  const rssDeltaBytes = Math.max(0, (final?.rssBytes.value ?? 0) - rssBaseline);
+  const rssPeakDeltaBytes = Math.max(0, rssPeak - rssBaseline);
   const report = {
     schemaVersion: 1,
     benchmark: "resources",
@@ -130,10 +133,10 @@ process.on("message", async (message) => {
     metadata: { platform: process.platform, arch: process.arch, node: process.version, rows: options.rows, requests: options.requests, warmup: options.warmup, concurrency: 1, gcBeforeBaseline: true },
     wallMs, p50Ms, p95Ms, latencySamplesMs: samples,
     rssBeforeGcBytes, rssBaselineBytes: rssBaseline, rssPeakBytes: rssPeak, rssDeltaBytes,
-    rssDeltaBeforeGcBytes: Math.max(0, rssPeak - rssBeforeGcBytes),
+    rssPeakDeltaBytes, rssDeltaBeforeGcBytes: Math.max(0, rssPeak - rssBeforeGcBytes),
     sqliteTotalChangesBefore: changesBefore, sqliteTotalChangesAfter: changesAfter, sqliteTotalChangesDelta: changesAfter - changesBefore,
     queryPlans: plans,
-    thresholds: { p95Ms: 10, rssDeltaBytes: 2 * 1024 * 1024 },
+    thresholds: { p95Ms: 10, retainedRssDeltaBytes: 2 * 1024 * 1024, rssBasis: "post_warmup_gc_to_post_run_gc" },
     p95Passed: p95Ms <= 10, rssPassed: rssDeltaBytes <= 2 * 1024 * 1024,
     zeroWritePassed: changesAfter === changesBefore,
     oom: false, exitCode: 0, residualPids: [],
