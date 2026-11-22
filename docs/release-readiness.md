@@ -1,29 +1,36 @@
 # 发布就绪报告
 
-## v0.1.13 Stable 候选（2026-11-21）
+## v0.1.13 Stable（2026-11-22）
 
-> **口径**：本节是候选就绪记录，不是发布完成报告。CLI 源码、本地全量测试、Windows/Node
-> 便携包实机验收与本地 v0.1.12 升级已执行；Linux x64/arm64、远端 CI、真实 Release 资产升级、
-> 正式 Release 与 GHCR 必须在最终提交上取得证据后才能记为 PASS。
+> **口径**：v0.1.13 已正式发布。发布源为 `main` 提交
+> `42d5e574992bc29e870480456f4b6154e0c9dc5f`（PR [#38](https://github.com/alicia1030su/search-hub/pull/38)
+> 的 merge commit）；候选最终提交为 `4a4c33650a77b41187a7ad9d03b0786111e09c15`。
+> 本记录只把真实执行并取得的证据记为 PASS，环境受限项单独说明。
 
-| 项 | 候选状态 |
+| 项 | 最终状态 |
 |---|---|
-| 目标版本 | **v0.1.13（Stable 候选）**，前序 Stable 为 v0.1.12 |
+| 目标版本 | **v0.1.13（Stable）**，前序 Stable 为 v0.1.12 |
 | 主题 | 独立远程 CLI `shub`：搜索/深度搜索、来源、状态、诊断、配置、Provider 单源/批量检测 |
-| 自动化测试 | **PASS（本地）**：1299 项 / 100 文件；其中 CLI 专项 58 项 |
-| 浏览器 E2E | **PASS（本地）**：Playwright 42/42 |
+| 发布源提交 | **PASS**：`42d5e574992bc29e870480456f4b6154e0c9dc5f`，PR #38 已正常合并 |
+| annotated Tag | **PASS**：`v0.1.13` → `314d29e5a47d1b2067ca2cf514e352a9f78c2614` → `42d5e57` |
+| 自动化测试 | **PASS（本地 + PR + main）**：1299 项 / 100 文件；CLI 专项 58 项 |
+| 浏览器 E2E | **PASS（本地 + PR + main + Docker）**：Playwright 42/42 |
 | 类型 / Lint / 构建 | **PASS**：typecheck 0 error；oxlint 0 warning / 0 error；Web/server/MCP/CLI 构建成功 |
 | 文档 / 矩阵 / 质量 | **PASS**：`check:docs`、`check:matrix` exit 0；质量自检 11/11（合成数据） |
-| 安全 | **PASS**：依赖审计无已知漏洞；Secret Scan 0 violation，未扩大白名单 |
-| Windows 服务端候选包 | **PASS（本地）**：构建、启动、REST/MCP、重启持久化 16/16 |
-| Windows CLI SEA | **PASS（本地）**：`shub.exe --version/--help/status/sources/doctor` 与真实 REST 搜索 9/9 |
-| Node 22 便携 CLI | **PASS（本地）**：真实服务端验收 9/9 |
-| Linux x64 / arm64 CLI | **PENDING**：由 `CLI packages` 与 Release 工作流在对应 runner 验收 |
-| launcher / updater / 故障注入 | **PASS（本地 Windows）**：生命周期、安装回滚、下载/校验/架构/迁移回滚全部通过 |
-| v0.1.12 → current 升级 | **PASS（本地源码构建旧包）**：管理员、Provider、Key 解密、master.key、会话、搜索任务、健康历史、预算账本、批量任务、缓存命中全部保留 |
-| 真实 v0.1.12 Release 资产升级 | **PENDING（远端）**：本机下载速度受限；`upgrade.yml` 已增加 Windows/Linux 真实资产路径 |
-| 远端 CI / Docker / systemd | **PENDING**：最终提交的正确 SHA 待观察 |
-| 正式 Release / Provenance / GHCR | **PENDING**：未观察到 v0.1.13 tag、Release 或镜像证据 |
+| 安全 | **PASS**：依赖审计无已知 HIGH/CRITICAL；Secret Scan 0 violation，未扩大白名单 |
+| PR 远端门禁 | **PASS**：CI、Docker、systemd、升级/故障注入、CLI packages 5/5 工作流全绿 |
+| main 远端门禁 | **PASS**：CI、Docker、systemd、升级/故障注入、CLI packages 5/5 工作流全绿 |
+| Windows 服务端包 | **PASS**：tag CI 在 Windows runner 构建、启动并通过 REST/MCP 验收；本地候选包 16/16 |
+| Linux x64 / arm64 服务端包 | **PASS**：tag CI 在对应 Linux runner 构建、启动并通过 REST/MCP 验收 |
+| Windows / Linux x64 / Linux arm64 CLI | **PASS**：tag CI 在对应 runner 构建 SEA 并连接真实服务端验收 |
+| Node 22 便携 CLI | **PASS**：tag CI 与本地 Windows 均连接真实服务端验收 9/9 |
+| 跨版本升级 | **PASS（Windows + Linux）**：v0.1.4-beta.6、v0.1.5-beta.1、v0.1.7-beta.3、v0.1.8、v0.1.10、v0.1.11、v0.1.12、v0.1.8-beta.1 全部通过 |
+| 本地真实旧包回归 | **PASS**：v0.1.4、v0.1.5、v0.1.7、v0.1.12 → current；管理员、Provider、Key、master.key、会话、任务、健康/预算/批量状态均保留 |
+| 正式发布工作流 | **PASS**：[44999060933](https://github.com/alicia1030su/search-hub/actions/runs/44999060933)，10/10 jobs |
+| GitHub Release | **PASS**：`prerelease=false`、`draft=false`，`/releases/latest` 返回 v0.1.13 |
+| 资产 / SHA256SUMS | **PASS**：8 个资产均 `uploaded`；tag CI 完整下载后 7 条摘要全 OK，本机 API digest 逐条一致 |
+| Provenance | **PASS**：8 个资产共享同一 SLSA bundle `attestations/1457501833/2026/11/22/70706299.json.sn`；tag CI 逐包验证通过 |
+| GHCR | **PASS**：`0.1.13`、`v0.1.13`、`latest` 同 digest `sha256:731ccb4ed475d154d9b0c79902c75511f0c8362c8df72d5c39518f348d0af941`，平台 `linux/amd64` |
 | 真实厂商联调 | 仍为 Hacker News、Crossref、OpenAlex、PubMed 4 个源 |
 | 多实例 | **NOT_IMPLEMENTED**：探测锁与预算仍为单进程/SQLite 单机 |
 
@@ -39,32 +46,56 @@
 - Provider 检测先读服务端预检，缺 Key/禁用 Key 跳过，免 Key 需显式开启，付费风险在无人值守模式必须 `--confirm-cost`。
 - CLI 接受服务端 `0.1.12` 至 `0.1.x`；不支持的端点明确失败，不把错误当空结果。
 
-### 候选验证记录
+### 最终验证记录
 
 | 命令 / 检查 | 执行环境 | 结果 |
 |---|---|---|
-| `pnpm test --maxWorkers=2` | 本地候选工作树 | **PASS**：1299/100，exit 0 |
+| `pnpm test --maxWorkers=2` | 本地 + PR/main CI | **PASS**：1299/100，exit 0 |
 | `pnpm test:cli` | 本地候选工作树 | **PASS**：58/58，exit 0 |
-| `pnpm test:e2e` | 本地构建 | **PASS**：42/42，exit 0 |
-| `pnpm typecheck` / `pnpm lint` / `pnpm build` | 本地候选工作树 | **PASS** |
-| `pnpm audit --audit-level high` | 本地候选工作树 | **PASS**：无已知漏洞 |
-| `node scripts/secret-scan.mjs` | 本地候选工作树 | **PASS**：0 violation |
-| `pnpm check:docs` / `pnpm check:matrix` / `pnpm quality:eval` | 本地候选工作树 | **PASS** |
-| Windows 服务端候选包 | 本地 Windows | **PASS**：16/16 |
-| Windows CLI SEA / Node 22 CLI | 本地 Windows | **PASS**：各 9/9 |
-| launcher / updater / fault injection | 本地 Windows | **PASS** |
-| v0.1.12 → current | 本地 Windows，v0.1.12 Tag 源码构建旧包 | **PASS**：全部数据保留断言通过 |
-| CLI 三平台 / 远端门禁 / 正式发布 | GitHub Actions | **PENDING** |
+| `pnpm test:e2e` | 本地 + PR/main/Docker CI | **PASS**：42/42 |
+| `pnpm typecheck` / `pnpm lint` / `pnpm build` | 本地 + PR/main CI | **PASS** |
+| `pnpm audit --audit-level high` | 本地 + PR/main CI | **PASS**：无已知 HIGH/CRITICAL |
+| `node scripts/secret-scan.mjs` | 本地 + PR/main CI | **PASS**：0 violation |
+| `pnpm check:docs` / `pnpm check:matrix` / `pnpm quality:eval` | 本地 + PR/main CI | **PASS** |
+| PR 五条工作流 | GitHub Actions | **PASS**：CI `44997781867`、Docker `44997781850`、systemd `44997781784`、Upgrade `44997781914`、CLI `44997781898` |
+| main 五条工作流 | GitHub Actions | **PASS**：CI `44998417665`、Docker `44998417686`、systemd `44998417704`、Upgrade `44998417741`、CLI `44998417762` |
+| 三平台发布包 | tag CI `44999060933` | **PASS**：Windows x64 / Linux x64 / Linux arm64 均在对应 runner 构建、启动并通过 REST/MCP 验收 |
+| 三平台 CLI + Node22 | tag CI `44999060933` | **PASS**：4 个 CLI 资产均构建并连接真实服务端验收 |
+| Release 资产校验 | tag CI + 本机 API | **PASS**：CI 完整下载后 `sha256sum -c` 七条全 OK；8 个资产均通过 Provenance API 查询 |
+| GHCR 三标签 | tag CI | **PASS**：三次 push digest 一致，push 后 imagetools inspect 再次读到同一 digest |
 
-### 已知限制与发布阻断口径
+### 缓存升级证据口径
 
-- 本机下载 v0.1.12 已发布 Windows 资产速度约 366 KB/分钟，未把截断文件当作升级依据；远端 CI 必须完成真实 Release 资产升级。
-- Linux x64/arm64 CLI 尚未在本机执行，必须由对应 runner 的真实 SEA 验收兜底。
-- 探测锁、Key 额度与预算仍不跨进程；多实例部署没有协调者。
-- CLI 不提供实时流，因为当前 REST 搜索 API 不同步流式返回。
-- Token 存储仅环境变量/stdin，未实现 OS keyring。
-- 只有 4 个搜索源有真实网络证据，质量评测仍只有合成基准。
-- 在所有 PENDING 项取得正确 SHA 的真实结果前，不得把 v0.1.13 标记为已发布或全部门禁 PASS。
+- `v0.1.4`–`v0.1.6` 使用进程内 `Map` 缓存，没有 `search_cache` 表；只有“表确实不存在 + 缓存 API 明确 404/not_implemented”才归类为 `legacy-memory-only`。
+- `legacy-memory-only` 不伪造旧持久行保留，但升级后必须建立新持久缓存，warmup 后 `entries>0`、SQLite `hit_count` 增长且 `stats.cached=true`。
+- `v0.1.7+` 持久缓存要求指纹未变时旧行必须复用；指纹合法变化时允许新行复用，但必须证明真实命中。
+- 数据库不可读、API 异常、缓存种子失败、条目缺失或证据歧义一律 FAIL，不回退到“只看 cached 字段”。
+
+### 发布事实
+
+- Release：<https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13>，发布于 `2026-11-22T07:39:45Z`，并已由 `/releases/latest` 确认为 GitHub Latest。
+- 资产 8 个：
+  - `search-hub-v0.1.13-windows-x64.zip`：74,154,773 bytes，`9d0cba1d02a1165e1b19049fea1f92bb38ff48211dd8021deeacc19886afb3c1`
+  - `search-hub-v0.1.13-linux-x64.tar.gz`：49,652,045 bytes，`961aee90d6f571c73658ece28ef1b1643f09aede435232a90fb7b87a50de4a1f`
+  - `search-hub-v0.1.13-linux-arm64.tar.gz`：49,490,629 bytes，`7598b5287e12fceff01cd29872cd2dd5febbc4f2bf62a88e4173a046c5a73e11`
+  - `shub-v0.1.13-windows-x64.zip`：34,627,934 bytes，`2f7c9e218ddbd2b50342d289476f0084e54026eb37bb7899e0b1d96f379dc021`
+  - `shub-v0.1.13-linux-x64.tar.gz`：42,185,532 bytes，`861519e48861dfb41941e099e99ef9e9030d7207900c9d854af9d24bc536722a`
+  - `shub-v0.1.13-linux-arm64.tar.gz`：42,103,187 bytes，`6e6694b60fe253355a8d90143d64079cc732edfb94e03f3d8bb72441ac8000b4`
+  - `shub-v0.1.13-node22.tar.gz`：428,094 bytes，`cb3d382f27ed83c39052b44a07e682520f77c333ef203faad3fe3130ae674d4f`
+  - `SHA256SUMS`：689 bytes，`39c9d79a4975b3129545fe3e98cce92fd5bacda900ec57c0b3b0f612109ecf20`
+- 八份资产均在同一份 SLSA Provenance 的 subject 中；bundle 为 `attestations/1457501833/2026/11/22/70706299.json.sn`。
+- GHCR `ghcr.io/alicia1030su/search-hub` 的 `0.1.13`、`v0.1.13`、`latest` 三个标签均指向 `sha256:731ccb4ed475d154d9b0c79902c75511f0c8362c8df72d5c39518f348d0af941`。
+
+### 未通过 / 受限
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 本机完整大资产下载 | **BLOCKED（宿主网络）** | 本机使用 Release API digest、`SHA256SUMS` 与 Provenance API 交叉核验；tag CI 已在 runner 上完整下载全部资产并执行字节级校验 |
+| 本机独立读取 GHCR manifest | **BLOCKED（凭证可见性）** | 当前 GitHub 凭证无 `read:packages`；发布 job 使用已认证 `docker buildx imagetools inspect` 完成 push 后复核 |
+| `gh release verify` 的 Tag 级 attestation 显示 | **NOTE** | 该命令未列出 asset attestation；直接 Provenance API 与 tag CI 的 `gh attestation verify` 均确认 8 个资产有有效记录 |
+| 真实厂商联调 | **受限** | 仅 4 个源有真实网络证据 |
+| 质量评测数据 | **受限** | 只有合成基准，无厂商标注集 |
+| 多实例 | **NOT_IMPLEMENTED** | 无跨进程协调者 |
 
 ---
 

@@ -4,9 +4,9 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.12 · Stable 已发布；v0.1.13 开发中（CLI）。**
+> **状态：v0.1.13 · Stable 已发布。**
 >
-> **发布门禁**：v0.1.13 本地全量 Vitest **1299 项 / 100 文件**、Playwright **42 项**、CLI 专项 **58 项**均已通过；远端 CI、升级矩阵与正式发布结果以 `docs/release-readiness.md` 的最终记录为准。
+> **发布门禁**：本地 Vitest **1299 项 / 100 文件**、Playwright **42 项**、CLI 专项 **58 项**；远端 PR/main 的 CI、Docker、systemd、8 条跨版本升级与三平台 CLI 验收均通过。正式 Release、资产校验、Provenance 与 GHCR 证据见 `docs/release-readiness.md`。
 >
 > **v0.1.13 主题**：新增可独立安装的 `shub` 命令行客户端，支持搜索、深度搜索、来源列表、状态、环境诊断、配置与 Provider 健康检测；CLI 只调用 REST API，不重新实现搜索核心。
 >
@@ -38,7 +38,7 @@ Search Hub 把这些做成一个可部署的服务：
 | REST API + OpenAPI 3.1 | 已实现 | `/api/openapi.json` 与 `/api/docs` |
 | MCP Server | 已实现 | 2026-07-28 现代协议 + 2025-11-25 传统握手；Streamable HTTP + stdio |
 | Agent Skills | 已实现 | 3 个 `SKILL.md`，遵循 agentskills.io 结构 |
-| CLI `shub` | v0.1.13 开发中 | 独立 Windows/Linux 可执行包；搜索、深度搜索、来源、状态、诊断、配置与健康检测；JSON/NDJSON 纯净输出 |
+| CLI `shub` | 已实现 | 独立 Windows/Linux 可执行包与 Node 22 便携包；搜索、深度搜索、来源、状态、诊断、配置与健康检测；JSON/NDJSON 纯净输出 |
 | AI 摘要 / Embedding / Rerank | 已实现（可选） | OpenAI 兼容 / Anthropic / Gemini / Cohere-Jina 兼容 / custom-http |
 | 结果缓存（SQLite 持久化） | 已实现 | 1–72 小时可配；重启/容器重建后仍有效；容量上限自动 LRU 淘汰，后台每 10 分钟清理过期 |
 | 中英文界面 | 已实现 | zh-CN 为默认，en-US 完整覆盖；语言选择持久化，日期/数字跟随语言 |
@@ -149,9 +149,9 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.13 候选）
+## 下载安装（v0.1.13 Stable）
 
-v0.1.12 已正式发布；v0.1.13 将新增独立 CLI，并在发布门禁通过后提供服务器与 CLI 资产。
+v0.1.13 已正式发布，包含独立 CLI，以及 Windows/Linux 服务端与 CLI 资产。
 
 | 平台 | 服务端 | CLI `shub` | 需要什么 |
 |---|---|---|---|
@@ -160,7 +160,7 @@ v0.1.12 已正式发布；v0.1.13 将新增独立 CLI，并在发布门禁通过
 | Linux arm64 | `search-hub-v0.1.13-linux-arm64.tar.gz` | `shub-v0.1.13-linux-arm64.tar.gz` | **无** |
 | Node.js 22+ | — | `shub-v0.1.13-node22.tar.gz` | Node.js 22+ |
 
-发布后从 [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) 下载同一份 `SHA256SUMS` 并执行 `sha256sum -c SHA256SUMS`；每个资产同时提供构建溯源。CLI 不需要部署服务端，可连接本机或远程 Search Hub。
+从 [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) 下载同一份 `SHA256SUMS` 并执行 `sha256sum -c SHA256SUMS`；每个资产同时提供构建溯源。CLI 不需要部署服务端，可连接本机或远程 Search Hub。
 
 ### CLI 快速开始
 
@@ -431,7 +431,7 @@ stdio 模式是 REST 代理：关闭 REST API 后 stdio 调用会失败，这证
 
 - Brave：没有订阅 Key，且本机网络到 `api.search.brave.com` 超时，未发起真实请求。
 - SearXNG：没有自建实例；公共实例在本机网络不可达，未联调。
-- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** v0.1.12 的 GitHub Actions 通过记录见 `docs/release-readiness.md`，v0.1.13 必须在候选提交上重新验证，两者不要混为一谈。
+- Docker：**本机** Docker Engine 不可用（WSL 被安全策略拦截）；**远端** v0.1.13 的 GitHub Actions 已通过 Docker 构建、浏览器 E2E、容器验收与 Trivy 门禁，证据见 `docs/release-readiness.md`。
 - AI 模型、Embedding、Rerank：没有真实厂商 Key，仅用本地模拟服务验证请求/响应契约。
 - 多实例部署：未实现 Redis 协调，当前仅保证单进程额度。
 
