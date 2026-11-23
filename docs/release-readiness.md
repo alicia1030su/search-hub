@@ -9,7 +9,7 @@
 | M04 100k/100/1000 资源基准 | `55a3333` PASS：P95 1.6348ms、RSS +917,504B、零写、query plan、cleanup 全 PASS，artifact SHA256 `7b66b5b54f2b01336cb31824a4a7f4a33b118eb5db782397cc2d954bb11adfd9`；同代码前序 `2306990` 的失败与第二次通过记录保留在下节 |
 | T05 版本/CI/Release exact-SHA 门禁 | PASS（本地）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs |
 | 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0 |
-| 代码 SHA | `5bc67459ec2a7bc549ce52d1859761a7c980239d`；evidence-only 提交不改变代码 fingerprint |
+| 代码 SHA | `818a489192db32c0957c015a604f6b22d4de2c2d`；evidence-only 提交不改变代码 fingerprint |
 | 三平台包/CLI/Node22 | PR PASS：CLI linux-arm64/linux-x64/node22/windows-x64 全部通过；本机 Windows x64 包体/REST/MCP/资源端点/重启持久化 16 项通过 |
 | Docker/systemd/upgrade v0.1.13→current | systemd PR PASS；upgrade PR Windows/Ubuntu PASS，v0.1.13 路径 `appliedDiff=[]`；Docker 因 quality 失败未启动，修复后重跑 |
 | Draft/finalize、资产/Provenance/GHCR | PENDING；任一步失败保持 draft |
