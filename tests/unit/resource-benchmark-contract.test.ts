@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+// @ts-expect-error -- plain ESM resource module
+import { classifyOom } from "../../scripts/lib/resource/oom.mjs";
 
 const benchmark = readFileSync(new URL("../../scripts/bench-resources.mjs", import.meta.url), "utf8");
 const processTree = readFileSync(new URL("../../scripts/lib/resource/process-tree.mjs", import.meta.url), "utf8");
@@ -34,6 +36,31 @@ describe("resource benchmark static safety contract", () => {
     expect(benchmark).toContain("residualProcesses = residuals");
     expect(processTree).toContain("current.identity.startTime !== registered.startTime");
     expect(processTree).toContain("sampleRegisteredDescendants");
+  });
+
+  it("makes abort and git-preflight failure terminal before artifact finalization", () => {
+    expect(benchmark).toContain("const throwIfAborted = () =>");
+    expect(benchmark).toContain("throwIfAborted();\n      const p50Ms");
+    expect(benchmark).toContain("throwIfAborted();\n      pendingReport = report");
+    expect(benchmark).toContain("applyTerminalState();\n        let writtenKey");
+    expect(benchmark).toContain("applyTerminalState();\n        if (terminalKey() !== writtenKey) outputPath = await artifact.writeJson");
+    expect(benchmark).toContain("source_preflight_failed");
+    expect(benchmark).toContain("preflightFailure");
+    expect(benchmark).toContain("await artifact.finish");
+    expect(benchmark).toContain("if (!pendingReport)");
+    expect(benchmark.indexOf('process.removeListener("SIGINT"')).toBeGreaterThan(benchmark.indexOf("await artifact.finish"));
+    expect(benchmark).not.toMatch(/\bsleep\s*\(/);
+  });
+
+  it("keeps an unknown owned RSS peak null instead of fabricating zero", () => {
+    expect(benchmark).toContain("let rssPeakBytes = null");
+    expect(benchmark).toContain("ownedPeakBytes: rssPeakBytes");
+    expect(benchmark).toContain('rssPeakReason: rssPeakBytes === null ? "unavailable" : null');
+    const unknown = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: null });
+    expect(unknown.confirmed).toBe(true);
+    expect(unknown.reason).toBe("windows_oom_code_with_peak_unknown");
+    expect(unknown.ownedPeakBytes).toBeNull();
+    expect(unknown.ownedPeakReason).toBe("unavailable");
   });
 
   it("does not fabricate cgroup OOM evidence when the counter is unavailable", () => {

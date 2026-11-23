@@ -113,6 +113,9 @@ async function main() {
     abortedBy = signal;
     abortController.abort(new Error(`benchmark_aborted_by_${signal}`));
   };
+  const throwIfAborted = () => {
+    if (abortedBy) throw new Error(`aborted_by_${abortedBy}`);
+  };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 
@@ -128,7 +131,8 @@ async function main() {
   let exitCode = EXIT_CODES.success;
   let childOutcome = null;
   let spawnError = null;
-  let rssPeakBytes = 0;
+  let benchmarkStarted = false;
+  let rssPeakBytes = null;
   let afterSnapshot = null;
   let cleanup = { ok: true, residuals: [], errors: [] };
   const sanitizer = createLogSanitizer();
@@ -148,28 +152,55 @@ async function main() {
     httpTimeoutMs: HTTP_TIMEOUT_MS,
   };
 
+  let baseReport = {
+    schemaVersion: 1,
+    benchmark: "resources",
+    metadata: { ...baseMetadata, sourceCommit: null, cleanWorktree: false },
+  };
   try {
-    const commit = git(["rev-parse", "HEAD"]);
-    const dirty = git(["status", "--porcelain", "--untracked-files=normal"]);
-    const baseReport = {
-      schemaVersion: 1,
-      benchmark: "resources",
-      metadata: { ...baseMetadata, sourceCommit: commit, cleanWorktree: dirty.length === 0 },
+    throwIfAborted();
+    let commit = null;
+    let dirty = null;
+    let preflightFailure = null;
+    try {
+      commit = git(["rev-parse", "HEAD"]);
+      dirty = git(["status", "--porcelain", "--untracked-files=normal"]);
+    } catch (error) {
+      preflightFailure = error instanceof Error ? error.message : String(error);
+    }
+    baseReport = {
+      ...baseReport,
+      metadata: { ...baseMetadata, sourceCommit: commit, cleanWorktree: typeof dirty === "string" && dirty.length === 0 },
     };
-    if (!/^[0-9a-f]{40}$/i.test(commit) || dirty.length !== 0) {
-      const report = {
+    throwIfAborted();
+    if (preflightFailure !== null) {
+      exitCode = EXIT_CODES.internal;
+      pendingReason = "source_preflight_failed";
+      pendingReport = {
         ...baseReport,
         status: "internal",
-        exitCode: EXIT_CODES.internal,
-        reason: dirty.length !== 0 ? "worktree_dirty" : "source_commit_unavailable",
+        exitCode,
+        reason: pendingReason,
+        preflightDetail: sanitizeLog(preflightFailure),
         oom: false,
         oomClassification: { confirmed: false, reason: "not_started", evidence: [] },
         residualPids: [],
       };
-      const outputPath = await artifact.writeJson("resources-benchmark.json", report);
-      await artifact.finish({ exitCode: EXIT_CODES.internal, reason: report.reason, details: { benchmark: report } });
-      console.error(JSON.stringify({ outputPath, status: report.status, reason: report.reason, exitCode: report.exitCode }));
-      return EXIT_CODES.internal;
+      return exitCode;
+    }
+    if (!/^[0-9a-f]{40}$/i.test(commit) || dirty.length !== 0) {
+      exitCode = EXIT_CODES.internal;
+      pendingReason = dirty.length !== 0 ? "worktree_dirty" : "source_commit_unavailable";
+      pendingReport = {
+        ...baseReport,
+        status: "internal",
+        exitCode,
+        reason: pendingReason,
+        oom: false,
+        oomClassification: { confirmed: false, reason: "not_started", evidence: [] },
+        residualPids: [],
+      };
+      return exitCode;
     }
 
     const snapshot = await collectSnapshot({ cpuDelayMs: 20 });
@@ -177,22 +208,22 @@ async function main() {
     baseReport.resourceSnapshot = snapshot;
     baseReport.frozenBudget = budget;
     if (!budget.stages.vitest.safe) {
-      const report = {
+      exitCode = EXIT_CODES.resourceBlocked;
+      pendingReason = budget.reason;
+      pendingReport = {
         ...baseReport,
         status: "resource_blocked",
-        exitCode: EXIT_CODES.resourceBlocked,
-        reason: budget.reason,
+        exitCode,
+        reason: pendingReason,
         oom: false,
         oomClassification: { confirmed: false, reason: "not_started", evidence: [] },
         residualPids: [],
       };
-      const outputPath = await artifact.writeJson("resources-benchmark.json", report);
-      await artifact.finish({ exitCode: EXIT_CODES.resourceBlocked, reason: budget.reason, details: { benchmark: report } });
-      console.log(JSON.stringify({ outputPath, status: report.status, reason: report.reason, exitCode: report.exitCode }));
-      return EXIT_CODES.resourceBlocked;
+      return exitCode;
     }
 
     try {
+      throwIfAborted();
       directory = await mkdtemp(path.join(tmpdir(), "search-hub-resources-bench-"));
       const dbPath = path.join(directory, "resources.db");
       const harnessPath = path.join(directory, "server.mjs");
@@ -201,11 +232,13 @@ async function main() {
       const insert = handle.sqlite.prepare("INSERT INTO search_cache (cache_key,response_json,status,mode,created_at,expires_at,last_accessed_at,size_bytes) VALUES (?,?,?,?,?,?,?,?)");
       const createdAt = "2026-01-01T00:00:00.000Z";
       const expiresAt = "2027-01-01T00:00:00.000Z";
+      throwIfAborted();
       handle.sqlite.transaction(() => {
         for (let index = 0; index < options.rows; index += 1) {
           insert.run(`fixture-${index.toString(36).padStart(8, "0")}`, "{}", "completed", "basic", createdAt, expiresAt, createdAt, 2);
         }
       })();
+      throwIfAborted();
       const plans = {
         cacheTotals: handle.sqlite.prepare("EXPLAIN QUERY PLAN SELECT value FROM search_cache_state WHERE key='cache:totals'").all(),
         session: handle.sqlite.prepare("EXPLAIN QUERY PLAN SELECT * FROM sessions WHERE token_hash='x'").all(),
@@ -227,7 +260,9 @@ process.on("message", async (message) => {
 });
 `;
       await writeFile(harnessPath, harness, "utf8");
+      throwIfAborted();
       const platform = process.platform;
+      benchmarkStarted = true;
       child = spawn(process.execPath, ["--expose-gc", "--import", "tsx", harnessPath, directory, dbPath], {
         cwd: REPO_ROOT,
         stdio: ["ignore", "ignore", "pipe", "ipc"],
@@ -262,27 +297,37 @@ process.on("message", async (message) => {
         throw new Error("child_process_identity_unavailable");
       }
       const ready = await readyPromise;
+      throwIfAborted();
       if (spawnError) throw spawnError;
       if (ready.type !== "ready" || !Number.isInteger(ready.port)) throw new Error("server_ready_invalid");
 
       const base = `http://127.0.0.1:${ready.port}`;
       const httpSignal = () => AbortSignal.any([abortController.signal, AbortSignal.timeout(HTTP_TIMEOUT_MS)]);
+      throwIfAborted();
       const setup = await fetch(`${base}/api/setup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: "bench@example.com", password: "Resource-Bench-Password-1", name: "Bench", setupToken: "resources-bench-token" }),
         signal: httpSignal(),
       });
+      throwIfAborted();
       if (setup.status !== 200) throw new Error(`setup_http_${setup.status}`);
       const cookie = setup.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
       const get = async () => {
+        throwIfAborted();
         const response = await fetch(`${base}/api/admin/resources`, { headers: { cookie }, signal: httpSignal() });
         const body = await response.json();
+        throwIfAborted();
         if (response.status !== 200) throw new Error(`resources_http_${response.status}`);
         if (body?.schemaVersion !== 1 || body?.cache?.diskScope !== "whole_sqlite_database") throw new Error("resources_schema_invalid");
         return body;
       };
-      const ipc = (sendType, responseType) => waitForMessage(child, sendType, responseType, 5000, abortController.signal);
+      const ipc = async (sendType, responseType) => {
+        throwIfAborted();
+        const message = await waitForMessage(child, sendType, responseType, 5000, abortController.signal);
+        throwIfAborted();
+        return message;
+      };
       const readRss = async () => {
         const current = await io.readProcess(child.pid);
         if (!current || current.identity.startTime !== identity.identity.startTime) return null;
@@ -329,6 +374,7 @@ process.on("message", async (message) => {
       const wallMs = performance.now() - wallStarted;
       const changesAfter = (await ipc("total_changes", "changes")).value;
       const beforeFinalGc = await readRss();
+      throwIfAborted();
       if (beforeFinalGc === null) throw new Error("rss_sample_unavailable");
       rssPeakBytes = Math.max(rssPeakBytes, beforeFinalGc);
       await ipc("gc", "gc");
@@ -336,9 +382,12 @@ process.on("message", async (message) => {
       clearInterval(sampler);
       sampler = null;
       await samplingPromise;
+      throwIfAborted();
       const rssFinalBytes = await readRss();
+      throwIfAborted();
       if (rssFinalBytes === null) throw new Error("rss_sample_unavailable");
 
+      throwIfAborted();
       const p50Ms = percentile(samples, 0.5);
       const p95Ms = percentile(samples, 0.95);
       const rssDeltaBytes = Math.max(0, rssFinalBytes - rssBaselineBytes);
@@ -380,6 +429,7 @@ process.on("message", async (message) => {
         report.exitCode = exitCode;
         report.reason = "resource_threshold_failed";
       }
+      throwIfAborted();
       pendingReport = report;
       pendingReason = report.reason;
     } catch (cause) {
@@ -416,27 +466,42 @@ process.on("message", async (message) => {
     const beforeOom = pendingReport?.resourceSnapshot?.cgroup?.oomKills?.value ?? null;
     const afterOom = afterSnapshot?.cgroup?.oomKills?.value ?? null;
     const cgroupOomDelta = Number.isSafeInteger(beforeOom) && Number.isSafeInteger(afterOom) ? Math.max(0, afterOom - beforeOom) : null;
-    const oomClassification = classifyOom({
-      exitCode: childOutcome?.code ?? null,
-      signal: childOutcome?.signal ?? null,
-      windowsExitCode: childOutcome?.code ?? null,
-      log: stderrTail,
-      ownedRootDied: Boolean(child?.pid && childOutcome),
-      ownedPeakBytes: rssPeakBytes,
-    }, { cgroupOomDelta });
+    const oomClassification = benchmarkStarted
+      ? classifyOom({
+        exitCode: childOutcome?.code ?? null,
+        signal: childOutcome?.signal ?? null,
+        windowsExitCode: childOutcome?.code ?? null,
+        log: stderrTail,
+        ownedRootDied: Boolean(child?.pid && childOutcome),
+        ownedPeakBytes: rssPeakBytes,
+      }, { cgroupOomDelta })
+      : pendingReport?.oomClassification ?? { confirmed: false, reason: "not_started", evidence: [] };
 
     const localCleanupErrors = [];
     try { handle?.close(); } catch (error) { localCleanupErrors.push({ stage: "db_close", reason: error instanceof Error ? error.message : String(error) }); }
     try { if (directory) await rm(directory, { recursive: true, force: true }); } catch (error) { localCleanupErrors.push({ stage: "temp_remove", reason: error instanceof Error ? error.message : String(error) }); }
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
 
+    if (!pendingReport) {
+      exitCode = abortedBy ? EXIT_CODES.resourceBlocked : EXIT_CODES.internal;
+      pendingReason = abortedBy ? `aborted_by_${abortedBy}` : "benchmark_internal_error";
+      pendingReport = {
+        ...baseReport,
+        status: abortedBy ? "resource_blocked" : "internal",
+        exitCode,
+        reason: pendingReason,
+        oom: false,
+        oomClassification: { confirmed: false, reason: "not_started", evidence: [] },
+        residualPids: [],
+      };
+    }
     if (pendingReport) {
       const residuals = cleanup.residuals ?? [];
       pendingReport.residualPids = residuals.map((item) => item.pid);
       pendingReport.residualProcesses = residuals;
       pendingReport.oom = oomClassification.confirmed;
       pendingReport.oomClassification = oomClassification;
+      pendingReport.rssPeakBytes = rssPeakBytes;
+      pendingReport.rssPeakReason = rssPeakBytes === null ? "unavailable" : null;
       pendingReport.cgroupOomEvidence = {
         before: beforeOom,
         after: afterOom,
@@ -448,19 +513,39 @@ process.on("message", async (message) => {
         ok: cleanup.ok && localCleanupErrors.length === 0,
         errors: [...(cleanup.errors ?? []), ...localCleanupErrors].map((item) => ({ pid: item.pid ?? null, stage: item.stage, reason: sanitizeLog(item.reason), ...(item.identity ? { identity: item.identity } : {}) })),
       };
-      if (residuals.length > 0 || !cleanup.ok || localCleanupErrors.length > 0) {
-        exitCode = EXIT_CODES.childFailed;
-        pendingReport.exitCode = exitCode;
-        pendingReport.status = "child_failed";
-        pendingReport.reason = residuals.length > 0 ? "owned_process_residual" : localCleanupErrors.length > 0 ? "local_cleanup_failed" : "owned_process_cleanup_failed";
-        pendingReason = pendingReport.reason;
-      }
+      const cleanupFailed = residuals.length > 0 || !cleanup.ok || localCleanupErrors.length > 0;
+      pendingReport.cleanupFailed = cleanupFailed;
+      const applyTerminalState = () => {
+        if (abortedBy) {
+          exitCode = EXIT_CODES.resourceBlocked;
+          pendingReport.exitCode = exitCode;
+          pendingReport.status = "resource_blocked";
+          pendingReport.reason = `aborted_by_${abortedBy}`;
+          pendingReason = pendingReport.reason;
+        } else if (cleanupFailed) {
+          exitCode = EXIT_CODES.childFailed;
+          pendingReport.exitCode = exitCode;
+          pendingReport.status = "child_failed";
+          pendingReport.reason = residuals.length > 0 ? "owned_process_residual" : localCleanupErrors.length > 0 ? "local_cleanup_failed" : "owned_process_cleanup_failed";
+          pendingReason = pendingReport.reason;
+        }
+      };
+      const terminalKey = () => `${pendingReport.status}:${pendingReport.reason}`;
       let artifactFinished = false;
       try {
-        const outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
+        applyTerminalState();
+        let writtenKey = terminalKey();
+        let outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
+        applyTerminalState();
+        if (terminalKey() !== writtenKey) {
+          writtenKey = terminalKey();
+          outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
+        }
         await artifact.appendLog("raw/child-stderr.log", stderrTail);
         if (residuals.length > 0) await artifact.writeJson("residual-processes.json", residuals);
         if ((cleanup.errors ?? []).length > 0) await artifact.writeJson("cleanup-errors.json", cleanup.errors);
+        applyTerminalState();
+        if (terminalKey() !== writtenKey) outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
         await artifact.finish({ exitCode, reason: pendingReason, details: { benchmark: pendingReport } });
         artifactFinished = true;
         if (exitCode === EXIT_CODES.success) {
@@ -469,16 +554,27 @@ process.on("message", async (message) => {
           console.error(JSON.stringify({ outputPath, reason: pendingReason, exitCode }));
         }
       } catch (error) {
-        exitCode = EXIT_CODES.internal;
-        pendingReport.exitCode = exitCode;
-        pendingReport.status = "internal";
-        pendingReport.reason = "artifact_finalization_failed";
-        console.error(JSON.stringify({ reason: pendingReport.reason, detail: sanitizeLog(error instanceof Error ? error.message : String(error)), exitCode }));
+        pendingReport.artifactError = sanitizeLog(error instanceof Error ? error.message : String(error));
+        if (abortedBy) {
+          exitCode = EXIT_CODES.resourceBlocked;
+          pendingReport.exitCode = exitCode;
+          pendingReport.status = "resource_blocked";
+          pendingReport.reason = `aborted_by_${abortedBy}`;
+        } else {
+          exitCode = EXIT_CODES.internal;
+          pendingReport.exitCode = exitCode;
+          pendingReport.status = "internal";
+          pendingReport.reason = "artifact_finalization_failed";
+        }
+        pendingReason = pendingReport.reason;
+        console.error(JSON.stringify({ reason: pendingReport.reason, detail: pendingReport.artifactError, exitCode }));
         if (!artifactFinished) {
           try { await artifact.finish({ exitCode, reason: pendingReport.reason, details: { benchmark: pendingReport } }); } catch { /* terminal artifact failure is reported above */ }
         }
       }
     }
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
   }
   return exitCode;
 }

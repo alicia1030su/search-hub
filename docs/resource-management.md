@@ -105,7 +105,7 @@ Koffi DLL/函数失败必须返回 `unavailable + reason`，不能猜 0。Window
 - 缓存：`cache.totals()` 只读 `search_cache_state` 主键；缺失、损坏时间戳、非法数值或读取异常返回 null+reason，不修复、不写 DB。RuntimeMonitor 严禁调用 `cache.stats()` 或全表聚合。
 - 磁盘：DB/WAL 分别 `statSync`，口径是 `whole_sqlite_database`，不是 cache-only。ENOENT、权限、内存 DB、其他 stat 错误逐字段返回 null 与枚举 reason，不返回路径或原始错误消息。
 - 生命周期：RuntimeMonitor 不持 timer/listener，不写 task/audit/health/budget/cache metrics，不触发 kill/restart/prune/并发或 Swap 修改。
-- benchmark 安全：仅 clean HEAD 可运行，dirty worktree 直接 internal/worktree_dirty；SIGINT/SIGTERM 通过 AbortController 中断 HTTP/IPC，HTTP 固定 30 秒超时。warmup 前后与测量前后都记录 total_changes，warmup delta 必须为 0。采样不重叠；child 使用 OwnedProcessTree 身份绑定清理，stderr 有界脱敏，残留写完整 pid/ppid/startTime。DB、临时目录或 artifact 收尾失败进入 terminal failure；cgroup OOM 计数未知时记录 null+unavailable，不伪造 0。
+- benchmark 安全：仅 clean HEAD 可运行，dirty worktree 直接 internal/worktree_dirty；git 预检失败写 terminal internal/source_preflight_failed，不留下 running artifact。SIGINT/SIGTERM 通过 AbortController 中断 HTTP/IPC，HTTP 固定 30 秒超时；晚到信号在报告与 artifact finalization 前再次检查，强制 resource_blocked，同时保留真实 cleanup/residual 失败字段。warmup 前后与测量前后都记录 total_changes，warmup delta 必须为 0。采样不重叠；child 使用 OwnedProcessTree 身份绑定清理，stderr 有界脱敏，残留写完整 pid/ppid/startTime。DB、临时目录或 artifact 收尾失败进入 terminal failure；cgroup OOM 计数与 owned RSS peak 未知时记录 null+unavailable，不伪造 0。
 
 ## 10. 内存术语停止线
 
