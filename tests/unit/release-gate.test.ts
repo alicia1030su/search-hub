@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -49,6 +49,13 @@ describe("release gate", () => {
     const result = evaluateRuns(runs, sha);
     expect(result.allGreen).toBe(false);
     expect(result.pending).toEqual([expect.objectContaining({ workflowPath: "ci.yml", run: expect.objectContaining({ id: 2 }) })]);
+  });
+
+  it("verifies single-arch GHCR images through the image config", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
+    expect(workflow).not.toContain("{{json .Manifest.Platforms}}");
+    expect(workflow).toContain("--format '{{json .Image}}'");
+    expect(workflow).toContain('.os == "linux" and .architecture == "amd64"');
   });
 
   it("requires an annotated tag on main with a matching stable version", () => {

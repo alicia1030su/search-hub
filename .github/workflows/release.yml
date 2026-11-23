@@ -631,8 +631,12 @@ jobs:
             test -n "$current"
             if [ -n "$digest" ]; then test "$current" = "$digest"; else digest="$current"; fi
           done
-          platforms=$(docker buildx imagetools inspect "${base}:${VERSION}" --format '{{json .Manifest.Platforms}}')
-          echo "$platforms" | jq -e 'any(.[]; .os == "linux" and .architecture == "amd64")' >/dev/null
+          # A single-arch push is an OCI image manifest, not a manifest index;
+          # .Manifest.Platforms only exists on the latter. Read the image config
+          # so the assertion works for the exact artifact this workflow pushes.
+          image=$(docker buildx imagetools inspect "${base}:${VERSION}" --format '{{json .Image}}')
+          echo "$image" | jq -e '.os == "linux" and .architecture == "amd64"' >/dev/null
+          platforms=$(echo "$image" | jq -c '{os,architecture}')
           echo "digest=$digest"
           echo "platforms=$platforms"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "suite": "search-hub-resource-v0.1.14",
-  "generatedAt": "2026-11-23T09:35:06.016Z",
+  "generatedAt": "2026-11-23T10:10:38.798Z",
   "baseline": {
     "commit": "4d2e25249f90a085b28ea05ee479b393d716c99e",
     "codeFingerprint": "bfbd1a6eb2699296b78cb44c56415e4bc299a0c90b54036eb907d4675dd0d138",
@@ -13,9 +13,9 @@
     "machineFingerprint": "51d6c2c18af8e4dd94bf8596e86f8917a2e03a9e60f7747a536ec1b5522af107"
   },
   "releaseCode": {
-    "codeFingerprint": "811e499b7ac379958ace587ab5cd14910300440974fb661c3898e23023b15cdc",
+    "codeFingerprint": "e8ac626aed75a1a558502e82e3a3291977f4b5f39cffe00e272c848dc74bd2b4",
     "computedFromRef": "HEAD",
-    "computedAt": "2026-11-23T09:35:06.016Z"
+    "computedAt": "2026-11-23T10:10:38.798Z"
   },
   "environment": {
     "platform": "win32",
