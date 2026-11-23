@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "suite": "search-hub-resource-v0.1.14",
-  "generatedAt": "2026-11-23T08:22:58.714Z",
+  "generatedAt": "2026-11-23T09:35:06.016Z",
   "baseline": {
     "commit": "4d2e25249f90a085b28ea05ee479b393d716c99e",
     "codeFingerprint": "bfbd1a6eb2699296b78cb44c56415e4bc299a0c90b54036eb907d4675dd0d138",
@@ -13,9 +13,9 @@
     "machineFingerprint": "51d6c2c18af8e4dd94bf8596e86f8917a2e03a9e60f7747a536ec1b5522af107"
   },
   "releaseCode": {
-    "codeFingerprint": "079773fe51fed861d4a07cc90cf971a5e8923507c8fd489d52277fa7ced00917",
-    "computedFromRef": "818a489192db32c0957c015a604f6b22d4de2c2d",
-    "computedAt": "2026-11-23T08:22:58.714Z"
+    "codeFingerprint": "811e499b7ac379958ace587ab5cd14910300440974fb661c3898e23023b15cdc",
+    "computedFromRef": "HEAD",
+    "computedAt": "2026-11-23T09:35:06.016Z"
   },
   "environment": {
     "platform": "win32",
@@ -173,7 +173,7 @@
   },
   "codeDelta": {
     "from": "e182f60703d179ec4d28f1dbf23ce04c0f2b0a25",
-    "to": "818a489192db32c0957c015a604f6b22d4de2c2d",
+    "to": "HEAD",
     "changedPaths": [
       ".github/workflows/ci.yml",
       ".github/workflows/docker.yml",
