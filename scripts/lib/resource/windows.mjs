@@ -245,7 +245,10 @@ export async function enumerateToolhelpEntries(win) {
     if (!ok) throw new Error(`toolhelp_enumeration_failed:${win.getLastError()}`);
     while (ok) {
       const value = win.koffi.decode(pointer, win.PROCESSENTRY32W);
-      entries.push({ pid: Number(value.th32ProcessID), ppid: Number(value.th32ParentProcessID), executableName: safeName(value.szExeFile) });
+      const pid = Number(value.th32ProcessID);
+      // Toolhelp includes the System Idle Process as PID 0. It is not an
+      // operable process and cannot be an owned root or descendant.
+      if (pid > 0) entries.push({ pid, ppid: Number(value.th32ParentProcessID), executableName: safeName(value.szExeFile) });
       ok = win.process32NextW(snapshot, pointer);
       if (!ok) {
         const code = win.getLastError();

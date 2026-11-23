@@ -21,7 +21,7 @@ import { compareLowmem, normalizeList } from "../../scripts/lib/resource/lowmem.
 const MIB = 1024 * 1024;
 const reading = (value: number | null, source = "test", reason: string | null = null) => ({ value, source, reason });
 
-function fakeToolhelp(entries: Array<{ th32ProcessID: number; th32ParentProcessID: number; szExeFile: number[] }>, options: { first?: boolean; lastError?: number } = {}) {
+function fakeToolhelp(entries: Array<{ th32ProcessID: number; th32ParentProcessID: number; szExeFile: Uint16Array }>, options: { first?: boolean; lastError?: number } = {}) {
   let index = 0;
   return {
     PROCESSENTRY32W: "PROCESSENTRY32W",
@@ -168,10 +168,11 @@ describe("strict process listing", () => {
     expect(await linuxProcessPidsStrict(async () => ["30", "2", "not-a-pid", "11"])).toEqual([2, 11, 30]);
   });
 
-  it("distinguishes Toolhelp first/next failures from normal completion", async () => {
+  it("excludes PID 0 and distinguishes Toolhelp first/next failures from normal completion", async () => {
     const entries = [
-      { th32ProcessID: 111, th32ParentProcessID: 1, szExeFile: [] },
-      { th32ProcessID: 222, th32ParentProcessID: 111, szExeFile: [] },
+      { th32ProcessID: 0, th32ParentProcessID: 0, szExeFile: new Uint16Array() },
+      { th32ProcessID: 111, th32ParentProcessID: 1, szExeFile: new Uint16Array() },
+      { th32ProcessID: 222, th32ParentProcessID: 111, szExeFile: new Uint16Array() },
     ];
     expect(await windowsProcessPidsStrict(fakeToolhelp(entries))).toEqual([111, 222]);
     expect(await enumerateToolhelpEntries(fakeToolhelp(entries))).toEqual([

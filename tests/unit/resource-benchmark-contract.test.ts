@@ -17,7 +17,7 @@ describe("resource benchmark static safety contract", () => {
     expect(benchmark).toContain("AbortSignal.timeout(HTTP_TIMEOUT_MS)");
     expect(benchmark).toContain("worktree_dirty");
     expect(benchmark).toContain('git(["status", "--porcelain"');
-    expect(benchmark).toContain("metadata: { ...baseMetadata, sourceCommit: commit, cleanWorktree: dirty.length === 0 }");
+    expect(benchmark).toContain('metadata: { ...baseMetadata, sourceCommit: commit, cleanWorktree: typeof dirty === "string" && dirty.length === 0 }');
   });
 
   it("proves warmup and measured reads are zero-write and checks each query plan", () => {
@@ -73,7 +73,8 @@ describe("resource benchmark static safety contract", () => {
     expect(benchmark).toContain("metadata: { ...baseReport.metadata }");
     expect(benchmark.indexOf('artifact.appendLog("raw/child-stderr.log"')).toBeLessThan(benchmark.indexOf('artifact.writeJson("resources-benchmark.json"'));
     expect(benchmark.indexOf('artifact.writeJson("resources-benchmark.json"')).toBeLessThan(benchmark.indexOf("await artifact.finish"));
-    expect(benchmark).toContain('pendingReport.reason = "artifact_finalization_failed"');
+    expect(benchmark).toContain("pendingReport.artifactError = sanitizeLog");
+    expect(benchmark).toContain("pendingReport.reason = state.reason;");
     expect(benchmark).toContain("resolveTerminalState({ cleanupFailure, abortedBy, threshold: pendingReport })");
     expect(benchmark).toContain("resolveTerminalState({ artifactFailed: true, cleanupFailure, abortedBy, threshold: pendingReport })");
     expect(benchmark.indexOf('process.removeListener("SIGINT"')).toBeGreaterThan(benchmark.indexOf("await artifact.finish"));
@@ -89,7 +90,7 @@ describe("resource benchmark static safety contract", () => {
   it("keeps an unknown owned RSS peak null instead of fabricating zero", () => {
     expect(benchmark).toContain("let rssPeakBytes = null");
     expect(benchmark).toContain("ownedPeakBytes: rssPeakBytes");
-    expect(benchmark).toContain('rssPeakReason: rssPeakBytes === null ? "unavailable" : null');
+    expect(benchmark).toContain('pendingReport.rssPeakReason = rssPeakBytes === null ? "unavailable" : null;');
     const unknown = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: null });
     expect(unknown.confirmed).toBe(false);
     expect(unknown.reason).toBe("windows_oom_code_peak_unknown");
