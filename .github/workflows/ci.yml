@@ -229,12 +229,12 @@ jobs:
         run: node scripts/resource-doctor.mjs --json > artifacts/resource-doctor.json
 
       - name: Stage flat resource evidence artifact
-        run: node scripts/stage-resource-evidence.mjs --output .resource-evidence-artifact
+        run: node scripts/stage-resource-evidence.mjs --output resource-evidence-artifact
 
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: resource-evidence-v0114
-          path: .resource-evidence-artifact/
+          path: resource-evidence-artifact/
           if-no-files-found: error
           retention-days: 30
 

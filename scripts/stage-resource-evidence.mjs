@@ -29,7 +29,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     evidenceDir: arg("evidence-dir", path.join(REPO_ROOT, "docs", "evidence", "v0.1.14")),
     runtimePath: arg("runtime", path.join(REPO_ROOT, "artifacts", "resource-evidence-v0114.json")),
     doctorPath: arg("doctor", path.join(REPO_ROOT, "artifacts", "resource-doctor.json")),
-    outputDir: arg("output", path.join(REPO_ROOT, ".resource-evidence-artifact")),
+    outputDir: arg("output", path.join(REPO_ROOT, "resource-evidence-artifact")),
   });
-  console.log(JSON.stringify({ outputDir: arg("output", path.join(REPO_ROOT, ".resource-evidence-artifact")), files }, null, 2));
+  console.log(JSON.stringify({ outputDir: arg("output", path.join(REPO_ROOT, "resource-evidence-artifact")), files }, null, 2));
 }
