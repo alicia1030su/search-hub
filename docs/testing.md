@@ -21,7 +21,9 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 
 ## What is covered
 
-v0.1.13 本地全量已通过 Vitest **1299 项 / 100 文件**、Playwright **42 项**与 CLI 专项 **58 项**。本文件不把本地结果写成远端 CI 或正式发布 PASS；远端证据见 `docs/release-readiness.md`。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
+v0.1.13 历史本地全量已通过 Vitest **1299 项 / 100 文件**、Playwright **42 项**与 CLI 专项 **58 项**。本文件不把本地结果写成远端 CI 或正式发布 PASS；远端证据见 `docs/release-readiness.md`。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
+
+v0.1.14 增加资源端点、只读认证、队列生命周期、严格进程枚举、OOM 证据、资源证据 fingerprint 与 exact-SHA release gate 测试。M04 是 P0 实测门槛：100,000 行、100 warmup、1,000 次顺序 `GET /api/admin/resources`，P95 ≤ 10ms、稳态 RSS ≤ 2MiB、warmup/正式零写、三个 query plan 均走索引。`pnpm evidence:verify` 校验 8 份 gzip raw、summary、SHA256SUMS、代码/scope fingerprint 与公开证据脱敏；未满足条件的证据保持 BLOCKED。
 
 ### v0.1.11 bulk provider test (T01–T46, H61–H66)
 

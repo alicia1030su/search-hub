@@ -43,6 +43,9 @@ describe("CLI core contracts", () => {
     expect(parseServerVersion("0.1.12")).toEqual({ major: 0, minor: 1, patch: 12 });
     expect(isCompatibleServerVersion("0.1.12")).toBe(true);
     expect(isCompatibleServerVersion("0.1.13-ci")).toBe(true);
+    expect(isCompatibleServerVersion("0.1.14")).toBe(true);
+    expect(isCompatibleServerVersion("0.1.14-ci")).toBe(true);
+    expect(isCompatibleServerVersion("0.1.15")).toBe(true);
     expect(isCompatibleServerVersion("0.1.11")).toBe(false);
     expect(isCompatibleServerVersion("0.2.0")).toBe(false);
     expect(isCompatibleServerVersion("dev")).toBe(false);

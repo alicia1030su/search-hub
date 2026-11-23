@@ -75,7 +75,7 @@ jobs:
           PACKAGE_TARGET: ${{ matrix.os == 'windows-latest' && 'windows-x64' || 'linux-x64' }}
           # Stamp the current candidate ahead of the published releases so the
           # updater performs a real forward move and the asset name matches.
-          SEARCH_HUB_VERSION: 0.1.13-ci
+          SEARCH_HUB_VERSION: 0.1.14-ci
         run: node packaging/build-package.mjs
 
       - name: Upgrade v0.1.4-beta.6 → current
@@ -154,6 +154,16 @@ jobs:
           test -n "$TARGET" || { echo "no package was built"; exit 1; }
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.12 --to "$TARGET" --port 8931
+
+      - name: Upgrade v0.1.13 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.13 --to "$TARGET" --port 8932
 
       # beta -> stable of the same minor version: the path an operator on the
       # beta channel actually takes, and the one where the updater must accept

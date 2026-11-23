@@ -4,11 +4,11 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.13 · Stable published.**
+> **Status: v0.1.14 · release candidate; gates are running.**
 >
-> **Release gate:** local Vitest **1299 cases / 100 files**, Playwright **42 cases**, and **58 CLI-specific cases** pass. Remote PR/main CI, Docker, systemd, eight cross-version upgrades and three-platform CLI acceptance all pass. Formal Release, asset verification, Provenance and GHCR evidence are recorded in `docs/release-readiness.md`.
+> **v0.1.14 theme:** resource-aware test/build gates, cache capacity and Singleflight fixes, a read-only runtime resource panel, and release evidence bound to the final code fingerprint. M04 and full-regression results are recorded only when executed in `docs/release-readiness.md`; unfinished checks remain PENDING/BLOCKED.
 >
-> **v0.1.13 theme:** a standalone `shub` command-line client for search, deep search, sources, status, diagnostics, configuration and provider health probes. The CLI only calls REST API; it does not reimplement the search core.
+> **Previous Stable:** v0.1.13 shipped the standalone `shub` CLI. Its historical acceptance, asset, Provenance and GHCR evidence remains in `docs/release-readiness.md`.
 >
 > **Stable means "this is the public release channel the maintainer ships", not "every third-party integration is production-certified".** Concretely: **Hacker News, Crossref, OpenAlex and PubMed are verified against the real network**; Tavily, Bocha, Brave, SearXNG and the rest are implemented from their official docs and are **not yet verified against real search results**; the quality lab currently has synthetic fixtures only, with **no vendor-labelled qrel set**. Those gaps are listed per provider in the [provider matrix](./docs/provider-matrix.md), the [release readiness report](./docs/release-readiness.md) and the [CHANGELOG](./CHANGELOG.md). Nothing untested is described as verified.
 
@@ -127,18 +127,18 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.13 Stable)
+## Download (v0.1.14 candidate)
 
-v0.1.13 is published and includes the standalone CLI plus Windows/Linux server and CLI assets.
+The v0.1.14 release workflow will produce the assets below. It becomes Stable only after the draft Release, asset sums, Provenance, GHCR digests and resource evidence all pass.
 
 | Platform | Server | CLI `shub` | Requirements |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.13-windows-x64.zip` | `shub-v0.1.13-windows-x64.zip` | **None** |
-| Linux x64 | `search-hub-v0.1.13-linux-x64.tar.gz` | `shub-v0.1.13-linux-x64.tar.gz` | **None** |
-| Linux arm64 | `search-hub-v0.1.13-linux-arm64.tar.gz` | `shub-v0.1.13-linux-arm64.tar.gz` | **None** |
-| Node.js 22+ | — | `shub-v0.1.13-node22.tar.gz` | Node.js 22+ |
+| Windows x64 | `search-hub-v0.1.14-windows-x64.zip` | `shub-v0.1.14-windows-x64.zip` | **None** |
+| Linux x64 | `search-hub-v0.1.14-linux-x64.tar.gz` | `shub-v0.1.14-linux-x64.tar.gz` | **None** |
+| Linux arm64 | `search-hub-v0.1.14-linux-arm64.tar.gz` | `shub-v0.1.14-linux-arm64.tar.gz` | **None** |
+| Node.js 22+ | — | `shub-v0.1.14-node22.tar.gz` | Node.js 22+ |
 
-Download `SHA256SUMS` from the [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) and run `sha256sum -c SHA256SUMS`. Every asset also carries build provenance. The CLI does not require a local server; it can connect to a local or remote Search Hub instance.
+After publication, download `SHA256SUMS` from the [v0.1.14 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.14) and run `sha256sum -c SHA256SUMS`. The sums cover `resource-evidence.json` and all seven archives. The CLI does not require a local server; it can connect to a local or remote Search Hub instance.
 
 ### CLI quick start
 
@@ -275,7 +275,7 @@ Tokens are read only from the environment or `--token-stdin`; they are never wri
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.13-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.14-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
@@ -284,7 +284,7 @@ For long-running use, the package ships `search-hub.service` (non-root, `Protect
 **Docker**:
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.13    # candidate tag; available after publication
+docker pull ghcr.io/alicia1030su/search-hub:0.1.14    # candidate tag; available after publication
 # The image is built for linux/amd64 only; use the arm64 package above on arm64 hosts
 docker compose up -d                                        # or build from source
 ```

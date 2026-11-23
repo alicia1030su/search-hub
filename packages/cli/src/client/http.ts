@@ -185,7 +185,7 @@ export function parseServerVersion(version: string): { major: number; minor: num
   return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
 }
 
-/** v0.1.13 CLI uses only endpoints present since v0.1.12; 0.2 may break them. */
+/** v0.1.14 CLI uses only endpoints present since v0.1.12; 0.2 may break them. */
 export function isCompatibleServerVersion(version: string): boolean {
   const parsed = parseServerVersion(version);
   return parsed !== null && parsed.major === 0 && parsed.minor === 1 && parsed.patch >= 12;

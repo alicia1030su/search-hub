@@ -8,7 +8,7 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "Search Hub API",
-    version: "0.1.13",
+    version: "0.1.14",
     description:
       "Self-hosted multi-provider search infrastructure. Search endpoints accept either an admin session cookie + CSRF header or a Bearer access token.",
     license: { name: "MIT" },

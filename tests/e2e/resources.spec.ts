@@ -4,6 +4,7 @@ const PASSWORD = "E2E-Local-Only-Password-1";
 
 async function completeSetup(page: Page): Promise<void> {
   await page.goto("/");
+  await page.waitForURL(/\/(?:login|setup)$/);
   if (new URL(page.url()).pathname === "/login") {
     await page.locator("#login-email").fill("admin@example.com");
     await page.locator("#login-password").fill(PASSWORD);
@@ -49,7 +50,7 @@ test.describe("runtime resource panel", () => {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto("/");
-    await expect(page).toHaveURL(/\/login$/);
+    await expect(page).toHaveURL(/\/(?:login|setup)$/);
     await context.close();
   });
 

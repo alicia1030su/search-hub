@@ -1,6 +1,6 @@
 {
   "name": "search-hub",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "type": "module",
   "description": "Open-source, self-hosted AI search infrastructure: multi-provider aggregation, key pools, MCP, and agent skills.",
@@ -19,6 +19,9 @@
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
     "test": "vitest run",
     "resource:doctor": "node scripts/resource-doctor.mjs",
+    "evidence:build": "node scripts/build-resource-evidence.mjs",
+    "evidence:verify": "node packaging/verify-resource-evidence.mjs",
+    "release:gate": "node packaging/check-release-gates.mjs",
     "verify:smart": "node scripts/verify-smart.mjs",
     "test:lowmem": "node scripts/test-lowmem.mjs",
     "cache:inspect": "node scripts/cache-maintenance.mjs inspect",

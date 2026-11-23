@@ -33,6 +33,7 @@ env:
 
 permissions:
   contents: write
+  actions: read
   # Only what GHCR needs; no other secrets are exposed.
   packages: write
   # Build provenance: `attest-build-provenance` signs a statement that binds the
@@ -44,11 +45,12 @@ permissions:
 
 jobs:
   gate:
-    name: Gate - tag commit on main with green CI and Docker
+    name: Gate - tag commit on main with green required workflows
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 75
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
+      ciRunId: ${{ steps.gates.outputs.ciRunId }}
       channel: ${{ steps.channel.outputs.channel }}
       prerelease: ${{ steps.channel.outputs.prerelease }}
       version: ${{ steps.channel.outputs.version }}
@@ -99,29 +101,12 @@ jobs:
             exit 1
           fi
 
-      - name: Require green CI and Docker runs for this exact SHA
+      - name: Require exact-SHA main-push workflows and resource evidence
+        id: gates
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-        run: |
-          set -euo pipefail
-          for attempt in $(seq 1 20); do
-            failed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.name=="CI" or .name=="Docker") | select(.conclusion != null and .conclusion != "success")] | length')
-            if [ "$failed" != "0" ]; then
-              echo "::error::A CI/Docker run for ${SHA} did not succeed"
-              exit 1
-            fi
-            ci=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.name=="CI") | select(.conclusion=="success")] | length')
-            docker=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.name=="Docker") | select(.conclusion=="success")] | length')
-            if [ "$ci" -ge 1 ] && [ "$docker" -ge 1 ]; then
-              echo "CI and Docker are green for ${SHA}"
-              exit 0
-            fi
-            echo "waiting for CI/Docker on ${SHA} (attempt ${attempt}, ci=${ci} docker=${docker})"
-            sleep 30
-          done
-          echo "::error::No successful CI and Docker run for ${SHA} after 10 minutes"
-          exit 1
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: node packaging/check-release-gates.mjs --tag "$TAG" --report artifacts/v0.1.14/release-gate.json
 
   windows:
     name: Windows x64 package
@@ -358,12 +343,23 @@ jobs:
         with:
           path: artifacts
 
+      - name: Download verified resource evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ needs.gate.outputs.ciRunId }}
+        run: |
+          mkdir -p evidence-ci
+          gh run download "$CI_RUN_ID" -n resource-evidence-v0114 -D evidence-ci
+          cp evidence-ci/resource-evidence-v0114.json artifacts/resource-evidence.json
+
       # A single SHA256SUMS covering every asset, so a user can verify one file.
       - name: Assemble SHA256SUMS
         run: |
           cd artifacts
-          find . -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec sha256sum {} \; \
-            | sed 's#  \./[^/]*/#  #' | sort -k2 > ../SHA256SUMS
+          {
+            find . -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec sha256sum {} \;
+            sha256sum resource-evidence.json
+          } | sed 's#  \./[^/]*/#  #' | sort -k2 > ../SHA256SUMS
           cat ../SHA256SUMS
 
       # Re-running a release must not silently mix two builds of the same
@@ -392,6 +388,7 @@ jobs:
           subject-path: |
             artifacts/*/*.zip
             artifacts/*/*.tar.gz
+            artifacts/resource-evidence.json
             SHA256SUMS
 
       # The release note header is written to a file rather than inline: a
@@ -441,12 +438,14 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: ${{ needs.gate.outputs.name }}
           prerelease: ${{ needs.gate.outputs.prerelease }}
-          make_latest: ${{ needs.gate.outputs.channel == 'stable' && 'true' || 'false' }}
+          draft: true
+          make_latest: false
           generate_release_notes: true
           body_path: release-body.md
           files: |
             artifacts/*/*.zip
             artifacts/*/*.tar.gz
+            artifacts/resource-evidence.json
             SHA256SUMS
           fail_on_unmatched_files: true
 
@@ -469,7 +468,7 @@ jobs:
           # Neither implies the other.
           sha256sum -c SHA256SUMS
           echo "--- build provenance ---"
-          for asset in *.zip *.tar.gz; do
+          for asset in *.zip *.tar.gz resource-evidence.json; do
             gh attestation verify "$asset" \
               --repo "${GITHUB_REPOSITORY}" \
               --format json > "/tmp/attest-${asset}.json" \
@@ -574,8 +573,94 @@ jobs:
       # The push is not proof that a user can pull it. Re-read the manifest and
       # print the platform list: a single-arch image pulled on arm64 falls back
       # to emulation or fails, and the report must say which one it is.
-      - name: Confirm the published image and record its platforms
+      - name: Confirm every published image tag and record its platforms
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "${{ steps.image.outputs.ref }}" || true
-          echo "platforms=$(docker image inspect search-hub:release-check --format '{{.Os}}/{{.Architecture}}' 2>/dev/null || echo unknown)"
+          docker buildx imagetools inspect "${{ steps.image.outputs.ref }}"
+          if [ -n "${{ steps.image.outputs.version_ref }}" ]; then
+            docker buildx imagetools inspect "${{ steps.image.outputs.version_ref }}"
+          fi
+          if [ -n "${{ steps.image.outputs.latest_ref }}" ]; then
+            docker buildx imagetools inspect "${{ steps.image.outputs.latest_ref }}"
+          fi
+          echo "platforms=$(docker image inspect search-hub:release-check --format '{{.Os}}/{{.Architecture}}')"
+
+  finalize:
+    name: Finalize release after asset and GHCR verification
+    needs: [gate, windows, linux, cli-windows, cli-linux, cli-portable, publish, container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify draft assets byte-for-byte
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json isDraft,isPrerelease,assets > release-metadata.json
+          jq -e '.isDraft == true' release-metadata.json >/dev/null
+          work=$(mktemp -d)
+          gh release download "$TAG" --dir "$work"
+          cd "$work"
+          sha256sum -c SHA256SUMS
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
+          test -f resource-evidence.json
+
+      - name: Verify GHCR tags share one linux/amd64 digest
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          REGISTRY: ${{ env.REGISTRY }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          base="${REGISTRY}/${owner}/search-hub"
+          refs=("${base}:${VERSION}")
+          if [ "$CHANNEL" = "stable" ]; then
+            refs+=("${base}:v${VERSION}" "${base}:latest")
+          fi
+          digest=""
+          for ref in "${refs[@]}"; do
+            current=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}')
+            test -n "$current"
+            if [ -n "$digest" ]; then test "$current" = "$digest"; else digest="$current"; fi
+          done
+          platforms=$(docker buildx imagetools inspect "${base}:${VERSION}" --format '{{json .Manifest.Platforms}}')
+          echo "$platforms" | jq -e 'any(.[]; .os == "linux" and .architecture == "amd64")' >/dev/null
+          echo "digest=$digest"
+          echo "platforms=$platforms"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Stable or prerelease only after all checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+        run: |
+          set -euo pipefail
+          if [ "$CHANNEL" = "stable" ]; then
+            gh release edit "$TAG" --draft=false --latest
+          else
+            gh release edit "$TAG" --draft=false
+          fi
+          gh release view "$TAG" --json isDraft,isPrerelease,tagName > final-release.json
+          jq -e '.isDraft == false' final-release.json >/dev/null
+          if [ "$CHANNEL" = "stable" ]; then
+            jq -e '.isPrerelease == false' final-release.json >/dev/null
+            latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')
+            test "$latest" = "$TAG"
+          fi
+          mkdir -p artifacts/v0.1.14
+          cp final-release.json artifacts/v0.1.14/release-final.json
+
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-final-v0114
+          path: artifacts/v0.1.14/release-final.json
+          if-no-files-found: error

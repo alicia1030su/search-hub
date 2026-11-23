@@ -1,5 +1,20 @@
 # 发布就绪报告
 
+## v0.1.14（Release candidate，未发布）
+
+| 项 | 状态 |
+|---|---|
+| T01–T03 资源工具与缓存修复 | 已实现，最终回归 PENDING |
+| T04 资源端点/UI/文档/包与 Docker smoke | 代码完成；M04 同 SHA 实测 PENDING/BLOCKED |
+| M04 100k/100/1000 资源基准 | PENDING；P95 ≤10ms、RSS ≤2MiB、零写、索引 query plan 必须全部 PASS |
+| T05 版本/CI/Release exact-SHA 门禁 | 代码完成，最终回归 PENDING |
+| 资源证据 | 8 份 raw + summary + SHA256SUMS；失效 scope 必须同机重跑，否则 BLOCKED |
+| 三平台包/CLI/Node22 | PENDING |
+| Docker/systemd/upgrade v0.1.13→current | PENDING |
+| Draft/finalize、资产/Provenance/GHCR | PENDING；任一步失败保持 draft |
+
+资源证据状态只允许 `PASS`、`PASS_NO_OPTIMIZATION`、`N/A`、`FAIL`、`BLOCKED`；`N/A` 仅用于 C10，P0 门槛不豁免。发布后事实将追加到本节，不改写历史 Stable 记录或 tagged commit。
+
 ## v0.1.13 Stable（2026-11-22）
 
 > **口径**：v0.1.13 已正式发布。发布源为 `main` 提交

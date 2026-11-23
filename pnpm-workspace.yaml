@@ -4,6 +4,7 @@ packages:
 
 allowBuilds:
   esbuild: true
+  koffi: true
 
 # One advisory is accepted rather than fixed, and it is listed here so that it
 # cannot be forgotten: GHSA-fc5q-39xc-vjpf (CVE-2026-112366), a ReDoS in
