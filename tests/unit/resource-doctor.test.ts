@@ -89,31 +89,30 @@ describe("D01 resource snapshots", () => {
     expect(json).not.toContain("process.env");
   });
 
-  it("uses real Win32 values on Windows and explicit reasons for unknowns", async () => {
+  it("uses real platform values and explicit reasons for unknowns", async () => {
     type Reading = { value: number | null; source: string; reason: string | null };
-    const host = (await collectWindowsMemory()) as { physicalBytes: Reading; availableBytes: Reading } & Record<string, Reading>;
     if (process.platform === "win32") {
+      const host = (await collectWindowsMemory()) as { physicalBytes: Reading; availableBytes: Reading } & Record<string, Reading>;
       expect(host.physicalBytes.value).toBeGreaterThan(0);
       expect(host.availableBytes.value).toBeGreaterThan(0);
       expect(host.availableBytes.source).toContain("win32");
-    }
-    for (const item of Object.values(host)) {
-      if (item.value === null) expect(item.reason).toBeTruthy();
-    }
-    const cpu = await collectWindowsCpu(20);
-    if (process.platform === "win32") {
+      for (const item of Object.values(host)) {
+        if (item.value === null) expect(item.reason).toBeTruthy();
+      }
+      const cpu = await collectWindowsCpu(20);
       expect(cpu.utilizationPercent.value).toBeGreaterThanOrEqual(0);
       expect(cpu.utilizationPercent.value).toBeLessThanOrEqual(100);
-    } else {
-      expect(cpu.utilizationPercent.value).toBeNull();
-      expect(cpu.utilizationPercent.reason).toBeTruthy();
-    }
-    const identity = await readWindowsProcess(process.pid);
-    if (process.platform === "win32") {
+      const identity = await readWindowsProcess(process.pid);
       expect(identity?.identity.ppid).toBeGreaterThan(0);
       expect(identity?.identity.startTime).toBeTruthy();
     } else {
-      expect(identity).toBeNull();
+      const snapshot = await collectSnapshot({ cpuDelayMs: 0 });
+      expect(snapshot.host.physicalBytes.value).toBeGreaterThan(0);
+      expect(snapshot.host.availableBytes.value).toBeGreaterThan(0);
+      expect(snapshot.cpu.logicalCpus.value).toBeGreaterThan(0);
+      for (const item of [snapshot.host.physicalBytes, snapshot.host.availableBytes, snapshot.cpu.utilizationPercent]) {
+        if (item.value === null) expect(item.reason).toBeTruthy();
+      }
     }
   });
 

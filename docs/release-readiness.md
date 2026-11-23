@@ -5,8 +5,8 @@
 | 项 | 状态 |
 |---|---|
 | T01–T03 资源工具与缓存修复 | PASS（本地）；最终缓存候选已在 `3860dc9` 同机重跑 |
-| T04 资源端点/UI/文档/包与 Docker smoke | 代码完成；M04 最终 evidence SHA 实测 PENDING |
-| M04 100k/100/1000 资源基准 | 同 SHA 两次运行：`2306990` 首次 RSS +3,088,384B 超限（FAIL，保留）；第二次 P95 1.9625ms、RSS +1,683,456B、零写、query plan、cleanup 全 PASS。最终 evidence-only SHA 的 M04 结果以同 SHA artifact 为准 |
+| T04 资源端点/UI/文档/包与 Docker smoke | 代码完成；M04 已取得最终候选 `55a3333` 同 SHA PASS，Docker 远端验收待 quality 修复后重跑 |
+| M04 100k/100/1000 资源基准 | `55a3333` PASS：P95 1.6348ms、RSS +917,504B、零写、query plan、cleanup 全 PASS，artifact SHA256 `7b66b5b54f2b01336cb31824a4a7f4a33b118eb5db782397cc2d954bb11adfd9`；同代码前序 `2306990` 的失败与第二次通过记录保留在下节 |
 | T05 版本/CI/Release exact-SHA 门禁 | PASS（本地）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs |
 | 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0 |
 | 代码 SHA | `b5499239763a5e55a649982919474bcf9f8e8907`；evidence-only 提交不改变代码 fingerprint |
