@@ -337,6 +337,49 @@ describe("D06 finally cleanup", () => {
     expect(tree.inspectionErrors.has(222)).toBe(false);
   });
 
+  it("fails closed for an unregistered direct descendant with unreadable identity", async () => {
+    const root = { pid: 111, ppid: 1, startTime: "root-stable", owned: false, role: "node", executableName: "node" };
+    const rootEntry = { identity: root, rssBytes: { value: 1, source: "test", reason: null } };
+    const placeholder = { identity: { pid: 222, ppid: 111, startTime: null, owned: false, role: "node", executableName: "node", detailUnavailable: true }, rssBytes: { value: null, source: "test", reason: "unavailable" } };
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      listProcessesStrict: async () => [rootEntry, placeholder],
+      listProcessPidsStrict: async () => [111, 222],
+      readProcess: async () => rootEntry,
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 222, reason: "process_details_unavailable" }));
+    expect(tree.records.has(222)).toBe(false);
+    expect(signalled).toEqual([]);
+  });
+
+  it("fails closed for an unregistered deep descendant behind a placeholder ancestor", async () => {
+    const root = { pid: 111, ppid: 1, startTime: "root-stable", owned: false, role: "node", executableName: "node" };
+    const placeholder = { pid: 222, ppid: 111, startTime: null, owned: false, role: "node", executableName: "node", detailUnavailable: true };
+    const deep = { pid: 333, ppid: 222, startTime: "deep-stable", owned: false, role: "node", executableName: "node" };
+    const entries = [root, placeholder, deep].map((identity) => ({ identity, rssBytes: { value: 1, source: "test", reason: null } }));
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      listProcessesStrict: async () => entries,
+      listProcessPidsStrict: async () => [111, 222, 333],
+      readProcess: async (pid: number) => entries.find((entry) => entry.identity.pid === pid) ?? null,
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 333, reason: "process_ancestry_unavailable" }));
+    expect(tree.records.has(333)).toBe(false);
+    expect(signalled).toEqual([]);
+  });
+
   it("never signals a descendant whose PID was reused", async () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-reused", owned: false, role: "node", executableName: "node" };
     const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };

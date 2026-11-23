@@ -36,6 +36,17 @@ function isDescendant(candidate, rootPid, identities) {
   return false;
 }
 
+function couldDescendFromRoot(candidate, rootPid, identities) {
+  const seen = new Set();
+  let current = candidate;
+  while (current && !seen.has(current.pid)) {
+    if (current.pid === rootPid) return true;
+    seen.add(current.pid);
+    current = identities.get(current.ppid);
+  }
+  return false;
+}
+
 /**
  * Tracks only processes whose ancestry was proven to a registered root. Every
  * signal rechecks PID + startTime. If the root exits or its PID is reused,
@@ -74,13 +85,14 @@ export class OwnedProcessTree {
     return { identity, rssBytes: current.rssBytes, v8, sampledAt };
   }
 
-  noteInspectionError(pid, reason) {
+  noteInspectionError(pid, reason, observedIdentity = null) {
     const registered = this.records.get(pid);
+    const identity = registered ?? observedIdentity;
     this.inspectionErrors.set(pid, {
       pid,
       stage: "inspect",
       reason,
-      ...(registered ? { identity: { pid, ppid: registered.ppid, startTime: registered.startTime } } : {}),
+      ...(identity ? { identity: { pid, ppid: identity.ppid ?? null, startTime: identity.startTime ?? null } } : {}),
     });
   }
 
@@ -193,8 +205,20 @@ export class OwnedProcessTree {
     const byPid = new Map(listed.map((entry) => [entry.identity.pid, entry]));
     byPid.set(this.rootPid, root);
     const ownedPids = new Set([this.rootPid]);
+    let suspiciousDescendant = false;
     for (const identity of identities.values()) {
-      if (isDescendant(identity, this.rootPid, identities)) ownedPids.add(identity.pid);
+      if (identity.pid === this.rootPid) continue;
+      if (isDescendant(identity, this.rootPid, identities)) {
+        ownedPids.add(identity.pid);
+      } else if (couldDescendFromRoot(identity, this.rootPid, identities)) {
+        this.noteInspectionError(identity.pid, identity.detailUnavailable || !identity.startTime ? "process_details_unavailable" : "process_ancestry_unavailable", identity);
+        suspiciousDescendant = true;
+      }
+    }
+    if (suspiciousDescendant) {
+      this.rootIdentityChanged = false;
+      this.rootIdentityState = "inspection_failed";
+      return [];
     }
     for (const pid of this.records.keys()) {
       if (pid === this.rootPid) continue;
