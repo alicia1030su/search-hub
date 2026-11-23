@@ -432,6 +432,41 @@ describe("D06 finally cleanup", () => {
     expect(cleanup.errors).toEqual([]);
   });
 
+  it("discovers and cleans a descendant created after the initial strict sample", async () => {
+    const root = { pid: 111, ppid: 1, startTime: "root-stable", owned: false, role: "node", executableName: "node" };
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    const rootEntry = { identity: root, rssBytes: { value: 10, source: "test", reason: null } };
+    const descendantEntry = { identity: descendant, rssBytes: { value: 20, source: "test", reason: null } };
+    let rootAlive = true;
+    let descendantAlive = false;
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      listProcessesStrict: async () => [...(rootAlive ? [rootEntry] : []), ...(descendantAlive ? [descendantEntry] : [])],
+      listProcessPidsStrict: async () => [...(rootAlive ? [111] : []), ...(descendantAlive ? [222] : [])],
+      readProcess: async (pid: number) => pid === 111 && rootAlive ? rootEntry : pid === 222 && descendantAlive ? descendantEntry : null,
+      terminateProcess: async (pid: number) => {
+        signalled.push(pid);
+        if (pid === 111) rootAlive = false;
+        if (pid === 222) descendantAlive = false;
+      },
+      killProcess: async (pid: number) => {
+        signalled.push(pid);
+        if (pid === 111) rootAlive = false;
+        if (pid === 222) descendantAlive = false;
+      },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    await tree.sample();
+    expect(tree.records.has(222)).toBe(false);
+    descendantAlive = true;
+    await tree.sample();
+    expect(tree.records.has(222)).toBe(true);
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(true);
+    expect(signalled).toContain(222);
+  });
+
   it("never signals a descendant whose PID was reused", async () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-reused", owned: false, role: "node", executableName: "node" };
     const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };

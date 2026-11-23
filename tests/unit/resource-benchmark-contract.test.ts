@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { classifyOom } from "../../scripts/lib/resource/oom.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { resolveTerminalState } from "../../scripts/lib/resource/terminal-state.mjs";
+// @ts-expect-error -- plain ESM resource module
+import { mergeOwnedTreeEvidence, preShutdownFailure, resolveRootExitBeforeShutdown, summarizeOwnedTreeSamples } from "../../scripts/lib/resource/owned-tree-evidence.mjs";
 
 const benchmark = readFileSync(new URL("../../scripts/bench-resources.mjs", import.meta.url), "utf8");
 const processTree = readFileSync(new URL("../../scripts/lib/resource/process-tree.mjs", import.meta.url), "utf8");
@@ -60,14 +62,33 @@ describe("resource benchmark static safety contract", () => {
   });
 
   it("keeps RSS sampling direct and excludes full-tree enumeration from the measurement loop", () => {
-    expect(benchmark).toContain("rssSampleIntervalMs: 25");
-    expect(benchmark).toContain('rssSampleMethod: "direct_process_memory"');
-    expect(benchmark).toContain('ownedTreeSamplePolicy: "initial_and_cleanup"');
+    expect(benchmark).toContain("rootRssSampleIntervalMs: 25");
+    expect(benchmark).toContain('rootRssSampleMethod: "direct_process_memory"');
+    expect(benchmark).toContain('rootRssSamplerProcess: "benchmark_parent"');
+    expect(benchmark).toContain('rootRssSamplerScope: "target_child_root_process"');
+    expect(benchmark).toContain('ownedTreeSamplePolicy: "initial_pre_shutdown_and_cleanup"');
+    expect(benchmark).toContain('ownedTreePeakMethod: "max_initial_pre_shutdown_strict_snapshots"');
+    expect(benchmark.match(/ownedTreePeakMethod:/g)).toHaveLength(1);
+    expect(benchmark).toContain('command: [process.execPath, ...process.execArgv, ...process.argv.slice(1)].join(" ")');
     expect(benchmark).toContain("io.readProcessMemory(child.pid)");
     expect(benchmark).not.toContain("sampleTicks");
-    expect(benchmark.match(/await owned\.sample\(\)/g)).toHaveLength(1);
+    expect(benchmark).not.toContain("combineOwnedTreeEvidence");
+    expect(benchmark.match(/await owned\.sample\(\)/g)).toHaveLength(2);
+    expect(benchmark.indexOf("const strictSnapshot = await owned.sample()")).toBeGreaterThan(benchmark.indexOf("const rssFinalBytes = await readRss()"));
+    expect(benchmark.indexOf("const strictSnapshot = await owned.sample()")).toBeLessThan(benchmark.indexOf('child.send({ type: "shutdown"'));
+    expect(benchmark).toContain('rssScope: "root_process"');
+    expect(benchmark).toContain("ownedTreePeakBytes: ownedTreeEvidence.peakBytes");
+    expect(benchmark).toContain("ownedPeakBytes: ownedTreeEvidence.peakBytes");
+    expect(benchmark).toContain("ownedRootDied: rootExitedBeforeShutdown");
+    expect(benchmark).toContain("resolveRootExitBeforeShutdown({");
+    expect(benchmark).toContain("root_exited_before_shutdown");
+    expect(benchmark).toContain("root_identity_changed_before_shutdown");
+    expect(benchmark).toContain("shutdown_ipc_failed");
     expect(linux).toContain("export async function readProcessMemory(pid)");
     expect(windows).toContain("export async function readProcessMemory(pid, suppliedApi = null)");
+    const windowsMemory = windows.slice(windows.indexOf("export async function readProcessMemory"), windows.indexOf("async function findToolhelpIdentity"));
+    expect(windowsMemory).toContain("readWindowsProcess(pid, suppliedApi)");
+    expect(windowsMemory).not.toContain("findToolhelpIdentity");
   });
 
   it("makes abort and git-preflight failure terminal before artifact finalization", () => {
@@ -92,6 +113,41 @@ describe("resource benchmark static safety contract", () => {
     expect(benchmark).not.toMatch(/\bsleep\s*\(/);
   });
 
+  it("separates root RSS from strict owned-tree peak and fails uncertain scope", () => {
+    const samples = [
+      { identity: { pid: 111, startTime: "root" }, rssBytes: { value: 100 } },
+      { identity: { pid: 222, startTime: "child" }, rssBytes: { value: 250 } },
+    ];
+    const valid = summarizeOwnedTreeSamples(samples, { rootIdentityChanged: false, rootIdentityState: null });
+    expect(valid).toEqual({ peakBytes: 350, reason: null, uncertainty: null, rssUnavailable: false, processCount: 2 });
+    expect(summarizeOwnedTreeSamples(samples, { rootIdentityChanged: true, rootIdentityState: "missing" })).toMatchObject({ peakBytes: null, uncertainty: "root_missing" });
+    expect(summarizeOwnedTreeSamples(samples, { rootIdentityChanged: true, rootIdentityState: "changed" })).toMatchObject({ peakBytes: null, uncertainty: "root_changed" });
+    expect(summarizeOwnedTreeSamples(samples, { rootIdentityChanged: false, rootIdentityState: "inspection_failed" })).toMatchObject({ peakBytes: null, uncertainty: "root_inspection_failed" });
+    expect(summarizeOwnedTreeSamples(samples, { rootIdentityChanged: false, rootIdentityState: null, inspectionErrors: new Map([[222, {}]]) })).toMatchObject({ peakBytes: null, uncertainty: "owned_tree_inspection_failed" });
+    expect(summarizeOwnedTreeSamples([{ identity: { pid: 111, startTime: "root" }, rssBytes: { value: null } }], { rootIdentityChanged: false, rootIdentityState: null })).toEqual({ peakBytes: null, reason: "rss_unavailable", uncertainty: null, rssUnavailable: true, processCount: 1 });
+    expect(summarizeOwnedTreeSamples([{ identity: { pid: 111, startTime: null }, rssBytes: { value: 100 } }], { rootIdentityChanged: false, rootIdentityState: null })).toMatchObject({ peakBytes: null, reason: "scope_uncertain", uncertainty: "owned_tree_identity_unavailable" });
+    expect(mergeOwnedTreeEvidence(valid, undefined)).toMatchObject({ peakBytes: null, reason: "snapshot_unavailable", uncertainty: "owned_tree_snapshot_unavailable" });
+    expect(mergeOwnedTreeEvidence(valid, { ...valid, peakBytes: 400 })).toMatchObject({ peakBytes: 400, reason: null, uncertainty: null });
+    expect(mergeOwnedTreeEvidence(valid, { ...valid, peakBytes: null, reason: "rss_unavailable", rssUnavailable: true })).toMatchObject({ peakBytes: null, reason: "owned_tree_rss_unavailable", uncertainty: null });
+    expect(mergeOwnedTreeEvidence(valid, { ...valid, peakBytes: null, reason: "scope_uncertain", uncertainty: "root_missing" })).toMatchObject({ peakBytes: null, reason: "scope_uncertain", uncertainty: "root_missing" });
+  });
+
+  it("distinguishes abnormal root exit from intentional shutdown", () => {
+    expect(resolveRootExitBeforeShutdown({ childOutcome: { code: 0, signal: null } })).toBe(true);
+    expect(resolveRootExitBeforeShutdown({ childOutcome: { code: 7, signal: null } })).toBe(true);
+    expect(resolveRootExitBeforeShutdown({ childOutcome: { code: null, signal: "SIGKILL" } })).toBe(true);
+    expect(resolveRootExitBeforeShutdown({ childOutcome: { code: null, signal: null } })).toBe(false);
+    expect(resolveRootExitBeforeShutdown({ rootIdentityChanged: true, rootIdentityState: "missing" })).toBe(true);
+    expect(resolveRootExitBeforeShutdown({ rootIdentityChanged: true, rootIdentityState: "changed" })).toBe(true);
+    expect(resolveRootExitBeforeShutdown({ childOutcome: { code: 0, signal: null }, shutdownRequested: true })).toBe(false);
+    expect(resolveRootExitBeforeShutdown()).toBe(false);
+    expect(classifyOom({ exitCode: 0, windowsExitCode: 0, ownedRootDied: false, ownedPeakBytes: 1024 }).confirmed).toBe(false);
+    expect(preShutdownFailure({ uncertainty: "root_missing" })).toEqual({ reason: "root_exited_before_shutdown", rootExited: true });
+    expect(preShutdownFailure({ uncertainty: "root_changed" })).toEqual({ reason: "root_identity_changed_before_shutdown", rootExited: true });
+    expect(preShutdownFailure({ uncertainty: "owned_tree_inspection_failed" })).toEqual({ reason: "pre_shutdown_inspection_failed", rootExited: false });
+    expect(preShutdownFailure({ uncertainty: null })).toBeNull();
+  });
+
   it("prioritizes artifact and cleanup failures over abort", () => {
     expect(resolveTerminalState({ abortedBy: "SIGTERM", cleanupFailure: "owned_process_residual" })).toMatchObject({ status: "child_failed", exitCode: 4, reason: "owned_process_residual", abortReason: "aborted_by_SIGTERM" });
     expect(resolveTerminalState({ abortedBy: "SIGTERM" })).toMatchObject({ status: "resource_blocked", exitCode: 3, reason: "aborted_by_SIGTERM" });
@@ -100,7 +156,7 @@ describe("resource benchmark static safety contract", () => {
 
   it("keeps an unknown owned RSS peak null instead of fabricating zero", () => {
     expect(benchmark).toContain("let rssPeakBytes = null");
-    expect(benchmark).toContain("ownedPeakBytes: rssPeakBytes");
+    expect(benchmark).toContain("ownedPeakBytes: ownedTreeEvidence.peakBytes");
     expect(benchmark).toContain('pendingReport.rssPeakReason = rssPeakBytes === null ? "unavailable" : null;');
     const unknown = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: null });
     expect(unknown.confirmed).toBe(false);

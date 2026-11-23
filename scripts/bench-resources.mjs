@@ -10,6 +10,7 @@ import { createDb, resolveMigrationsDir, runMigrations } from "../packages/db/sr
 import { createArtifactRun, EXIT_CODES } from "./lib/resource/artifacts.mjs";
 import { freezeBudget } from "./lib/resource/budget.mjs";
 import { classifyOom } from "./lib/resource/oom.mjs";
+import { mergeOwnedTreeEvidence, preShutdownFailure, resolveRootExitBeforeShutdown, summarizeOwnedTreeSamples } from "./lib/resource/owned-tree-evidence.mjs";
 import { OwnedProcessTree, adapter } from "./lib/resource/process-tree.mjs";
 import { createLogSanitizer, sanitizeLog } from "./lib/resource/report.mjs";
 import { collectSnapshot } from "./lib/resource/snapshot.mjs";
@@ -134,6 +135,15 @@ async function main() {
   let spawnError = null;
   let benchmarkStarted = false;
   let rssPeakBytes = null;
+  let initialOwnedTreeEvidence = { peakBytes: null, reason: "not_completed", uncertainty: "initial_tree_inspection_failed", rssUnavailable: false, processCount: 0 };
+  let preShutdownEvidence = { peakBytes: null, reason: "not_completed", uncertainty: "pre_shutdown_not_completed", rssUnavailable: false, processCount: 0 };
+  let ownedTreeEvidence = mergeOwnedTreeEvidence(initialOwnedTreeEvidence, preShutdownEvidence);
+  let preShutdownRootAlive = false;
+  let preShutdownFailureReason = null;
+  let shutdownRequested = false;
+  let cleanupStarted = false;
+  let rootExitedBeforeShutdown = false;
+  let shutdownIpcFailed = false;
   let afterSnapshot = null;
   let cleanup = { ok: true, residuals: [], errors: [] };
   const sanitizer = createLogSanitizer();
@@ -151,9 +161,14 @@ async function main() {
     concurrency: 1,
     gcBeforeBaseline: true,
     httpTimeoutMs: HTTP_TIMEOUT_MS,
-    rssSampleIntervalMs: 25,
-    rssSampleMethod: "direct_process_memory",
-    ownedTreeSamplePolicy: "initial_and_cleanup",
+    rootRssSampleIntervalMs: 25,
+    rootRssSampleMethod: "direct_process_memory",
+    ownedTreeSamplePolicy: "initial_pre_shutdown_and_cleanup",
+    ownedTreePeakMethod: "max_initial_pre_shutdown_strict_snapshots",
+    rootRssSamplerProcess: "benchmark_parent",
+    rootRssSamplerScope: "target_child_root_process",
+    getTimingScope: "client_fetch_to_response_json",
+    command: [process.execPath, ...process.execArgv, ...process.argv.slice(1)].join(" "),
   };
 
   let baseReport = {
@@ -282,6 +297,7 @@ process.on("message", async (message) => {
         });
         child.once("close", (code, signal) => {
           childOutcome = { code, signal };
+          if (!shutdownRequested && !cleanupStarted) rootExitedBeforeShutdown = true;
           resolve(childOutcome);
         });
       });
@@ -297,7 +313,9 @@ process.on("message", async (message) => {
           io,
           consoleCtrlOwned: platform === "win32",
         });
-        await owned.sample();
+        const initialSnapshot = await owned.sample();
+        initialOwnedTreeEvidence = summarizeOwnedTreeSamples(initialSnapshot, owned);
+        if (initialOwnedTreeEvidence.uncertainty) throw new Error("initial_tree_inspection_failed");
       } else if (child.pid && !childOutcome) {
         throw new Error("child_process_identity_unavailable");
       }
@@ -383,12 +401,12 @@ process.on("message", async (message) => {
       throwIfAborted();
       if (beforeFinalGc === null) throw new Error("rss_sample_unavailable");
       rssPeakBytes = Math.max(rssPeakBytes, beforeFinalGc);
-      await ipc("gc", "gc");
-      await new Promise((resolve) => setImmediate(resolve));
       clearInterval(sampler);
       sampler = null;
       await samplingPromise;
       throwIfAborted();
+      await ipc("gc", "gc");
+      await new Promise((resolve) => setImmediate(resolve));
       const rssFinalBytes = await readRss();
       throwIfAborted();
       if (rssFinalBytes === null) throw new Error("rss_sample_unavailable");
@@ -408,6 +426,29 @@ process.on("message", async (message) => {
         rssBeforeGcBytes,
         rssBaselineBytes,
         rssPeakBytes,
+        rssScope: "root_process",
+        rootRssPeakBytes: rssPeakBytes,
+        ownedTreePeakBytes: ownedTreeEvidence.peakBytes,
+        ownedTreePeakReason: ownedTreeEvidence.reason,
+        ownedTreePeakUncertainty: ownedTreeEvidence.uncertainty,
+        ownedTreePeakSource: "strict_owned_tree_snapshots",
+        initialOwnedTreeSample: {
+          peakBytes: initialOwnedTreeEvidence.peakBytes,
+          processCount: initialOwnedTreeEvidence.processCount,
+          uncertainty: initialOwnedTreeEvidence.uncertainty,
+          reason: initialOwnedTreeEvidence.reason,
+          rssUnavailable: initialOwnedTreeEvidence.rssUnavailable,
+        },
+        preShutdownSample: {
+          peakBytes: preShutdownEvidence.peakBytes,
+          processCount: preShutdownEvidence.processCount,
+          uncertainty: preShutdownEvidence.uncertainty,
+          reason: preShutdownEvidence.reason,
+          rssUnavailable: preShutdownEvidence.rssUnavailable,
+        },
+        rootExitedBeforeShutdown,
+        shutdownRequested,
+        shutdownIpcFailed,
         rssFinalBytes,
         rssDeltaBytes,
         rssPeakDeltaBytes,
@@ -456,16 +497,63 @@ process.on("message", async (message) => {
     appendStderr(sanitizer.write(stderrDecoder.end()));
     appendStderr(sanitizer.end());
 
-    if (child && child.pid && !childOutcome) {
-      try { child.send({ type: "shutdown" }, () => undefined); } catch { /* channel may already be closed */ }
-      await Promise.race([delay(5000, { ref: false }), new Promise((resolve) => child.once("close", resolve))]);
+    if (benchmarkStarted && owned) {
+      try {
+        const strictSnapshot = await owned.sample();
+        preShutdownEvidence = summarizeOwnedTreeSamples(strictSnapshot, owned);
+      } catch {
+        preShutdownEvidence = { peakBytes: null, reason: "sample_failed", uncertainty: "pre_shutdown_inspection_failed", rssUnavailable: false, processCount: 0 };
+      }
+    } else if (benchmarkStarted) {
+      preShutdownEvidence = { peakBytes: null, reason: "unavailable", uncertainty: "pre_shutdown_inspection_failed", rssUnavailable: false, processCount: 0 };
     }
+    const preShutdownIssue = preShutdownFailure(preShutdownEvidence);
+    preShutdownFailureReason = preShutdownIssue?.reason ?? null;
+    rootExitedBeforeShutdown = rootExitedBeforeShutdown || preShutdownIssue?.rootExited === true ||
+      resolveRootExitBeforeShutdown({
+        childOutcome,
+        rootIdentityChanged: owned?.rootIdentityChanged,
+        rootIdentityState: owned?.rootIdentityState,
+        shutdownRequested,
+      });
+    preShutdownRootAlive = !preShutdownEvidence.uncertainty;
+    ownedTreeEvidence = mergeOwnedTreeEvidence(initialOwnedTreeEvidence, preShutdownEvidence);
+
+    if (child && child.pid && !childOutcome && preShutdownRootAlive && !rootExitedBeforeShutdown) {
+      shutdownRequested = true;
+      try {
+        await new Promise((resolve) => {
+          child.send({ type: "shutdown" }, (error) => {
+            if (error) shutdownIpcFailed = true;
+            resolve();
+          });
+        });
+      } catch {
+        shutdownIpcFailed = true;
+      }
+      if (!childOutcome) await Promise.race([delay(5000, { ref: false }), new Promise((resolve) => child.once("close", resolve))]);
+    }
+    cleanupStarted = true;
     if (owned) {
       try { cleanup = await owned.cleanup(); } catch (error) {
         cleanup = { ok: false, residuals: [], errors: [{ stage: "cleanup", reason: error instanceof Error ? error.message : String(error) }] };
       }
     } else if (child?.pid && !childOutcome) {
       cleanup = { ok: false, residuals: [{ pid: child.pid, reason: "identity_unavailable" }], errors: [] };
+    }
+    const safetyErrors = [];
+    if (benchmarkStarted && rootExitedBeforeShutdown) {
+      safetyErrors.push({ stage: "pre_shutdown", reason: preShutdownFailureReason === "root_identity_changed_before_shutdown" || owned?.rootIdentityState === "changed" ? "root_identity_changed_before_shutdown" : "root_exited_before_shutdown" });
+    }
+    if (benchmarkStarted && initialOwnedTreeEvidence.uncertainty) {
+      safetyErrors.push({ stage: "initial_tree", reason: "initial_tree_inspection_failed" });
+    }
+    if (benchmarkStarted && preShutdownEvidence.reason !== "not_completed" && preShutdownEvidence.uncertainty && !rootExitedBeforeShutdown) {
+      safetyErrors.push({ stage: "pre_shutdown", reason: "pre_shutdown_inspection_failed" });
+    }
+    if (shutdownIpcFailed) safetyErrors.push({ stage: "shutdown_ipc", reason: "shutdown_ipc_failed" });
+    if (safetyErrors.length > 0) {
+      cleanup = { ...cleanup, ok: false, errors: [...(cleanup.errors ?? []), ...safetyErrors] };
     }
 
     try { afterSnapshot = await collectSnapshot({ cpuDelayMs: 20 }); } catch { afterSnapshot = null; }
@@ -478,8 +566,8 @@ process.on("message", async (message) => {
         signal: childOutcome?.signal ?? null,
         windowsExitCode: childOutcome?.code ?? null,
         log: stderrTail,
-        ownedRootDied: Boolean(child?.pid && childOutcome),
-        ownedPeakBytes: rssPeakBytes,
+        ownedRootDied: rootExitedBeforeShutdown,
+        ownedPeakBytes: ownedTreeEvidence.peakBytes,
       }, { cgroupOomDelta })
       : pendingReport?.oomClassification ?? { confirmed: false, reason: "not_started", evidence: [] };
 
@@ -508,6 +596,29 @@ process.on("message", async (message) => {
       pendingReport.oomClassification = oomClassification;
       pendingReport.rssPeakBytes = rssPeakBytes;
       pendingReport.rssPeakReason = rssPeakBytes === null ? "unavailable" : null;
+      pendingReport.rssScope = "root_process";
+      pendingReport.rootRssPeakBytes = rssPeakBytes;
+      pendingReport.ownedTreePeakBytes = ownedTreeEvidence.peakBytes;
+      pendingReport.ownedTreePeakReason = ownedTreeEvidence.reason;
+      pendingReport.ownedTreePeakUncertainty = ownedTreeEvidence.uncertainty;
+      pendingReport.ownedTreePeakSource = "strict_owned_tree_snapshots";
+      pendingReport.initialOwnedTreeSample = {
+        peakBytes: initialOwnedTreeEvidence.peakBytes,
+        processCount: initialOwnedTreeEvidence.processCount,
+        uncertainty: initialOwnedTreeEvidence.uncertainty,
+        reason: initialOwnedTreeEvidence.reason,
+        rssUnavailable: initialOwnedTreeEvidence.rssUnavailable,
+      };
+      pendingReport.preShutdownSample = {
+        peakBytes: preShutdownEvidence.peakBytes,
+        processCount: preShutdownEvidence.processCount,
+        uncertainty: preShutdownEvidence.uncertainty,
+        reason: preShutdownEvidence.reason,
+        rssUnavailable: preShutdownEvidence.rssUnavailable,
+      };
+      pendingReport.rootExitedBeforeShutdown = rootExitedBeforeShutdown;
+      pendingReport.shutdownRequested = shutdownRequested;
+      pendingReport.shutdownIpcFailed = shutdownIpcFailed;
       pendingReport.cgroupOomEvidence = {
         before: beforeOom,
         after: afterOom,
