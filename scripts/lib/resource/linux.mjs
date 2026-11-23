@@ -254,7 +254,7 @@ export async function listProcessPidsStrict(readDir = readdir) {
 /** Complete detailed listing; per-PID detail failures retain PID existence. */
 export async function listProcessesStrict() {
   const pids = await listProcessPidsStrict();
-  return Promise.all(pids.map(async (pid) => {
+  const readStrictEntry = async (pid) => {
     try {
       const current = await readLinuxProcess(pid);
       if (current) return current;
@@ -266,12 +266,26 @@ export async function listProcessesStrict() {
       const parent = status?.match(/^PPid:\s+(\d+)$/m)?.[1];
       if (parent && Number.isSafeInteger(Number(parent))) ppid = Number(parent);
       executableName = safeExecutableName(status?.match(/^Name:\s+(.+)$/m)?.[1]);
-    } catch { /* PID existence still comes from the complete strict listing */ }
+    } catch { /* status is optional when stat still provides the parent */ }
+    if (ppid === null) {
+      try {
+        const statText = await readText(`/proc/${pid}/stat`);
+        const closeParen = statText?.lastIndexOf(")") ?? -1;
+        const fields = closeParen >= 0 ? statText.slice(closeParen + 2).split(" ") : [];
+        const parent = Number(fields[1]);
+        if (Number.isSafeInteger(parent)) ppid = parent;
+      } catch { /* PID existence still comes from the complete strict listing */ }
+    }
     return {
       identity: { pid, ppid, startTime: null, owned: false, role: roleFor(executableName), executableName, detailUnavailable: true },
       rssBytes: reading(null, "proc_status", "process_details_unavailable"),
     };
-  }));
+  };
+  const processes = [];
+  for (let index = 0; index < pids.length; index += 64) {
+    processes.push(...await Promise.all(pids.slice(index, index + 64).map(readStrictEntry)));
+  }
+  return processes;
 }
 
 export async function readProcess(pid) {

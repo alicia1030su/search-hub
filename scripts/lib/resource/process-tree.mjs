@@ -28,6 +28,7 @@ function isDescendant(candidate, rootPid, identities) {
   const seen = new Set();
   let current = candidate;
   while (current && !seen.has(current.pid)) {
+    if (current.detailUnavailable || !current.startTime) return false;
     if (current.pid === rootPid) return true;
     seen.add(current.pid);
     current = identities.get(current.ppid);
@@ -119,6 +120,10 @@ export class OwnedProcessTree {
         this.noteInspectionError(pid, "process_read_unavailable");
         continue;
       }
+      if (current.identity.detailUnavailable || !current.identity.startTime) {
+        this.noteInspectionError(pid, "process_details_unavailable");
+        continue;
+      }
       if (current.identity.startTime !== registered.startTime) {
         // PID reuse is safe to ignore: never signal the replacement process.
         this.inspectionErrors.delete(pid);
@@ -171,7 +176,12 @@ export class OwnedProcessTree {
     try {
       if (typeof this.io.listProcessesStrict !== "function") throw new Error("strict_process_listing_unavailable");
       listed = await this.io.listProcessesStrict();
-      if (!Array.isArray(listed)) throw new Error("strict_process_listing_invalid");
+      if (!Array.isArray(listed) || listed.some((entry) => {
+        const identity = entry?.identity;
+        return !identity || !Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
+          !(identity.ppid === null || Number.isSafeInteger(identity.ppid)) ||
+          !(identity.startTime === null || typeof identity.startTime === "string");
+      })) throw new Error("strict_process_listing_invalid");
     } catch (error) {
       this.noteInspectionError(this.rootPid, `process_listing_failed:${error?.code ?? (error instanceof Error ? error.message : "unknown")}`);
       this.rootIdentityChanged = false;

@@ -44,6 +44,9 @@ describe("resource benchmark static safety contract", () => {
     expect(processTree).toContain("strict_process_listing_unavailable");
     expect(linux).toContain("export async function listProcessPidsStrict(");
     expect(linux).toContain("export async function listProcessesStrict()");
+    expect(linux).toContain("index += 64");
+    expect(linux).toContain("pids.slice(index, index + 64)");
+    expect(linux).toContain("`/proc/${pid}/stat`");
     expect(windows).toContain("export async function listProcessPidsStrict(");
     expect(windows).toContain("export async function listProcessesStrict(");
     expect(processTree).toContain("this.io.listProcessesStrict()");
