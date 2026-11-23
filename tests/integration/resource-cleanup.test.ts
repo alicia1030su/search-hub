@@ -59,6 +59,67 @@ describe("D06 finally cleanup", () => {
     expect(signalled).not.toContain(111);
   });
 
+  it("fails cleanup when a registered descendant cannot be inspected", async () => {
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      readProcess: async (pid: number) => {
+        if (pid === 222) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        return null;
+      },
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    tree.records.set(222, { ...descendant, owned: true });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({
+      pid: 222,
+      stage: "inspect",
+      reason: "process_read_failed:EACCES",
+      identity: expect.objectContaining({ pid: 222, ppid: 111, startTime: "descendant-stable" }),
+    }));
+    expect(signalled).toEqual([]);
+  });
+
+  it("does not treat an ambiguous null descendant read as proof of exit", async () => {
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    const io = {
+      listProcesses: async () => { throw new Error("listing unavailable"); },
+      readProcess: async () => null,
+      terminateProcess: async () => {},
+      killProcess: async () => {},
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    tree.records.set(222, { ...descendant, owned: true });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 222, stage: "inspect", reason: "process_read_unavailable" }));
+  });
+
+  it("clears an inspection error only after an authoritative listing proves exit", async () => {
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    let reads = 0;
+    const io = {
+      listProcesses: async () => [],
+      readProcess: async (pid: number) => {
+        if (pid === 222 && reads++ === 0) throw Object.assign(new Error("transient"), { code: "EIO" });
+        return null;
+      },
+      terminateProcess: async () => {},
+      killProcess: async () => {},
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    tree.records.set(222, { ...descendant, owned: true });
+    await tree.sample();
+    await tree.sample();
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(true);
+    expect(cleanup.errors).toEqual([]);
+  });
+
   it("never signals a descendant whose PID was reused", async () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-reused", owned: false, role: "node", executableName: "node" };
     const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };

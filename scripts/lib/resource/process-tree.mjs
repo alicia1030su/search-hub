@@ -53,6 +53,7 @@ export class OwnedProcessTree {
     this.rootIdentityChanged = false;
     this.rootIdentityState = null;
     this.records = new Map();
+    this.inspectionErrors = new Map();
     this.records.set(rootPid, { pid: rootPid, ppid: process.ppid, startTime: rootStartTime, owned: true, role: "node", executableName: "node" });
   }
 
@@ -71,14 +72,46 @@ export class OwnedProcessTree {
     return { identity, rssBytes: current.rssBytes, v8, sampledAt };
   }
 
+  noteInspectionError(pid, reason) {
+    const registered = this.records.get(pid);
+    this.inspectionErrors.set(pid, {
+      pid,
+      stage: "inspect",
+      reason,
+      ...(registered ? { identity: { pid, ppid: registered.ppid, startTime: registered.startTime } } : {}),
+    });
+  }
+
   async sampleRegisteredDescendants(telemetry = null) {
     const sampledAt = new Date().toISOString();
     const samples = [];
     for (const [pid, registered] of this.records) {
       if (pid === this.rootPid) continue;
       let current = null;
-      try { current = await this.io.readProcess(pid); } catch { current = null; }
-      if (!current || current.identity.startTime !== registered.startTime) continue;
+      try {
+        current = await this.io.readProcess(pid);
+      } catch (error) {
+        this.noteInspectionError(pid, `process_read_failed:${error?.code ?? "unknown"}`);
+        continue;
+      }
+      if (!current) {
+        // A null detail read is ambiguous on Windows. Only an authoritative
+        // process listing that omits the PID proves it has exited.
+        let listed = null;
+        try { listed = await this.io.listProcesses(Math.max(this.maxProcesses, 2048)); } catch { listed = null; }
+        if (listed && !listed.some((entry) => entry.identity.pid === pid)) {
+          this.inspectionErrors.delete(pid);
+          continue;
+        }
+        this.noteInspectionError(pid, "process_read_unavailable");
+        continue;
+      }
+      if (current.identity.startTime !== registered.startTime) {
+        // PID reuse is safe to ignore: never signal the replacement process.
+        this.inspectionErrors.delete(pid);
+        continue;
+      }
+      this.inspectionErrors.delete(pid);
       samples.push(this.sampleEntry(current, telemetry, sampledAt));
     }
     return samples;
@@ -127,6 +160,7 @@ export class OwnedProcessTree {
   }
 
   finalCleanupResult(errors = [], residuals = []) {
+    errors = [...errors, ...this.inspectionErrors.values()];
     if (this.rootIdentityState === "changed") {
       errors = [...errors, { pid: this.rootPid, stage: "identity", reason: "root_identity_changed" }];
     }

@@ -446,7 +446,7 @@ process.on("message", async (message) => {
       };
       pendingReport.cleanup = {
         ok: cleanup.ok && localCleanupErrors.length === 0,
-        errors: [...(cleanup.errors ?? []), ...localCleanupErrors].map((item) => ({ pid: item.pid ?? null, stage: item.stage, reason: sanitizeLog(item.reason) })),
+        errors: [...(cleanup.errors ?? []), ...localCleanupErrors].map((item) => ({ pid: item.pid ?? null, stage: item.stage, reason: sanitizeLog(item.reason), ...(item.identity ? { identity: item.identity } : {}) })),
       };
       if (residuals.length > 0 || !cleanup.ok || localCleanupErrors.length > 0) {
         exitCode = EXIT_CODES.childFailed;
@@ -460,6 +460,7 @@ process.on("message", async (message) => {
         const outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
         await artifact.appendLog("raw/child-stderr.log", stderrTail);
         if (residuals.length > 0) await artifact.writeJson("residual-processes.json", residuals);
+        if ((cleanup.errors ?? []).length > 0) await artifact.writeJson("cleanup-errors.json", cleanup.errors);
         await artifact.finish({ exitCode, reason: pendingReason, details: { benchmark: pendingReport } });
         artifactFinished = true;
         if (exitCode === EXIT_CODES.success) {
