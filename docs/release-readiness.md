@@ -5,13 +5,13 @@
 | 项 | 状态 |
 |---|---|
 | T01–T03 资源工具与缓存修复 | PASS（本地）；最终缓存候选已在 `3860dc9` 同机重跑 |
-| T04 资源端点/UI/文档/包与 Docker smoke | 代码完成；M04 已取得最终候选 `55a3333` 同 SHA PASS，Docker 远端验收待 quality 修复后重跑 |
-| M04 100k/100/1000 资源基准 | `55a3333` PASS：P95 1.6348ms、RSS +917,504B、零写、query plan、cleanup 全 PASS，artifact SHA256 `7b66b5b54f2b01336cb31824a4a7f4a33b118eb5db782397cc2d954bb11adfd9`；同代码前序 `2306990` 的失败与第二次通过记录保留在下节 |
-| T05 版本/CI/Release exact-SHA 门禁 | PASS（本地）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs |
-| 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0 |
-| 代码 SHA | `818a489192db32c0957c015a604f6b22d4de2c2d`；evidence-only 提交不改变代码 fingerprint |
+| T04 资源端点/UI/文档/包与 Docker smoke | PASS：M04 最终候选 `9e77474` 同 SHA 通过；Docker PR 的 image/compose/MCP/11 项验收通过 |
+| M04 100k/100/1000 资源基准 | `9e77474` PASS：P95 4.5295ms、RSS +929,792B、零写、query plan、cleanup 全 PASS，artifact SHA256 `c64dc53b0b6c524691b2d9d614301b16561a3734e87bf275a36d9580d3d0be24`；前序波动记录保留在下节 |
+| T05 版本/CI/Release exact-SHA 门禁 | PASS（本地 + PR）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs；PR 五工作流全部通过 |
+| 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0；CI artifact 12 文件平铺下载验证通过 |
+| 代码指纹 | `079773fe51fed861d4a07cc90cf971a5e8923507c8fd489d52277fa7ced00917`；evidence-only 提交不改变代码 fingerprint |
 | 三平台包/CLI/Node22 | PR PASS：CLI linux-arm64/linux-x64/node22/windows-x64 全部通过；本机 Windows x64 包体/REST/MCP/资源端点/重启持久化 16 项通过 |
-| Docker/systemd/upgrade v0.1.13→current | systemd PR PASS；upgrade PR Windows/Ubuntu PASS，v0.1.13 路径 `appliedDiff=[]`；Docker 因 quality 失败未启动，修复后重跑 |
+| Docker/systemd/upgrade v0.1.13→current | PR PASS：Docker、systemd、Windows/Ubuntu 升级矩阵全部通过；v0.1.13 路径 `appliedDiff=[]` |
 | Draft/finalize、资产/Provenance/GHCR | PENDING；任一步失败保持 draft |
 
 资源证据状态只允许 `PASS`、`PASS_NO_OPTIMIZATION`、`N/A`、`FAIL`、`BLOCKED`；`N/A` 仅用于 C10，P0 门槛不豁免。发布后事实将追加到本节，不改写历史 Stable 记录或 tagged commit。
