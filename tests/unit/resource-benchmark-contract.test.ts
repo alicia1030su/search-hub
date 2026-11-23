@@ -49,6 +49,8 @@ describe("resource benchmark static safety contract", () => {
     expect(linux).toContain("`/proc/${pid}/stat`");
     expect(windows).toContain("export async function listProcessPidsStrict(");
     expect(windows).toContain("export async function listProcessesStrict(");
+    expect(windows).toContain("index += 64");
+    expect(windows).toContain("entries.slice(index, index + 64)");
     expect(processTree).toContain("this.io.listProcessesStrict()");
     const linuxStrict = linux.slice(linux.indexOf("export async function listProcessPidsStrict("), linux.indexOf("/** Complete detailed listing"));
     const windowsStrict = windows.slice(windows.indexOf("export async function enumerateToolhelpEntries"), windows.indexOf("async function readWindowsProcess"));
@@ -98,7 +100,9 @@ describe("resource benchmark static safety contract", () => {
     expect(unknownWithLog.reason).toBe("windows_oom_code_peak_unknown");
     expect(unknownWithLog.confirmedReasons).toEqual([]);
     expect(unknownWithLog.evidence).toContain("owned_peak_unknown");
-    expect(classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024 }).confirmed).toBe(false);
+    const knownWithoutLog = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024 });
+    expect(knownWithoutLog.confirmed).toBe(false);
+    expect(knownWithoutLog.reason).toBe("windows_oom_code_without_memory_log");
     expect(classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024, log: "memory allocation failed" }).confirmed).toBe(true);
   });
 

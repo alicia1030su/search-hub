@@ -268,7 +268,8 @@ export async function listProcessPidsStrict(suppliedApi = null) {
 /** Complete detailed listing; per-PID detail failures retain PID and parent. */
 export async function listProcessesStrict(suppliedApi = null) {
   const win = suppliedApi ?? await api();
-  return Promise.all((await enumerateToolhelpEntries(win)).map(async (entry) => {
+  const entries = await enumerateToolhelpEntries(win);
+  const readStrictEntry = async (entry) => {
     const details = await readWindowsProcess(entry.pid, win);
     return {
       identity: {
@@ -282,7 +283,12 @@ export async function listProcessesStrict(suppliedApi = null) {
       },
       rssBytes: details?.rssBytes ?? reading(null, "win32_process_memory_counters", "process_details_unavailable"),
     };
-  }));
+  };
+  const processes = [];
+  for (let index = 0; index < entries.length; index += 64) {
+    processes.push(...await Promise.all(entries.slice(index, index + 64).map(readStrictEntry)));
+  }
+  return processes;
 }
 
 async function readWindowsProcess(pid, suppliedApi = null) {

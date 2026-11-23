@@ -89,13 +89,15 @@ describe("D06 finally cleanup", () => {
     expect(signalled).toEqual([]);
   });
 
-  it("does not treat an ambiguous null descendant read as proof of exit", async () => {
+  it("does not treat an ambiguous null descendant read as proof of exit after root identity changes", async () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    const reusedRoot = { pid: 111, ppid: 1, startTime: "root-reused", owned: false, role: "node", executableName: "node" };
+    const rootEntry = { identity: reusedRoot, rssBytes: { value: 1, source: "test", reason: null } };
     const io = {
       listProcesses: async () => { throw new Error("listing unavailable"); },
       listProcessesStrict: async () => { throw new Error("strict listing unavailable"); },
       listProcessPidsStrict: async () => { throw new Error("strict listing unavailable"); },
-      readProcess: async () => null,
+      readProcess: async (pid: number) => pid === 111 ? rootEntry : null,
       terminateProcess: async () => {},
       killProcess: async () => {},
     };
@@ -378,6 +380,29 @@ describe("D06 finally cleanup", () => {
     expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 333, reason: "process_ancestry_unavailable" }));
     expect(tree.records.has(333)).toBe(false);
     expect(signalled).toEqual([]);
+  });
+
+  it("clears an unregistered suspicious PID error after the complete listing proves exit", async () => {
+    const root = { pid: 111, ppid: 1, startTime: "root-stable", owned: false, role: "node", executableName: "node" };
+    const rootEntry = { identity: root, rssBytes: { value: 1, source: "test", reason: null } };
+    const placeholder = { identity: { pid: 222, ppid: 111, startTime: null, owned: false, role: "node", executableName: "node", detailUnavailable: true }, rssBytes: { value: null, source: "test", reason: "unavailable" } };
+    let alive = true;
+    const io = {
+      listProcesses: async () => [],
+      listProcessesStrict: async () => alive ? [rootEntry, placeholder] : [],
+      listProcessPidsStrict: async () => alive ? [111, 222] : [],
+      readProcess: async () => alive ? rootEntry : null,
+      terminateProcess: async () => { alive = false; },
+      killProcess: async () => { alive = false; },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    await tree.sample();
+    expect(tree.inspectionErrors.has(222)).toBe(true);
+    io.listProcessesStrict = async () => [rootEntry];
+    await tree.sample();
+    expect(tree.inspectionErrors.has(222)).toBe(false);
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(true);
   });
 
   it("never signals a descendant whose PID was reused", async () => {

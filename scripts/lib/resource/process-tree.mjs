@@ -204,6 +204,9 @@ export class OwnedProcessTree {
     identities.set(this.rootPid, root.identity);
     const byPid = new Map(listed.map((entry) => [entry.identity.pid, entry]));
     byPid.set(this.rootPid, root);
+    for (const pid of this.inspectionErrors.keys()) {
+      if (pid !== this.rootPid && !this.records.has(pid) && !byPid.has(pid)) this.inspectionErrors.delete(pid);
+    }
     const ownedPids = new Set([this.rootPid]);
     let suspiciousDescendant = false;
     for (const identity of identities.values()) {
