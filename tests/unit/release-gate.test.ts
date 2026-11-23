@@ -13,7 +13,8 @@ const sha = "a".repeat(40);
 function run(path: string, overrides: Record<string, unknown> = {}) {
   return {
     id: Math.floor(Math.random() * 1_000_000), head_sha: sha, event: "push", head_branch: "main",
-    path, status: "completed", conclusion: "success", created_at: "2026-11-23T00:00:00Z",
+    path: path.startsWith(".github/workflows/") ? path : `.github/workflows/${path}`,
+    status: "completed", conclusion: "success", created_at: "2026-11-23T00:00:00Z",
     html_url: `https://example.test/${path}`, run_attempt: 1, ...overrides,
   };
 }
@@ -21,10 +22,11 @@ function run(path: string, overrides: Record<string, unknown> = {}) {
 describe("release gate", () => {
   it("selects only exact-SHA main-push runs for the five required workflow paths", () => {
     const runs = Object.keys(REQUIRED_WORKFLOWS).map((path) => run(path));
-    runs.push(run("ci.yml", { event: "pull_request" }), run("docker.yml", { head_branch: "feature" }), run("cli.yml", { head_sha: "b".repeat(40) }), run("other.yml"));
+    runs.push(run("ci.yml", { event: "pull_request" }), run("docker.yml", { head_branch: "feature" }), run("cli.yml", { head_sha: "b".repeat(40) }), run("other.yml"), run("other/ci.yml"));
     const selected = selectLatestRuns(runs, sha);
     expect([...selected.keys()].sort()).toEqual(Object.keys(REQUIRED_WORKFLOWS).sort());
     expect(evaluateRuns(runs, sha).allGreen).toBe(true);
+    expect(selectLatestRuns([run("other/ci.yml")], sha).size).toBe(0);
   });
 
   it("uses the latest terminal run and ignores an older success", () => {

@@ -32,11 +32,16 @@ export function selectLatestRuns(runs, sha) {
   const selected = new Map();
   for (const workflowRun of runs) {
     if (workflowRun.head_sha !== sha || workflowRun.event !== "push" || workflowRun.head_branch !== "main") continue;
-    if (!Object.hasOwn(REQUIRED_WORKFLOWS, workflowRun.path)) continue;
-    const current = selected.get(workflowRun.path);
+    if (typeof workflowRun.path !== "string") continue;
+    // GitHub returns ".github/workflows/ci.yml"; reports keep the stable basename.
+    // Strip only the canonical prefix so lookalike paths such as "other/ci.yml"
+    // cannot satisfy a required workflow gate.
+    const workflowPath = workflowRun.path.replace(/^\.github\/workflows\//, "");
+    if (!Object.hasOwn(REQUIRED_WORKFLOWS, workflowPath)) continue;
+    const current = selected.get(workflowPath);
     const key = `${workflowRun.created_at ?? ""}:${workflowRun.id ?? 0}`;
     const currentKey = current ? `${current.created_at ?? ""}:${current.id ?? 0}` : "";
-    if (!current || key > currentKey) selected.set(workflowRun.path, workflowRun);
+    if (!current || key > currentKey) selected.set(workflowPath, workflowRun);
   }
   return selected;
 }
