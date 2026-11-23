@@ -1,20 +1,55 @@
 # 发布就绪报告
 
-## v0.1.14（Release candidate，未发布）
+## v0.1.14 Stable（2026-11-23）
 
 | 项 | 状态 |
 |---|---|
 | T01–T03 资源工具与缓存修复 | PASS（本地）；最终缓存候选已在 `3860dc9` 同机重跑 |
-| T04 资源端点/UI/文档/包与 Docker smoke | PASS：M04 最终候选 `9e77474` 同 SHA 通过；Docker PR 的 image/compose/MCP/11 项验收通过 |
-| M04 100k/100/1000 资源基准 | `9e77474` PASS：P95 4.5295ms、RSS +929,792B、零写、query plan、cleanup 全 PASS，artifact SHA256 `c64dc53b0b6c524691b2d9d614301b16561a3734e87bf275a36d9580d3d0be24`；前序波动记录保留在下节 |
-| T05 版本/CI/Release exact-SHA 门禁 | PASS（本地 + PR）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs；PR 五工作流全部通过 |
+| T04 资源端点/UI/文档/包与 Docker smoke | PASS：最终 SHA `c357781` 的 M04 同 SHA 通过；Docker image/compose/MCP/11 项验收通过 |
+| M04 100k/100/1000 资源基准 | `c357781` PASS：P95 1.3242ms、RSS +2,023,424B、零写、query plan、cleanup 全 PASS，artifact SHA256 `0dc27dfd3f0a12fc624105abab349706fdc543daefef5b3fb61447444d18870e`；前序波动与未发布失败保留在下节 |
+| T05 版本/CI/Release exact-SHA 门禁 | PASS（本地 + PR + main + tag）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs；最终 main 五工作流与 Release 全部门禁通过 |
 | 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0；CI artifact 12 文件平铺下载验证通过 |
-| 代码指纹 | `079773fe51fed861d4a07cc90cf971a5e8923507c8fd489d52277fa7ced00917`；evidence-only 提交不改变代码 fingerprint |
-| 三平台包/CLI/Node22 | PR PASS：CLI linux-arm64/linux-x64/node22/windows-x64 全部通过；本机 Windows x64 包体/REST/MCP/资源端点/重启持久化 16 项通过 |
-| Docker/systemd/upgrade v0.1.13→current | PR PASS：Docker、systemd、Windows/Ubuntu 升级矩阵全部通过；v0.1.13 路径 `appliedDiff=[]` |
-| Draft/finalize、资产/Provenance/GHCR | PENDING；任一步失败保持 draft |
+| 代码指纹 | `e8ac626aed75a1a558502e82e3a3291977f4b5f39cffe00e272c848dc74bd2b4`；与 Release `resource-evidence.json` 一致 |
+| 三平台包/CLI/Node22 | PASS：Windows x64、Linux x64/arm64 服务端包与 CLI、Node22 CLI 均在对应 runner 构建并连接真实服务端验收 |
+| Docker/systemd/upgrade v0.1.13→current | PASS：Docker、systemd、Windows/Ubuntu 升级矩阵全部通过；v0.1.13 路径 `appliedDiff=[]` |
+| Draft/finalize、资产/Provenance/GHCR | PASS：Release run `45157464970` 全绿；9 个资产、SHA256SUMS、Provenance、GHCR 三标签同 digest 与 latest 均核验通过 |
 
-资源证据状态只允许 `PASS`、`PASS_NO_OPTIMIZATION`、`N/A`、`FAIL`、`BLOCKED`；`N/A` 仅用于 C10，P0 门槛不豁免。发布后事实将追加到本节，不改写历史 Stable 记录或 tagged commit。
+资源证据状态只允许 `PASS`、`PASS_NO_OPTIMIZATION`、`N/A`、`FAIL`、`BLOCKED`；`N/A` 仅用于 C10，P0 门槛不豁免。发布事实追加在本节，不改写历史 Stable 记录或 tagged commit。
+
+### 最终发布事实
+
+- 发布源：`main` 提交 `c35778169bde2737e566f53aa176abfa10519d27`（PR #42 的 merge commit）。
+- annotated tag：`v0.1.14` → tag 对象 `f84c7f559ab04f5380efe8ff2b7feba82b2e17f2` → `c35778169bde2737e566f53aa176abfa10519d27`。
+- Release：<https://github.com/alicia1030su/search-hub/releases/tag/v0.1.14>，`2026-11-23T10:38:56Z` 发布，`draft=false`、`prerelease=false`，`/releases/latest` 返回 `v0.1.14`。
+- 正式工作流：[45157464970](https://github.com/alicia1030su/search-hub/actions/runs/45157464970)，11/11 jobs success；Gate 6s 通过 exact-SHA 五工作流与资源证据。
+- 资产 9 个，全部 `uploaded`：三平台服务端包、三平台 CLI、Node22 CLI、`resource-evidence.json`、`SHA256SUMS`。
+- `SHA256SUMS`：778 bytes，SHA256 `1dcffd82139597e7382aca90f2738f0e7cfcaf30fc0502974fe720956db2b919`；8 条摘要与 GitHub Release API digest 逐条一致。
+- `resource-evidence.json`：528 bytes，SHA256 `b0dae047a3758032efbcd68094f023fcf1805d72122c4758c309a09ee9e44565`；release commit `c357781`、code fingerprint `e8ac626a…`、8 份 raw。
+- Provenance：9 个资产共享同一 SLSA statement；签名身份 `release.yml@refs/tags/v0.1.14`，source/build digest `c357781`，invocation `45157464970/attempts/1`。
+- GHCR：`ghcr.io/alicia1030su/search-hub` 的 `0.1.14`、`v0.1.14`、`latest` 均指向 `sha256:ea1cfd35965d63ead3661846815c33cba118d0d0ad884ca35754b816bedfe1f0`；镜像 config 为 `linux/amd64`。
+
+### 最终 M04 实测
+
+命令：`pnpm exec tsx scripts/bench-resources.mjs --rows 100000 --warmup 100 --requests 1000`。`sourceCommit=c35778169bde2737e566f53aa176abfa10519d27`、`cleanWorktree=true`、1,000 个原始样本，exit 0。
+
+| 指标 | 结果 |
+|---|---|
+| 端到端 P95 | 1.3242ms（门槛 ≤10ms） |
+| steady-state RSS delta | +2,023,424B（门槛 ≤2,097,152B） |
+| warmup / 正式写 | 0 / 0 |
+| query plan | cacheTotals、session、admin 全部走索引 |
+| initial / pre-shutdown owned-tree peak | 35,950,592B / 231,469,056B |
+| root death / shutdown IPC | false / false |
+| residual PIDs / processes | 0 / 0 |
+| cleanup | PASS，无 errors |
+| artifact | `artifacts/v0.1.14/20261123T102057972Z-f3a21085/resources-benchmark.json` |
+| artifact SHA256 | `0dc27dfd3f0a12fc624105abab349706fdc543daefef5b3fb61447444d18870e` |
+
+### 未发布过程记录（不计入 Stable PASS）
+
+- `1a47103` 的过程 tag `38bedc7e…` 触发 run `45143513765`，因 gate 用裸 `ci.yml` 匹配 API 的 `.github/workflows/ci.yml` 而空等；手动取消，未创建 Release 或资产。PR #41 修复后合并为 `3992d90`。
+- `3992d90` 的过程 tag `5bdc034…` 触发 run `45151375689`，资产、SHA256SUMS、Provenance 与 GHCR push 均成功，但 finalize 误读单架构 manifest 的 `.Manifest.Platforms`；draft 保持未公开，两次 finalize 失败后删除 draft，未手动 finalize。PR #42 改用 `.Image.os/.architecture` 后合并为最终 `c357781`。
+- `3992d90` 的一次 M04 预检因工作树存在本地门禁报告而返回 `worktree_dirty`（exit 5）；报告保留在 `20261123T094601482Z-2644f8ec`，不计入 PASS。最终 `c357781` 在干净工作树重采并独立签收。
 
 ### M04 同 SHA 波动记录（2306990）
 
