@@ -93,7 +93,7 @@ describe("RuntimeMonitor", () => {
     const forbidden = () => { throw new Error("forbidden full scan"); };
     try {
       const snapshot = new RuntimeMonitor(deps({
-        cache: { totals: () => ({ entries: 1, bytes: 2, updatedAt: null, source: "search_cache_state", reason: null }), stats: forbidden } as never,
+        cache: { totals: () => ({ entries: 1, bytes: 2, updatedAt: "2026-01-01T00:00:00.000Z", source: "search_cache_state", reason: null }), stats: forbidden } as never,
         providers: { queueDepth: 0, listRows: forbidden, activeRuntimes: forbidden } as never,
         search: { activeSearchCount: 0, queuedFollowerCount: 0 },
       })).snapshot();

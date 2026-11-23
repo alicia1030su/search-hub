@@ -113,11 +113,13 @@ export class RuntimeMonitor {
     let totals: CacheTotalsResult;
     try {
       const value = this.deps.cache.totals();
-      const validEntries = value.entries === null || (Number.isSafeInteger(value.entries) && value.entries >= 0);
-      const validBytes = value.bytes === null || (Number.isSafeInteger(value.bytes) && value.bytes >= 0);
+      const unavailableTotals = value.entries === null && value.bytes === null && value.updatedAt === null &&
+        (value.reason === "totals_missing" || value.reason === "totals_unavailable");
       const updatedAtMs = typeof value.updatedAt === "string" ? Date.parse(value.updatedAt) : Number.NaN;
-      const validUpdatedAt = Number.isFinite(updatedAtMs) && new Date(updatedAtMs).toISOString() === value.updatedAt;
-      totals = validEntries && validBytes && validUpdatedAt
+      const availableTotals = Number.isSafeInteger(value.entries) && (value.entries ?? -1) >= 0 &&
+        Number.isSafeInteger(value.bytes) && (value.bytes ?? -1) >= 0 &&
+        Number.isFinite(updatedAtMs) && new Date(updatedAtMs).toISOString() === value.updatedAt;
+      totals = unavailableTotals || availableTotals
         ? value
         : { entries: null, bytes: null, updatedAt: null, source: value.source, reason: "invalid_value" };
     } catch {

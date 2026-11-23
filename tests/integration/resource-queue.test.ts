@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
 import { apiKeys, createDb, providerInstances, resolveMigrationsDir, runMigrations, type DbHandle } from "@search-hub/db";
 import { KeyScheduler, type SchedulerKeySeed } from "@search-hub/core";
 import { ProviderService } from "../../apps/api/src/services/providers.js";
@@ -103,7 +102,7 @@ describe("O(1) resource queue counters", () => {
     addProvider(handle, "p2");
     const secrets = SecretBox.fromEnvOrFile(dir);
     const now = new Date().toISOString();
-    for (const [id, providerId] of [["key1", "p1"], ["key2", "p2"]]) {
+    for (const [id, providerId] of [["key1", "p1"], ["key2", "p2"]] as const) {
       const encrypted = secrets.encrypt(`sk-${id}`);
       handle.db.insert(apiKeys).values({ id, providerId, label: id, keyCiphertext: encrypted.ciphertext, keyIv: encrypted.iv, keyTag: encrypted.tag, keyVersion: 1, keyHint: "sk-***", weight: 1, enabled: true, status: "healthy", createdAt: now, updatedAt: now }).run();
     }
@@ -128,7 +127,7 @@ describe("O(1) resource queue counters", () => {
     expect(providers.queueDepth).toBe(1);
     firstHeldAgain!.release({ ok: true });
 
-    handle.db.delete(providerInstances).where(eq(providerInstances.id, "p2")).run();
+    handle.sqlite.prepare("DELETE FROM provider_instances WHERE id = ?").run("p2");
     providers.reload();
     expect(providers.queueDepth).toBe(1);
     secondHeld!.release({ ok: true });
