@@ -101,11 +101,20 @@ describe("D01 resource snapshots", () => {
       if (item.value === null) expect(item.reason).toBeTruthy();
     }
     const cpu = await collectWindowsCpu(20);
-    expect(cpu.utilizationPercent.value).toBeGreaterThanOrEqual(0);
-    expect(cpu.utilizationPercent.value).toBeLessThanOrEqual(100);
+    if (process.platform === "win32") {
+      expect(cpu.utilizationPercent.value).toBeGreaterThanOrEqual(0);
+      expect(cpu.utilizationPercent.value).toBeLessThanOrEqual(100);
+    } else {
+      expect(cpu.utilizationPercent.value).toBeNull();
+      expect(cpu.utilizationPercent.reason).toBeTruthy();
+    }
     const identity = await readWindowsProcess(process.pid);
-    expect(identity?.identity.ppid).toBeGreaterThan(0);
-    expect(identity?.identity.startTime).toBeTruthy();
+    if (process.platform === "win32") {
+      expect(identity?.identity.ppid).toBeGreaterThan(0);
+      expect(identity?.identity.startTime).toBeTruthy();
+    } else {
+      expect(identity).toBeNull();
+    }
   });
 
   it("recognizes cgroup v1 cgroup mounts and keeps v2 distinct", () => {

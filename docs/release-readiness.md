@@ -6,15 +6,26 @@
 |---|---|
 | T01–T03 资源工具与缓存修复 | PASS（本地）；最终缓存候选已在 `3860dc9` 同机重跑 |
 | T04 资源端点/UI/文档/包与 Docker smoke | 代码完成；M04 最终 evidence SHA 实测 PENDING |
-| M04 100k/100/1000 资源基准 | PENDING（最终 evidence SHA）；前序 `3860dc9` 为 P95 1.4459ms、RSS +1,060,864B、零写、query plan 全 PASS |
+| M04 100k/100/1000 资源基准 | 同 SHA 两次运行：`2306990` 首次 RSS +3,088,384B 超限（FAIL，保留）；第二次 P95 1.9625ms、RSS +1,683,456B、零写、query plan、cleanup 全 PASS。最终 evidence-only SHA 的 M04 结果以同 SHA artifact 为准 |
 | T05 版本/CI/Release exact-SHA 门禁 | PASS（本地）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs |
 | 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0 |
 | 代码 SHA | `7d5e6e9ff1a33360b0c01712280413ac10cd8e90`；evidence-only 提交不改变代码 fingerprint |
-| 三平台包/CLI/Node22 | PENDING |
-| Docker/systemd/upgrade v0.1.13→current | PENDING |
+| 三平台包/CLI/Node22 | PR PASS：CLI linux-arm64/linux-x64/node22/windows-x64 全部通过；本机 Windows x64 包体/REST/MCP/资源端点/重启持久化 16 项通过 |
+| Docker/systemd/upgrade v0.1.13→current | systemd PR PASS；upgrade PR Windows/Ubuntu PASS，v0.1.13 路径 `appliedDiff=[]`；Docker 因 quality 失败未启动，修复后重跑 |
 | Draft/finalize、资产/Provenance/GHCR | PENDING；任一步失败保持 draft |
 
 资源证据状态只允许 `PASS`、`PASS_NO_OPTIMIZATION`、`N/A`、`FAIL`、`BLOCKED`；`N/A` 仅用于 C10，P0 门槛不豁免。发布后事实将追加到本节，不改写历史 Stable 记录或 tagged commit。
+
+### M04 同 SHA 波动记录（2306990）
+
+命令：`pnpm exec tsx scripts/bench-resources.mjs --rows 100000 --warmup 100 --requests 1000`。两次均为 `sourceCommit=2306990fd6f1cb0ecd3bc3840778209bcc3cc4f0`、`cleanWorktree=true`、1,000 个原始样本；失败运行不删除、不覆盖。
+
+| 运行 | artifact | 退出码 | SHA256 | P95 | RSS delta | 结果 |
+|---|---|---:|---|---:|---:|---|
+| 1 | `artifacts/v0.1.14/20261123T074541905Z-f994e535/resources-benchmark.json` | 4 | `7e2a224f82c21ca0e117a42a5d3e7b551a10e8caf2544ba9f58e5fd2ac538074` | 2.1483ms（余量 7.8517ms） | 3,088,384B（超限 991,232B） | FAIL：仅 RSS 超限；P95/零写/query plan/cleanup 通过 |
+| 2 | `artifacts/v0.1.14/20261123T074646542Z-1d410edf/resources-benchmark.json` | 0 | `8f1ae3d254436d64f2a673758a9f7357831867596058a6a54f326a6166d4d6ef` | 1.9625ms（余量 8.0375ms） | 1,683,456B（余量 413,696B） | PASS：全部门槛通过 |
+
+最终 evidence-only 提交不改变应用代码，M04 仍在该提交 SHA 上单独重采；发布后把最终 artifact 哈希追加到 main 的 readiness，而不改写 tagged commit。
 
 ## v0.1.13 Stable（2026-11-22）
 

@@ -461,8 +461,11 @@ They are not substitutes for the full test suite or remote CI.
 and upgrades published packages in place. The v0.1.13 PR and main runs
 passed on both runners: [PR run 44997781914](https://github.com/alicia1030su/search-hub/actions/runs/44997781914)
 and [main run 44998417741](https://github.com/alicia1030su/search-hub/actions/runs/44998417741).
+The v0.1.14 candidate run [45133912965](https://github.com/alicia1030su/search-hub/actions/runs/45133912965)
+also passed on both runners, including the new v0.1.13→current path with
+`appliedDiff=[]` recorded from the `_migrations` table on each platform.
 The matrix covers v0.1.4-beta.6, v0.1.5-beta.1, v0.1.7-beta.3, v0.1.8,
-v0.1.10, v0.1.11, v0.1.12 and v0.1.8-beta.1. Cache evidence is fail-closed:
+v0.1.10, v0.1.11, v0.1.12, v0.1.13 and v0.1.8-beta.1. Cache evidence is fail-closed:
 persistent-cache versions must reuse the old row when the fingerprint is unchanged;
 legacy memory-only versions must establish a new persistent row and prove a real
 cache hit after warmup. Missing or ambiguous evidence fails the upgrade.
