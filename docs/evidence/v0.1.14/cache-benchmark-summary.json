@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "suite": "search-hub-resource-v0.1.14",
-  "generatedAt": "2026-11-23T07:07:48.745Z",
+  "generatedAt": "2026-11-23T07:14:53.453Z",
   "baseline": {
     "commit": "4d2e25249f90a085b28ea05ee479b393d716c99e",
     "codeFingerprint": "bfbd1a6eb2699296b78cb44c56415e4bc299a0c90b54036eb907d4675dd0d138",
@@ -13,9 +13,9 @@
     "machineFingerprint": "51d6c2c18af8e4dd94bf8596e86f8917a2e03a9e60f7747a536ec1b5522af107"
   },
   "releaseCode": {
-    "codeFingerprint": "6e17305d419e8e0e594374bc8ff6bd13525302147221e7a23999320371ed5e9f",
-    "computedFromRef": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c",
-    "computedAt": "2026-11-23T07:07:48.745Z"
+    "codeFingerprint": "d72a56ba7f16830e0e9570f77af7116818dc5199291dedcb4af665a6ac490e9c",
+    "computedFromRef": "bf2b795bdb47de4d8b3048ccb20078d36acbbfef",
+    "computedAt": "2026-11-23T07:14:53.453Z"
   },
   "environment": {
     "platform": "win32",
@@ -24,7 +24,7 @@
     "totalMemoryBytes": 16905920512,
     "node": "v22.22.2",
     "pnpm": "12.18.0",
-    "vitest": "^5.1.0",
+    "vitest": "5.1.0",
     "playwright": "1.64.1",
     "sqlite": "better-sqlite3/WAL",
     "paidVendor": false
@@ -41,7 +41,7 @@
   },
   "benchmarks": {
     "cacheCapacity": {
-      "command": "node scripts/bench-cache-capacity.mjs --label {label}",
+      "command": "node --import tsx scripts/bench-cache-capacity.mjs --label {label}",
       "status": "PASS",
       "baseline": {
         "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
@@ -56,6 +56,13 @@
           "bytes": 917917
         },
         "invariantPassed": true,
+        "otherTablesUnchanged": true,
+        "cacheTablesExcluded": [
+          "search_cache",
+          "search_cache_metrics",
+          "search_cache_state",
+          "sqlite_sequence"
+        ],
         "exitCode": 0
       },
       "scopeFingerprint": {
@@ -69,7 +76,7 @@
       ]
     },
     "cacheHit": {
-      "command": "node scripts/bench-cache-hit.mjs --requests 20000 --repeat 5 --label {label}",
+      "command": "node --import tsx scripts/bench-cache-hit.mjs --requests 20000 --repeat 5 --label {label}",
       "status": "PASS_NO_OPTIMIZATION",
       "baseline": {
         "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
@@ -93,7 +100,7 @@
       ]
     },
     "cacheStampede": {
-      "command": "node scripts/bench-cache-stampede.mjs --concurrency 100 --label {label}",
+      "command": "node --import tsx scripts/bench-cache-stampede.mjs --concurrency 100 --label {label}",
       "status": "PASS",
       "baseline": {
         "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
@@ -126,7 +133,7 @@
       ]
     },
     "cacheStorage": {
-      "command": "node scripts/bench-cache-storage.mjs --repeat 5 --label {label}",
+      "command": "node --import tsx scripts/bench-cache-storage.mjs --repeat 5 --label {label}",
       "status": "PASS",
       "baseline": {
         "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
@@ -141,7 +148,7 @@
         "maintenanceMsMax": 37.49149999999986,
         "dbFileBytes": 2297856,
         "walFileBytes": 2142432,
-        "vacuumPerformed": true
+        "vacuumPerformed": false
       },
       "scopeFingerprint": {
         "atBenchmark": "f239e51ea85e4f2c5552f2ecff457412253b37d6ebef2f351236f631f339628b",
@@ -166,7 +173,7 @@
   },
   "codeDelta": {
     "from": "e182f60703d179ec4d28f1dbf23ce04c0f2b0a25",
-    "to": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c",
+    "to": "bf2b795bdb47de4d8b3048ccb20078d36acbbfef",
     "changedPaths": [
       ".github/workflows/ci.yml",
       ".github/workflows/release.yml",
