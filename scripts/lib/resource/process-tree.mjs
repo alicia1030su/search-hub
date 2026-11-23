@@ -60,6 +60,7 @@ export class OwnedProcessTree {
   sampleEntry(current, telemetry, sampledAt) {
     const identity = { ...current.identity, owned: true };
     this.records.set(identity.pid, identity);
+    this.inspectionErrors.delete(identity.pid);
     const reported = telemetry?.samples.get(identity.pid);
     const v8 = reported ? {
       heapUsedBytes: { value: reported.heapUsedBytes, source: "node_telemetry", reason: null },
@@ -82,6 +83,15 @@ export class OwnedProcessTree {
     });
   }
 
+  async strictPidSet() {
+    if (typeof this.io.listProcessPidsStrict !== "function") throw new Error("strict_process_listing_unavailable");
+    const pids = await this.io.listProcessPidsStrict();
+    if (!Array.isArray(pids) || pids.some((pid) => !Number.isSafeInteger(pid) || pid <= 0)) {
+      throw new Error("strict_process_listing_invalid");
+    }
+    return new Set(pids);
+  }
+
   async sampleRegisteredDescendants(telemetry = null) {
     const sampledAt = new Date().toISOString();
     const samples = [];
@@ -95,11 +105,14 @@ export class OwnedProcessTree {
         continue;
       }
       if (!current) {
-        // A null detail read is ambiguous on Windows. Only an authoritative
-        // process listing that omits the PID proves it has exited.
-        let listed = null;
-        try { listed = await this.io.listProcesses(Math.max(this.maxProcesses, 2048)); } catch { listed = null; }
-        if (listed && !listed.some((entry) => entry.identity.pid === pid)) {
+        // Snapshot-friendly listProcesses may swallow enumeration errors. Only
+        // the strict complete PID listing can prove this process exited.
+        let pids = null;
+        try { pids = await this.strictPidSet(); } catch (error) {
+          this.noteInspectionError(pid, `process_listing_failed:${error?.code ?? (error instanceof Error ? error.message : "unknown")}`);
+          continue;
+        }
+        if (!pids.has(pid)) {
           this.inspectionErrors.delete(pid);
           continue;
         }
@@ -124,21 +137,26 @@ export class OwnedProcessTree {
       rootReadFailure = `process_read_failed:${error?.code ?? "unknown"}`;
     }
     if (!root) {
-      // A null/failed detail read is ambiguous. Only an authoritative listing
-      // that omits the root proves exit; otherwise the root identity is
-      // unverified and must never be signalled.
-      let listed = null;
-      try { listed = await this.io.listProcesses(Math.max(this.maxProcesses, 2048)); } catch { listed = null; }
-      if (listed && !listed.some((entry) => entry.identity.pid === this.rootPid)) {
+      // A null/failed detail read is ambiguous. Only a strict complete PID
+      // listing that omits the root proves exit. If the root identity cannot be
+      // verified, no root or descendant is eligible for signalling.
+      let pids = null;
+      try { pids = await this.strictPidSet(); } catch (error) {
+        this.noteInspectionError(this.rootPid, `process_listing_failed:${error?.code ?? (error instanceof Error ? error.message : "unknown")}`);
+        this.rootIdentityChanged = false;
+        this.rootIdentityState = "inspection_failed";
+        return [];
+      }
+      if (!pids.has(this.rootPid)) {
         this.inspectionErrors.delete(this.rootPid);
         this.rootIdentityChanged = true;
         this.rootIdentityState = "missing";
-      } else {
-        this.noteInspectionError(this.rootPid, rootReadFailure ?? "process_read_unavailable");
-        this.rootIdentityChanged = false;
-        this.rootIdentityState = "inspection_failed";
+        return this.sampleRegisteredDescendants(telemetry);
       }
-      return this.sampleRegisteredDescendants(telemetry);
+      this.noteInspectionError(this.rootPid, rootReadFailure ?? "process_read_unavailable");
+      this.rootIdentityChanged = false;
+      this.rootIdentityState = "inspection_failed";
+      return [];
     }
     if (root.identity.startTime !== this.rootStartTime) {
       this.inspectionErrors.delete(this.rootPid);

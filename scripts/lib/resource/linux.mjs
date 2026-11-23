@@ -245,6 +245,12 @@ export async function listProcesses(limit = 512) {
   return processes;
 }
 
+/** Complete PID enumeration for exit proof; global enumeration errors propagate. */
+export async function listProcessPidsStrict() {
+  const entries = await readdir("/proc");
+  return entries.filter((entry) => /^\d+$/.test(entry)).map(Number).sort((a, b) => a - b);
+}
+
 export async function readProcess(pid) {
   return readLinuxProcess(pid);
 }

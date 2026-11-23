@@ -42,7 +42,7 @@ pnpm test:lowmem
 
 1. cgroup `memory.events.oom_kill` 增量且 owned 子进程同期死亡；
 2. 明确 V8 heap FATAL 并伴随 SIGABRT/非 0；
-3. Windows `0xC0000017` 或 `0xC000009A`，结合 owned 树峰值与日志；
+3. Windows `0xC0000017` 或 `0xC000009A` + owned root death，且日志必须有明确 `out of memory`、`memory allocation failed`、`heap allocation failed` 或 V8 heap FATAL；peak 未知可保留为 null，但无 memoryLog 一律不确认；
 4. 用 stub/故障注入验证分类器，避免仅凭全局事件重试。
 
 根因分类至少包括：宿主/cgroup 容量不足、并发估算失真、V8 old space 上限、外部/ArrayBuffer/native 增长、OS/其他进程竞争、测试数据累积、浏览器进程树、无法归属。只有首次**确认 OOM**且 Vitest workers>1 才允许同阶段 workers-1 重试一次；保留首次日志/退出码/峰值，第二次失败即阻断。其他已串行阶段不虚构降并发。
@@ -51,7 +51,7 @@ pnpm test:lowmem
 
 spawn 前登记 root PID、startTime、祖先链、cwd 和非敏感参数摘要。采样只收录可追溯到 root 的进程；清理前再次核对 PID、startTime 和祖先关系，防止 PID 复用。无法证明归属时只报告，不 kill。成功、失败、OOM、信号和 spawn 失败都必须在 finally 清理 owned 树、HTTP server、DB handle、timer 与 Singleflight。
 
-严禁按进程名批量 kill、杀用户进程、重启、修改 Swap/pagefile、修改 Docker/WSL 全局配置。残留写入 `residual-processes.json`，owned 残留即失败。
+严禁按进程名批量 kill、杀用户进程、重启、修改 Swap/pagefile、修改 Docker/WSL 全局配置。残留写入 `residual-processes.json`，owned 残留即失败。退出证明只能使用完整、无 limit 截断的 `listProcessPidsStrict`；全局枚举失败抛错，单个 PID 详情失败仍保留 PID 存在信息。快照友好 `listProcesses()` 的空数组不能证明进程已退出。
 
 ## 5. 缓存管理
 
@@ -105,7 +105,7 @@ Koffi DLL/函数失败必须返回 `unavailable + reason`，不能猜 0。Window
 - 缓存：`cache.totals()` 只读 `search_cache_state` 主键；缺失、损坏时间戳、非法数值或读取异常返回 null+reason，不修复、不写 DB。RuntimeMonitor 严禁调用 `cache.stats()` 或全表聚合。
 - 磁盘：DB/WAL 分别 `statSync`，口径是 `whole_sqlite_database`，不是 cache-only。ENOENT、权限、内存 DB、其他 stat 错误逐字段返回 null 与枚举 reason，不返回路径或原始错误消息。
 - 生命周期：RuntimeMonitor 不持 timer/listener，不写 task/audit/health/budget/cache metrics，不触发 kill/restart/prune/并发或 Swap 修改。
-- benchmark 安全：仅 clean HEAD 可运行，dirty worktree 直接 internal/worktree_dirty；git 预检失败写 terminal internal/source_preflight_failed，不留下 running artifact。SIGINT/SIGTERM 通过 AbortController 中断 HTTP/IPC，HTTP 固定 30 秒超时；晚到信号在报告与 artifact finalization 前再次检查，强制 resource_blocked，同时保留真实 cleanup/residual 失败字段。warmup 前后与测量前后都记录 total_changes，warmup delta 必须为 0。采样不重叠；child 使用 OwnedProcessTree 身份绑定清理，stderr 有界脱敏，残留写完整 pid/ppid/startTime。DB、临时目录或 artifact 收尾失败进入 terminal failure；cgroup OOM 计数与 owned RSS peak 未知时记录 null+unavailable，不伪造 0。
+- benchmark 安全：仅 clean HEAD 可运行，dirty worktree 直接 internal/worktree_dirty；git 预检失败写 terminal internal/source_preflight_failed，不留下 running artifact；真实运行失败继承预检的 cleanWorktree。SIGINT/SIGTERM 通过 AbortController 中断 HTTP/IPC，HTTP 固定 30 秒超时；晚到信号在 snapshot/budget、报告与 artifact finalization 前再次检查。终态优先级为 artifact failure/internal(5) > cleanup/residual failure/child_failed(4) > abort/resource_blocked(3) > 阈值结果；abort 与 cleanup failure 共存时保留 abortReason，但不把 4 降成 3。warmup 前后与测量前后都记录 total_changes，warmup delta 必须为 0。采样不重叠；child 使用 OwnedProcessTree 身份绑定清理，stderr 有界脱敏，残留写完整 pid/ppid/startTime。辅助证据先写，benchmark JSON 后写，summary 最后 finish；任一步失败 best-effort 重写 internal 并重试 finish。DB、临时目录或 artifact 收尾失败进入 terminal failure；cgroup OOM 计数与 owned RSS peak 未知时记录 null+unavailable，不伪造 0。
 
 ## 10. 内存术语停止线
 

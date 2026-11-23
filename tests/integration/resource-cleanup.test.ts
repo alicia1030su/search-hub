@@ -46,6 +46,7 @@ describe("D06 finally cleanup", () => {
     const signalled: number[] = [];
     const io = {
       listProcesses: async () => [],
+      listProcessPidsStrict: async () => [],
       readProcess: async (pid: number) => pid === 222 ? entry : null,
       terminateProcess: async (pid: number) => { signalled.push(pid); },
       killProcess: async (pid: number) => { signalled.push(pid); },
@@ -64,6 +65,7 @@ describe("D06 finally cleanup", () => {
     const signalled: number[] = [];
     const io = {
       listProcesses: async () => [],
+      listProcessPidsStrict: async () => [],
       readProcess: async (pid: number) => {
         if (pid === 222) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
         return null;
@@ -88,6 +90,7 @@ describe("D06 finally cleanup", () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
     const io = {
       listProcesses: async () => { throw new Error("listing unavailable"); },
+      listProcessPidsStrict: async () => { throw new Error("strict listing unavailable"); },
       readProcess: async () => null,
       terminateProcess: async () => {},
       killProcess: async () => {},
@@ -96,7 +99,25 @@ describe("D06 finally cleanup", () => {
     tree.records.set(222, { ...descendant, owned: true });
     const cleanup = await tree.cleanup();
     expect(cleanup.ok).toBe(false);
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 222, stage: "inspect", reason: "process_listing_failed:strict listing unavailable" }));
+  });
+
+  it("fails when a descendant PID exists but its details remain unreadable", async () => {
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [],
+      listProcessPidsStrict: async () => [222],
+      readProcess: async () => null,
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    tree.records.set(222, { ...descendant, owned: true });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
     expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 222, stage: "inspect", reason: "process_read_unavailable" }));
+    expect(signalled).toEqual([]);
   });
 
   it("clears an inspection error only after an authoritative listing proves exit", async () => {
@@ -104,6 +125,7 @@ describe("D06 finally cleanup", () => {
     let reads = 0;
     const io = {
       listProcesses: async () => [],
+      listProcessPidsStrict: async () => [],
       readProcess: async (pid: number) => {
         if (pid === 222 && reads++ === 0) throw Object.assign(new Error("transient"), { code: "EIO" });
         return null;
@@ -126,6 +148,7 @@ describe("D06 finally cleanup", () => {
     const signalled: number[] = [];
     const io = {
       listProcesses: async () => [entry],
+      listProcessPidsStrict: async () => [entry.identity.pid],
       readProcess: async () => { throw Object.assign(new Error("permission denied"), { code: "EACCES" }); },
       terminateProcess: async (pid: number) => { signalled.push(pid); },
       killProcess: async (pid: number) => { signalled.push(pid); },
@@ -141,6 +164,7 @@ describe("D06 finally cleanup", () => {
   it("does not call an ambiguous null root read missing when listing fails", async () => {
     const io = {
       listProcesses: async () => { throw new Error("listing unavailable"); },
+      listProcessPidsStrict: async () => { throw new Error("strict listing unavailable"); },
       readProcess: async () => null,
       terminateProcess: async () => {},
       killProcess: async () => {},
@@ -149,12 +173,13 @@ describe("D06 finally cleanup", () => {
     const cleanup = await tree.cleanup();
     expect(cleanup.ok).toBe(false);
     expect(cleanup.reason).toBe("root_inspection_failed");
-    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 111, reason: "process_read_unavailable" }));
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 111, reason: "process_listing_failed:strict listing unavailable" }));
   });
 
   it("accepts root exit only when an authoritative listing omits the root", async () => {
     const io = {
       listProcesses: async () => [],
+      listProcessPidsStrict: async () => [],
       readProcess: async () => { throw Object.assign(new Error("already exited"), { code: "ESRCH" }); },
       terminateProcess: async () => {},
       killProcess: async () => {},
@@ -166,12 +191,31 @@ describe("D06 finally cleanup", () => {
     expect(cleanup.errors).toEqual([]);
   });
 
+  it("clears a stale descendant inspection error after a successful normal sample", async () => {
+    const root = { pid: 111, ppid: 1, startTime: "root-stable", owned: false, role: "node", executableName: "node" };
+    const descendant = { pid: 222, ppid: 111, startTime: "descendant-stable", owned: false, role: "node", executableName: "node" };
+    const entries = [root, descendant].map((identity) => ({ identity, rssBytes: { value: 1, source: "test", reason: null } }));
+    const io = {
+      listProcesses: async () => entries,
+      listProcessPidsStrict: async () => [111, 222],
+      readProcess: async (pid: number) => entries.find((entry) => entry.identity.pid === pid) ?? null,
+      terminateProcess: async () => {},
+      killProcess: async () => {},
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    tree.records.set(222, { ...descendant, owned: true });
+    tree.noteInspectionError(222, "process_read_failed:EIO");
+    await tree.sample();
+    expect(tree.inspectionErrors.has(222)).toBe(false);
+  });
+
   it("never signals a descendant whose PID was reused", async () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-reused", owned: false, role: "node", executableName: "node" };
     const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };
     const signalled: number[] = [];
     const io = {
       listProcesses: async () => [],
+      listProcessPidsStrict: async () => [],
       readProcess: async (pid: number) => pid === 222 ? entry : null,
       terminateProcess: async (pid: number) => { signalled.push(pid); },
       killProcess: async (pid: number) => { signalled.push(pid); },
@@ -189,6 +233,7 @@ describe("D06 finally cleanup", () => {
     const signalled: number[] = [];
     const io = {
       listProcesses: async () => [],
+      listProcessPidsStrict: async () => [],
       readProcess: async () => entry,
       terminateProcess: async (pid: number) => { signalled.push(pid); },
       killProcess: async (pid: number) => { signalled.push(pid); },
@@ -207,6 +252,7 @@ describe("D06 finally cleanup", () => {
     const entry = { identity, rssBytes: { value: 1, source: "test", reason: null } };
     const io = {
       listProcesses: async () => [entry],
+      listProcessPidsStrict: async () => [entry.identity.pid],
       readProcess: async () => entry,
       terminateProcess: async () => {},
       killProcess: async () => {},

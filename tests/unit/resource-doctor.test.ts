@@ -148,9 +148,11 @@ describe("D08 OOM evidence and redaction", () => {
   it("requires corroboration and accepts explicit V8/Windows/cgroup evidence", () => {
     expect(classifyOom({ exitCode: 137, ownedRootDied: true }, { cgroupOomDelta: 1 }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 134, signal: "SIGABRT", log: "FATAL ERROR: Reached heap limit" }).confirmed).toBe(true);
-    expect(classifyOom({ exitCode: 5, ownedRootDied: true, ownedPeakBytes: 100 }, { injectedEvidence: { windowsCode: 0xC0000017 } }).confirmed).toBe(true);
-    expect(classifyOom({ exitCode: -1073741801, ownedRootDied: true, ownedPeakBytes: 100 }).confirmed).toBe(true);
-    expect(classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: 100 }).confirmed).toBe(true);
+    expect(classifyOom({ exitCode: 5, ownedRootDied: true, ownedPeakBytes: 100 }, { injectedEvidence: { windowsCode: 0xC0000017 } }).confirmed).toBe(false);
+    expect(classifyOom({ exitCode: 5, ownedRootDied: true, ownedPeakBytes: 100, log: "memory allocation failed" }, { injectedEvidence: { windowsCode: 0xC0000017 } }).confirmed).toBe(true);
+    expect(classifyOom({ exitCode: -1073741801, ownedRootDied: true, ownedPeakBytes: 100, log: "JavaScript heap out of memory" }).confirmed).toBe(true);
+    expect(classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: 100, log: "heap allocation failed" }).confirmed).toBe(true);
+    expect(classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: null, log: "out of memory" }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 5, ownedRootDied: false }, { cgroupOomDelta: 1 }).confirmed).toBe(false);
     const unknown = classifyOom({ exitCode: 5, ownedRootDied: true }, { cgroupOomDelta: null });
     expect(unknown.confirmed).toBe(false);

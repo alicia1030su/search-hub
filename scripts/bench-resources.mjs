@@ -205,6 +205,7 @@ async function main() {
 
     const snapshot = await collectSnapshot({ cpuDelayMs: 20 });
     const budget = freezeBudget(snapshot, { peakMiB: { vitest: 512 } });
+    throwIfAborted();
     baseReport.resourceSnapshot = snapshot;
     baseReport.frozenBudget = budget;
     if (!budget.stages.vitest.safe) {
@@ -437,7 +438,7 @@ process.on("message", async (message) => {
       pendingReason = errorReason(cause, abortedBy);
       pendingReport = {
         ...baseReport,
-        metadata: { ...baseReport.metadata, cleanWorktree: false },
+        metadata: { ...baseReport.metadata },
         status: abortedBy ? "resource_blocked" : exitCode === EXIT_CODES.childFailed ? "child_failed" : "internal",
         exitCode,
         reason: pendingReason,
@@ -516,62 +517,57 @@ process.on("message", async (message) => {
       const cleanupFailed = residuals.length > 0 || !cleanup.ok || localCleanupErrors.length > 0;
       pendingReport.cleanupFailed = cleanupFailed;
       const applyTerminalState = () => {
-        if (abortedBy) {
-          exitCode = EXIT_CODES.resourceBlocked;
-          pendingReport.exitCode = exitCode;
-          pendingReport.status = "resource_blocked";
-          pendingReport.reason = `aborted_by_${abortedBy}`;
-          pendingReason = pendingReport.reason;
-        } else if (cleanupFailed) {
+        if (abortedBy) pendingReport.abortReason = `aborted_by_${abortedBy}`;
+        if (cleanupFailed) {
           exitCode = EXIT_CODES.childFailed;
           pendingReport.exitCode = exitCode;
           pendingReport.status = "child_failed";
           pendingReport.reason = residuals.length > 0 ? "owned_process_residual" : localCleanupErrors.length > 0 ? "local_cleanup_failed" : "owned_process_cleanup_failed";
           pendingReason = pendingReport.reason;
+        } else if (abortedBy) {
+          exitCode = EXIT_CODES.resourceBlocked;
+          pendingReport.exitCode = exitCode;
+          pendingReport.status = "resource_blocked";
+          pendingReport.reason = pendingReport.abortReason;
+          pendingReason = pendingReport.reason;
         }
       };
       const terminalKey = () => `${pendingReport.status}:${pendingReport.reason}`;
       let artifactFinished = false;
+      let outputPath = null;
       try {
         applyTerminalState();
-        let writtenKey = terminalKey();
-        let outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
-        applyTerminalState();
-        if (terminalKey() !== writtenKey) {
-          writtenKey = terminalKey();
-          outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
-        }
         await artifact.appendLog("raw/child-stderr.log", stderrTail);
         if (residuals.length > 0) await artifact.writeJson("residual-processes.json", residuals);
         if ((cleanup.errors ?? []).length > 0) await artifact.writeJson("cleanup-errors.json", cleanup.errors);
         applyTerminalState();
-        if (terminalKey() !== writtenKey) outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
+        let writtenKey = terminalKey();
+        outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
+        applyTerminalState();
+        if (terminalKey() !== writtenKey) {
+          outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport);
+        }
         await artifact.finish({ exitCode, reason: pendingReason, details: { benchmark: pendingReport } });
         artifactFinished = true;
-        if (exitCode === EXIT_CODES.success) {
+      } catch (error) {
+        pendingReport.artifactError = sanitizeLog(error instanceof Error ? error.message : String(error));
+        exitCode = EXIT_CODES.internal;
+        pendingReport.exitCode = exitCode;
+        pendingReport.status = "internal";
+        pendingReport.reason = "artifact_finalization_failed";
+        pendingReason = pendingReport.reason;
+        try { outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport); } catch { /* best effort after artifact failure */ }
+        if (!artifactFinished) {
+          try { await artifact.finish({ exitCode, reason: pendingReason, details: { benchmark: pendingReport } }); } catch { /* terminal artifact failure is reported by process exit */ }
+        }
+      }
+      try {
+        if (outputPath && exitCode === EXIT_CODES.success) {
           console.log(JSON.stringify({ outputPath, p95Ms: pendingReport.p95Ms, rssDeltaBytes: pendingReport.rssDeltaBytes, sqliteTotalChangesDelta: pendingReport.sqliteTotalChangesDelta, p95Passed: pendingReport.p95Passed, rssPassed: pendingReport.rssPassed, zeroWritePassed: pendingReport.zeroWritePassed, queryPlanPassed: pendingReport.queryPlanPassed, exitCode }, null, 2));
         } else {
           console.error(JSON.stringify({ outputPath, reason: pendingReason, exitCode }));
         }
-      } catch (error) {
-        pendingReport.artifactError = sanitizeLog(error instanceof Error ? error.message : String(error));
-        if (abortedBy) {
-          exitCode = EXIT_CODES.resourceBlocked;
-          pendingReport.exitCode = exitCode;
-          pendingReport.status = "resource_blocked";
-          pendingReport.reason = `aborted_by_${abortedBy}`;
-        } else {
-          exitCode = EXIT_CODES.internal;
-          pendingReport.exitCode = exitCode;
-          pendingReport.status = "internal";
-          pendingReport.reason = "artifact_finalization_failed";
-        }
-        pendingReason = pendingReport.reason;
-        console.error(JSON.stringify({ reason: pendingReport.reason, detail: pendingReport.artifactError, exitCode }));
-        if (!artifactFinished) {
-          try { await artifact.finish({ exitCode, reason: pendingReport.reason, details: { benchmark: pendingReport } }); } catch { /* terminal artifact failure is reported above */ }
-        }
-      }
+      } catch { /* console failures never reverse terminal evidence state */ }
     }
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);

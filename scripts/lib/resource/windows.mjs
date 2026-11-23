@@ -98,6 +98,7 @@ async function buildApi() {
     createToolhelp32Snapshot: kernel32.func("void* __stdcall CreateToolhelp32Snapshot(uint32_t flags, uint32_t processId)"),
     process32FirstW: kernel32.func("bool __stdcall Process32FirstW(void* snapshot, SearchHubProcessEntry32W *entry)"),
     process32NextW: kernel32.func("bool __stdcall Process32NextW(void* snapshot, SearchHubProcessEntry32W *entry)"),
+    getLastError: kernel32.func("uint32_t __stdcall GetLastError()"),
     closeHandle: kernel32.func("bool __stdcall CloseHandle(void *handle)"),
     openProcess: kernel32.func("void* __stdcall OpenProcess(uint32_t access, bool inherit, uint32_t pid)"),
     getProcessMemoryInfo: psapi.func("bool __stdcall GetProcessMemoryInfo(void *process, SearchHubProcessMemoryCountersEx *counters, uint32_t size)"),
@@ -229,6 +230,30 @@ export async function listProcesses(limit = 512) {
     }
   } catch {
     return [];
+  }
+}
+
+/** Complete PID enumeration for exit proof; global enumeration errors propagate. */
+export async function listProcessPidsStrict() {
+  const win = await api();
+  const snapshot = win.createToolhelp32Snapshot(0x2, 0);
+  if (!snapshot || snapshot === -1 || snapshot === -1n) throw new Error("toolhelp_snapshot_failed");
+  const pointer = win.koffi.alloc(win.PROCESSENTRY32W, 1);
+  const pids = [];
+  try {
+    win.koffi.encode(pointer, win.PROCESSENTRY32W, { dwSize: win.koffi.sizeof(win.PROCESSENTRY32W) });
+    let ok = win.process32FirstW(snapshot, pointer);
+    if (!ok) throw new Error(`toolhelp_enumeration_failed:${win.getLastError()}`);
+    while (ok) {
+      const value = win.koffi.decode(pointer, win.PROCESSENTRY32W);
+      pids.push(Number(value.th32ProcessID));
+      ok = win.process32NextW(snapshot, pointer);
+      if (!ok && win.getLastError() !== 18) throw new Error(`toolhelp_enumeration_failed:${win.getLastError()}`);
+    }
+    return pids;
+  } finally {
+    win.koffi.free(pointer);
+    win.closeHandle(snapshot);
   }
 }
 
