@@ -120,6 +120,52 @@ describe("D06 finally cleanup", () => {
     expect(cleanup.errors).toEqual([]);
   });
 
+  it("fails without signalling when the root identity cannot be inspected", async () => {
+    const root = { pid: 111, ppid: 1, startTime: "root-stable", owned: false, role: "node", executableName: "node" };
+    const entry = { identity: root, rssBytes: { value: 1, source: "test", reason: null } };
+    const signalled: number[] = [];
+    const io = {
+      listProcesses: async () => [entry],
+      readProcess: async () => { throw Object.assign(new Error("permission denied"), { code: "EACCES" }); },
+      terminateProcess: async (pid: number) => { signalled.push(pid); },
+      killProcess: async (pid: number) => { signalled.push(pid); },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.reason).toBe("root_inspection_failed");
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 111, stage: "inspect", reason: "process_read_failed:EACCES" }));
+    expect(signalled).toEqual([]);
+  });
+
+  it("does not call an ambiguous null root read missing when listing fails", async () => {
+    const io = {
+      listProcesses: async () => { throw new Error("listing unavailable"); },
+      readProcess: async () => null,
+      terminateProcess: async () => {},
+      killProcess: async () => {},
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(false);
+    expect(cleanup.reason).toBe("root_inspection_failed");
+    expect(cleanup.errors).toContainEqual(expect.objectContaining({ pid: 111, reason: "process_read_unavailable" }));
+  });
+
+  it("accepts root exit only when an authoritative listing omits the root", async () => {
+    const io = {
+      listProcesses: async () => [],
+      readProcess: async () => { throw Object.assign(new Error("already exited"), { code: "ESRCH" }); },
+      terminateProcess: async () => {},
+      killProcess: async () => {},
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(true);
+    expect(cleanup.reason).toBe("root_missing");
+    expect(cleanup.errors).toEqual([]);
+  });
+
   it("never signals a descendant whose PID was reused", async () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-reused", owned: false, role: "node", executableName: "node" };
     const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };

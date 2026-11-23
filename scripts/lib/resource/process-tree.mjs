@@ -119,17 +119,34 @@ export class OwnedProcessTree {
 
   async sample(telemetry = null) {
     let root = null;
-    try { root = await this.io.readProcess(this.rootPid); } catch { root = null; }
+    let rootReadFailure = null;
+    try { root = await this.io.readProcess(this.rootPid); } catch (error) {
+      rootReadFailure = `process_read_failed:${error?.code ?? "unknown"}`;
+    }
     if (!root) {
-      this.rootIdentityChanged = true;
-      this.rootIdentityState = "missing";
+      // A null/failed detail read is ambiguous. Only an authoritative listing
+      // that omits the root proves exit; otherwise the root identity is
+      // unverified and must never be signalled.
+      let listed = null;
+      try { listed = await this.io.listProcesses(Math.max(this.maxProcesses, 2048)); } catch { listed = null; }
+      if (listed && !listed.some((entry) => entry.identity.pid === this.rootPid)) {
+        this.inspectionErrors.delete(this.rootPid);
+        this.rootIdentityChanged = true;
+        this.rootIdentityState = "missing";
+      } else {
+        this.noteInspectionError(this.rootPid, rootReadFailure ?? "process_read_unavailable");
+        this.rootIdentityChanged = false;
+        this.rootIdentityState = "inspection_failed";
+      }
       return this.sampleRegisteredDescendants(telemetry);
     }
     if (root.identity.startTime !== this.rootStartTime) {
+      this.inspectionErrors.delete(this.rootPid);
       this.rootIdentityChanged = true;
       this.rootIdentityState = "changed";
       return this.sampleRegisteredDescendants(telemetry);
     }
+    this.inspectionErrors.delete(this.rootPid);
     this.rootIdentityChanged = false;
     this.rootIdentityState = null;
     const listed = await this.io.listProcesses(Math.max(this.maxProcesses, 2048));
@@ -169,7 +186,7 @@ export class OwnedProcessTree {
       residuals,
       errors,
       rootIdentityChanged: this.rootIdentityChanged,
-      ...(this.rootIdentityState ? { reason: this.rootIdentityState === "changed" ? "root_identity_changed" : "root_missing" } : {}),
+      ...(this.rootIdentityState ? { reason: this.rootIdentityState === "changed" ? "root_identity_changed" : this.rootIdentityState === "inspection_failed" ? "root_inspection_failed" : "root_missing" } : {}),
     };
   }
 
