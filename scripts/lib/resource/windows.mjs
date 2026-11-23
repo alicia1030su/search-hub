@@ -337,6 +337,11 @@ async function readWindowsProcess(pid, suppliedApi = null) {
   }
 }
 
+/** Read only process creation time and working set, without Toolhelp ancestry. */
+export async function readProcessMemory(pid, suppliedApi = null) {
+  return readWindowsProcess(pid, suppliedApi);
+}
+
 async function findToolhelpIdentity(pid, suppliedApi = null) {
   const win = suppliedApi ?? await api();
   const snapshot = win.createToolhelp32Snapshot(0x2, 0);

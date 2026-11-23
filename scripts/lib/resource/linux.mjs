@@ -292,6 +292,12 @@ export async function readProcess(pid) {
   return readLinuxProcess(pid);
 }
 
+/** Read only process start time and RSS, without enumerating other processes. */
+export async function readProcessMemory(pid) {
+  const current = await readLinuxProcess(pid);
+  return current ? { startTime: current.identity.startTime, rssBytes: current.rssBytes } : null;
+}
+
 export async function terminateProcess(pid) {
   process.kill(pid, "SIGTERM");
 }

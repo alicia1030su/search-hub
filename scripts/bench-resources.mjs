@@ -151,6 +151,9 @@ async function main() {
     concurrency: 1,
     gcBeforeBaseline: true,
     httpTimeoutMs: HTTP_TIMEOUT_MS,
+    rssSampleIntervalMs: 25,
+    rssSampleMethod: "direct_process_memory",
+    ownedTreeSamplePolicy: "initial_and_cleanup",
   };
 
   let baseReport = {
@@ -331,9 +334,13 @@ process.on("message", async (message) => {
         return message;
       };
       const readRss = async () => {
-        const current = await io.readProcess(child.pid);
-        if (!current || current.identity.startTime !== identity.identity.startTime) return null;
-        return current.rssBytes.value;
+        const current = typeof io.readProcessMemory === "function"
+          ? await io.readProcessMemory(child.pid)
+          : await io.readProcess(child.pid);
+        const startTime = current?.startTime ?? current?.identity?.startTime;
+        const rssBytes = current?.rssBytes?.value ?? current?.rssBytes;
+        if (!current || startTime !== identity.identity.startTime || !Number.isSafeInteger(rssBytes) || rssBytes < 0) return null;
+        return rssBytes;
       };
 
       const changesBeforeWarmup = (await ipc("total_changes", "changes")).value;
@@ -350,12 +357,9 @@ process.on("message", async (message) => {
       if (rssBaselineBytes === null) throw new Error("rss_sample_unavailable");
       rssPeakBytes = rssBaselineBytes;
       let sampling = false;
-      let sampleTicks = 0;
       const sampleOnce = async () => {
         const value = await readRss();
         if (value !== null) rssPeakBytes = Math.max(rssPeakBytes, value);
-        sampleTicks += 1;
-        if (owned && sampleTicks % 10 === 0) await owned.sample();
       };
       sampler = setInterval(() => {
         if (sampling) return;

@@ -59,6 +59,17 @@ describe("resource benchmark static safety contract", () => {
     expect(windowsStrict).toContain("toolhelp_enumeration_failed");
   });
 
+  it("keeps RSS sampling direct and excludes full-tree enumeration from the measurement loop", () => {
+    expect(benchmark).toContain("rssSampleIntervalMs: 25");
+    expect(benchmark).toContain('rssSampleMethod: "direct_process_memory"');
+    expect(benchmark).toContain('ownedTreeSamplePolicy: "initial_and_cleanup"');
+    expect(benchmark).toContain("io.readProcessMemory(child.pid)");
+    expect(benchmark).not.toContain("sampleTicks");
+    expect(benchmark.match(/await owned\.sample\(\)/g)).toHaveLength(1);
+    expect(linux).toContain("export async function readProcessMemory(pid)");
+    expect(windows).toContain("export async function readProcessMemory(pid, suppliedApi = null)");
+  });
+
   it("makes abort and git-preflight failure terminal before artifact finalization", () => {
     expect(benchmark).toContain("const throwIfAborted = () =>");
     expect(benchmark).toContain("throwIfAborted();\n      const p50Ms");

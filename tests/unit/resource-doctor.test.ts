@@ -12,9 +12,9 @@ import { classifyOom } from "../../scripts/lib/resource/oom.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { createLogSanitizer, sanitizeLog } from "../../scripts/lib/resource/report.mjs";
 // @ts-expect-error -- plain ESM resource module
-import { listProcessPidsStrict as linuxProcessPidsStrict, parseCgroupRoot } from "../../scripts/lib/resource/linux.mjs";
+import { listProcessPidsStrict as linuxProcessPidsStrict, parseCgroupRoot, readProcessMemory as readLinuxProcessMemory } from "../../scripts/lib/resource/linux.mjs";
 // @ts-expect-error -- plain ESM resource module
-import { enumerateToolhelpEntries, listProcessPidsStrict as windowsProcessPidsStrict } from "../../scripts/lib/resource/windows.mjs";
+import { enumerateToolhelpEntries, listProcessPidsStrict as windowsProcessPidsStrict, readProcessMemory as readWindowsProcessMemory } from "../../scripts/lib/resource/windows.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { compareLowmem, normalizeList } from "../../scripts/lib/resource/lowmem.mjs";
 
@@ -159,6 +159,18 @@ describe("D04 low-memory complete-suite comparison", () => {
     const skipped = { testResults: [{ name: "C:/repo/a.test.ts", assertionResults: [{ fullName: "suite > one", status: "skipped" }, { fullName: "suite > two", status: "todo" }] }] };
     expect(compareLowmem(listed, skipped, { runExitCode: 0 }).passed).toBe(false);
     expect(compareLowmem([], { testResults: [] }, { runExitCode: 0 }).passed).toBe(false);
+  });
+});
+
+describe("direct process memory sampling", () => {
+  it("reads the current PID without requiring ancestry enumeration", async () => {
+    const readMemory = process.platform === "win32" ? readWindowsProcessMemory : readLinuxProcessMemory;
+    const current = await readMemory(process.pid);
+    expect(current).not.toBeNull();
+    expect(typeof current?.startTime).toBe("string");
+    expect(current?.startTime.length).toBeGreaterThan(0);
+    expect(Number.isSafeInteger(current?.rssBytes.value)).toBe(true);
+    expect(current?.rssBytes.value).toBeGreaterThan(0);
   });
 });
 
