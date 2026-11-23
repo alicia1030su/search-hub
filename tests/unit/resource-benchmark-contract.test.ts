@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM resource module
 import { classifyOom } from "../../scripts/lib/resource/oom.mjs";
+// @ts-expect-error -- plain ESM resource module
+import { resolveTerminalState } from "../../scripts/lib/resource/terminal-state.mjs";
 
 const benchmark = readFileSync(new URL("../../scripts/bench-resources.mjs", import.meta.url), "utf8");
 const processTree = readFileSync(new URL("../../scripts/lib/resource/process-tree.mjs", import.meta.url), "utf8");
@@ -40,10 +42,13 @@ describe("resource benchmark static safety contract", () => {
     expect(processTree).toContain("sampleRegisteredDescendants");
     expect(processTree).toContain("listProcessPidsStrict");
     expect(processTree).toContain("strict_process_listing_unavailable");
-    expect(linux).toContain("export async function listProcessPidsStrict()");
-    expect(windows).toContain("export async function listProcessPidsStrict()");
-    const linuxStrict = linux.slice(linux.indexOf("export async function listProcessPidsStrict()"), linux.indexOf("export async function readProcess"));
-    const windowsStrict = windows.slice(windows.indexOf("export async function listProcessPidsStrict()"), windows.indexOf("async function readWindowsProcess"));
+    expect(linux).toContain("export async function listProcessPidsStrict(");
+    expect(linux).toContain("export async function listProcessesStrict()");
+    expect(windows).toContain("export async function listProcessPidsStrict(");
+    expect(windows).toContain("export async function listProcessesStrict(");
+    expect(processTree).toContain("this.io.listProcessesStrict()");
+    const linuxStrict = linux.slice(linux.indexOf("export async function listProcessPidsStrict("), linux.indexOf("/** Complete detailed listing"));
+    const windowsStrict = windows.slice(windows.indexOf("export async function enumerateToolhelpEntries"), windows.indexOf("async function readWindowsProcess"));
     expect(linuxStrict).not.toMatch(/\bcatch\b/);
     expect(windowsStrict).not.toMatch(/\bcatch\b/);
     expect(windowsStrict).toContain("toolhelp_enumeration_failed");
@@ -64,9 +69,16 @@ describe("resource benchmark static safety contract", () => {
     expect(benchmark.indexOf('artifact.appendLog("raw/child-stderr.log"')).toBeLessThan(benchmark.indexOf('artifact.writeJson("resources-benchmark.json"'));
     expect(benchmark.indexOf('artifact.writeJson("resources-benchmark.json"')).toBeLessThan(benchmark.indexOf("await artifact.finish"));
     expect(benchmark).toContain('pendingReport.reason = "artifact_finalization_failed"');
-    expect(benchmark.indexOf("if (cleanupFailed)")).toBeLessThan(benchmark.indexOf("else if (abortedBy)"));
+    expect(benchmark).toContain("resolveTerminalState({ cleanupFailure, abortedBy, threshold: pendingReport })");
+    expect(benchmark).toContain("resolveTerminalState({ artifactFailed: true, cleanupFailure, abortedBy, threshold: pendingReport })");
     expect(benchmark.indexOf('process.removeListener("SIGINT"')).toBeGreaterThan(benchmark.indexOf("await artifact.finish"));
     expect(benchmark).not.toMatch(/\bsleep\s*\(/);
+  });
+
+  it("prioritizes artifact and cleanup failures over abort", () => {
+    expect(resolveTerminalState({ abortedBy: "SIGTERM", cleanupFailure: "owned_process_residual" })).toMatchObject({ status: "child_failed", exitCode: 4, reason: "owned_process_residual", abortReason: "aborted_by_SIGTERM" });
+    expect(resolveTerminalState({ abortedBy: "SIGTERM" })).toMatchObject({ status: "resource_blocked", exitCode: 3, reason: "aborted_by_SIGTERM" });
+    expect(resolveTerminalState({ artifactFailed: true, abortedBy: "SIGINT", cleanupFailure: "local_cleanup_failed" })).toMatchObject({ status: "internal", exitCode: 5, reason: "artifact_finalization_failed" });
   });
 
   it("keeps an unknown owned RSS peak null instead of fabricating zero", () => {
@@ -79,8 +91,10 @@ describe("resource benchmark static safety contract", () => {
     expect(unknown.ownedPeakBytes).toBeNull();
     expect(unknown.ownedPeakReason).toBe("unavailable");
     const unknownWithLog = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: null, log: "FATAL ERROR: JavaScript heap out of memory" });
-    expect(unknownWithLog.confirmed).toBe(true);
-    expect(unknownWithLog.reason).toBe("windows_oom_code_with_peak_unknown");
+    expect(unknownWithLog.confirmed).toBe(false);
+    expect(unknownWithLog.reason).toBe("windows_oom_code_peak_unknown");
+    expect(unknownWithLog.confirmedReasons).toEqual([]);
+    expect(unknownWithLog.evidence).toContain("owned_peak_unknown");
     expect(classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024 }).confirmed).toBe(false);
     expect(classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024, log: "memory allocation failed" }).confirmed).toBe(true);
   });

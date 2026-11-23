@@ -167,7 +167,17 @@ export class OwnedProcessTree {
     this.inspectionErrors.delete(this.rootPid);
     this.rootIdentityChanged = false;
     this.rootIdentityState = null;
-    const listed = await this.io.listProcesses(Math.max(this.maxProcesses, 2048));
+    let listed = null;
+    try {
+      if (typeof this.io.listProcessesStrict !== "function") throw new Error("strict_process_listing_unavailable");
+      listed = await this.io.listProcessesStrict();
+      if (!Array.isArray(listed)) throw new Error("strict_process_listing_invalid");
+    } catch (error) {
+      this.noteInspectionError(this.rootPid, `process_listing_failed:${error?.code ?? (error instanceof Error ? error.message : "unknown")}`);
+      this.rootIdentityChanged = false;
+      this.rootIdentityState = "inspection_failed";
+      return [];
+    }
     const identities = new Map(listed.map((entry) => [entry.identity.pid, entry.identity]));
     identities.set(this.rootPid, root.identity);
     const byPid = new Map(listed.map((entry) => [entry.identity.pid, entry]));
@@ -176,13 +186,25 @@ export class OwnedProcessTree {
     for (const identity of identities.values()) {
       if (isDescendant(identity, this.rootPid, identities)) ownedPids.add(identity.pid);
     }
+    for (const pid of this.records.keys()) {
+      if (pid === this.rootPid) continue;
+      if (!byPid.has(pid)) this.inspectionErrors.delete(pid);
+      else if (!ownedPids.has(pid)) this.noteInspectionError(pid, "process_ancestry_unavailable");
+    }
     const sampledAt = new Date().toISOString();
     const samples = [];
     for (const pid of ownedPids) {
-      const current = byPid.get(pid) ?? await this.io.readProcess(pid);
+      const current = byPid.get(pid);
       if (!current) continue;
       const registered = this.records.get(pid);
-      if (registered && registered.startTime !== current.identity.startTime) continue;
+      if (current.identity.detailUnavailable || !current.identity.startTime) {
+        if (registered) this.noteInspectionError(pid, "process_details_unavailable");
+        continue;
+      }
+      if (registered && registered.startTime !== current.identity.startTime) {
+        this.inspectionErrors.delete(pid);
+        continue;
+      }
       samples.push(this.sampleEntry(current, telemetry, sampledAt));
     }
     return samples;

@@ -42,7 +42,7 @@ pnpm test:lowmem
 
 1. cgroup `memory.events.oom_kill` 增量且 owned 子进程同期死亡；
 2. 明确 V8 heap FATAL 并伴随 SIGABRT/非 0；
-3. Windows `0xC0000017` 或 `0xC000009A` + owned root death，且日志必须有明确 `out of memory`、`memory allocation failed`、`heap allocation failed` 或 V8 heap FATAL；peak 未知可保留为 null，但无 memoryLog 一律不确认；
+3. Windows `0xC0000017` 或 `0xC000009A` + owned root death + 明确 memoryLog，且 ownedPeakBytes>0 才确认；peak 未知或无 memoryLog 一律不确认，只保留 possible/clues；
 4. 用 stub/故障注入验证分类器，避免仅凭全局事件重试。
 
 根因分类至少包括：宿主/cgroup 容量不足、并发估算失真、V8 old space 上限、外部/ArrayBuffer/native 增长、OS/其他进程竞争、测试数据累积、浏览器进程树、无法归属。只有首次**确认 OOM**且 Vitest workers>1 才允许同阶段 workers-1 重试一次；保留首次日志/退出码/峰值，第二次失败即阻断。其他已串行阶段不虚构降并发。
@@ -51,7 +51,7 @@ pnpm test:lowmem
 
 spawn 前登记 root PID、startTime、祖先链、cwd 和非敏感参数摘要。采样只收录可追溯到 root 的进程；清理前再次核对 PID、startTime 和祖先关系，防止 PID 复用。无法证明归属时只报告，不 kill。成功、失败、OOM、信号和 spawn 失败都必须在 finally 清理 owned 树、HTTP server、DB handle、timer 与 Singleflight。
 
-严禁按进程名批量 kill、杀用户进程、重启、修改 Swap/pagefile、修改 Docker/WSL 全局配置。残留写入 `residual-processes.json`，owned 残留即失败。退出证明只能使用完整、无 limit 截断的 `listProcessPidsStrict`；全局枚举失败抛错，单个 PID 详情失败仍保留 PID 存在信息。快照友好 `listProcesses()` 的空数组不能证明进程已退出。
+严禁按进程名批量 kill、杀用户进程、重启、修改 Swap/pagefile、修改 Docker/WSL 全局配置。残留写入 `residual-processes.json`，owned 残留即失败。退出证明只能使用完整、无 limit 截断的 `listProcessPidsStrict`；正常 ancestry 采样使用完整 `listProcessesStrict`，全局枚举失败抛错，单个 PID 详情失败仍保留 PID/可用 ppid，startTime 不可证明的新 descendant 不登记。快照友好 `listProcesses()` 的空数组不能证明进程已退出。
 
 ## 5. 缓存管理
 

@@ -13,6 +13,7 @@ import { classifyOom } from "./lib/resource/oom.mjs";
 import { OwnedProcessTree, adapter } from "./lib/resource/process-tree.mjs";
 import { createLogSanitizer, sanitizeLog } from "./lib/resource/report.mjs";
 import { collectSnapshot } from "./lib/resource/snapshot.mjs";
+import { resolveTerminalState } from "./lib/resource/terminal-state.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const HTTP_TIMEOUT_MS = 30_000;
@@ -516,21 +517,17 @@ process.on("message", async (message) => {
       };
       const cleanupFailed = residuals.length > 0 || !cleanup.ok || localCleanupErrors.length > 0;
       pendingReport.cleanupFailed = cleanupFailed;
+      const cleanupFailure = cleanupFailed
+        ? residuals.length > 0 ? "owned_process_residual" : localCleanupErrors.length > 0 ? "local_cleanup_failed" : "owned_process_cleanup_failed"
+        : null;
       const applyTerminalState = () => {
-        if (abortedBy) pendingReport.abortReason = `aborted_by_${abortedBy}`;
-        if (cleanupFailed) {
-          exitCode = EXIT_CODES.childFailed;
-          pendingReport.exitCode = exitCode;
-          pendingReport.status = "child_failed";
-          pendingReport.reason = residuals.length > 0 ? "owned_process_residual" : localCleanupErrors.length > 0 ? "local_cleanup_failed" : "owned_process_cleanup_failed";
-          pendingReason = pendingReport.reason;
-        } else if (abortedBy) {
-          exitCode = EXIT_CODES.resourceBlocked;
-          pendingReport.exitCode = exitCode;
-          pendingReport.status = "resource_blocked";
-          pendingReport.reason = pendingReport.abortReason;
-          pendingReason = pendingReport.reason;
-        }
+        const state = resolveTerminalState({ cleanupFailure, abortedBy, threshold: pendingReport });
+        exitCode = state.exitCode;
+        pendingReport.exitCode = state.exitCode;
+        pendingReport.status = state.status;
+        pendingReport.reason = state.reason;
+        if (state.abortReason) pendingReport.abortReason = state.abortReason;
+        pendingReason = state.reason;
       };
       const terminalKey = () => `${pendingReport.status}:${pendingReport.reason}`;
       let artifactFinished = false;
@@ -551,11 +548,13 @@ process.on("message", async (message) => {
         artifactFinished = true;
       } catch (error) {
         pendingReport.artifactError = sanitizeLog(error instanceof Error ? error.message : String(error));
-        exitCode = EXIT_CODES.internal;
-        pendingReport.exitCode = exitCode;
-        pendingReport.status = "internal";
-        pendingReport.reason = "artifact_finalization_failed";
-        pendingReason = pendingReport.reason;
+        const state = resolveTerminalState({ artifactFailed: true, cleanupFailure, abortedBy, threshold: pendingReport });
+        exitCode = state.exitCode;
+        pendingReport.exitCode = state.exitCode;
+        pendingReport.status = state.status;
+        pendingReport.reason = state.reason;
+        if (state.abortReason) pendingReport.abortReason = state.abortReason;
+        pendingReason = state.reason;
         try { outputPath = await artifact.writeJson("resources-benchmark.json", pendingReport); } catch { /* best effort after artifact failure */ }
         if (!artifactFinished) {
           try { await artifact.finish({ exitCode, reason: pendingReason, details: { benchmark: pendingReport } }); } catch { /* terminal artifact failure is reported by process exit */ }

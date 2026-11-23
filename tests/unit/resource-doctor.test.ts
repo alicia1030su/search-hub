@@ -12,12 +12,36 @@ import { classifyOom } from "../../scripts/lib/resource/oom.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { createLogSanitizer, sanitizeLog } from "../../scripts/lib/resource/report.mjs";
 // @ts-expect-error -- plain ESM resource module
-import { parseCgroupRoot } from "../../scripts/lib/resource/linux.mjs";
+import { listProcessPidsStrict as linuxProcessPidsStrict, parseCgroupRoot } from "../../scripts/lib/resource/linux.mjs";
+// @ts-expect-error -- plain ESM resource module
+import { enumerateToolhelpEntries, listProcessPidsStrict as windowsProcessPidsStrict } from "../../scripts/lib/resource/windows.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { compareLowmem, normalizeList } from "../../scripts/lib/resource/lowmem.mjs";
 
 const MIB = 1024 * 1024;
 const reading = (value: number | null, source = "test", reason: string | null = null) => ({ value, source, reason });
+
+function fakeToolhelp(entries: Array<{ th32ProcessID: number; th32ParentProcessID: number; szExeFile: number[] }>, options: { first?: boolean; lastError?: number } = {}) {
+  let index = 0;
+  return {
+    PROCESSENTRY32W: "PROCESSENTRY32W",
+    createToolhelp32Snapshot: () => 1,
+    closeHandle: () => true,
+    getLastError: () => options.lastError ?? 18,
+    process32FirstW: () => options.first ?? true,
+    process32NextW: () => {
+      index += 1;
+      return index < entries.length;
+    },
+    koffi: {
+      alloc: () => ({}),
+      free: () => {},
+      sizeof: () => 1,
+      encode: () => {},
+      decode: () => entries[index],
+    },
+  };
+}
 
 function snapshot(availableGiB: number, options: { physicalGiB?: number; cgroupLimitGiB?: number; cgroupCurrentGiB?: number; cpus?: number } = {}) {
   return {
@@ -138,6 +162,27 @@ describe("D04 low-memory complete-suite comparison", () => {
   });
 });
 
+describe("strict process listing", () => {
+  it("propagates Linux enumeration failure and returns a complete unbounded PID set", async () => {
+    await expect(linuxProcessPidsStrict(async () => { throw new Error("proc_unavailable"); })).rejects.toThrow("proc_unavailable");
+    expect(await linuxProcessPidsStrict(async () => ["30", "2", "not-a-pid", "11"])).toEqual([2, 11, 30]);
+  });
+
+  it("distinguishes Toolhelp first/next failures from normal completion", async () => {
+    const entries = [
+      { th32ProcessID: 111, th32ParentProcessID: 1, szExeFile: [] },
+      { th32ProcessID: 222, th32ParentProcessID: 111, szExeFile: [] },
+    ];
+    expect(await windowsProcessPidsStrict(fakeToolhelp(entries))).toEqual([111, 222]);
+    expect(await enumerateToolhelpEntries(fakeToolhelp(entries))).toEqual([
+      { pid: 111, ppid: 1, executableName: "unknown" },
+      { pid: 222, ppid: 111, executableName: "unknown" },
+    ]);
+    await expect(enumerateToolhelpEntries(fakeToolhelp(entries, { first: false, lastError: 5 }))).rejects.toThrow("toolhelp_enumeration_failed:5");
+    await expect(enumerateToolhelpEntries(fakeToolhelp(entries.slice(0, 1), { lastError: 5 }))).rejects.toThrow("toolhelp_enumeration_failed:5");
+  });
+});
+
 describe("D08 OOM evidence and redaction", () => {
   it("does not infer OOM from exit 137, SIGKILL, exit 1, or timeout alone", () => {
     for (const attempt of [{ exitCode: 137 }, { exitCode: 1 }, { exitCode: null, signal: "SIGKILL" }, { exitCode: 124 }]) {
@@ -152,7 +197,10 @@ describe("D08 OOM evidence and redaction", () => {
     expect(classifyOom({ exitCode: 5, ownedRootDied: true, ownedPeakBytes: 100, log: "memory allocation failed" }, { injectedEvidence: { windowsCode: 0xC0000017 } }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: -1073741801, ownedRootDied: true, ownedPeakBytes: 100, log: "JavaScript heap out of memory" }).confirmed).toBe(true);
     expect(classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: 100, log: "heap allocation failed" }).confirmed).toBe(true);
-    expect(classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: null, log: "out of memory" }).confirmed).toBe(true);
+    const unknownPeak = classifyOom({ exitCode: 3221225495, ownedRootDied: true, ownedPeakBytes: null, log: "out of memory" });
+    expect(unknownPeak.confirmed).toBe(false);
+    expect(unknownPeak.reason).toBe("windows_oom_code_peak_unknown");
+    expect(unknownPeak.confirmedReasons).toEqual([]);
     expect(classifyOom({ exitCode: 5, ownedRootDied: false }, { cgroupOomDelta: 1 }).confirmed).toBe(false);
     const unknown = classifyOom({ exitCode: 5, ownedRootDied: true }, { cgroupOomDelta: null });
     expect(unknown.confirmed).toBe(false);

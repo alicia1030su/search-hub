@@ -38,7 +38,7 @@ export function classifyOom(attempt, evidence = {}) {
     if (!memoryLog) {
       unconfirmedReason = "windows_oom_code_without_memory_log";
     } else if (ownedPeakBytes === null) {
-      confirmedReasons.push("windows_oom_code_with_peak_unknown");
+      unconfirmedReason = "windows_oom_code_peak_unknown";
       clues.push("memory_log", "owned_peak_unknown");
     } else if (ownedPeakBytes > 0) {
       confirmedReasons.push("windows_oom_code_with_owned_peak");

@@ -246,9 +246,32 @@ export async function listProcesses(limit = 512) {
 }
 
 /** Complete PID enumeration for exit proof; global enumeration errors propagate. */
-export async function listProcessPidsStrict() {
-  const entries = await readdir("/proc");
+export async function listProcessPidsStrict(readDir = readdir) {
+  const entries = await readDir("/proc");
   return entries.filter((entry) => /^\d+$/.test(entry)).map(Number).sort((a, b) => a - b);
+}
+
+/** Complete detailed listing; per-PID detail failures retain PID existence. */
+export async function listProcessesStrict() {
+  const pids = await listProcessPidsStrict();
+  return Promise.all(pids.map(async (pid) => {
+    try {
+      const current = await readLinuxProcess(pid);
+      if (current) return current;
+    } catch { /* fall through to identity-preserving placeholder */ }
+    let ppid = null;
+    let executableName = "unknown";
+    try {
+      const status = await readText(`/proc/${pid}/status`);
+      const parent = status?.match(/^PPid:\s+(\d+)$/m)?.[1];
+      if (parent && Number.isSafeInteger(Number(parent))) ppid = Number(parent);
+      executableName = safeExecutableName(status?.match(/^Name:\s+(.+)$/m)?.[1]);
+    } catch { /* PID existence still comes from the complete strict listing */ }
+    return {
+      identity: { pid, ppid, startTime: null, owned: false, role: roleFor(executableName), executableName, detailUnavailable: true },
+      rssBytes: reading(null, "proc_status", "process_details_unavailable"),
+    };
+  }));
 }
 
 export async function readProcess(pid) {

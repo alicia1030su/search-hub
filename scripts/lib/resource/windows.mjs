@@ -233,28 +233,56 @@ export async function listProcesses(limit = 512) {
   }
 }
 
-/** Complete PID enumeration for exit proof; global enumeration errors propagate. */
-export async function listProcessPidsStrict() {
-  const win = await api();
+/** Complete Toolhelp identity enumeration; global enumeration errors propagate. */
+export async function enumerateToolhelpEntries(win) {
   const snapshot = win.createToolhelp32Snapshot(0x2, 0);
   if (!snapshot || snapshot === -1 || snapshot === -1n) throw new Error("toolhelp_snapshot_failed");
   const pointer = win.koffi.alloc(win.PROCESSENTRY32W, 1);
-  const pids = [];
+  const entries = [];
   try {
     win.koffi.encode(pointer, win.PROCESSENTRY32W, { dwSize: win.koffi.sizeof(win.PROCESSENTRY32W) });
     let ok = win.process32FirstW(snapshot, pointer);
     if (!ok) throw new Error(`toolhelp_enumeration_failed:${win.getLastError()}`);
     while (ok) {
       const value = win.koffi.decode(pointer, win.PROCESSENTRY32W);
-      pids.push(Number(value.th32ProcessID));
+      entries.push({ pid: Number(value.th32ProcessID), ppid: Number(value.th32ParentProcessID), executableName: safeName(value.szExeFile) });
       ok = win.process32NextW(snapshot, pointer);
-      if (!ok && win.getLastError() !== 18) throw new Error(`toolhelp_enumeration_failed:${win.getLastError()}`);
+      if (!ok) {
+        const code = win.getLastError();
+        if (code !== 18) throw new Error(`toolhelp_enumeration_failed:${code}`);
+      }
     }
-    return pids;
+    return entries;
   } finally {
     win.koffi.free(pointer);
     win.closeHandle(snapshot);
   }
+}
+
+/** Complete PID enumeration for exit proof; global enumeration errors propagate. */
+export async function listProcessPidsStrict(suppliedApi = null) {
+  const win = suppliedApi ?? await api();
+  return (await enumerateToolhelpEntries(win)).map((entry) => entry.pid);
+}
+
+/** Complete detailed listing; per-PID detail failures retain PID and parent. */
+export async function listProcessesStrict(suppliedApi = null) {
+  const win = suppliedApi ?? await api();
+  return Promise.all((await enumerateToolhelpEntries(win)).map(async (entry) => {
+    const details = await readWindowsProcess(entry.pid, win);
+    return {
+      identity: {
+        pid: entry.pid,
+        ppid: entry.ppid,
+        startTime: details?.startTime ?? null,
+        owned: false,
+        role: roleFor(entry.executableName),
+        executableName: entry.executableName,
+        ...(details ? {} : { detailUnavailable: true }),
+      },
+      rssBytes: details?.rssBytes ?? reading(null, "win32_process_memory_counters", "process_details_unavailable"),
+    };
+  }));
 }
 
 async function readWindowsProcess(pid, suppliedApi = null) {
