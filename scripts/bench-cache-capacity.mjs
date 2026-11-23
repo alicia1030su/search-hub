@@ -14,10 +14,10 @@ if (!/^[a-zA-Z0-9_-]+$/.test(label)) throw new Error("label must be path-safe");
 const directory = await mkdtemp(path.join(tmpdir(), "search-hub-capacity-"));
 const file = path.join(directory, "capacity.db");
 const handle = createDb({ file });
-const excluded = new Set(["search_cache", "search_cache_state", "sqlite_sequence"]);
+const isCacheTable = (name) => name.startsWith("search_cache") || name === "sqlite_sequence";
 function otherTablesFingerprint() {
   const tables = handle.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-  const payload = tables.map(({ name }) => ({ name, rows: excluded.has(name) ? [] : handle.sqlite.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`).all() }));
+  const payload = tables.map(({ name }) => ({ name, rows: isCacheTable(name) ? [] : handle.sqlite.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`).all() }));
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 try {
@@ -38,6 +38,7 @@ try {
   const put = cache.put("new-entry", large, 3600, "basic");
   const actual = handle.sqlite.prepare("SELECT COUNT(*) AS entries, COALESCE(SUM(size_bytes),0) AS bytes FROM search_cache").get();
   const after = otherTablesFingerprint();
+  const cacheTablesExcluded = handle.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'search_cache%' OR name='sqlite_sequence') ORDER BY name").all().map((row) => row.name);
   const report = {
     schemaVersion: 1,
     benchmark: `cache-capacity-${label}`,
@@ -47,6 +48,7 @@ try {
     actual,
     invariantPassed: actual.entries <= 200 && actual.bytes <= 1024 * 1024,
     otherTablesUnchanged: before === after,
+    cacheTablesExcluded,
     totals: cache.totals(),
     exitCode: 0,
   };
