@@ -35,11 +35,11 @@ export function classifyOom(attempt, evidence = {}) {
   }
   if (WINDOWS_OOM_CODES.has(windowsCode) && ownedRootDied) {
     clues.push("windows_oom_code", "owned_root_death");
-    if (!memoryLog) {
-      unconfirmedReason = "windows_oom_code_without_memory_log";
-    } else if (ownedPeakBytes === null) {
+    if (ownedPeakBytes === null) {
       unconfirmedReason = "windows_oom_code_peak_unknown";
-      clues.push("memory_log", "owned_peak_unknown");
+      clues.push("owned_peak_unknown", ...(memoryLog ? ["memory_log"] : []));
+    } else if (!memoryLog) {
+      unconfirmedReason = "windows_oom_code_without_corroborating_log";
     } else if (ownedPeakBytes > 0) {
       confirmedReasons.push("windows_oom_code_with_owned_peak");
       clues.push("memory_log", "owned_peak_positive");

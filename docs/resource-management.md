@@ -42,7 +42,7 @@ pnpm test:lowmem
 
 1. cgroup `memory.events.oom_kill` 增量且 owned 子进程同期死亡；
 2. 明确 V8 heap FATAL 并伴随 SIGABRT/非 0；
-3. Windows `0xC0000017` 或 `0xC000009A` + owned root death + 明确 memoryLog，且 ownedPeakBytes>0 才确认；peak 未知或无 memoryLog 一律不确认，只保留 possible/clues；
+3. Windows `0xC0000017` 或 `0xC000009A` + owned root death + 明确 memoryLog，且 ownedPeakBytes>0 才确认；peak 未知优先记 `windows_oom_code_peak_unknown`，known peak 无 memoryLog 记 `windows_oom_code_without_corroborating_log`，均不确认；
 4. 用 stub/故障注入验证分类器，避免仅凭全局事件重试。
 
 根因分类至少包括：宿主/cgroup 容量不足、并发估算失真、V8 old space 上限、外部/ArrayBuffer/native 增长、OS/其他进程竞争、测试数据累积、浏览器进程树、无法归属。只有首次**确认 OOM**且 Vitest workers>1 才允许同阶段 workers-1 重试一次；保留首次日志/退出码/峰值，第二次失败即阻断。其他已串行阶段不虚构降并发。

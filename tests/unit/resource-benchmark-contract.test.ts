@@ -92,7 +92,7 @@ describe("resource benchmark static safety contract", () => {
     expect(benchmark).toContain('rssPeakReason: rssPeakBytes === null ? "unavailable" : null');
     const unknown = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: null });
     expect(unknown.confirmed).toBe(false);
-    expect(unknown.reason).toBe("windows_oom_code_without_memory_log");
+    expect(unknown.reason).toBe("windows_oom_code_peak_unknown");
     expect(unknown.ownedPeakBytes).toBeNull();
     expect(unknown.ownedPeakReason).toBe("unavailable");
     const unknownWithLog = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: null, log: "FATAL ERROR: JavaScript heap out of memory" });
@@ -102,8 +102,10 @@ describe("resource benchmark static safety contract", () => {
     expect(unknownWithLog.evidence).toContain("owned_peak_unknown");
     const knownWithoutLog = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024 });
     expect(knownWithoutLog.confirmed).toBe(false);
-    expect(knownWithoutLog.reason).toBe("windows_oom_code_without_memory_log");
-    expect(classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024, log: "memory allocation failed" }).confirmed).toBe(true);
+    expect(knownWithoutLog.reason).toBe("windows_oom_code_without_corroborating_log");
+    const knownWithLog = classifyOom({ windowsExitCode: 0xC0000017, ownedRootDied: true, ownedPeakBytes: 1024, log: "memory allocation failed" });
+    expect(knownWithLog.confirmed).toBe(true);
+    expect(knownWithLog.reason).toBe("windows_oom_code_with_owned_peak");
   });
 
   it("does not fabricate cgroup OOM evidence when the counter is unavailable", () => {

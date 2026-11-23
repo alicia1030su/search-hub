@@ -405,6 +405,33 @@ describe("D06 finally cleanup", () => {
     expect(cleanup.ok).toBe(true);
   });
 
+  it("clears an unregistered suspicious PID error when a later listing proves re-parenting", async () => {
+    const root = { pid: 111, ppid: 1, startTime: "root-stable", owned: false, role: "node", executableName: "node" };
+    const rootEntry = { identity: root, rssBytes: { value: 1, source: "test", reason: null } };
+    const placeholder = { identity: { pid: 222, ppid: 111, startTime: null, owned: false, role: "node", executableName: "node", detailUnavailable: true }, rssBytes: { value: null, source: "test", reason: "unavailable" } };
+    const unrelated = { identity: { pid: 222, ppid: 1, startTime: "unrelated-stable", owned: false, role: "node", executableName: "node" }, rssBytes: { value: 1, source: "test", reason: null } };
+    let suspicious = true;
+    let rootAlive = true;
+    const io = {
+      listProcesses: async () => [],
+      listProcessesStrict: async () => !rootAlive ? [unrelated] : suspicious ? [rootEntry, placeholder] : [rootEntry, unrelated],
+      listProcessPidsStrict: async () => rootAlive ? [111, 222] : [222],
+      readProcess: async (pid: number) => pid === 111 && rootAlive ? rootEntry : null,
+      terminateProcess: async () => { rootAlive = false; },
+      killProcess: async () => { rootAlive = false; },
+    };
+    const tree = new OwnedProcessTree(111, "root-stable", { io, termGraceMs: 1 });
+    await tree.sample();
+    expect(tree.inspectionErrors.has(222)).toBe(true);
+    suspicious = false;
+    await tree.sample();
+    expect(tree.inspectionErrors.has(222)).toBe(false);
+    expect(tree.records.has(222)).toBe(false);
+    const cleanup = await tree.cleanup();
+    expect(cleanup.ok).toBe(true);
+    expect(cleanup.errors).toEqual([]);
+  });
+
   it("never signals a descendant whose PID was reused", async () => {
     const descendant = { pid: 222, ppid: 111, startTime: "descendant-reused", owned: false, role: "node", executableName: "node" };
     const entry = { identity: descendant, rssBytes: { value: 1, source: "test", reason: null } };

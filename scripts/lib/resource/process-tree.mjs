@@ -204,24 +204,30 @@ export class OwnedProcessTree {
     identities.set(this.rootPid, root.identity);
     const byPid = new Map(listed.map((entry) => [entry.identity.pid, entry]));
     byPid.set(this.rootPid, root);
-    for (const pid of this.inspectionErrors.keys()) {
-      if (pid !== this.rootPid && !this.records.has(pid) && !byPid.has(pid)) this.inspectionErrors.delete(pid);
-    }
     const ownedPids = new Set([this.rootPid]);
-    let suspiciousDescendant = false;
+    const suspiciousPids = new Set();
     for (const identity of identities.values()) {
       if (identity.pid === this.rootPid) continue;
       if (isDescendant(identity, this.rootPid, identities)) {
         ownedPids.add(identity.pid);
       } else if (couldDescendFromRoot(identity, this.rootPid, identities)) {
         this.noteInspectionError(identity.pid, identity.detailUnavailable || !identity.startTime ? "process_details_unavailable" : "process_ancestry_unavailable", identity);
-        suspiciousDescendant = true;
+        suspiciousPids.add(identity.pid);
       }
     }
-    if (suspiciousDescendant) {
+    // A suspicious unregistered PID may later disappear or be re-parented to an
+    // unrelated process. A complete successful listing proves either recovery;
+    // only PIDs that remain suspicious may keep their historical error.
+    for (const pid of this.inspectionErrors.keys()) {
+      if (!this.records.has(pid) && !suspiciousPids.has(pid)) this.inspectionErrors.delete(pid);
+    }
+    if (suspiciousPids.size > 0) {
       this.rootIdentityChanged = false;
       this.rootIdentityState = "inspection_failed";
       return [];
+    }
+    for (const pid of this.inspectionErrors.keys()) {
+      if (!this.records.has(pid) && !ownedPids.has(pid)) this.inspectionErrors.delete(pid);
     }
     for (const pid of this.records.keys()) {
       if (pid === this.rootPid) continue;
