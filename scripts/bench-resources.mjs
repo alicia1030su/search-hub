@@ -165,7 +165,7 @@ async function main() {
     rootRssSampleMethod: "direct_process_memory",
     ownedTreeSamplePolicy: "initial_pre_shutdown_and_cleanup",
     ownedTreePeakMethod: "max_initial_pre_shutdown_strict_snapshots",
-    rootRssSamplerProcess: "benchmark_parent",
+    rootRssSamplerExecution: "benchmark_parent",
     rootRssSamplerScope: "target_child_root_process",
     getTimingScope: "client_fetch_to_response_json",
     command: [process.execPath, ...process.execArgv, ...process.argv.slice(1)].join(" "),

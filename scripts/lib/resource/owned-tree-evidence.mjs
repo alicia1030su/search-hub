@@ -40,7 +40,7 @@ export function summarizeOwnedTreeSamples(samples, rootState = {}) {
     }
     const value = sample?.rssBytes?.value ?? sample?.rssBytes;
     if (!Number.isSafeInteger(value) || value < 0 || !Number.isSafeInteger(total + value)) {
-      return { ...base, reason: "rss_unavailable", rssUnavailable: true };
+      return { ...base, reason: "owned_tree_rss_unavailable", rssUnavailable: true };
     }
     total += value;
   }
