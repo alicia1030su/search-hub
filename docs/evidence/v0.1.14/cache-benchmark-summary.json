@@ -1,0 +1,495 @@
+{
+  "schemaVersion": 1,
+  "suite": "search-hub-resource-v0.1.14",
+  "generatedAt": "2026-11-23T07:07:48.745Z",
+  "baseline": {
+    "commit": "4d2e25249f90a085b28ea05ee479b393d716c99e",
+    "codeFingerprint": "bfbd1a6eb2699296b78cb44c56415e4bc299a0c90b54036eb907d4675dd0d138",
+    "machineFingerprint": "51d6c2c18af8e4dd94bf8596e86f8917a2e03a9e60f7747a536ec1b5522af107"
+  },
+  "benchmarkCode": {
+    "commit": "e182f60703d179ec4d28f1dbf23ce04c0f2b0a25",
+    "codeFingerprint": "9cc9cadf523bfba04564532b6b8280106cfe38ff19c91487427ba5e062323740",
+    "machineFingerprint": "51d6c2c18af8e4dd94bf8596e86f8917a2e03a9e60f7747a536ec1b5522af107"
+  },
+  "releaseCode": {
+    "codeFingerprint": "6e17305d419e8e0e594374bc8ff6bd13525302147221e7a23999320371ed5e9f",
+    "computedFromRef": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c",
+    "computedAt": "2026-11-23T07:07:48.745Z"
+  },
+  "environment": {
+    "platform": "win32",
+    "arch": "x64",
+    "cpus": 16,
+    "totalMemoryBytes": 16905920512,
+    "node": "v22.22.2",
+    "pnpm": "12.18.0",
+    "vitest": "^5.1.0",
+    "playwright": "1.64.1",
+    "sqlite": "better-sqlite3/WAL",
+    "paidVendor": false
+  },
+  "protocol": {
+    "percentile": "nearest-rank",
+    "fixture": "fixed-local-no-paid-vendor",
+    "requests": 20000,
+    "repeat": 5,
+    "concurrency": 100,
+    "testConcurrency": 1,
+    "storageRepeat": 5,
+    "warmupHits": 100
+  },
+  "benchmarks": {
+    "cacheCapacity": {
+      "command": "node scripts/bench-cache-capacity.mjs --label {label}",
+      "status": "PASS",
+      "baseline": {
+        "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
+      },
+      "candidate": {
+        "commitAtRun": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c"
+      },
+      "rounds": 1,
+      "summary": {
+        "actual": {
+          "entries": 7,
+          "bytes": 917917
+        },
+        "invariantPassed": true,
+        "exitCode": 0
+      },
+      "scopeFingerprint": {
+        "atBenchmark": "8404856ad9e2cecaadfec495f558f2254892d273c14425b9c590be5ca4e60019",
+        "atRelease": "8404856ad9e2cecaadfec495f558f2254892d273c14425b9c590be5ca4e60019",
+        "applicable": true
+      },
+      "rawFiles": [
+        "raw/cache-capacity-baseline.json.gz",
+        "raw/cache-capacity-candidate.json.gz"
+      ]
+    },
+    "cacheHit": {
+      "command": "node scripts/bench-cache-hit.mjs --requests 20000 --repeat 5 --label {label}",
+      "status": "PASS_NO_OPTIMIZATION",
+      "baseline": {
+        "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
+      },
+      "candidate": {
+        "commitAtRun": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c"
+      },
+      "rounds": 5,
+      "summary": {
+        "mutatingSqlPer1000HitsMedian": 2000,
+        "p95MsMedian": 0.5701999999982945
+      },
+      "scopeFingerprint": {
+        "atBenchmark": "680008156b6387e5292506d71b12e526242c3ea96067560837a02c83e3fc5edc",
+        "atRelease": "680008156b6387e5292506d71b12e526242c3ea96067560837a02c83e3fc5edc",
+        "applicable": true
+      },
+      "rawFiles": [
+        "raw/cache-hit-baseline.json.gz",
+        "raw/cache-hit-candidate.json.gz"
+      ]
+    },
+    "cacheStampede": {
+      "command": "node scripts/bench-cache-stampede.mjs --concurrency 100 --label {label}",
+      "status": "PASS",
+      "baseline": {
+        "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
+      },
+      "candidate": {
+        "commitAtRun": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c"
+      },
+      "rounds": 1,
+      "summary": {
+        "upstreamCalls": 1,
+        "responseCount": 100,
+        "consistent": true,
+        "completed": true,
+        "p50Ms": 232.5616,
+        "p95Ms": 267.9879000000001,
+        "rssPeakBytes": 186122240,
+        "mutatingSql": 403,
+        "commits": 401,
+        "dbFileBytes": 700416,
+        "walFileBytes": 2134192
+      },
+      "scopeFingerprint": {
+        "atBenchmark": "f51bf9dbbd68a23902f72efa698a2306f84b563d0330b58beb62513f9d7ca4e3",
+        "atRelease": "f51bf9dbbd68a23902f72efa698a2306f84b563d0330b58beb62513f9d7ca4e3",
+        "applicable": true
+      },
+      "rawFiles": [
+        "raw/cache-stampede-baseline.json.gz",
+        "raw/cache-stampede-candidate.json.gz"
+      ]
+    },
+    "cacheStorage": {
+      "command": "node scripts/bench-cache-storage.mjs --repeat 5 --label {label}",
+      "status": "PASS",
+      "baseline": {
+        "commitAtRun": "4d2e25249f90a085b28ea05ee479b393d716c99e"
+      },
+      "candidate": {
+        "commitAtRun": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c"
+      },
+      "rounds": 5,
+      "summary": {
+        "rounds": 5,
+        "maintenanceMsMedian": 24.98429999999962,
+        "maintenanceMsMax": 37.49149999999986,
+        "dbFileBytes": 2297856,
+        "walFileBytes": 2142432,
+        "vacuumPerformed": true
+      },
+      "scopeFingerprint": {
+        "atBenchmark": "f239e51ea85e4f2c5552f2ecff457412253b37d6ebef2f351236f631f339628b",
+        "atRelease": "f239e51ea85e4f2c5552f2ecff457412253b37d6ebef2f351236f631f339628b",
+        "applicable": true
+      },
+      "rawFiles": [
+        "raw/cache-storage-baseline.json.gz",
+        "raw/cache-storage-candidate.json.gz"
+      ]
+    }
+  },
+  "cacheCapacity": {
+    "maxEntries": 200,
+    "maxBytes": 1048576,
+    "baselineEntriesAfter": 17,
+    "baselineBytesAfter": 2229227,
+    "candidateEntriesAfter": 7,
+    "candidateBytesAfter": 917917,
+    "candidateWithinLimits": true,
+    "otherTablesUnchanged": true
+  },
+  "codeDelta": {
+    "from": "e182f60703d179ec4d28f1dbf23ce04c0f2b0a25",
+    "to": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c",
+    "changedPaths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/release.yml",
+      ".github/workflows/upgrade.yml",
+      "CHANGELOG.md",
+      "README.md",
+      "README_EN.md",
+      "apps/api/package.json",
+      "apps/api/src/auth.ts",
+      "apps/api/src/context.ts",
+      "apps/api/src/routes/admin-routes.ts",
+      "apps/api/src/routes/openapi-routes.ts",
+      "apps/api/src/services/cache.ts",
+      "apps/api/src/services/health.ts",
+      "apps/api/src/services/providers.ts",
+      "apps/api/src/services/runtime-monitor.ts",
+      "apps/api/src/services/search.ts",
+      "apps/web/package.json",
+      "apps/web/src/components/resource-monitor.tsx",
+      "apps/web/src/components/ui.tsx",
+      "apps/web/src/lib/api.ts",
+      "apps/web/src/lib/i18n-en.ts",
+      "apps/web/src/lib/i18n-zh.ts",
+      "apps/web/src/lib/types.ts",
+      "apps/web/src/pages/dashboard.tsx",
+      "docs/api.md",
+      "docs/cli.md",
+      "docs/deployment.md",
+      "docs/release-readiness.md",
+      "docs/resource-management.md",
+      "docs/testing.md",
+      "package.json",
+      "packages/cli/package.json",
+      "packages/cli/src/client/http.ts",
+      "packages/cli/src/version.ts",
+      "packages/core/package.json",
+      "packages/core/src/scheduler/key-scheduler.ts",
+      "packages/db/package.json",
+      "packages/mcp/package.json",
+      "packages/models/package.json",
+      "packages/providers/package.json",
+      "packages/shared/package.json",
+      "packaging/check-release-gates.mjs",
+      "packaging/supply-chain-audit.mjs",
+      "packaging/upgrade-matrix.mjs",
+      "packaging/verify-package.mjs",
+      "packaging/verify-resource-evidence.mjs",
+      "pnpm-workspace.yaml",
+      "scripts/bench-cache-capacity.mjs",
+      "scripts/bench-resources.mjs",
+      "scripts/build-cache-verdict.mjs",
+      "scripts/build-resource-evidence.mjs",
+      "scripts/docker-verify.sh",
+      "scripts/lib/resource-evidence.mjs",
+      "scripts/lib/resource/linux.mjs",
+      "scripts/lib/resource/oom.mjs",
+      "scripts/lib/resource/owned-tree-evidence.mjs",
+      "scripts/lib/resource/process-tree.mjs",
+      "scripts/lib/resource/terminal-state.mjs",
+      "scripts/lib/resource/windows.mjs",
+      "tests/e2e/resources.spec.ts",
+      "tests/integration/cache-capacity.test.ts",
+      "tests/integration/cli/basic.test.ts",
+      "tests/integration/resource-cleanup.test.ts",
+      "tests/integration/resource-monitor.test.ts",
+      "tests/integration/resource-queue.test.ts",
+      "tests/unit/cli/core.test.ts",
+      "tests/unit/release-gate.test.ts",
+      "tests/unit/resource-benchmark-contract.test.ts",
+      "tests/unit/resource-doctor.test.ts",
+      "tests/unit/resource-evidence.test.ts",
+      "tests/unit/resource-pressure.test.ts",
+      "tests/unit/resource-readonly-auth.test.ts",
+      "tests/unit/runtime-monitor.test.ts"
+    ],
+    "benchmarkRelevantChangedPaths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/release.yml",
+      ".github/workflows/upgrade.yml",
+      "CHANGELOG.md",
+      "README.md",
+      "README_EN.md",
+      "apps/api/package.json",
+      "apps/api/src/auth.ts",
+      "apps/api/src/context.ts",
+      "apps/api/src/routes/admin-routes.ts",
+      "apps/api/src/routes/openapi-routes.ts",
+      "apps/api/src/services/cache.ts",
+      "apps/api/src/services/health.ts",
+      "apps/api/src/services/providers.ts",
+      "apps/api/src/services/runtime-monitor.ts",
+      "apps/api/src/services/search.ts",
+      "apps/web/package.json",
+      "apps/web/src/components/resource-monitor.tsx",
+      "apps/web/src/components/ui.tsx",
+      "apps/web/src/lib/api.ts",
+      "apps/web/src/lib/i18n-en.ts",
+      "apps/web/src/lib/i18n-zh.ts",
+      "apps/web/src/lib/types.ts",
+      "apps/web/src/pages/dashboard.tsx",
+      "docs/api.md",
+      "docs/cli.md",
+      "docs/deployment.md",
+      "docs/release-readiness.md",
+      "docs/resource-management.md",
+      "docs/testing.md",
+      "package.json",
+      "packages/cli/package.json",
+      "packages/cli/src/client/http.ts",
+      "packages/cli/src/version.ts",
+      "packages/core/package.json",
+      "packages/core/src/scheduler/key-scheduler.ts",
+      "packages/db/package.json",
+      "packages/mcp/package.json",
+      "packages/models/package.json",
+      "packages/providers/package.json",
+      "packages/shared/package.json",
+      "packaging/check-release-gates.mjs",
+      "packaging/supply-chain-audit.mjs",
+      "packaging/upgrade-matrix.mjs",
+      "packaging/verify-package.mjs",
+      "packaging/verify-resource-evidence.mjs",
+      "pnpm-workspace.yaml",
+      "scripts/bench-cache-capacity.mjs",
+      "scripts/bench-resources.mjs",
+      "scripts/build-cache-verdict.mjs",
+      "scripts/build-resource-evidence.mjs",
+      "scripts/docker-verify.sh",
+      "scripts/lib/resource-evidence.mjs",
+      "scripts/lib/resource/linux.mjs",
+      "scripts/lib/resource/oom.mjs",
+      "scripts/lib/resource/owned-tree-evidence.mjs",
+      "scripts/lib/resource/process-tree.mjs",
+      "scripts/lib/resource/terminal-state.mjs",
+      "scripts/lib/resource/windows.mjs",
+      "tests/e2e/resources.spec.ts",
+      "tests/integration/cache-capacity.test.ts",
+      "tests/integration/cli/basic.test.ts",
+      "tests/integration/resource-cleanup.test.ts",
+      "tests/integration/resource-monitor.test.ts",
+      "tests/integration/resource-queue.test.ts",
+      "tests/unit/cli/core.test.ts",
+      "tests/unit/release-gate.test.ts",
+      "tests/unit/resource-benchmark-contract.test.ts",
+      "tests/unit/resource-doctor.test.ts",
+      "tests/unit/resource-evidence.test.ts",
+      "tests/unit/resource-pressure.test.ts",
+      "tests/unit/resource-readonly-auth.test.ts",
+      "tests/unit/runtime-monitor.test.ts"
+    ]
+  },
+  "verdict": {
+    "source": "artifacts/v0.1.14/candidate/cache-verdict.json",
+    "sha256": "2d936d9ef30f67a6df03082320292e57acac12b2c1dbb8e6cea89691c868272f",
+    "bytes": 3867,
+    "checks": {
+      "C01": {
+        "status": "PASS",
+        "baseline": {
+          "entries": 17,
+          "bytes": 2229227
+        },
+        "candidate": {
+          "entries": 7,
+          "bytes": 917917,
+          "evicted": 74
+        },
+        "limits": {
+          "maxEntries": 200,
+          "maxBytes": 1048576
+        },
+        "otherTablesUnchanged": true
+      },
+      "C02": {
+        "status": "PASS",
+        "evidence": "replace refreshes lastAccessedAt and remains present under byte pressure; LRU eviction excludes the current key"
+      },
+      "C03": {
+        "status": "PASS"
+      },
+      "C04": {
+        "status": "PASS"
+      },
+      "C05": {
+        "status": "PASS"
+      },
+      "C06": {
+        "status": "PASS"
+      },
+      "C07": {
+        "status": "PASS"
+      },
+      "C08": {
+        "status": "PASS_NO_OPTIMIZATION",
+        "evidenceCommit": "3860dc9a0ac4f76d4f260b723d568cad6f02c99c",
+        "baselineMutatingSqlPer1000Hits": 2000,
+        "candidateMutatingSqlPer1000Hits": 2000,
+        "sqlReductionRatio": 0,
+        "baselineP95MsMedian": 0.6282000000010157,
+        "candidateP95MsMedian": 0.5701999999982945,
+        "p95MedianChangeRatio": -0.09232728430854414,
+        "baselineP95MsMax": 0.8233000000036554,
+        "candidateP95MsMax": 0.6594999999997526,
+        "p95MaxChangeRatio": -0.19895542330034685,
+        "baselineRssPeakBytesMedian": 514813952,
+        "candidateRssPeakBytesMedian": 514195456,
+        "rssMedianChangeRatio": -0.001201397121420672,
+        "baselineRssPeakBytesMax": 550875136,
+        "candidateRssPeakBytesMax": 550653952,
+        "rssMaxChangeRatio": -0.000401513855945751,
+        "rssGatePassed": true,
+        "p95GatePassed": true,
+        "sqlGatePassed": false,
+        "decision": "RSS stayed within the 5% gate; SQL/P95 optimization gates are reported independently."
+      },
+      "C09": {
+        "status": "PASS",
+        "baselineUpstreamCalls": 100,
+        "candidateUpstreamCalls": 1,
+        "responseCount": 100,
+        "consistent": true,
+        "baselineP95Ms": 379.2679000000003,
+        "candidateP95Ms": 267.9879000000001,
+        "candidateRssPeakBytes": 186122240,
+        "candidateMutatingSql": 403,
+        "candidateCommits": 401,
+        "candidateDbFileBytes": 700416,
+        "candidateWalFileBytes": 2134192
+      },
+      "C10": {
+        "status": "PASS",
+        "evidence": "explicit follower identity/count: 1 leader+99 followers=99; leader cancellation retains 99; individual cancellation, completion, and shutdown reach zero; last-waiter cancellation removes the flight even when the factory ignores abort"
+      },
+      "C11": {
+        "status": "PASS"
+      },
+      "C12": {
+        "status": "PASS",
+        "baselineMaintenanceMedianMs": 45.2503999999999,
+        "candidateMaintenanceMedianMs": 24.98429999999962,
+        "baselineMaintenanceMaxMs": 73.06169999999975,
+        "candidateMaintenanceMaxMs": 37.49149999999986,
+        "baselineDbFileBytes": 2469888,
+        "candidateDbFileBytes": 2297856,
+        "baselineWalFileBytes": 2397872,
+        "candidateWalFileBytes": 2142432,
+        "osPageCacheBytes": null,
+        "osPageCacheReason": "page_cache_not_reliably_attributable",
+        "vacuumPerformed": true
+      },
+      "C13": {
+        "status": "PASS",
+        "evidence": "initialize repairs parseable but incorrect totals; every mutation path keeps totals equal to COUNT/SUM"
+      },
+      "C14": {
+        "status": "PASS"
+      }
+    }
+  },
+  "rawFiles": [
+    {
+      "path": "raw/cache-capacity-baseline.json.gz",
+      "sha256": "f7fa632b6c87dced4974cd519380ca16236d18e23fcef1a4a2c003b56eca0566",
+      "bytes": 248,
+      "decompressedSha256": "42d3e1ba1d12820f4f4905ce41f26f5c8cbdee7396572090fa4f51318c4f46df",
+      "sourceSha256": "42d3e1ba1d12820f4f4905ce41f26f5c8cbdee7396572090fa4f51318c4f46df",
+      "sourceBytes": 352
+    },
+    {
+      "path": "raw/cache-capacity-candidate.json.gz",
+      "sha256": "e58d863458f128ce032817ffabc6ff1b65b7d46d12148c6f400ada9623eba44f",
+      "bytes": 523,
+      "decompressedSha256": "3c0a2b6ac732dabef24f364dfceb5f3f3aa1b4b2362619778ab35b6eae15320d",
+      "sourceSha256": "a1a69132e58361a6142772c3f262e113c79e6eaf686f0df7e1963c0caee48e15",
+      "sourceBytes": 1115
+    },
+    {
+      "path": "raw/cache-hit-baseline.json.gz",
+      "sha256": "a8a1f951a5c2ede5b561f2f19df59fb5aef558aa9c88255fe2432884fafdc79f",
+      "bytes": 478904,
+      "decompressedSha256": "6f3c70c76fd4eeb7c78e8bd5e96fb85b3e39e2ac936558c19bb2d4be9b5bfe66",
+      "sourceSha256": "dfc551e240b6e145020bb314b33a12ad3a7437e2d291f5ced8c43e20e9dfc4f4",
+      "sourceBytes": 2855205
+    },
+    {
+      "path": "raw/cache-hit-candidate.json.gz",
+      "sha256": "3149db7294aebe142b0a533a8d1f4ba237a235200f6708cb160dbd2a8a17a65f",
+      "bytes": 478795,
+      "decompressedSha256": "57094f361489ed9f882ddfccd5f1e853d48943ff6eab817cb78872a108b3755c",
+      "sourceSha256": "c1e9c2ea1e051cd4173f050f6e9026558dcaecb51ae89f74d6b57782d505525d",
+      "sourceBytes": 2854994
+    },
+    {
+      "path": "raw/cache-stampede-baseline.json.gz",
+      "sha256": "b9363a810a4ca3d94acc832bbb57b73f29ac0e2e4fed35381396b0ebc283f7a6",
+      "bytes": 1245,
+      "decompressedSha256": "35f091943dee4a18e676fb2d503b7d96a0ca726a84856119878bca1c3720a30e",
+      "sourceSha256": "bffcd2ada29524c0c7be8bc93e22eca0922bffb08a14b3d462d55563f428de3e",
+      "sourceBytes": 3476
+    },
+    {
+      "path": "raw/cache-stampede-candidate.json.gz",
+      "sha256": "69449c1e491314af1c09e63df587d48a180d4cbfef63ebfb4f677fac0806c720",
+      "bytes": 1245,
+      "decompressedSha256": "1b5ede9199ec61f8712d6ea56792ee9bcbbea8324c6a5ed60e3b9a99fd70b67f",
+      "sourceSha256": "67cd7f93ed415f3cc935d8c575aac6361f0e959462df36c9de89714988c31845",
+      "sourceBytes": 3448
+    },
+    {
+      "path": "raw/cache-storage-baseline.json.gz",
+      "sha256": "296b75a7efe0c45d1777ec58ae94496fe9d2dd3cb9a75a6dbdc8ee82d6d13424",
+      "bytes": 902,
+      "decompressedSha256": "d5db91166db581c6dc70842d51186b26e3c3f1358e3788c8ae6334ff51dad75d",
+      "sourceSha256": "ec925fa2b2bede0ce8318cc6fbdd0777c19a0bed9cb43074ec31af590ee9ad43",
+      "sourceBytes": 5019
+    },
+    {
+      "path": "raw/cache-storage-candidate.json.gz",
+      "sha256": "e7d9a8de64d0f1a935bc8399b3de11dcb336d5b8cb500344e640afac35febcac",
+      "bytes": 900,
+      "decompressedSha256": "5520c43b894cd6f95f695b58ab4fb18a12d04ec6c3b6f5dbe6f4a1ddd1a0e483",
+      "sourceSha256": "fa5951a750286cfda573f28cd49cc3fdc184466416cc380d802f12f6bcdca730",
+      "sourceBytes": 4909
+    }
+  ]
+}
