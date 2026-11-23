@@ -84,6 +84,7 @@ describe("resource benchmark static safety contract", () => {
     expect(benchmark).toContain("root_exited_before_shutdown");
     expect(benchmark).toContain("root_identity_changed_before_shutdown");
     expect(benchmark).toContain("shutdown_ipc_failed");
+    expect(benchmark).toContain("(preShutdownRootAlive || !owned)");
     expect(linux).toContain("export async function readProcessMemory(pid)");
     expect(windows).toContain("export async function readProcessMemory(pid, suppliedApi = null)");
     const windowsMemory = windows.slice(windows.indexOf("export async function readProcessMemory"), windows.indexOf("async function findToolhelpIdentity"));

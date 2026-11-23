@@ -519,7 +519,9 @@ process.on("message", async (message) => {
     preShutdownRootAlive = !preShutdownEvidence.uncertainty;
     ownedTreeEvidence = mergeOwnedTreeEvidence(initialOwnedTreeEvidence, preShutdownEvidence);
 
-    if (child && child.pid && !childOutcome && preShutdownRootAlive && !rootExitedBeforeShutdown) {
+    // Without an owned identity we cannot signal safely, but the IPC channel is
+    // still scoped to this child and provides a graceful best-effort cleanup.
+    if (child && child.pid && !childOutcome && (preShutdownRootAlive || !owned) && !rootExitedBeforeShutdown) {
       shutdownRequested = true;
       try {
         await new Promise((resolve) => {
