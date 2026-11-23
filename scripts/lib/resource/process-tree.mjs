@@ -226,9 +226,6 @@ export class OwnedProcessTree {
       this.rootIdentityState = "inspection_failed";
       return [];
     }
-    for (const pid of this.inspectionErrors.keys()) {
-      if (!this.records.has(pid) && !ownedPids.has(pid)) this.inspectionErrors.delete(pid);
-    }
     for (const pid of this.records.keys()) {
       if (pid === this.rootPid) continue;
       if (!byPid.has(pid)) this.inspectionErrors.delete(pid);
