@@ -227,15 +227,13 @@ jobs:
       - name: Capture resource doctor
         run: node scripts/resource-doctor.mjs --json > artifacts/resource-doctor.json
 
+      - name: Stage flat resource evidence artifact
+        run: node scripts/stage-resource-evidence.mjs --output .resource-evidence-artifact
+
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: resource-evidence-v0114
-          path: |
-            artifacts/resource-evidence-v0114.json
-            artifacts/resource-doctor.json
-            docs/evidence/v0.1.14/cache-benchmark-summary.json
-            docs/evidence/v0.1.14/SHA256SUMS
-            docs/evidence/v0.1.14/raw/*.json.gz
+          path: .resource-evidence-artifact/
           if-no-files-found: error
           retention-days: 30
 

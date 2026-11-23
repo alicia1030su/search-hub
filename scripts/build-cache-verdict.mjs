@@ -124,7 +124,8 @@ const verdict = {
     candidateWalFileBytes: storageRounds.at(-1)?.walFileBytes ?? null,
     osPageCacheBytes: null,
     osPageCacheReason: "page_cache_not_reliably_attributable",
-    vacuumPerformed: storageRounds.every((round) => round.vacuumPerformed === false),
+    vacuumPerformed: storageRounds.some((round) => round.vacuumPerformed === true),
+    noVacuumPerformed: storageRounds.every((round) => round.vacuumPerformed === false),
   },
 };
 mkdirSync(path.dirname(outputPath), { recursive: true });

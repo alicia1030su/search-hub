@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,8 @@ import { BASELINE_COMMIT, BENCHMARK_COMMIT, assertPublicEvidence, codeFingerprin
 import { buildSummary } from "../../scripts/build-resource-evidence.mjs";
 // @ts-expect-error -- plain ESM packaging module
 import { verifyEvidence } from "../../packaging/verify-resource-evidence.mjs";
+// @ts-expect-error -- plain ESM resource module
+import { stageResourceEvidence } from "../../scripts/stage-resource-evidence.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const temporary: string[] = [];
@@ -81,6 +83,25 @@ describe("resource evidence", () => {
     expect(summary.environment.vitest).toBe("5.1.0");
     expect(summary.cacheCapacity.otherTablesUnchanged).toBe(true);
     expect(summary.rawFiles).toEqual([]);
+  });
+
+  it("stages a flat upload/download artifact layout with eight raw files", () => {
+    const directory = mkdtempSync(join(tmpdir(), "search-hub-evidence-stage-"));
+    temporary.push(directory);
+    const evidenceDir = join(directory, "docs");
+    const outputDir = join(directory, "artifact");
+    mkdirSync(join(evidenceDir, "raw"), { recursive: true });
+    writeFileSync(join(evidenceDir, "cache-benchmark-summary.json"), "{}");
+    writeFileSync(join(evidenceDir, "SHA256SUMS"), "sums");
+    for (let index = 0; index < 8; index += 1) writeFileSync(join(evidenceDir, "raw", `cache-${index}.json.gz`), "gzip");
+    const runtimePath = join(directory, "runtime.json");
+    const doctorPath = join(directory, "doctor.json");
+    writeFileSync(runtimePath, "{}");
+    writeFileSync(doctorPath, "{}");
+    const files = stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, outputDir });
+    expect(files).toHaveLength(12);
+    expect(readdirSync(outputDir).sort()).toEqual(["SHA256SUMS", "cache-benchmark-summary.json", "raw", "resource-doctor.json", "resource-evidence-v0114.json"]);
+    expect(readdirSync(join(outputDir, "raw"))).toHaveLength(8);
   });
 
   it("verifies hashes, gzip payloads, fingerprints and capacity evidence", () => {

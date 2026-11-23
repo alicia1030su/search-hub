@@ -161,10 +161,17 @@ export async function collectCpu(delayMs = 100) {
         win.koffi.free(userPtr);
       }
     };
-    const first = sample();
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, delayMs)));
-    const second = sample();
-    const totalDelta = second.total - first.total;
+    let first = sample();
+    let second = first;
+    let totalDelta = 0n;
+    const sampleDelay = Math.max(25, Math.max(0, delayMs));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, sampleDelay));
+      second = sample();
+      totalDelta = second.total - first.total;
+      if (totalDelta > 0n) break;
+      first = second;
+    }
     const rawBusyDelta = totalDelta - (second.idle - first.idle);
     const busyDelta = rawBusyDelta > 0n ? rawBusyDelta : 0n;
     return {
