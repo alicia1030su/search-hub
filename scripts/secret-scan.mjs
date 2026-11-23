@@ -65,6 +65,10 @@ const ALLOWLIST = [
   "A-very-long-password-1",
   // Password the release acceptance script types into its own throwaway instance.
   "Release-Check-Password-1",
+  // Password for the isolated resource benchmark database created under tmpdir.
+  "Resource-Bench-Password-1",
+  // Password for the throwaway instance used by the documentation screenshot script.
+  "Screenshot-Local-Only-1",
   // Admin password for the throwaway instance the cross-version upgrade test creates.
   "Upgrade-Password-1",
   "Clean-Install-Pass-1",

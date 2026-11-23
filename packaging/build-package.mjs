@@ -14,12 +14,12 @@
  * a native addon and cannot be loaded from inside a SEA blob, so the launcher
  * spawns the bundled runtime against `app/`.
  */
-import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeZip } from "./zip.mjs";
+import { execOwnedProcess } from "./process-runner.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET = process.env["PACKAGE_TARGET"] ?? (process.platform === "win32" ? "windows-x64" : "linux-x64");
@@ -37,7 +37,7 @@ mkdirSync(join(OUT, "app"), { recursive: true });
 mkdirSync(join(OUT, "runtime"), { recursive: true });
 
 // 1. Build the workspace (web bundle + server + stdio).
-run("corepack", ["pnpm", "build"], { cwd: REPO, shell: true });
+await run("corepack", ["pnpm", "build"], { cwd: REPO, shell: true });
 
 log("copying build output");
 // 2. Copy the built artefacts, then install production dependencies inside the
@@ -49,7 +49,7 @@ log("copying build output");
 // pnpm's tree is ~90k files (virtual store + nested node_modules), which is both
 // too large for a download and above the 65,535-entry limit of a plain ZIP. The
 // release therefore ships one bundled server plus the single native addon.
-run(process.execPath, [join(REPO, "packaging", "bundle-release.mjs"), join(OUT, "app")], {
+await run(process.execPath, [join(REPO, "packaging", "bundle-release.mjs"), join(OUT, "app")], {
   cwd: REPO,
   // The bundler picks the native addon for the *target* platform, which may
   // differ from the build host (cross-compiled Linux arm64 on an x64 runner).
@@ -97,7 +97,7 @@ log("building launcher");
 log("building launcher");
 // 5. Launcher: SEA on Windows, plain script on Linux.
 if (IS_WINDOWS) {
-  buildSeaLauncher(OUT);
+  await buildSeaLauncher(OUT);
 } else {
   const bin = join(OUT, "bin");
   mkdirSync(bin, { recursive: true });
@@ -141,7 +141,7 @@ log("creating archive");
 // 7. Archive + checksums.
 const archive = archiveName(TARGET, VERSION);
 const archivePath = join(REPO, "dist", "package", archive);
-makeArchive(OUT, archivePath);
+await makeArchive(OUT, archivePath);
 writeFileSync(
   join(REPO, "dist", "package", `${archive}.sha256`),
   `${sha256(archivePath)}  ${archive}\n`,
@@ -156,7 +156,7 @@ function keepBuilt(path) {
   return true;
 }
 
-function buildSeaLauncher(out) {
+async function buildSeaLauncher(out) {
   const blob = join(REPO, "dist", "package", "sea-prep.blob");
   const seaConfig = join(REPO, "dist", "package", "sea-config.json");
   mkdirSync(dirname(seaConfig), { recursive: true });
@@ -165,7 +165,7 @@ function buildSeaLauncher(out) {
   // launcher must be bundled down to CJS first; otherwise the exe dies with
   // "Cannot use import statement outside a module".
   const launcherCjs = join(REPO, "dist", "package", "launcher.cjs");
-  run(
+  await run(
     process.execPath,
     [
       join(REPO, "node_modules", "esbuild", "bin", "esbuild"),
@@ -194,7 +194,7 @@ function buildSeaLauncher(out) {
   );
 
   // The SEA blob is produced by Node itself; no extra tooling is needed.
-  run(process.execPath, ["--experimental-sea-config", seaConfig], { cwd: REPO });
+  await run(process.execPath, ["--experimental-sea-config", seaConfig], { cwd: REPO });
 
   const exe = join(out, "SearchHub.exe");
   copyFileSync(process.execPath, exe);
@@ -203,7 +203,7 @@ function buildSeaLauncher(out) {
   // is only a copy of node and would start nothing.
   const postject = join(REPO, "node_modules", "postject", "dist", "cli.js");
   if (existsSync(postject)) {
-    run(process.execPath, [
+    await run(process.execPath, [
       postject,
       exe,
       "NODE_SEA_BLOB",
@@ -345,7 +345,7 @@ function archiveName(target, version) {
   return `search-hub-v${version}-${target}.${IS_WINDOWS ? "zip" : "tar.gz"}`;
 }
 
-function makeArchive(fromDir, toFile) {
+async function makeArchive(fromDir, toFile) {
   mkdirSync(dirname(toFile), { recursive: true });
   const parent = dirname(fromDir);
   const base = fromDir.split(/[\\/]/).pop();
@@ -360,7 +360,7 @@ function makeArchive(fromDir, toFile) {
   // Create the archive from *inside* the directory ("./"), so its entries sit at
   // the archive root exactly like the Windows zip. Wrapping everything in a
   // top-level folder made the extracted layout differ per platform.
-  run("tar", ["-czf", toFile, "-C", fromDir, "."], { cwd: parent });
+  await run("tar", ["-czf", toFile, "-C", fromDir, "."], { cwd: parent });
 }
 
 function sha256(file) {
@@ -373,8 +373,8 @@ function copyIfExists(from, to) {
   cpSync(from, to);
 }
 
-function run(command, args, options = {}) {
-  execFileSync(command, args, { stdio: "inherit", ...options });
+async function run(command, args, options = {}) {
+  await execOwnedProcess(command, args, { stdio: "inherit", ...options });
 }
 
 function log(message) {

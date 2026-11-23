@@ -65,6 +65,8 @@ if (first.healthy) {
   step("MCP initialize", results.mcpInit);
   step("MCP tools/list", results.mcpList);
   step("MCP tools/call", results.mcpCall);
+  step("资源端点 session 200", results.resourcesSession, results.resourcesDetail);
+  step("资源端点 Bearer 403", results.resourcesBearer);
   // The database file is `search-hub.db` (config.ts), not `search.db`.
   step("数据库文件已落盘", existsSync(join(dataDir, "search-hub.db")));
   step("主密钥已落盘", existsSync(join(dataDir, "master.key")));
@@ -159,7 +161,7 @@ async function launch(executable) {
 
 async function drive(port) {
   const base = `http://127.0.0.1:${port}`;
-  const out = { setup: false, setupDetail: "", search: false, searchDetail: "", mcpInit: false, mcpList: false, mcpCall: false };
+  const out = { setup: false, setupDetail: "", search: false, searchDetail: "", mcpInit: false, mcpList: false, mcpCall: false, resourcesSession: false, resourcesBearer: false, resourcesDetail: "" };
 
   const tokenPath = join(dataDir, "setup-token");
   if (!existsSync(tokenPath)) {
@@ -184,6 +186,30 @@ async function drive(port) {
   const cookie = setup.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
   const session = await fetch(`${base}/api/auth/session`, { headers: { cookie } });
   const { csrfToken } = await session.json();
+
+  const resources = await fetch(`${base}/api/admin/resources`, { headers: { cookie } });
+  const resourcesBody = await resources.json();
+  const memory = resourcesBody.process?.memory ?? {};
+  const activity = resourcesBody.activity ?? {};
+  const cache = resourcesBody.cache ?? {};
+  const unavailable = new Set((resourcesBody.unavailable ?? []).map((item) => item.field));
+  const reading = (field, value) => typeof value === "number" || (value === null && unavailable.has(field));
+  out.resourcesSession = resources.status === 200 && resourcesBody.schemaVersion === 1 &&
+    reading("process.memory.rssBytes", memory.rssBytes) &&
+    reading("process.memory.heapUsedBytes", memory.heapUsedBytes) &&
+    reading("process.memory.heapTotalBytes", memory.heapTotalBytes) &&
+    reading("process.memory.externalBytes", memory.externalBytes) &&
+    reading("process.memory.arrayBuffersBytes", memory.arrayBuffersBytes) &&
+    reading("process.uptimeSeconds", resourcesBody.process?.uptimeSeconds) &&
+    typeof activity.activeSearches === "number" && typeof activity.activeProbes === "number" &&
+    typeof activity.queue?.total === "number" && typeof activity.queue?.providerKey === "number" &&
+    typeof activity.queue?.health === "number" && typeof activity.queue?.singleflightFollowers === "number" &&
+    reading("cache.totals", cache.entries) && reading("cache.totals", cache.bytes) &&
+    reading("cache.dbFileBytes", cache.dbFileBytes) && reading("cache.walFileBytes", cache.walFileBytes) &&
+    cache.diskScope === "whole_sqlite_database";
+  out.resourcesDetail = `HTTP ${resources.status}`;
+  const invalidBearerResources = await fetch(`${base}/api/admin/resources`, { headers: { authorization: "Bearer invalid-resource-probe" } });
+  out.resourcesBearer = invalidBearerResources.status === 403;
 
   const provider = await fetch(`${base}/api/admin/providers`, {
     method: "POST",
@@ -224,6 +250,9 @@ async function drive(port) {
     out.searchDetail += "; token creation failed";
     return out;
   }
+
+  const forbiddenResources = await fetch(`${base}/api/admin/resources`, { headers: { authorization: `Bearer ${bearer}` } });
+  out.resourcesBearer = out.resourcesBearer && forbiddenResources.status === 403;
 
   const mcp = async (payload) => {
     const response = await fetch(`${base}/mcp`, {

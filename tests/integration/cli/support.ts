@@ -65,12 +65,15 @@ export function json(response: ServerResponse, status: number, body: unknown, he
 
 export function cliEnvironment(url: string, token = "sh_test_token_1234567890"): NodeJS.ProcessEnv {
   const configDir = mkdtempSync(join(tmpdir(), "shub-config-"));
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     SEARCH_HUB_URL: url,
     SEARCH_HUB_TOKEN: token,
     SEARCH_HUB_CLI_CONFIG_DIR: configDir,
   };
+  // A host-level opt-out must not silently disable the CLI security tests.
+  delete env.NODE_TLS_REJECT_UNAUTHORIZED;
+  return env;
 }
 
 export function cleanupEnvironment(env: NodeJS.ProcessEnv): void {

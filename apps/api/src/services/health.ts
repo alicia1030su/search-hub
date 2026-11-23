@@ -219,6 +219,7 @@ export class HealthService {
   private readonly budgetLedger: ProbeBudget;
   /** Providers with a probe in flight; the scheduler must never double-probe. */
   private readonly inFlight = new Set<string>();
+  private queuedProbes = 0;
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
   private stopped = false;
@@ -815,6 +816,14 @@ export class HealthService {
     }
   }
 
+  get activeProbeCount(): number {
+    return this.inFlight.size;
+  }
+
+  get queueDepth(): number {
+    return this.queuedProbes;
+  }
+
   /** True while a probe for this provider is in flight (used by the runner). */
   isProbing(providerId: string): boolean {
     return this.inFlight.has(providerId);
@@ -892,10 +901,12 @@ export class HealthService {
     let spentPaidThisRun = 0;
     let spentAnonymousThisRun = 0;
     const queue = [...ids];
+    this.queuedProbes += queue.length;
     const worker = async (): Promise<void> => {
       for (;;) {
         const id = queue.shift();
         if (id === undefined) return;
+        this.queuedProbes = Math.max(0, this.queuedProbes - 1);
         await probe(id);
         if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
       }
@@ -1003,8 +1014,16 @@ export class HealthService {
       }
     };
 
-    await Promise.all(Array.from({ length: Math.min(workers, ids.length || 1) }, () => worker()));
-    return { results, skipped, budget: this.budget() };
+    try {
+      const settled = await Promise.allSettled(Array.from({ length: Math.min(workers, ids.length || 1) }, () => worker()));
+      const firstFailure = settled.find((outcome) => outcome.status === "rejected");
+      if (firstFailure?.status === "rejected") throw firstFailure.reason;
+      return { results, skipped, budget: this.budget() };
+    } finally {
+      // A worker may reject from onItem while peers are still running. Only the
+      // allSettled boundary can safely account for the unconsumed tail.
+      this.queuedProbes = Math.max(0, this.queuedProbes - queue.length);
+    }
   }
 
   /**

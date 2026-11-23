@@ -599,6 +599,43 @@ export interface AppSettings {
   initializedAt: string | null;
 }
 
+/** Read-only process, activity, queue, and cache disk snapshot (GET /api/admin/resources). */
+export interface RuntimeResourceSnapshot {
+  schemaVersion: 1;
+  sampledAt: string;
+  process: {
+    platform: string;
+    nodeVersion: string;
+    uptimeSeconds: number | null;
+    memory: {
+      rssBytes: number | null;
+      heapUsedBytes: number | null;
+      heapTotalBytes: number | null;
+      externalBytes: number | null;
+      arrayBuffersBytes: number | null;
+    };
+    sources: { rss: string; heapUsed: string; heapTotal: string; external: string; arrayBuffers: string; uptime: string };
+  };
+  activity: {
+    activeSearches: number;
+    activeProbes: number;
+    queue: { total: number; providerKey: number; health: number; singleflightFollowers: number };
+  };
+  cache: {
+    entries: number | null;
+    bytes: number | null;
+    totalsUpdatedAt: string | null;
+    totalsSource: string;
+    totalsReason: string | null;
+    dbFileBytes: number | null;
+    walFileBytes: number | null;
+    dbFileSource: string;
+    walFileSource: string;
+    diskScope: "whole_sqlite_database";
+  };
+  unavailable: Array<{ field: string; source: string; reason: string }>;
+}
+
 /** Live cache usage, counters and capacity (GET /api/admin/cache). */
 export interface CacheStats {
   enabled: boolean;

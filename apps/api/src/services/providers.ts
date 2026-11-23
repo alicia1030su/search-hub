@@ -89,6 +89,7 @@ export class ProviderService {
   private runtimes = new Map<string, ProviderRuntimeEntry>();
   private dirtyFlushTimer: NodeJS.Timeout | null = null;
   private readonly dirtyKeys = new Map<string, KeyRuntimeSnapshot>();
+  private waitingForKey = 0;
 
   constructor(
     private readonly db: SearchHubDb,
@@ -145,6 +146,7 @@ export class ProviderService {
           breakerThreshold: row.breakerThreshold,
           keys: seeds,
           onDirty: (snapshot) => this.markDirty(snapshot),
+          onWaitingChange: (delta) => { this.waitingForKey = Math.max(0, this.waitingForKey + delta); },
           accountGroup: account.group,
           accountLimits: account.limits,
         });
@@ -178,6 +180,11 @@ export class ProviderService {
     }
 
     this.runtimes = next;
+  }
+
+  /** O(1) aggregate of callers parked on provider key schedulers. */
+  get queueDepth(): number {
+    return this.waitingForKey;
   }
 
   listRows(): Array<typeof providerInstances.$inferSelect> {

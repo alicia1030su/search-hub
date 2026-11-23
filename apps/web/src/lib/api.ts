@@ -29,6 +29,7 @@ import type {
   SkillEntry,
   TokenCreateResult,
   HealthOverview,
+  RuntimeResourceSnapshot,
   HealthCheckResult,
   ProviderHealthPolicy,
   BatchJobView,
@@ -422,6 +423,8 @@ export const api = {
   // ---- dashboard / settings ----
   dashboard: (range: string, signal?: AbortSignal) =>
     request<DashboardStats>("/admin/dashboard", { query: { range }, signal }),
+  resources: (signal?: AbortSignal) =>
+    request<RuntimeResourceSnapshot>("/admin/resources", { signal }),
   settings: (signal?: AbortSignal) =>
     request<AppSettings>("/admin/settings", { signal }),
   updateSettings: (patch: Partial<AppSettings>) =>

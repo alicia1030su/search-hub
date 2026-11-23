@@ -21,6 +21,7 @@ import type { HealthOverview } from "../lib/types";
 import { StackedBar, TimelineChart } from "../components/charts";
 import { Table, TBody, TD, TH, THead, TR } from "../components/table";
 import { Segmented } from "../components/tabs";
+import { ResourceMonitorPanel } from "../components/resource-monitor";
 import {
   Alert,
   Badge,
@@ -192,6 +193,8 @@ export function DashboardPage() {
               icon={Activity}
             />
           </div>
+
+          <ResourceMonitorPanel />
 
           <HealthSummary data={health.data} loading={health.loading} />
 

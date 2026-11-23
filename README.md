@@ -4,11 +4,11 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.13 · Stable 已发布。**
+> **状态：v0.1.14 · 候选版本，发布门禁执行中。**
 >
-> **发布门禁**：本地 Vitest **1299 项 / 100 文件**、Playwright **42 项**、CLI 专项 **58 项**；远端 PR/main 的 CI、Docker、systemd、8 条跨版本升级与三平台 CLI 验收均通过。正式 Release、资产校验、Provenance 与 GHCR 证据见 `docs/release-readiness.md`。
+> **v0.1.14 主题**：资源感知的测试/构建门禁、缓存容量与 Singleflight 修复、只读运行时资源面板，以及绑定最终代码指纹的发布证据链。M04 性能门槛与完整回归结果以 `docs/release-readiness.md` 的实际记录为准，未执行项保持 PENDING/BLOCKED。
 >
-> **v0.1.13 主题**：新增可独立安装的 `shub` 命令行客户端，支持搜索、深度搜索、来源列表、状态、环境诊断、配置与 Provider 健康检测；CLI 只调用 REST API，不重新实现搜索核心。
+> **上一 Stable**：v0.1.13 已发布，包含独立 `shub` CLI；历史验收、资产、Provenance 与 GHCR 证据保留在 `docs/release-readiness.md`。
 >
 > **Stable 的含义是「这是维护者当前选择的公开正式发布渠道」，不是「所有外部集成均已通过生产认证」。** 具体说：**Hacker News、Crossref、OpenAlex、PubMed 已完成真实网络联调**；Tavily / 博查 Bocha / Brave / SearXNG 等其余适配器按官方文档实现，**尚未完成真实搜索联调**；搜索质量评测目前只有合成基准，**没有真实厂商标注集**。这些缺口在 [Provider 状态矩阵](./docs/provider-matrix.md)、[发布就绪报告](./docs/release-readiness.md) 与 [CHANGELOG](./CHANGELOG.md) 里逐项列明，未联调的能力不会被描述为“已验证”。
 
@@ -149,18 +149,18 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.13 Stable）
+## 下载安装（v0.1.14 候选）
 
-v0.1.13 已正式发布，包含独立 CLI，以及 Windows/Linux 服务端与 CLI 资产。
+v0.1.14 发布流程将生成以下资产；只有在 draft Release、资产摘要、Provenance、GHCR digest 与资源证据全部通过后才会转为 Stable。
 
 | 平台 | 服务端 | CLI `shub` | 需要什么 |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.13-windows-x64.zip` | `shub-v0.1.13-windows-x64.zip` | **无** |
-| Linux x64 | `search-hub-v0.1.13-linux-x64.tar.gz` | `shub-v0.1.13-linux-x64.tar.gz` | **无** |
-| Linux arm64 | `search-hub-v0.1.13-linux-arm64.tar.gz` | `shub-v0.1.13-linux-arm64.tar.gz` | **无** |
-| Node.js 22+ | — | `shub-v0.1.13-node22.tar.gz` | Node.js 22+ |
+| Windows x64 | `search-hub-v0.1.14-windows-x64.zip` | `shub-v0.1.14-windows-x64.zip` | **无** |
+| Linux x64 | `search-hub-v0.1.14-linux-x64.tar.gz` | `shub-v0.1.14-linux-x64.tar.gz` | **无** |
+| Linux arm64 | `search-hub-v0.1.14-linux-arm64.tar.gz` | `shub-v0.1.14-linux-arm64.tar.gz` | **无** |
+| Node.js 22+ | — | `shub-v0.1.14-node22.tar.gz` | Node.js 22+ |
 
-从 [v0.1.13 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.13) 下载同一份 `SHA256SUMS` 并执行 `sha256sum -c SHA256SUMS`；每个资产同时提供构建溯源。CLI 不需要部署服务端，可连接本机或远程 Search Hub。
+发布后从 [v0.1.14 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.14) 下载同一份 `SHA256SUMS` 并执行 `sha256sum -c SHA256SUMS`；`resource-evidence.json` 与七个归档都在摘要覆盖范围内。CLI 不需要部署服务端，可连接本机或远程 Search Hub。
 
 ### CLI 快速开始
 
@@ -256,7 +256,7 @@ Token 只从环境变量或 `--token-stdin` 读取，不写入明文配置。完
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.13-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.14-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -265,7 +265,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.13    # 候选 tag；最终发布后可用
+docker pull ghcr.io/alicia1030su/search-hub:0.1.14    # 候选 tag；最终发布后可用
 # 镜像当前只构建 linux/amd64；arm64 主机请使用上面的 arm64 独立包
 docker compose up -d                                        # 或从源码构建
 ```

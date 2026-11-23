@@ -1,42 +1,58 @@
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, eq, lte, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
 import type { Logger, SearchResponse } from "@search-hub/shared";
-import type { SearchHubDb } from "@search-hub/db";
+import type { SearchHubDb, DbHandle } from "@search-hub/db";
 import { searchCache, searchCacheMetrics, searchCacheState } from "@search-hub/db";
+import {
+  CacheDiagnostics,
+  type CacheDiagnosticsSnapshot,
+  type CacheDiskSnapshot,
+} from "./cache-diagnostics.js";
 
-/**
- * Persistent search response cache.
- *
- * Three properties matter here and each of them was chosen against a failure
- * mode that a purely in-memory cache had:
- *
- *  - **survives restarts** — the rows live in the same SQLite file as the rest
- *    of the application, so a Docker volume, a systemd restart or a Windows
- *    reboot all keep them, and the existing backup/upgrade paths cover them.
- *  - **bounded** — a cache that grows without limit is a slow-motion disk-full
- *    incident. Entry count and total bytes are both capped, and the eviction
- *    policy is LRU by `last_accessed_at`.
- *  - **honest statistics** — hits, misses, evictions and sweeps are counted per
- *    UTC hour, so the dashboard can report a 24-hour rate or say "no data yet"
- *    instead of inventing a number from a single request.
- *
- * The cache key is a SHA-256 over the request fingerprint. Never the query
- * text: a raw query as a primary key turns the table into a readable history of
- * what everyone searched for, and long queries make the index expensive.
- */
-
+/** Persistent, bounded search-response cache with exact transactional totals. */
 export interface CacheLimits {
   maxEntries: number;
   maxBytes: number;
 }
 
-/** 5000 entries / 256 MB: high enough to be useful, low enough to stay local. */
 export const DEFAULT_CACHE_LIMITS: CacheLimits = {
   maxEntries: 5_000,
   maxBytes: 256 * 1024 * 1024,
 };
 
 export const CACHE_SWEEP_INTERVAL_MS = 10 * 60_000;
+const TOTALS_KEY = "cache:totals";
+const BUSY_RETRY_MS = [10, 25, 50] as const;
+
+export interface CachePutResult {
+  stored: boolean;
+  reason: "stored" | "oversize";
+  sizeBytes: number;
+  evicted?: number;
+  entries?: number;
+  bytes?: number;
+}
+
+export interface CacheTotals {
+  entries: number;
+  bytes: number;
+  updatedAt: string;
+}
+
+export interface CacheTotalsResult {
+  entries: number | null;
+  bytes: number | null;
+  updatedAt: string | null;
+  source: "search_cache_state";
+  reason: string | null;
+}
+
+export interface CacheStatsDiagnostics extends CacheDiagnosticsSnapshot {
+  hitRate: number | null;
+  hitRate24h: number | null;
+  evicted: number;
+}
 
 export interface CacheStats {
   enabled: boolean;
@@ -45,18 +61,18 @@ export interface CacheStats {
   bytes: number;
   maxEntries: number;
   maxBytes: number;
-  /** Cumulative since the instance was created. */
   hits: number;
   misses: number;
   hitRate: number | null;
-  /** Last 24 hours only; null when nothing was looked up in that window. */
   hits24h: number;
   misses24h: number;
   hitRate24h: number | null;
   expiredRemoved: number;
   evicted: number;
+  evictedBytes: number;
   lastSweepAt: string | null;
-  windowHours: number;
+  windowHours: 24;
+  diagnostics: CacheStatsDiagnostics;
 }
 
 export interface CacheLookup {
@@ -70,34 +86,172 @@ export interface CacheServiceDeps {
   db: SearchHubDb;
   logger: Logger;
   limits?: CacheLimits;
-  /** Injected in tests so TTL behaviour can be asserted without waiting. */
   now?: () => number;
+  /** File path enables DB/WAL byte diagnostics; absent in isolated unit fixtures. */
+  dbPath?: string;
+  /** Optional raw handle for an allocation-light prepared totals lookup. */
+  sqlite?: DbHandle["sqlite"];
+  /** Optional read-only OS page-cache collector; unknown values stay null. */
+  osPageCache?: () => { value: number | null; source: string; reason: string | null };
+}
+
+export class CacheBusyError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "CacheBusyError";
+  }
+}
+
+export class CacheInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CacheInvariantError";
+  }
+}
+
+function validateLimits(limits: CacheLimits): CacheLimits {
+  if (!Number.isSafeInteger(limits.maxEntries) || limits.maxEntries <= 0 ||
+      !Number.isSafeInteger(limits.maxBytes) || limits.maxBytes <= 0) {
+    throw new TypeError("Cache limits must be positive finite integers");
+  }
+  return { ...limits };
+}
+
+function isBusyError(error: unknown): boolean {
+  const value = error as { code?: string; message?: string } | null;
+  return value?.code === "SQLITE_BUSY" || value?.code === "SQLITE_LOCKED" ||
+    /SQLITE_BUSY|SQLITE_LOCKED|database is locked/i.test(value?.message ?? "");
+}
+
+function sleepSync(durationMs: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, durationMs);
+}
+
+function withBusyRetry<T>(operation: () => T): T {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= BUSY_RETRY_MS.length; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      if (!isBusyError(error)) throw error;
+      lastError = error;
+      const delay = BUSY_RETRY_MS[attempt];
+      if (delay !== undefined) sleepSync(delay);
+    }
+  }
+  throw new CacheBusyError(lastError);
+}
+
+function parseTotals(value: string | undefined): CacheTotals | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<CacheTotals>;
+    if (!Number.isSafeInteger(parsed.entries) || (parsed.entries ?? -1) < 0 ||
+        !Number.isSafeInteger(parsed.bytes) || (parsed.bytes ?? -1) < 0 ||
+        typeof parsed.updatedAt !== "string") return null;
+    const updatedAtMs = Date.parse(parsed.updatedAt);
+    if (!Number.isFinite(updatedAtMs) || new Date(updatedAtMs).toISOString() !== parsed.updatedAt) return null;
+    return { entries: parsed.entries!, bytes: parsed.bytes!, updatedAt: parsed.updatedAt };
+  } catch {
+    return null;
+  }
+}
+
+function readTotals(tx: SearchHubDb): CacheTotals | null {
+  const row = tx.select({ value: searchCacheState.value })
+    .from(searchCacheState)
+    .where(eq(searchCacheState.key, TOTALS_KEY))
+    .get();
+  return parseTotals(row?.value);
+}
+
+function writeCacheTotals(tx: SearchHubDb, entries: number, bytes: number, updatedAt: string): void {
+  const value = JSON.stringify({ entries, bytes, updatedAt });
+  tx.insert(searchCacheState)
+    .values({ key: TOTALS_KEY, value, updatedAt })
+    .onConflictDoUpdate({ target: searchCacheState.key, set: { value, updatedAt } })
+    .run();
+}
+
+function aggregateCacheTotals(tx: SearchHubDb, now: () => number): CacheTotals {
+  const aggregate = tx.select({
+    entries: sql<number>`count(*)`,
+    bytes: sql<number>`coalesce(sum(${searchCache.sizeBytes}), 0)`,
+  }).from(searchCache).all()[0] ?? { entries: 0, bytes: 0 };
+  return { entries: Number(aggregate.entries), bytes: Number(aggregate.bytes), updatedAt: new Date(now()).toISOString() };
+}
+
+function ensureCacheTotals(tx: SearchHubDb, now: () => number): CacheTotals {
+  const existing = readTotals(tx);
+  if (existing) return existing;
+  const totals = aggregateCacheTotals(tx, now);
+  writeCacheTotals(tx, totals.entries, totals.bytes, totals.updatedAt);
+  return totals;
 }
 
 export class CacheService {
   private readonly limits: CacheLimits;
   private readonly now: () => number;
-  /** Guards against two sweeps (manual + scheduled) running at once. */
+  private readonly diagnostics = new CacheDiagnostics();
+  private readonly totalsStatement: { get(key: string): { value: string } | undefined } | null;
   private sweeping = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly deps: CacheServiceDeps) {
-    this.limits = deps.limits ?? DEFAULT_CACHE_LIMITS;
+    this.limits = validateLimits(deps.limits ?? DEFAULT_CACHE_LIMITS);
     this.now = deps.now ?? (() => Date.now());
+    this.totalsStatement = deps.sqlite
+      ? deps.sqlite.prepare("SELECT value FROM search_cache_state WHERE key = ?") as unknown as { get(key: string): { value: string } | undefined }
+      : null;
   }
 
-  /**
-   * Stable cache key for a request fingerprint.
-   *
-   * The fingerprint is serialised with sorted keys so that two logically
-   * identical requests can never produce two different keys because of object
-   * insertion order — a subtle bug that silently halves the hit rate.
-   */
+  /** Stable v1 request-fingerprint key; never contains query text or credentials. */
   static buildKey(fingerprint: unknown): string {
     return createHash("sha256").update(canonicalJson(fingerprint)).digest("hex");
   }
 
+  /**
+   * Validate totals against COUNT/SUM once at startup and rebuild missing,
+   * corrupt, or stale values. The comparison and repair share one IMMEDIATE
+   * transaction so concurrent boot cannot install stale totals.
+   */
+  initialize(): CacheTotals {
+    return withBusyRetry(() => this.deps.db.transaction((tx) => {
+      const existing = readTotals(tx);
+      const actual = aggregateCacheTotals(tx, this.now);
+      if (existing && existing.entries === actual.entries && existing.bytes === actual.bytes) return existing;
+      writeCacheTotals(tx, actual.entries, actual.bytes, actual.updatedAt);
+      return actual;
+    }, { behavior: "immediate" }));
+  }
+
+  /** O(1) primary-key read for runtime monitoring; never scans or repairs. */
+  totals(): CacheTotalsResult {
+    const row = this.totalsStatement
+      ? this.totalsStatement.get(TOTALS_KEY)
+      : this.deps.db
+        .select({ value: searchCacheState.value })
+        .from(searchCacheState)
+        .where(eq(searchCacheState.key, TOTALS_KEY))
+        .get();
+    const totals = parseTotals(row?.value);
+    return totals
+      ? { ...totals, source: "search_cache_state", reason: null }
+      : { entries: null, bytes: null, updatedAt: null, source: "search_cache_state", reason: "totals_missing" };
+  }
+
   get(key: string): CacheLookup | null {
+    const started = performance.now();
+    try {
+      return this.getInternal(key);
+    } finally {
+      const duration = performance.now() - started;
+      this.diagnostics.recordQuery(duration);
+      this.diagnostics.recordRead(duration);
+    }
+  }
+
+  private getInternal(key: string): CacheLookup | null {
     const nowIso = new Date(this.now()).toISOString();
     const row = this.deps.db.select().from(searchCache).where(eq(searchCache.cacheKey, key)).get();
     if (!row) {
@@ -105,9 +259,8 @@ export class CacheService {
       return null;
     }
     if (row.expiresAt <= nowIso) {
-      // Expired rows are removed on read so a stale row can never be served,
-      // even if the sweeper has not run yet.
-      this.deps.db.delete(searchCache).where(eq(searchCache.cacheKey, key)).run();
+      this.deleteKeyWithTotals(key);
+      this.diagnostics.recordExpiredRemoved(1);
       this.count("misses");
       return null;
     }
@@ -116,12 +269,13 @@ export class CacheService {
     try {
       parsed = JSON.parse(row.responseJson) as SearchResponse;
     } catch {
-      // A row we cannot parse is worse than a miss: drop it.
-      this.deps.db.delete(searchCache).where(eq(searchCache.cacheKey, key)).run();
+      this.deleteKeyWithTotals(key);
       this.count("misses");
       return null;
     }
 
+    // C08 intentionally preserves the original two-write hit path. Combining
+    // transactions alone does not reduce mutating SQL and is not an optimization.
     this.deps.db
       .update(searchCache)
       .set({ lastAccessedAt: nowIso, hitCount: row.hitCount + 1 })
@@ -136,208 +290,206 @@ export class CacheService {
     };
   }
 
-  put(key: string, response: SearchResponse, ttlSeconds: number, mode: string): void {
-    const nowMs = this.now();
-    const createdAt = new Date(nowMs).toISOString();
-    const expiresAt = new Date(nowMs + ttlSeconds * 1000).toISOString();
+  put(key: string, response: SearchResponse, ttlSeconds: number, mode: string): CachePutResult {
     const responseJson = JSON.stringify(response);
-    // The cap is about disk, so measure the bytes on disk, not `string.length`.
     const sizeBytes = Buffer.byteLength(responseJson, "utf8");
+    // Oversize responses are a successful search with no cache write: no
+    // transaction, eviction, totals update, or metric mutation.
+    if (sizeBytes > this.limits.maxBytes) return { stored: false, reason: "oversize", sizeBytes };
 
-    // insert-or-replace plus the eviction pass run in one transaction: a
-    // concurrent writer must never be able to observe (or leave behind) a cache
-    // that is over the limit.
-    this.deps.db.transaction((tx) => {
-      tx.insert(searchCache)
-        .values({
-          cacheKey: key,
-          responseJson,
-          status: response.status,
-          mode,
-          createdAt,
-          expiresAt,
-          lastAccessedAt: createdAt,
-          sizeBytes,
-          hitCount: 0,
-        })
-        .onConflictDoUpdate({
-          target: searchCache.cacheKey,
-          set: { responseJson, status: response.status, mode, createdAt, expiresAt, sizeBytes },
-        })
-        .run();
-      this.enforceLimits(tx);
-    });
+    const started = performance.now();
+    let committedEvictedBytes = 0;
+    try {
+      const result: CachePutResult = withBusyRetry(() => this.deps.db.transaction((tx) => {
+        committedEvictedBytes = 0;
+        const totals = this.ensureTotals(tx);
+        const previous = tx
+          .select({ sizeBytes: searchCache.sizeBytes })
+          .from(searchCache)
+          .where(eq(searchCache.cacheKey, key))
+          .get();
+        const nowMs = this.now();
+        const createdAt = new Date(nowMs).toISOString();
+        const expiresAt = new Date(nowMs + ttlSeconds * 1000).toISOString();
+        tx.insert(searchCache)
+          .values({
+            cacheKey: key,
+            responseJson,
+            status: response.status,
+            mode,
+            createdAt,
+            expiresAt,
+            lastAccessedAt: createdAt,
+            sizeBytes,
+            hitCount: 0,
+          })
+          .onConflictDoUpdate({
+            target: searchCache.cacheKey,
+            set: { responseJson, status: response.status, mode, createdAt, expiresAt, lastAccessedAt: createdAt, sizeBytes },
+          })
+          .run();
+
+        let entries = totals.entries + (previous ? 0 : 1);
+        let bytes = totals.bytes - (previous?.sizeBytes ?? 0) + sizeBytes;
+        let evicted = 0;
+        let evictedBytes = 0;
+        while (entries > this.limits.maxEntries || bytes > this.limits.maxBytes) {
+          const batch = tx
+            .select({ key: searchCache.cacheKey, sizeBytes: searchCache.sizeBytes })
+            .from(searchCache)
+            .where(ne(searchCache.cacheKey, key))
+            .orderBy(asc(searchCache.lastAccessedAt), asc(searchCache.createdAt), asc(searchCache.cacheKey))
+            .limit(Math.min(256, Math.max(entries, 1)))
+            .all();
+          if (batch.length === 0) throw new CacheInvariantError("Capacity eviction cannot remove the current write or make progress");
+          for (const row of batch) {
+            if (entries <= this.limits.maxEntries && bytes <= this.limits.maxBytes) break;
+            tx.delete(searchCache).where(eq(searchCache.cacheKey, row.key)).run();
+            entries -= 1;
+            bytes -= row.sizeBytes;
+            evicted += 1;
+            evictedBytes += row.sizeBytes;
+          }
+        }
+        if (entries < 0 || bytes < 0 || entries > this.limits.maxEntries || bytes > this.limits.maxBytes) {
+          throw new CacheInvariantError(`Cache invariant failed: entries=${entries}, bytes=${bytes}`);
+        }
+        this.writeTotals(tx, entries, bytes);
+        if (evicted > 0) {
+          this.count("evicted", evicted, tx);
+          committedEvictedBytes = evictedBytes;
+        }
+        return { stored: true, reason: "stored", sizeBytes, evicted, entries, bytes };
+      }, { behavior: "immediate" }));
+      if ((result.evicted ?? 0) > 0) {
+        this.diagnostics.recordEvictedBytes(committedEvictedBytes);
+        this.deps.logger.info(
+          { evicted: result.evicted, evictedBytes: committedEvictedBytes, entries: result.entries, bytes: result.bytes, limits: this.limits },
+          "cache over capacity; evicted least-recently-used entries",
+        );
+      }
+      return result;
+    } finally {
+      const duration = performance.now() - started;
+      this.diagnostics.recordQuery(duration);
+      this.diagnostics.recordWrite(duration);
+    }
   }
 
-  /**
-   * Applies the entry count and byte caps by evicting the least recently used
-   * rows. Runs inside the caller's transaction when there is one.
-   */
-  private enforceLimits(tx: SearchHubDb): void {
-    const totals = tx
-      .select({
-        entries: sql<number>`count(*)`,
-        bytes: sql<number>`coalesce(sum(${searchCache.sizeBytes}), 0)`,
-      })
-      .from(searchCache)
-      .all()[0] ?? { entries: 0, bytes: 0 };
-
-    let entries = Number(totals.entries);
-    let bytes = Number(totals.bytes);
-    if (entries <= this.limits.maxEntries && bytes <= this.limits.maxBytes) return;
-
-    // Fetch just the LRU prefix. `last_accessed_at` ties are broken by
-    // `created_at` so the order is deterministic and the assertion in tests can
-    // name the exact row that must go.
-    const candidates = tx
-      .select({ key: searchCache.cacheKey, size: searchCache.sizeBytes })
-      .from(searchCache)
-      .orderBy(asc(searchCache.lastAccessedAt), asc(searchCache.createdAt))
-      .limit(Math.min(Math.max(entries - this.limits.maxEntries, 0) + 64, entries))
-      .all();
-
-    let evicted = 0;
-    for (const candidate of candidates) {
-      if (entries <= this.limits.maxEntries && bytes <= this.limits.maxBytes) break;
-      tx.delete(searchCache).where(eq(searchCache.cacheKey, candidate.key)).run();
-      entries -= 1;
-      bytes -= Number(candidate.size);
-      evicted += 1;
-    }
-    if (evicted > 0) {
-      this.count("evicted", evicted, tx);
-      this.deps.logger.info(
-        { evicted, entries, bytes, limits: this.limits },
-        "cache over capacity; evicted least-recently-used entries",
-      );
-    }
-  }
-
-  /**
-   * Deletes expired rows. Returns how many were removed.
-   *
-   * Deliberately does **not** VACUUM: the file does not shrink immediately and
-   * vacuuming on every sweep would block the writer for no operational gain.
-   */
+  /** Delete expired rows and update totals/metrics/state in one transaction. */
   sweepExpired(): number {
+    const started = performance.now();
     const nowIso = new Date(this.now()).toISOString();
-    const result = this.deps.db.delete(searchCache).where(lte(searchCache.expiresAt, nowIso)).run();
-    const removed = Number(result.changes ?? 0);
-    this.setState("lastSweepAt", nowIso);
-    if (removed > 0) {
-      this.count("expiredRemoved", removed);
-      this.deps.logger.info({ removed }, "swept expired cache entries");
-    }
+    const removed = withBusyRetry(() => this.deps.db.transaction((tx) => {
+      const totals = this.ensureTotals(tx);
+      const rows = tx.delete(searchCache)
+        .where(lte(searchCache.expiresAt, nowIso))
+        .returning({ sizeBytes: searchCache.sizeBytes })
+        .all();
+      const removedBytes = rows.reduce((sum, row) => sum + row.sizeBytes, 0);
+      this.writeTotals(tx, totals.entries - rows.length, totals.bytes - removedBytes);
+      this.setState("lastSweepAt", nowIso, tx);
+      if (rows.length > 0) this.count("expiredRemoved", rows.length, tx);
+      return rows.length;
+    }, { behavior: "immediate" }));
+    this.diagnostics.recordExpiredRemoved(removed);
+    this.diagnostics.recordMaintenance("sweep", performance.now() - started);
+    if (removed > 0) this.deps.logger.info({ removed }, "swept expired cache entries");
     return removed;
   }
 
-  /** Deletes every cached response. Settings and statistics are untouched. */
+  /** Clear only search_cache; settings and statistics remain intact. */
   clear(): number {
-    const result = this.deps.db.delete(searchCache).run();
-    return Number(result.changes ?? 0);
+    const started = performance.now();
+    const removed = withBusyRetry(() => this.deps.db.transaction((tx) => {
+      this.ensureTotals(tx);
+      const result = tx.delete(searchCache).run();
+      this.writeTotals(tx, 0, 0);
+      return Number(result.changes ?? 0);
+    }, { behavior: "immediate" }));
+    this.diagnostics.recordMaintenance("clear", performance.now() - started);
+    return removed;
   }
 
-  /**
-   * Re-times every still-valid entry after a TTL change.
-   *
-   * Two rules, both directed by the task:
-   *  - an entry that is still valid expires `ttl` after it was **created**, so
-   *    shortening the TTL takes effect immediately instead of leaving a 72-hour
-   *    entry alive;
-   *  - an entry that has already expired is **not** revived by lengthening the
-   *    TTL — it is deleted rather than extended.
-   */
+  /** Shorten/extend TTL without reviving entries that are already expired. */
   retime(ttlSeconds: number): { retimed: number; removed: number } {
+    const started = performance.now();
     const nowMs = this.now();
     const nowIso = new Date(nowMs).toISOString();
-    const rows = this.deps.db
-      .select({
+    const result = withBusyRetry(() => this.deps.db.transaction((tx) => {
+      const totals = this.ensureTotals(tx);
+      const rows = tx.select({
         key: searchCache.cacheKey,
         createdAt: searchCache.createdAt,
         expiresAt: searchCache.expiresAt,
-      })
-      .from(searchCache)
-      .all();
-
-    let retimed = 0;
-    let removed = 0;
-    this.deps.db.transaction((tx) => {
+        sizeBytes: searchCache.sizeBytes,
+      }).from(searchCache).all();
+      let entries = totals.entries;
+      let bytes = totals.bytes;
+      let retimed = 0;
+      let removed = 0;
       for (const row of rows) {
-        if (row.expiresAt <= nowIso) {
+        const nextExpiry = new Date(Date.parse(row.createdAt) + ttlSeconds * 1000).toISOString();
+        if (row.expiresAt <= nowIso || nextExpiry <= nowIso) {
           tx.delete(searchCache).where(eq(searchCache.cacheKey, row.key)).run();
+          entries -= 1;
+          bytes -= row.sizeBytes;
           removed += 1;
-          continue;
-        }
-        const createdMs = Date.parse(row.createdAt);
-        const nextExpiry = new Date(createdMs + ttlSeconds * 1000).toISOString();
-        if (nextExpiry <= nowIso) {
-          // The new TTL already elapsed for this entry.
-          tx.delete(searchCache).where(eq(searchCache.cacheKey, row.key)).run();
-          removed += 1;
-          continue;
-        }
-        if (nextExpiry !== row.expiresAt) {
-          tx.update(searchCache)
-            .set({ expiresAt: nextExpiry })
-            .where(eq(searchCache.cacheKey, row.key))
-            .run();
+        } else if (nextExpiry !== row.expiresAt) {
+          tx.update(searchCache).set({ expiresAt: nextExpiry }).where(eq(searchCache.cacheKey, row.key)).run();
           retimed += 1;
         }
       }
-    });
-    if (removed > 0) this.count("expiredRemoved", removed);
-    return { retimed, removed };
+      this.writeTotals(tx, entries, bytes);
+      if (removed > 0) this.count("expiredRemoved", removed, tx);
+      return { retimed, removed };
+    }, { behavior: "immediate" }));
+    this.diagnostics.recordExpiredRemoved(result.removed);
+    this.diagnostics.recordMaintenance("retime", performance.now() - started);
+    return result;
   }
 
   stats(options: { enabled: boolean; ttlSeconds: number }): CacheStats {
-    const totals = this.deps.db
-      .select({
-        entries: sql<number>`count(*)`,
-        bytes: sql<number>`coalesce(sum(${searchCache.sizeBytes}), 0)`,
-      })
-      .from(searchCache)
-      .all()[0] ?? { entries: 0, bytes: 0 };
-
+    const totals = this.liveTotals();
     const all = this.deps.db.select().from(searchCacheMetrics).all();
     const hits = all.reduce((sum, row) => sum + row.hits, 0);
     const misses = all.reduce((sum, row) => sum + row.misses, 0);
     const expiredRemoved = all.reduce((sum, row) => sum + row.expiredRemoved, 0);
     const evicted = all.reduce((sum, row) => sum + row.evicted, 0);
-
-    // The 24-hour window is the trailing 24 hourly buckets, not "since the
-    // process started": a restart must not reset the rate to zero.
     const cutoff = new Date(this.now() - 86_400_000).toISOString().slice(0, 13);
     const recent = all.filter((row) => row.bucket >= cutoff);
     const hits24h = recent.reduce((sum, row) => sum + row.hits, 0);
     const misses24h = recent.reduce((sum, row) => sum + row.misses, 0);
-
+    const hitRate = hits + misses === 0 ? null : hits / (hits + misses);
+    const hitRate24h = hits24h + misses24h === 0 ? null : hits24h / (hits24h + misses24h);
+    const diagnostics: CacheStatsDiagnostics = {
+      ...this.diagnostics.snapshot({ entries: totals.entries, bytes: totals.bytes, disk: this.diskSnapshot() }),
+      hitRate,
+      hitRate24h,
+      evicted,
+    };
     return {
       enabled: options.enabled,
       ttlSeconds: options.ttlSeconds,
-      entries: Number(totals.entries),
-      bytes: Number(totals.bytes),
+      ...totals,
       maxEntries: this.limits.maxEntries,
       maxBytes: this.limits.maxBytes,
       hits,
       misses,
-      hitRate: hits + misses === 0 ? null : hits / (hits + misses),
+      hitRate,
       hits24h,
       misses24h,
-      hitRate24h: hits24h + misses24h === 0 ? null : hits24h / (hits24h + misses24h),
+      hitRate24h,
       expiredRemoved,
       evicted,
+      evictedBytes: diagnostics.evictedBytes,
       lastSweepAt: this.getState("lastSweepAt"),
       windowHours: 24,
+      diagnostics,
     };
   }
 
-  /**
-   * Starts the background sweep: once at startup, then every 10 minutes.
-   *
-   * The tick is wrapped so a failing sweep is logged and retried on the next
-   * tick — a cache problem must never take the API process down with it — and a
-   * re-entrancy guard stops a slow sweep from stacking up behind itself.
-   */
+  /** Start the existing bounded startup/periodic sweep. */
   startScheduler(intervalMs = CACHE_SWEEP_INTERVAL_MS): () => void {
     if (this.timer) return () => this.stopScheduler();
     const tick = (): void => {
@@ -354,7 +506,6 @@ export class CacheService {
     };
     tick();
     this.timer = setInterval(tick, intervalMs);
-    // Do not hold the process open just for the cache.
     this.timer.unref();
     return () => this.stopScheduler();
   }
@@ -366,7 +517,50 @@ export class CacheService {
     }
   }
 
-  /** Hourly buckets older than 31 days are of no use to any surface. */
+  private ensureTotals(tx: SearchHubDb): CacheTotals {
+    return ensureCacheTotals(tx, this.now);
+  }
+
+  private writeTotals(tx: SearchHubDb, entries: number, bytes: number, updatedAt = new Date(this.now()).toISOString()): void {
+    writeCacheTotals(tx, entries, bytes, updatedAt);
+  }
+
+  private deleteKeyWithTotals(key: string): number {
+    return withBusyRetry(() => this.deps.db.transaction((tx) => {
+      const totals = this.ensureTotals(tx);
+      const row = tx.select({ sizeBytes: searchCache.sizeBytes }).from(searchCache)
+        .where(eq(searchCache.cacheKey, key)).get();
+      if (!row) return 0;
+      tx.delete(searchCache).where(eq(searchCache.cacheKey, key)).run();
+      this.writeTotals(tx, totals.entries - 1, totals.bytes - row.sizeBytes);
+      return row.sizeBytes;
+    }, { behavior: "immediate" }));
+  }
+
+  private liveTotals(): { entries: number; bytes: number } {
+    const totals = this.deps.db.select({
+      entries: sql<number>`count(*)`,
+      bytes: sql<number>`coalesce(sum(${searchCache.sizeBytes}), 0)`,
+    }).from(searchCache).all()[0] ?? { entries: 0, bytes: 0 };
+    return { entries: Number(totals.entries), bytes: Number(totals.bytes) };
+  }
+
+  private diskSnapshot(): CacheDiskSnapshot {
+    const size = (filePath: string): number | null => {
+      try { return statSync(filePath).size; } catch { return null; }
+    };
+    const pageCache = this.deps.osPageCache?.() ?? { value: null, source: "unavailable", reason: "os_page_cache_not_collected" };
+    return {
+      dbFileBytes: this.deps.dbPath ? size(this.deps.dbPath) : null,
+      walFileBytes: this.deps.dbPath ? size(`${this.deps.dbPath}-wal`) : null,
+      osPageCacheBytes: pageCache.value,
+      dbSource: this.deps.dbPath ? "fs.stat" : "unavailable",
+      walSource: this.deps.dbPath ? "fs.stat" : "unavailable",
+      osPageCacheSource: pageCache.source,
+      osPageCacheReason: pageCache.reason,
+    };
+  }
+
   private pruneMetrics(): void {
     const cutoff = new Date(this.now() - 31 * 86_400_000).toISOString().slice(0, 13);
     this.deps.db.delete(searchCacheMetrics).where(lte(searchCacheMetrics.bucket, cutoff)).run();
@@ -393,30 +587,21 @@ export class CacheService {
   }
 
   private getState(key: string): string | null {
-    const row = this.deps.db
-      .select()
-      .from(searchCacheState)
-      .where(eq(searchCacheState.key, key))
-      .get();
+    const row = this.deps.db.select().from(searchCacheState)
+      .where(eq(searchCacheState.key, key)).get();
     return row?.value ?? null;
   }
 
-  private setState(key: string, value: string): void {
+  private setState(key: string, value: string, db: SearchHubDb = this.deps.db): void {
     const updatedAt = new Date(this.now()).toISOString();
-    this.deps.db
-      .insert(searchCacheState)
+    db.insert(searchCacheState)
       .values({ key, value, updatedAt })
       .onConflictDoUpdate({ target: searchCacheState.key, set: { value, updatedAt } })
       .run();
   }
 }
 
-/**
- * JSON with sorted object keys, so `{a,b}` and `{b,a}` hash identically.
- *
- * Arrays keep their order: for provider fingerprints the caller sorts them
- * explicitly, and silently reordering a user-supplied list would be wrong.
- */
+/** JSON with sorted object keys; arrays preserve their explicit order. */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
@@ -428,22 +613,28 @@ export function canonicalJson(value: unknown): string {
   return `{${parts.join(",")}}`;
 }
 
-/** Deletes rows for one key; used by tests and by the "invalidate on change" path. */
+/** Delete one key and keep cache:totals exact in the same immediate transaction. */
 export function deleteCacheKey(db: SearchHubDb, key: string): void {
-  db.delete(searchCache).where(eq(searchCache.cacheKey, key)).run();
+  withBusyRetry(() => db.transaction((tx) => {
+    const totals = ensureCacheTotals(tx, () => Date.now());
+    const row = tx.select({ sizeBytes: searchCache.sizeBytes }).from(searchCache)
+      .where(eq(searchCache.cacheKey, key)).get();
+    if (!row) return;
+    tx.delete(searchCache).where(eq(searchCache.cacheKey, key)).run();
+    const entries = totals.entries - 1;
+    const bytes = totals.bytes - row.sizeBytes;
+    if (entries < 0 || bytes < 0) throw new CacheInvariantError("Cannot decrement invalid cache totals");
+    writeCacheTotals(tx, entries, bytes, new Date().toISOString());
+  }, { behavior: "immediate" }));
 }
 
-/** Count helper for tests that need the raw row count without a stats window. */
 export function cacheEntryCount(db: SearchHubDb): number {
   const rows = db.select({ count: sql<number>`count(*)` }).from(searchCache).all();
   return Number(rows[0]?.count ?? 0);
 }
 
-/** Rows whose expiry is in the past; used by tests to assert the sweeper ran. */
 export function expiredCacheCount(db: SearchHubDb, nowMs: number): number {
-  const rows = db
-    .select({ count: sql<number>`count(*)` })
-    .from(searchCache)
+  const rows = db.select({ count: sql<number>`count(*)` }).from(searchCache)
     .where(and(lte(searchCache.expiresAt, new Date(nowMs).toISOString())))
     .all();
   return Number(rows[0]?.count ?? 0);

@@ -67,6 +67,30 @@ If GitHub permissions or branch protection genuinely block an operation, record
 the blocker and continue with everything else that is still executable. Never
 work around it.
 
+## Resource safety for coding and verification
+
+Before running large-scale tests, builds, or spawning parallel sub-agents, every
+agent MUST first inspect the host's current available physical memory (当前可用物理内存).
+Do not substitute total RAM, Node heap, or a stale observation. When resources
+are insufficient, dynamically adjust scheduling and concurrency (动态调整调度/并发);
+do not skip tests, narrow their scope, weaken assertions, increase timeouts to
+hide failures, or lower standards (不得跳测试/降低标准).
+
+A single OOM must not automatically be attributed to a product memory leak
+(不得把单次 OOM 自动归因产品泄漏). Preserve exit codes, logs, process-tree
+identity, cgroup events, and V8/native evidence, then classify the root cause.
+Only confirmed OOM may trigger the documented one-time concurrency reduction.
+
+Never clean user caches or workspaces without evidence and explicit authorization
+(不得无证据清理用户缓存/工作区). Resource tools may clean only owned process
+trees with revalidated PID/start-time/ancestry. `git clean -fdx` is prohibited as
+a cleanup shortcut. Do not kill user processes, restart the host, or modify
+Swap/pagefile, Docker, or WSL configuration.
+
+Every formal release must leave a same SHA resource record (每次正式版本发布留资源记录)
+under `artifacts/v0.1.14/`, including real platform results and verification
+verdicts. `verify:smart` and local lowmem runs never replace full CI coverage.
+
 ## Release requirements
 
 - Only a `main` commit that passed the required checks may be released.

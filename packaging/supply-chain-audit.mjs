@@ -89,6 +89,10 @@ const EXPECTED_CLI = assets
   .filter((name) => name.startsWith("shub-") && CLI_PATTERNS.some((re) => re.test(name)))
   .sort();
 const ALL_EXPECTED = [...EXPECTED, ...EXPECTED_CLI].sort();
+const versionMatch = /^(\d+)\.(\d+)\.(\d+)/.exec(VERSION);
+const versionTuple = versionMatch ? versionMatch.slice(1).map(Number) : [0, 0, 0];
+const requiresEvidence = versionTuple[0] > 0 || (versionTuple[0] === 0 && (versionTuple[1] > 1 || (versionTuple[1] === 1 && versionTuple[2] >= 14)));
+const EVIDENCE_ASSETS = requiresEvidence ? assets.map((asset) => asset.name).filter((name) => name === "resource-evidence.json") : [];
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -201,7 +205,7 @@ if (downloadFailures.length > 0) {
 
 const publishedSizes = new Map(assets.map((asset) => [asset.name, asset.size]));
 
-for (const name of ["SHA256SUMS", ...ALL_EXPECTED]) {
+for (const name of ["SHA256SUMS", ...ALL_EXPECTED, ...EVIDENCE_ASSETS]) {
   const path = join(DIR, name);
   const present = existsSync(path);
   const size = present ? statSync(path).size : 0;
@@ -267,6 +271,7 @@ try {
 // a real supply-chain smell: a beta package becomes indistinguishable from the
 // final 0.1.6 by filename alone.
 check("three server platform assets are published", EXPECTED.length === 3, `${EXPECTED.length}: ${EXPECTED.join(", ")}`);
+check("resource evidence asset is published", !requiresEvidence || EVIDENCE_ASSETS.length === 1, EVIDENCE_ASSETS.join(", "));
 if (EXPECTED_CLI.length > 0) {
   check("four CLI assets are published", EXPECTED_CLI.length === 4, `${EXPECTED_CLI.length}: ${EXPECTED_CLI.join(", ")}`);
   for (const pattern of CLI_PATTERNS) {

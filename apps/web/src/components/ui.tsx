@@ -1,5 +1,6 @@
 import type {
   ButtonHTMLAttributes,
+  HTMLAttributes,
   InputHTMLAttributes,
   ReactNode,
   SelectHTMLAttributes,
@@ -191,14 +192,13 @@ export function Switch({
 export function Card({
   className,
   children,
-  id,
+  ...props
 }: {
   className?: string;
   children: ReactNode;
-  id?: string;
-}) {
+} & HTMLAttributes<HTMLDivElement>) {
   return (
-    <div id={id} className={cn("rounded-xl border bg-card text-card-foreground shadow-xs", className)}>
+    <div className={cn("rounded-xl border bg-card text-card-foreground shadow-xs", className)} {...props}>
       {children}
     </div>
   );

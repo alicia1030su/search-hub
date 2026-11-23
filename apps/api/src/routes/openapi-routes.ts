@@ -8,7 +8,7 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "Search Hub API",
-    version: "0.1.13",
+    version: "0.1.14",
     description:
       "Self-hosted multi-provider search infrastructure. Search endpoints accept either an admin session cookie + CSRF header or a Bearer access token.",
     license: { name: "MIT" },
@@ -100,6 +100,18 @@ export const openApiDocument = {
         tags: ["sources"],
         summary: "List providers, catalog and runtime health",
         responses: { "200": { description: "Provider list (no secrets)" } },
+      },
+    },
+    "/api/admin/resources": {
+      get: {
+        tags: ["admin"],
+        summary: "Read-only process, activity, queue, and cache disk snapshot",
+        security: [{ sessionCookie: [] }],
+        responses: {
+          "200": { description: "Runtime resource snapshot", content: { "application/json": { schema: { $ref: "#/components/schemas/RuntimeResourceSnapshot" } } } },
+          "401": { description: "Missing, invalid, or expired admin session" },
+          "403": { description: "Authorization header supplied; only an admin session cookie is accepted" },
+        },
       },
     },
     "/api/admin/dashboard": {
@@ -253,6 +265,77 @@ export const openApiDocument = {
       sessionCookie: { type: "apiKey", in: "cookie", name: "sh_session" },
     },
     schemas: {
+      RuntimeResourceSnapshot: {
+        type: "object",
+        required: ["schemaVersion", "sampledAt", "process", "activity", "cache", "unavailable"],
+        properties: {
+          schemaVersion: { const: 1 },
+          sampledAt: { type: "string", format: "date-time" },
+          process: {
+            type: "object",
+            required: ["platform", "nodeVersion", "uptimeSeconds", "memory", "sources"],
+            properties: {
+              platform: { type: "string" },
+              nodeVersion: { type: "string" },
+              uptimeSeconds: { type: ["number", "null"] },
+              memory: {
+                type: "object",
+                required: ["rssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"],
+                properties: {
+                  rssBytes: { type: ["integer", "null"] },
+                  heapUsedBytes: { type: ["integer", "null"] },
+                  heapTotalBytes: { type: ["integer", "null"] },
+                  externalBytes: { type: ["integer", "null"] },
+                  arrayBuffersBytes: { type: ["integer", "null"] },
+                },
+              },
+              sources: {
+                type: "object",
+                required: ["rss", "heapUsed", "heapTotal", "external", "arrayBuffers", "uptime"],
+                properties: {
+                  rss: { type: "string" }, heapUsed: { type: "string" }, heapTotal: { type: "string" },
+                  external: { type: "string" }, arrayBuffers: { type: "string" }, uptime: { type: "string" },
+                },
+              },
+            },
+          },
+          activity: {
+            type: "object",
+            required: ["activeSearches", "activeProbes", "queue"],
+            properties: {
+              activeSearches: { type: "integer", minimum: 0 },
+              activeProbes: { type: "integer", minimum: 0 },
+              queue: {
+                type: "object",
+                required: ["total", "providerKey", "health", "singleflightFollowers"],
+                properties: {
+                  total: { type: "integer", minimum: 0 }, providerKey: { type: "integer", minimum: 0 },
+                  health: { type: "integer", minimum: 0 }, singleflightFollowers: { type: "integer", minimum: 0 },
+                },
+              },
+            },
+          },
+          cache: {
+            type: "object",
+            required: ["entries", "bytes", "totalsUpdatedAt", "totalsSource", "totalsReason", "dbFileBytes", "walFileBytes", "dbFileSource", "walFileSource", "diskScope"],
+            properties: {
+              entries: { type: ["integer", "null"] }, bytes: { type: ["integer", "null"] },
+              totalsUpdatedAt: { type: ["string", "null"], format: "date-time" },
+              totalsSource: { type: "string" }, totalsReason: { type: ["string", "null"] },
+              dbFileBytes: { type: ["integer", "null"] }, walFileBytes: { type: ["integer", "null"] },
+              dbFileSource: { type: "string" }, walFileSource: { type: "string" }, diskScope: { const: "whole_sqlite_database" },
+            },
+          },
+          unavailable: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["field", "source", "reason"],
+              properties: { field: { type: "string" }, source: { type: "string" }, reason: { type: "string" } },
+            },
+          },
+        },
+      },
       SetupRequest: {
         type: "object",
         required: ["email", "password"],

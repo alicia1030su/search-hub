@@ -21,7 +21,9 @@ bash tests/scripts/smoke.sh http://127.0.0.1:8787
 
 ## What is covered
 
-v0.1.13 本地全量已通过 Vitest **1299 项 / 100 文件**、Playwright **42 项**与 CLI 专项 **58 项**。本文件不把本地结果写成远端 CI 或正式发布 PASS；远端证据见 `docs/release-readiness.md`。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
+v0.1.13 历史本地全量已通过 Vitest **1299 项 / 100 文件**、Playwright **42 项**与 CLI 专项 **58 项**。本文件不把本地结果写成远端 CI 或正式发布 PASS；远端证据见 `docs/release-readiness.md`。批量、资格判定、原子取消、预算/迁移、异常路径与 P09 验收均有定向覆盖；真实 HTTP 路径使用 `127.0.0.1` 服务，不调用第三方厂商。
+
+v0.1.14 增加资源端点、只读认证、队列生命周期、严格进程枚举、OOM 证据、资源证据 fingerprint 与 exact-SHA release gate 测试。M04 是 P0 实测门槛：100,000 行、100 warmup、1,000 次顺序 `GET /api/admin/resources`，P95 ≤ 10ms、稳态 RSS ≤ 2MiB、warmup/正式零写、三个 query plan 均走索引。`pnpm evidence:verify` 校验 8 份 gzip raw、summary、SHA256SUMS、代码/scope fingerprint 与公开证据脱敏；未满足条件的证据保持 BLOCKED。
 
 ### v0.1.11 bulk provider test (T01–T46, H61–H66)
 
@@ -459,8 +461,11 @@ They are not substitutes for the full test suite or remote CI.
 and upgrades published packages in place. The v0.1.13 PR and main runs
 passed on both runners: [PR run 44997781914](https://github.com/alicia1030su/search-hub/actions/runs/44997781914)
 and [main run 44998417741](https://github.com/alicia1030su/search-hub/actions/runs/44998417741).
+The v0.1.14 candidate run [45133912965](https://github.com/alicia1030su/search-hub/actions/runs/45133912965)
+also passed on both runners, including the new v0.1.13→current path with
+`appliedDiff=[]` recorded from the `_migrations` table on each platform.
 The matrix covers v0.1.4-beta.6, v0.1.5-beta.1, v0.1.7-beta.3, v0.1.8,
-v0.1.10, v0.1.11, v0.1.12 and v0.1.8-beta.1. Cache evidence is fail-closed:
+v0.1.10, v0.1.11, v0.1.12, v0.1.13 and v0.1.8-beta.1. Cache evidence is fail-closed:
 persistent-cache versions must reuse the old row when the fingerprint is unchanged;
 legacy memory-only versions must establish a new persistent row and prove a real
 cache hit after warmup. Missing or ambiguous evidence fails the upgrade.

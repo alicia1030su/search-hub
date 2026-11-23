@@ -1,0 +1,322 @@
+import { setTimeout as delay } from "node:timers/promises";
+import * as linux from "./linux.mjs";
+import * as windows from "./windows.mjs";
+
+const NOT_NODE_V8 = Object.freeze({
+  heapUsedBytes: { value: null, source: "v8", reason: "not_node" },
+  heapTotalBytes: { value: null, source: "v8", reason: "not_node" },
+  externalBytes: { value: null, source: "v8", reason: "not_node" },
+  arrayBuffersBytes: { value: null, source: "v8", reason: "not_node" },
+});
+
+function unavailableV8(reason, source = "v8") {
+  return {
+    heapUsedBytes: { value: null, source, reason },
+    heapTotalBytes: { value: null, source, reason },
+    externalBytes: { value: null, source, reason },
+    arrayBuffersBytes: { value: null, source, reason },
+  };
+}
+
+function adapter(platform = process.platform) {
+  if (platform === "linux") return linux;
+  if (platform === "win32") return windows;
+  throw new Error(`unsupported_platform:${platform}`);
+}
+
+function isDescendant(candidate, rootPid, identities) {
+  const seen = new Set();
+  let current = candidate;
+  while (current && !seen.has(current.pid)) {
+    if (current.detailUnavailable || !current.startTime) return false;
+    if (current.pid === rootPid) return true;
+    seen.add(current.pid);
+    current = identities.get(current.ppid);
+  }
+  return false;
+}
+
+function couldDescendFromRoot(candidate, rootPid, identities) {
+  const seen = new Set();
+  let current = candidate;
+  while (current && !seen.has(current.pid)) {
+    if (current.pid === rootPid) return true;
+    seen.add(current.pid);
+    current = identities.get(current.ppid);
+  }
+  return false;
+}
+
+/**
+ * Tracks only processes whose ancestry was proven to a registered root. Every
+ * signal rechecks PID + startTime. If the root exits or its PID is reused,
+ * previously registered descendants are still checked by identity, but the root
+ * PID itself is never signalled again.
+ */
+export class OwnedProcessTree {
+  constructor(rootPid, rootStartTime, options = {}) {
+    this.rootPid = rootPid;
+    this.rootStartTime = rootStartTime;
+    this.platform = options.platform ?? process.platform;
+    this.io = options.io ?? adapter(this.platform);
+    this.maxProcesses = options.maxProcesses ?? 512;
+    this.termGraceMs = options.termGraceMs ?? 5_000;
+    this.consoleCtrlOwned = options.consoleCtrlOwned ?? false;
+    this.rootIdentityChanged = false;
+    this.rootIdentityState = null;
+    this.records = new Map();
+    this.inspectionErrors = new Map();
+    this.records.set(rootPid, { pid: rootPid, ppid: process.ppid, startTime: rootStartTime, owned: true, role: "node", executableName: "node" });
+  }
+
+  sampleEntry(current, telemetry, sampledAt) {
+    const identity = { ...current.identity, owned: true };
+    this.records.set(identity.pid, identity);
+    this.inspectionErrors.delete(identity.pid);
+    const reported = telemetry?.samples.get(identity.pid);
+    const v8 = reported ? {
+      heapUsedBytes: { value: reported.heapUsedBytes, source: "node_telemetry", reason: null },
+      heapTotalBytes: { value: reported.heapTotalBytes, source: "node_telemetry", reason: null },
+      externalBytes: { value: reported.externalBytes, source: "node_telemetry", reason: null },
+      arrayBuffersBytes: { value: reported.arrayBuffersBytes, source: "node_telemetry", reason: null },
+    } : identity.role === "node"
+      ? unavailableV8("telemetry_unavailable", "node_telemetry")
+      : { ...NOT_NODE_V8 };
+    return { identity, rssBytes: current.rssBytes, v8, sampledAt };
+  }
+
+  noteInspectionError(pid, reason, observedIdentity = null) {
+    const registered = this.records.get(pid);
+    const identity = registered ?? observedIdentity;
+    this.inspectionErrors.set(pid, {
+      pid,
+      stage: "inspect",
+      reason,
+      ...(identity ? { identity: { pid, ppid: identity.ppid ?? null, startTime: identity.startTime ?? null } } : {}),
+    });
+  }
+
+  async strictPidSet() {
+    if (typeof this.io.listProcessPidsStrict !== "function") throw new Error("strict_process_listing_unavailable");
+    const pids = await this.io.listProcessPidsStrict();
+    if (!Array.isArray(pids) || pids.some((pid) => !Number.isSafeInteger(pid) || pid <= 0)) {
+      throw new Error("strict_process_listing_invalid");
+    }
+    return new Set(pids);
+  }
+
+  async sampleRegisteredDescendants(telemetry = null) {
+    const sampledAt = new Date().toISOString();
+    const samples = [];
+    for (const [pid, registered] of this.records) {
+      if (pid === this.rootPid) continue;
+      let current = null;
+      try {
+        current = await this.io.readProcess(pid);
+      } catch (error) {
+        this.noteInspectionError(pid, `process_read_failed:${error?.code ?? "unknown"}`);
+        continue;
+      }
+      if (!current) {
+        // Snapshot-friendly listProcesses may swallow enumeration errors. Only
+        // the strict complete PID listing can prove this process exited.
+        let pids = null;
+        try { pids = await this.strictPidSet(); } catch (error) {
+          this.noteInspectionError(pid, `process_listing_failed:${error?.code ?? (error instanceof Error ? error.message : "unknown")}`);
+          continue;
+        }
+        if (!pids.has(pid)) {
+          this.inspectionErrors.delete(pid);
+          continue;
+        }
+        this.noteInspectionError(pid, "process_read_unavailable");
+        continue;
+      }
+      if (current.identity.detailUnavailable || !current.identity.startTime) {
+        this.noteInspectionError(pid, "process_details_unavailable");
+        continue;
+      }
+      if (current.identity.startTime !== registered.startTime) {
+        // PID reuse is safe to ignore: never signal the replacement process.
+        this.inspectionErrors.delete(pid);
+        continue;
+      }
+      this.inspectionErrors.delete(pid);
+      samples.push(this.sampleEntry(current, telemetry, sampledAt));
+    }
+    return samples;
+  }
+
+  async sample(telemetry = null) {
+    let root = null;
+    let rootReadFailure = null;
+    try { root = await this.io.readProcess(this.rootPid); } catch (error) {
+      rootReadFailure = `process_read_failed:${error?.code ?? "unknown"}`;
+    }
+    if (!root) {
+      // A null/failed detail read is ambiguous. Only a strict complete PID
+      // listing that omits the root proves exit. If the root identity cannot be
+      // verified, no root or descendant is eligible for signalling.
+      let pids = null;
+      try { pids = await this.strictPidSet(); } catch (error) {
+        this.noteInspectionError(this.rootPid, `process_listing_failed:${error?.code ?? (error instanceof Error ? error.message : "unknown")}`);
+        this.rootIdentityChanged = false;
+        this.rootIdentityState = "inspection_failed";
+        return [];
+      }
+      if (!pids.has(this.rootPid)) {
+        this.inspectionErrors.delete(this.rootPid);
+        this.rootIdentityChanged = true;
+        this.rootIdentityState = "missing";
+        return this.sampleRegisteredDescendants(telemetry);
+      }
+      this.noteInspectionError(this.rootPid, rootReadFailure ?? "process_read_unavailable");
+      this.rootIdentityChanged = false;
+      this.rootIdentityState = "inspection_failed";
+      return [];
+    }
+    if (root.identity.startTime !== this.rootStartTime) {
+      this.inspectionErrors.delete(this.rootPid);
+      this.rootIdentityChanged = true;
+      this.rootIdentityState = "changed";
+      return this.sampleRegisteredDescendants(telemetry);
+    }
+    this.inspectionErrors.delete(this.rootPid);
+    this.rootIdentityChanged = false;
+    this.rootIdentityState = null;
+    let listed = null;
+    try {
+      if (typeof this.io.listProcessesStrict !== "function") throw new Error("strict_process_listing_unavailable");
+      listed = await this.io.listProcessesStrict();
+      if (!Array.isArray(listed) || listed.some((entry) => {
+        const identity = entry?.identity;
+        return !identity || !Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
+          !(identity.ppid === null || Number.isSafeInteger(identity.ppid)) ||
+          !(identity.startTime === null || typeof identity.startTime === "string");
+      })) throw new Error("strict_process_listing_invalid");
+    } catch (error) {
+      this.noteInspectionError(this.rootPid, `process_listing_failed:${error?.code ?? (error instanceof Error ? error.message : "unknown")}`);
+      this.rootIdentityChanged = false;
+      this.rootIdentityState = "inspection_failed";
+      return [];
+    }
+    const identities = new Map(listed.map((entry) => [entry.identity.pid, entry.identity]));
+    identities.set(this.rootPid, root.identity);
+    const byPid = new Map(listed.map((entry) => [entry.identity.pid, entry]));
+    byPid.set(this.rootPid, root);
+    const ownedPids = new Set([this.rootPid]);
+    const suspiciousPids = new Set();
+    for (const identity of identities.values()) {
+      if (identity.pid === this.rootPid) continue;
+      if (isDescendant(identity, this.rootPid, identities)) {
+        ownedPids.add(identity.pid);
+      } else if (couldDescendFromRoot(identity, this.rootPid, identities)) {
+        this.noteInspectionError(identity.pid, identity.detailUnavailable || !identity.startTime ? "process_details_unavailable" : "process_ancestry_unavailable", identity);
+        suspiciousPids.add(identity.pid);
+      }
+    }
+    // A suspicious unregistered PID may later disappear or be re-parented to an
+    // unrelated process. A complete successful listing proves either recovery;
+    // only PIDs that remain suspicious may keep their historical error.
+    for (const pid of this.inspectionErrors.keys()) {
+      if (!this.records.has(pid) && !suspiciousPids.has(pid)) this.inspectionErrors.delete(pid);
+    }
+    if (suspiciousPids.size > 0) {
+      this.rootIdentityChanged = false;
+      this.rootIdentityState = "inspection_failed";
+      return [];
+    }
+    for (const pid of this.records.keys()) {
+      if (pid === this.rootPid) continue;
+      if (!byPid.has(pid)) this.inspectionErrors.delete(pid);
+      else if (!ownedPids.has(pid)) this.noteInspectionError(pid, "process_ancestry_unavailable");
+    }
+    const sampledAt = new Date().toISOString();
+    const samples = [];
+    for (const pid of ownedPids) {
+      const current = byPid.get(pid);
+      if (!current) continue;
+      const registered = this.records.get(pid);
+      if (current.identity.detailUnavailable || !current.identity.startTime) {
+        if (registered) this.noteInspectionError(pid, "process_details_unavailable");
+        continue;
+      }
+      if (registered && registered.startTime !== current.identity.startTime) {
+        this.inspectionErrors.delete(pid);
+        continue;
+      }
+      samples.push(this.sampleEntry(current, telemetry, sampledAt));
+    }
+    return samples;
+  }
+
+  /** Return only identity-stable owned processes still eligible for cleanup. */
+  async verifiedOwnedProcesses() {
+    const samples = await this.sample();
+    return samples.filter((sample) => sample.identity.startTime === this.records.get(sample.identity.pid)?.startTime);
+  }
+
+  finalCleanupResult(errors = [], residuals = []) {
+    errors = [...errors, ...this.inspectionErrors.values()];
+    if (this.rootIdentityState === "changed") {
+      errors = [...errors, { pid: this.rootPid, stage: "identity", reason: "root_identity_changed" }];
+    }
+    return {
+      ok: residuals.length === 0 && errors.length === 0,
+      residuals,
+      errors,
+      rootIdentityChanged: this.rootIdentityChanged,
+      ...(this.rootIdentityState ? { reason: this.rootIdentityState === "changed" ? "root_identity_changed" : this.rootIdentityState === "inspection_failed" ? "root_inspection_failed" : "root_missing" } : {}),
+    };
+  }
+
+  /** TERM leaves-to-root, wait up to the grace period, then KILL survivors. */
+  async cleanup() {
+    const errors = [];
+    const initial = await this.verifiedOwnedProcesses();
+    if (initial.length === 0) return this.finalCleanupResult(errors);
+    const depth = new Map(initial.map((sample) => [sample.identity.pid, 0]));
+    for (const sample of initial) {
+      let parent = sample.identity.ppid;
+      const seen = new Set([sample.identity.pid]);
+      let value = 1;
+      while (parent && !seen.has(parent)) {
+        seen.add(parent);
+        value += 1;
+        parent = this.records.get(parent)?.ppid;
+      }
+      depth.set(sample.identity.pid, value);
+    }
+    const ordered = initial.sort((a, b) => (depth.get(b.identity.pid) ?? 0) - (depth.get(a.identity.pid) ?? 0));
+    for (const sample of ordered) {
+      if (this.platform === "win32" && !this.consoleCtrlOwned) continue;
+      const current = await this.verifiedOwnedProcesses();
+      if (!current.some((entry) => entry.identity.pid === sample.identity.pid)) continue;
+      try {
+        await this.io.terminateProcess(sample.identity.pid);
+      } catch (error) {
+        if (error?.code !== "ESRCH") errors.push({ pid: sample.identity.pid, stage: "term", reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const deadline = Date.now() + this.termGraceMs;
+    while (Date.now() < deadline) {
+      const remaining = await this.verifiedOwnedProcesses();
+      if (remaining.length === 0) return this.finalCleanupResult(errors);
+      await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+    }
+    for (const sample of await this.verifiedOwnedProcesses()) {
+      const current = await this.verifiedOwnedProcesses();
+      if (!current.some((entry) => entry.identity.pid === sample.identity.pid)) continue;
+      try {
+        await this.io.killProcess(sample.identity.pid);
+      } catch (error) {
+        if (error?.code !== "ESRCH") errors.push({ pid: sample.identity.pid, stage: "kill", reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    await delay(100);
+    const residuals = (await this.verifiedOwnedProcesses()).map((sample) => sample.identity);
+    return this.finalCleanupResult(errors, residuals);
+  }
+}
+
+export { adapter, isDescendant, NOT_NODE_V8 };

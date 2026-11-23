@@ -262,6 +262,21 @@ function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+/** Read the applied migration names without creating or modifying schema. */
+function readMigrationNames(dataDir) {
+  const path = join(dataDir, "search-hub.db");
+  if (!existsSync(path)) return null;
+  let db;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    return db.prepare("SELECT name FROM _migrations ORDER BY name").all().map((row) => row.name);
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
 /** Distinguishes a real schema absence from an unreadable database. */
 function readSearchCacheTableState(dataDir) {
   const path = join(dataDir, "search-hub.db");
@@ -665,6 +680,7 @@ async function populate(base) {
     cacheApiErrorCode,
     cacheRequired: true,
     cacheRequiredReason,
+    migrationNames: readMigrationNames(dataDir),
     bearer,
     admin: setup.ok,
     adminDetail: `HTTP ${setup.status}`,
@@ -734,8 +750,16 @@ async function verify(base, state) {
   out.catalogMetaso = catalog.some((e) => e.type === "metaso");
 
   const health = await fetch(`${base}/api/health`);
-  out.migrations = health.ok;
-  out.migrationsDetail = `health ${health.status}`;
+  const migrationNames = readMigrationNames(dataDir);
+  const beforeMigrations = state.migrationNames;
+  const appliedDiff = beforeMigrations && migrationNames
+    ? migrationNames.filter((name) => !beforeMigrations.includes(name))
+    : null;
+  const preserved = beforeMigrations !== null && migrationNames !== null &&
+    beforeMigrations.every((name) => migrationNames.includes(name));
+  out.migrationsAppliedDiff = appliedDiff;
+  out.migrations = health.ok && preserved && (FROM !== "v0.1.13" || appliedDiff.length === 0);
+  out.migrationsDetail = `health ${health.status}, appliedDiff=${JSON.stringify(appliedDiff)}`;
 
   if (state.searchTaskId) {
     const taskRes = await fetch(`${base}/api/search/tasks/${state.searchTaskId}`, { headers: { cookie: state.cookie } });

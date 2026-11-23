@@ -21,6 +21,7 @@ import { HealthService } from "./services/health.js";
 import { ProviderBatchService } from "./services/provider-batch.js";
 import { SearchService } from "./services/search.js";
 import { CacheService } from "./services/cache.js";
+import { RuntimeMonitor } from "./services/runtime-monitor.js";
 import { QualityService } from "./services/quality.js";
 import { SessionService, TokenService, type AuthDependencies } from "./auth.js";
 
@@ -114,6 +115,7 @@ export interface AppContext {
   providers: ProviderService;
   models: ModelService;
   search: SearchService;
+  runtimeMonitor: RuntimeMonitor;
   /** Persistent search-response cache; shared by REST, MCP and Skills. */
   /**
    * Persistent search-response cache.
@@ -220,7 +222,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
   };
   const settings = new SettingsService(handle.db, config);
   const secrets = SecretBox.fromEnvOrFile(config.dataDir, config.encryptionKey);
-  const sessions = new SessionService(handle.db, config);
+  const sessions = new SessionService(handle.db, config, handle.sqlite);
   const tokens = new TokenService(handle.db);
   const providers = new ProviderService(handle.db, secrets);
   const models = new ModelService(handle.db, secrets);
@@ -291,9 +293,12 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
   const cache = new CacheService({
     db: handle.db,
     logger: appLogger,
+    dbPath: config.dbPath,
+    sqlite: handle.sqlite,
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.cacheLimits === undefined ? {} : { limits: options.cacheLimits }),
   });
+  cache.initialize();
 
   const search = new SearchService({
     db: handle.db,
@@ -304,6 +309,14 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     logger,
     health,
     cache,
+  });
+
+  const runtimeMonitor = new RuntimeMonitor({
+    cache,
+    search,
+    providers,
+    health,
+    dbPath: config.dbPath,
   });
 
   const quality = new QualityService({
@@ -410,6 +423,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     providers,
     models,
     search,
+    runtimeMonitor,
     cache,
     health,
     batch,

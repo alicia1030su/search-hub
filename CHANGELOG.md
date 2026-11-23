@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.14 (Unreleased) — Release candidate
+
+### Added
+
+- **Read-only runtime resources.** `GET /api/admin/resources` exposes process memory, queue depth, cache totals and DB/WAL size to admin sessions only. The dashboard refresh is manual and unavailable fields remain explicit.
+- **Resource-aware verification.** Frozen memory budgets, pressure levels, owned process-tree cleanup, bounded logs and terminal evidence protect typecheck, lint, Vitest, build and Playwright stages.
+- **Release evidence.** Cache baseline/candidate raw evidence, tree and per-benchmark fingerprints, SHA256SUMS and exact-SHA five-workflow gates are verified before a draft Release becomes Stable.
+
+### Changed
+
+- **Cache correctness.** Entry and UTF-8 byte limits are enforced together, totals stay exact across mutation paths, and the hit path preserves the original no-optimization result when its benchmark gates do not pass.
+- **Singleflight.** Explicit followers are counted and cancelled independently; 100 concurrent cold requests collapse to one upstream call in the local-stub benchmark.
+- **Windows cleanup.** Strict Toolhelp enumeration excludes the non-operable PID 0, preserves enumeration errors and bounds detail sampling to 64 processes per batch.
+
+### Compatibility
+
+- The CLI remains compatible with server `0.1.12` through `0.1.x`.
+- No new database migration is introduced; v0.1.13 upgrade evidence requires `appliedDiff=[]`.
+
+### Release gates
+
+- M04 requires 100,000 cache rows, 100 warmup requests and 1,000 sequential resource GETs with P95 at or below 10 ms, retained RSS growth at or below 2 MiB, zero writes and index-only query plans.
+- Unfinished checks remain PENDING/BLOCKED in `docs/release-readiness.md`; this entry does not claim a Stable release before finalization.
+
 ## v0.1.13 (2026-11-22) — Stable
 
 This release adds the independently installable `shub` CLI. The CLI is a remote

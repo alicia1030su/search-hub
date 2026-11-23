@@ -2,6 +2,8 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { SearchResponse } from "@search-hub/shared";
+import { CacheService } from "../../apps/api/src/services/cache.js";
 import {
   createDb,
   listMigrations,
@@ -169,6 +171,27 @@ describe("cache migration on an existing database", () => {
     //    and the updater both see the new schema.
     expect(handle.sqlite.pragma("user_version", { simple: true })).toBe(files.length);
     expect(Number(usageBefore)).toBe(oldFiles.length);
+  });
+
+  it("keeps v1 keys and old rows usable after a real reopen", () => {
+    const { handle, file } = tempDb();
+    runMigrations(handle.sqlite, directory);
+    const key = CacheService.buildKey({ v: 1, query: "legacy fixture", mode: "basic" });
+    const response: SearchResponse = {
+      taskId: "legacy", query: "legacy fixture", mode: "basic", status: "completed", results: [],
+      stats: { rawCount: 0, dedupedCount: 0, fusedCount: 0, providers: [], rerankApplied: false, embeddingApplied: false, summaryApplied: false, partial: false, timing: { totalMs: 0, fanoutMs: 0, fusionMs: 0 } },
+      errors: [], failedSources: [], debug: { rewrittenQueries: [] },
+    };
+    const json = JSON.stringify(response);
+    handle.sqlite.prepare("INSERT INTO search_cache (cache_key,response_json,status,mode,created_at,expires_at,last_accessed_at,size_bytes) VALUES (?,?,?,?,?,?,?,?)")
+      .run(key, json, "completed", "basic", "2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", Buffer.byteLength(json));
+    handle.close();
+    const reopened = createDb({ file });
+    handles.push(reopened);
+    const cache = new CacheService({ db: reopened.db, logger: { debug() {}, info() {}, warn() {}, error() {} } });
+    expect(cache.initialize()).toEqual({ entries: 1, bytes: Buffer.byteLength(json), updatedAt: expect.any(String) });
+    expect(cache.get(key)?.response.query).toBe("legacy fixture");
+    expect(cache.totals().entries).toBe(1);
   });
 
   it("is a no-op on a database that already has it", () => {

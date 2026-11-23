@@ -8,7 +8,7 @@ import {
 } from "@search-hub/shared";
 import { auditLogs, modelConfigs, providerInstances, searchGroups } from "@search-hub/db";
 import type { AppContext } from "../context.js";
-import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
+import { actorLabel, authenticate, authenticateAdminSessionReadOnly, requireAdmin, type Actor } from "../auth.js";
 import { audit, jsonFor, parseInput, sendError } from "../http.js";
 import { dashboardStats, parseRange, recentEvents } from "../services/stats.js";
 import { applyLegacyPlan, planLegacyMigration } from "../services/legacy-migration.js";
@@ -82,6 +82,18 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
     jsonFor(app, async (request) => {
       requireAdmin(actorOf(request, ctx));
       return ctx.settings.get();
+    }),
+  );
+
+  // ---- read-only runtime resources --------------------------------------
+  app.get(
+    "/api/admin/resources",
+    jsonFor(app, async (request) => {
+      authenticateAdminSessionReadOnly(
+        { headers: request.headers as Record<string, string | string[] | undefined>, cookies: request.cookies, ip: request.ip },
+        ctx.authDeps,
+      );
+      return ctx.runtimeMonitor.snapshot();
     }),
   );
 
