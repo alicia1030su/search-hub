@@ -76,6 +76,9 @@ describe("resource evidence", () => {
     expect(summary.baseline.machineFingerprint).toBe(machineFingerprint(machine()));
     expect(summary.environment.paidVendor).toBe(false);
     expect(summary.benchmarks.cacheHit.status).toBe("PASS_NO_OPTIMIZATION");
+    expect(summary.benchmarks.cacheHit.command).toContain("node --import tsx");
+    expect(summary.benchmarks.cacheStorage.summary.vacuumPerformed).toBe(false);
+    expect(summary.environment.vitest).toBe("5.1.0");
     expect(summary.cacheCapacity.otherTablesUnchanged).toBe(true);
     expect(summary.rawFiles).toEqual([]);
   });

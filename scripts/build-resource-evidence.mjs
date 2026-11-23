@@ -11,10 +11,10 @@ import {
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const COMMANDS = Object.freeze({
-  cacheCapacity: "node scripts/bench-cache-capacity.mjs --label {label}",
-  cacheHit: "node scripts/bench-cache-hit.mjs --requests 20000 --repeat 5 --label {label}",
-  cacheStampede: "node scripts/bench-cache-stampede.mjs --concurrency 100 --label {label}",
-  cacheStorage: "node scripts/bench-cache-storage.mjs --repeat 5 --label {label}",
+  cacheCapacity: "node --import tsx scripts/bench-cache-capacity.mjs --label {label}",
+  cacheHit: "node --import tsx scripts/bench-cache-hit.mjs --requests 20000 --repeat 5 --label {label}",
+  cacheStampede: "node --import tsx scripts/bench-cache-stampede.mjs --concurrency 100 --label {label}",
+  cacheStorage: "node --import tsx scripts/bench-cache-storage.mjs --repeat 5 --label {label}",
 });
 const VERDICT_KEYS = Object.freeze({ cacheCapacity: "C01", cacheHit: "C08", cacheStampede: "C09", cacheStorage: "C12" });
 
@@ -43,7 +43,7 @@ function max(values) {
 }
 
 function benchmarkSummary(name, report) {
-  if (name === "cacheCapacity") return { actual: report.actual, invariantPassed: report.invariantPassed, exitCode: report.exitCode };
+  if (name === "cacheCapacity") return { actual: report.actual, invariantPassed: report.invariantPassed, otherTablesUnchanged: report.otherTablesUnchanged, cacheTablesExcluded: report.cacheTablesExcluded, exitCode: report.exitCode };
   if (name === "cacheHit") return report.summary;
   if (name === "cacheStampede") {
     return {
@@ -67,7 +67,7 @@ function benchmarkSummary(name, report) {
     maintenanceMsMax: max(rounds.map((round) => round.maintenanceMs)),
     dbFileBytes: rounds.at(-1)?.dbFileBytes ?? null,
     walFileBytes: rounds.at(-1)?.walFileBytes ?? null,
-    vacuumPerformed: rounds.every((round) => round.vacuumPerformed === false),
+    vacuumPerformed: rounds.some((round) => round.vacuumPerformed === true),
   };
 }
 
@@ -85,7 +85,7 @@ function environmentFrom(reports, pkg) {
     totalMemoryBytes: machine.totalMemoryBytes ?? null,
     node: metadata.node ?? null,
     pnpm: metadata.pnpm ?? null,
-    vitest: pkg.devDependencies?.vitest ?? null,
+    vitest: typeof pkg.devDependencies?.vitest === "string" ? pkg.devDependencies.vitest.replace(/^[^0-9]+/, "") : null,
     playwright: pkg.devDependencies?.["@playwright/test"] ?? null,
     sqlite: "better-sqlite3/WAL",
     paidVendor: false,
