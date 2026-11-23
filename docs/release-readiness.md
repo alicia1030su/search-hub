@@ -9,7 +9,7 @@
 | M04 100k/100/1000 资源基准 | 同 SHA 两次运行：`2306990` 首次 RSS +3,088,384B 超限（FAIL，保留）；第二次 P95 1.9625ms、RSS +1,683,456B、零写、query plan、cleanup 全 PASS。最终 evidence-only SHA 的 M04 结果以同 SHA artifact 为准 |
 | T05 版本/CI/Release exact-SHA 门禁 | PASS（本地）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs |
 | 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0 |
-| 代码 SHA | `7d5e6e9ff1a33360b0c01712280413ac10cd8e90`；evidence-only 提交不改变代码 fingerprint |
+| 代码 SHA | `b5499239763a5e55a649982919474bcf9f8e8907`；evidence-only 提交不改变代码 fingerprint |
 | 三平台包/CLI/Node22 | PR PASS：CLI linux-arm64/linux-x64/node22/windows-x64 全部通过；本机 Windows x64 包体/REST/MCP/资源端点/重启持久化 16 项通过 |
 | Docker/systemd/upgrade v0.1.13→current | systemd PR PASS；upgrade PR Windows/Ubuntu PASS，v0.1.13 路径 `appliedDiff=[]`；Docker 因 quality 失败未启动，修复后重跑 |
 | Draft/finalize、资产/Provenance/GHCR | PENDING；任一步失败保持 draft |

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "suite": "search-hub-resource-v0.1.14",
-  "generatedAt": "2026-11-23T07:37:52.684Z",
+  "generatedAt": "2026-11-23T08:04:39.829Z",
   "baseline": {
     "commit": "4d2e25249f90a085b28ea05ee479b393d716c99e",
     "codeFingerprint": "bfbd1a6eb2699296b78cb44c56415e4bc299a0c90b54036eb907d4675dd0d138",
@@ -13,9 +13,9 @@
     "machineFingerprint": "51d6c2c18af8e4dd94bf8596e86f8917a2e03a9e60f7747a536ec1b5522af107"
   },
   "releaseCode": {
-    "codeFingerprint": "a8ad2e7965b7ba4c4738b4c70395c49d295db0cb287e4a70cefaebb1cb4ee66a",
-    "computedFromRef": "7d5e6e9ff1a33360b0c01712280413ac10cd8e90",
-    "computedAt": "2026-11-23T07:37:52.684Z"
+    "codeFingerprint": "035d6d7227123de386f18e6363bdff6f298e5250c0dea0f9a5c54e2f8850664c",
+    "computedFromRef": "b5499239763a5e55a649982919474bcf9f8e8907",
+    "computedAt": "2026-11-23T08:04:39.829Z"
   },
   "environment": {
     "platform": "win32",
@@ -173,9 +173,10 @@
   },
   "codeDelta": {
     "from": "e182f60703d179ec4d28f1dbf23ce04c0f2b0a25",
-    "to": "7d5e6e9ff1a33360b0c01712280413ac10cd8e90",
+    "to": "b5499239763a5e55a649982919474bcf9f8e8907",
     "changedPaths": [
       ".github/workflows/ci.yml",
+      ".github/workflows/docker.yml",
       ".github/workflows/release.yml",
       ".github/workflows/upgrade.yml",
       "CHANGELOG.md",
@@ -244,6 +245,7 @@
       "scripts/lib/resource/process-tree.mjs",
       "scripts/lib/resource/terminal-state.mjs",
       "scripts/lib/resource/windows.mjs",
+      "scripts/secret-scan.mjs",
       "scripts/stage-resource-evidence.mjs",
       "tests/e2e/resources.spec.ts",
       "tests/integration/cache-capacity.test.ts",
@@ -263,6 +265,7 @@
     ],
     "benchmarkRelevantChangedPaths": [
       ".github/workflows/ci.yml",
+      ".github/workflows/docker.yml",
       ".github/workflows/release.yml",
       ".github/workflows/upgrade.yml",
       "CHANGELOG.md",
@@ -331,6 +334,7 @@
       "scripts/lib/resource/process-tree.mjs",
       "scripts/lib/resource/terminal-state.mjs",
       "scripts/lib/resource/windows.mjs",
+      "scripts/secret-scan.mjs",
       "scripts/stage-resource-evidence.mjs",
       "tests/e2e/resources.spec.ts",
       "tests/integration/cache-capacity.test.ts",
