@@ -167,6 +167,7 @@ try {
   const updater = join(newRoot, "bin", "updater.mjs");
   const newRuntime = IS_WINDOWS ? join(newRoot, "runtime", "node.exe") : join(newRoot, "runtime", "bin", "node");
   check("the new package contains an updater", existsSync(updater), updater);
+  check("the new package contains the updater config resolver", existsSync(join(newRoot, "bin", "updater-config.mjs")), join(newRoot, "bin", "updater-config.mjs"));
   check("the new package bundles a runtime", existsSync(newRuntime));
   if (!existsSync(updater)) throw new Error("new package has no updater; cannot upgrade in place");
 

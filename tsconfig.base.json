@@ -24,7 +24,8 @@
       "@search-hub/providers": ["packages/providers/src/index.ts"],
       "@search-hub/models": ["packages/models/src/index.ts"],
       "@search-hub/mcp": ["packages/mcp/src/index.ts"],
-      "@search-hub/cli": ["packages/cli/src/index.ts"]
+      "@search-hub/cli": ["packages/cli/src/index.ts"],
+      "@search-hub/backup": ["packages/backup/src/index.ts"]
     }
   }
 }

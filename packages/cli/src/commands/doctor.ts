@@ -84,13 +84,22 @@ export async function runDoctor(
     } catch (error) {
       checks.push({ name: "admin_scope", ok: false, detail: error instanceof Error ? error.message : String(error) });
     }
+    try {
+      const backup = await client.request("/api/admin/backups/status") as { restoreReadiness?: boolean; keyReadiness?: string; latestBackup?: unknown };
+      checks.push({ name: "backup_status", ok: true, detail: `read-only check accepted; readiness=${String(backup.restoreReadiness ?? "unknown")}; key=${backup.keyReadiness ?? "unknown"}` });
+    } catch (error) {
+      // This endpoint intentionally requires an admin session, not a Bearer
+      // token. Its failure must not change the established doctor contract.
+      checks.push({ name: "backup_status", ok: false, detail: error instanceof Error ? error.message : String(error) });
+    }
   } else {
     checks.push({ name: "search_scope", ok: false, detail: "not checked" });
     checks.push({ name: "sources_scope", ok: false, detail: "not checked" });
     checks.push({ name: "admin_scope", ok: false, detail: "not checked" });
+    checks.push({ name: "backup_status", ok: false, detail: "not checked" });
   }
 
-  const requiredChecks = checks.filter((check) => check.name !== "admin_scope");
+  const requiredChecks = checks.filter((check) => check.name !== "admin_scope" && check.name !== "backup_status");
   const ok = requiredChecks.every((check) => check.ok) && searchScope && sourcesScope;
   const output = {
     ok,

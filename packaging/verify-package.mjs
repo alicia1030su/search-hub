@@ -39,6 +39,9 @@ const launcher = IS_WINDOWS ? join(work, "SearchHub.exe") : join(work, "bin", "s
 step("launcher present", existsSync(launcher), launcher);
 step("bundled runtime present", existsSync(IS_WINDOWS ? join(work, "runtime", "node.exe") : join(work, "runtime", "bin", "node")));
 step("server bundle present", existsSync(join(work, "app", "apps", "api", "dist", "server.mjs")));
+step("updater present", existsSync(join(work, "bin", "updater.mjs")));
+step("updater core present", existsSync(join(work, "bin", "updater-core.mjs")));
+step("updater config resolver present", existsSync(join(work, "bin", "updater-config.mjs")));
 step("web assets present", existsSync(join(work, "app", "apps", "web", "dist", "index.html")));
 step(
   "native addon present",

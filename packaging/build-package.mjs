@@ -121,6 +121,10 @@ copyIfExists(
   join(REPO, "packaging", "launcher", "updater-core.mjs"),
   join(binDir, "updater-core.mjs"),
 );
+copyIfExists(
+  join(REPO, "packaging", "launcher", "updater-config.mjs"),
+  join(binDir, "updater-config.mjs"),
+);
 writeFileSync(
   join(binDir, IS_WINDOWS ? "update.cmd" : "update"),
   IS_WINDOWS
@@ -247,16 +251,18 @@ function readme(target, version) {
   SearchHub.exe --logs          查看日志
   SearchHub.exe --autostart     开机自启动（写入当前用户的启动文件夹）
 
-升级（不会丢数据）:
+升级（事务化，不会用旧程序打开新 schema）:
   bin\\update.cmd --package <新包.zip> --version <新版本> --sha256 <校验和>
-  它会先备份数据库与 master.key，再停服、替换程序、启动并健康检查；
-  健康检查失败会自动回滚程序，schema 已前移时连同数据库一起回到升级前。
+  它会先做只读 SQLite 一致快照和完整 dataDir 备份，再停服、替换程序、启动并健康检查；
+  失败时交换回整个升级前 dataDir，并保留失败版本数据。
 
 数据目录: %LOCALAPPDATA%\\SearchHub
-  search.db / master.key / launcher-config.json / logs/
+  search-hub.db / master.key / launcher-config.json / logs/
 
-备份：停止服务后复制整个数据目录。master.key 必须一起备份，
-否则已保存的 API Key 无法解密。
+备份：在管理后台“备份恢复中心”创建加密 .shbackup，或使用 CLI 包中的
+  shub backup create --output <file.shbackup> --passphrase-stdin
+恢复：shub backup restore <file.shbackup> --data-dir <新目录> --apply
+不要停止服务后复制 search-hub.db/-wal/-shm 作为恢复点；master.key 已加密包含在完整包内。
 `;
   }
   return `# Search Hub ${version} (${target})
@@ -291,8 +297,8 @@ unit 已设置 User=search-hub，非 root 运行，数据目录可持久化。
 
     ./bin/update --package <新包.tar.gz> --version <新版本> --sha256 <校验和>
 
-先备份数据库与 master.key，再停服、替换程序、启动并健康检查；
-健康检查失败会自动回滚程序，schema 已前移时连同数据库一起回到升级前。
+先做只读 SQLite 一致快照和完整 dataDir 备份，再停服、替换程序、启动并健康检查；
+失败时交换回整个升级前 dataDir，并保留失败版本数据。
 退出码：0 成功；3 已回滚且健康；4 需要人工介入；1 校验/降级/架构不通过（未动文件）。
 
 ## 升级
@@ -306,10 +312,13 @@ unit 已设置 User=search-hub，非 root 运行，数据目录可持久化。
 
 ## 备份与恢复
 
-    tar -czf search-hub-backup.tgz -C "$HOME/.local/share" search-hub
+在管理后台“备份恢复中心”创建加密 `.shbackup`，或使用 CLI 包：
 
-恢复：停止服务 → 用备份覆盖数据目录 → 启动。
-master.key 必须一起备份，否则已保存的 API Key 无法解密。
+    shub backup create --output search-hub.shbackup --passphrase-stdin
+    shub backup restore search-hub.shbackup --data-dir /srv/search-hub-restored --apply
+
+不要停止服务后复制 search-hub.db / -wal / -shm 作为恢复点。
+完整包已加密包含数据库与 master.key；恢复只写入新的空目录，不覆盖生产数据。
 `;
 }
 

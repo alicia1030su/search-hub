@@ -1,13 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { createDb, openDatabaseFile } from "@search-hub/db";
 import { buildApp } from "../../apps/api/src/app.js";
 import { createContext, type AppContext } from "../../apps/api/src/context.js";
 import { loadConfig, type AppConfig } from "../../apps/api/src/config.js";
-import { checkIntegrity, createDatabaseSnapshot, schemaCompatibility } from "../../apps/api/src/services/backup.js";
+import { checkIntegrity, createDatabaseSnapshot, pruneStaleUploads, schemaCompatibility } from "../../apps/api/src/services/backup.js";
 
 interface Harness {
   app: FastifyInstance;
@@ -20,6 +20,7 @@ interface Harness {
 const harnesses: Harness[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const harness of harnesses.splice(0)) {
     await harness.app.close();
     rmSync(harness.dir, { recursive: true, force: true });
@@ -40,9 +41,9 @@ function testConfig(dir: string): AppConfig {
   };
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(overrides: Partial<AppConfig> = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "search-hub-backup-"));
-  const ctx = createContext(testConfig(dir));
+  const ctx = createContext({ ...testConfig(dir), ...overrides });
   const app = await buildApp(ctx);
   await app.ready();
 
@@ -67,6 +68,18 @@ async function createHarness(): Promise<Harness> {
 
 function adminHeaders(harness: Harness) {
   return { cookies: { sh_session: harness.cookie }, headers: { "x-csrf-token": harness.csrf } };
+}
+
+function packageMultipart(payload: Buffer, passphrase: string, filename = "search-hub.shbackup"): { payload: Buffer; contentType: string } {
+  const boundary = `----searchhub-package-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return {
+    payload: Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+      payload,
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="passphrase"\r\n\r\n${passphrase}\r\n--${boundary}--\r\n`),
+    ]),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
 }
 
 async function createMockProvider(harness: Harness, name: string): Promise<string> {
@@ -136,6 +149,29 @@ function poisonAsNewerVersion(sourcePath: string, targetPath: string): string {
 }
 
 describe("SQLite snapshot consistency", () => {
+  it("removes stale owned upload staging but preserves fresh requests", async () => {
+    const root = mkdtempSync(join(tmpdir(), "search-hub-upload-cleanup-"));
+    const previous = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = root;
+    process.env.TMP = root;
+    process.env.TMPDIR = root;
+    try {
+      const { mkdirSync, utimesSync } = await import("node:fs");
+      mkdirSync(join(root, "search-hub-upload-stale"));
+      mkdirSync(join(root, "search-hub-upload-fresh"));
+      const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      utimesSync(join(root, "search-hub-upload-stale"), old, old);
+      expect(await pruneStaleUploads()).toBe(1);
+      expect(() => statSync(join(root, "search-hub-upload-stale"))).toThrow();
+      expect(statSync(join(root, "search-hub-upload-fresh")).isDirectory()).toBe(true);
+    } finally {
+      if (previous.TEMP === undefined) delete process.env.TEMP; else process.env.TEMP = previous.TEMP;
+      if (previous.TMP === undefined) delete process.env.TMP; else process.env.TMP = previous.TMP;
+      if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("produces a self-contained, integrity-checked file under concurrent writes", async () => {
     const harness = await createHarness();
     // One provider on purpose: this test is about SQLite write concurrency, and
@@ -355,6 +391,362 @@ describe("GET /api/admin/backup", () => {
   });
 });
 
+describe("complete backup packages", () => {
+  it("reports status and downloads an age-encrypted verified package", async () => {
+    const harness = await createHarness();
+    await createMockProvider(harness, "package-source");
+    const initial = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/backups/status",
+      cookies: { sh_session: harness.cookie },
+    });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({ keySource: "file", latestBackup: null, backupDirWritable: true });
+
+    const short = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/package",
+      ...adminHeaders(harness),
+      payload: { passphrase: "short" },
+    });
+    expect(short.statusCode).toBe(400);
+
+    const passphrase = "a strong backup passphrase 灾备";
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/package",
+      ...adminHeaders(harness),
+      payload: { passphrase },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const audit = openDatabaseFile(harness.ctx.config.dbPath, { readonly: true });
+    try {
+      const details = audit.prepare("SELECT detail_json FROM audit_logs WHERE action = 'backup.package'").all();
+      expect(JSON.stringify(details)).not.toContain(passphrase);
+    } finally {
+      audit.close();
+    }
+    expect(response.headers["content-disposition"]).toMatch(/\.shbackup"$/);
+    expect(response.headers["x-search-hub-backup-sha256"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(response.rawPayload.subarray(0, Buffer.byteLength("age-encryption.org/v1\n")).toString("ascii")).toBe("age-encryption.org/v1\n");
+    expect(response.rawPayload.includes(Buffer.from("a strong backup passphrase"))).toBe(false);
+
+    const status = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/backups/status",
+      cookies: { sh_session: harness.cookie },
+    });
+    expect(status.json().latestBackup.verified).toBe(true);
+    expect(status.json().restoreReadiness).toBe(true);
+    expect(status.json().keyReadiness).toBe("verified");
+  });
+
+  it("returns the server checksum and leaves no temporary package artifacts", async () => {
+    const harness = await createHarness();
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/package",
+      ...adminHeaders(harness),
+      payload: { passphrase: "server checksum passphrase 灾备" },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.headers["x-search-hub-backup-sha256"]).toMatch(/^[a-f0-9]{64}$/);
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(join(harness.dir, "backups"));
+    expect(files.some((name) => name.endsWith(".shbackup"))).toBe(true);
+    expect(files.some((name) => name.startsWith(".shbackup-work-"))).toBe(false);
+    expect(files.some((name) => name.endsWith(".shbak") || name.startsWith(".shbak-work-"))).toBe(false);
+  });
+
+  it("requires an admin session for status", async () => {
+    const harness = await createHarness();
+    const response = await harness.app.inject({ method: "GET", url: "/api/admin/backups/status" });
+    expect([401, 403]).toContain(response.statusCode);
+  });
+
+  it("allows only one package generator under concurrent requests", async () => {
+    const harness = await createHarness();
+    const request = () => harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/package",
+      ...adminHeaders(harness),
+      payload: { passphrase: "concurrent backup passphrase 灾备" },
+    });
+    const responses = await Promise.all([request(), request()]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 429]);
+  });
+
+  it("authenticates before writing an anonymous upload to disk", async () => {
+    const harness = await createHarness();
+    const temporary = join(harness.dir, "upload-temp");
+    const { mkdirSync, readdirSync } = await import("node:fs");
+    mkdirSync(temporary, { recursive: true });
+    const previous = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = temporary;
+    process.env.TMP = temporary;
+    process.env.TMPDIR = temporary;
+    try {
+      const response = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/backup/verify",
+        headers: { "content-type": "application/octet-stream" },
+        payload: Buffer.alloc(2 * 1024 * 1024, 1),
+      });
+      expect([401, 403]).toContain(response.statusCode);
+      expect(readdirSync(temporary)).toEqual([]);
+      const missingCsrf = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/backup/verify",
+        cookies: { sh_session: harness.cookie },
+        headers: { "content-type": "application/octet-stream" },
+        payload: Buffer.alloc(16 * 1024, 1),
+      });
+      expect(missingCsrf.statusCode).toBe(403);
+      expect(readdirSync(temporary)).toEqual([]);
+    } finally {
+      if (previous.TEMP === undefined) delete process.env.TEMP; else process.env.TEMP = previous.TEMP;
+      if (previous.TMP === undefined) delete process.env.TMP; else process.env.TMP = previous.TMP;
+      if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("POST /api/admin/backup/package/verify", () => {
+  it("verifies a complete package with six boolean results and removes private staging", async () => {
+    const harness = await createHarness();
+    const passphrase = "package verification passphrase 灾备";
+    const created = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/package",
+      ...adminHeaders(harness),
+      payload: { passphrase },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+
+    const temporary = join(harness.dir, "package-upload-temp");
+    const { mkdirSync, readdirSync } = await import("node:fs");
+    mkdirSync(temporary, { recursive: true });
+    const previous = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = temporary;
+    process.env.TMP = temporary;
+    process.env.TMPDIR = temporary;
+    try {
+      const multipart = packageMultipart(Buffer.from(created.rawPayload), passphrase);
+      const verified = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/backup/package/verify",
+        ...adminHeaders(harness),
+        headers: { "x-csrf-token": harness.csrf, "content-type": multipart.contentType },
+        payload: multipart.payload,
+      });
+      expect(verified.statusCode, verified.body).toBe(200);
+      expect(verified.json()).toMatchObject({
+        format: "shbackup-v1",
+        formatOk: true,
+        structuralOk: true,
+        schemaCompatible: true,
+        keyFingerprintMatch: true,
+        ciphertextSampleDecryptable: true,
+        restoreReadiness: true,
+        keyReadiness: "verified",
+        keyProofValid: true,
+      });
+      expect(verified.json().sampleCount).toBeGreaterThanOrEqual(0);
+      expect(typeof verified.json().restoreReadiness).toBe("boolean");
+      expect(readdirSync(temporary)).toEqual([]);
+      const audit = openDatabaseFile(harness.ctx.config.dbPath, { readonly: true });
+      try {
+        const details = audit.prepare("SELECT detail_json FROM audit_logs WHERE action = 'backup.package.verify'").all();
+        expect(JSON.stringify(details)).not.toContain(passphrase);
+      } finally {
+        audit.close();
+      }
+
+      const statusBefore = await harness.app.inject({
+        method: "GET",
+        url: "/api/admin/backups/status",
+        cookies: { sh_session: harness.cookie },
+      });
+      const latest = statusBefore.json().latestBackup;
+      expect(latest.report.restoreReadiness).toBe(true);
+      const published = join(harness.dir, "backups", latest.file);
+      writeFileSync(published, Buffer.concat([readFileSync(published), Buffer.from("tampered")]));
+      const corrupt = await harness.app.inject({
+        method: "GET",
+        url: "/api/admin/backups/status",
+        cookies: { sh_session: harness.cookie },
+      });
+      expect(corrupt.json().restoreReadiness).toBe(false);
+      expect(corrupt.json().latestBackup.verified).toBe(false);
+
+      writeFileSync(published, created.rawPayload);
+      const sidecarPath = `${published}.json`;
+      const sidecar = JSON.parse(readFileSync(sidecarPath, "utf8"));
+      sidecar.keyFingerprint = "0".repeat(64);
+      sidecar.report.keyFingerprintMatch = false;
+      sidecar.report.keyReadiness = "mismatch";
+      writeFileSync(sidecarPath, JSON.stringify(sidecar));
+      const mismatch = await harness.app.inject({
+        method: "GET",
+        url: "/api/admin/backups/status",
+        cookies: { sh_session: harness.cookie },
+      });
+      expect(mismatch.json().restoreReadiness).toBe(false);
+      expect(mismatch.json().keyReadiness).toBe("mismatch");
+      expect(mismatch.json().latestBackup.verified).toBe(false);
+    } finally {
+      if (previous.TEMP === undefined) delete process.env.TEMP; else process.env.TEMP = previous.TEMP;
+      if (previous.TMP === undefined) delete process.env.TMP; else process.env.TMP = previous.TMP;
+      if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing CSRF, low scope and known oversize bodies before disk use", async () => {
+    const harness = await createHarness();
+    const temporary = join(harness.dir, "package-upload-temp");
+    const { mkdirSync, readdirSync } = await import("node:fs");
+    mkdirSync(temporary, { recursive: true });
+    const previous = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = temporary;
+    process.env.TMP = temporary;
+    process.env.TMPDIR = temporary;
+    try {
+      const multipart = packageMultipart(Buffer.from("not a package"), "a valid long passphrase 灾备");
+      const missingCsrf = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/backup/package/verify",
+        cookies: { sh_session: harness.cookie },
+        headers: { "content-type": multipart.contentType },
+        payload: multipart.payload,
+      });
+      expect(missingCsrf.statusCode).toBe(403);
+      expect(readdirSync(temporary)).toEqual([]);
+
+      const token = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/tokens",
+        ...adminHeaders(harness),
+        payload: { name: "search-only", scopes: ["search"], rateLimitPerMin: 60 },
+      });
+      expect(token.statusCode).toBe(200);
+      const lowScope = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/backup/package/verify",
+        headers: { authorization: `Bearer ${token.json().token}`, "content-type": multipart.contentType },
+        payload: multipart.payload,
+      });
+      expect(lowScope.statusCode).toBe(403);
+      expect(readdirSync(temporary)).toEqual([]);
+
+      const oversize = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/backup/package/verify",
+        ...adminHeaders(harness),
+        headers: {
+          "x-csrf-token": harness.csrf,
+          "content-type": multipart.contentType,
+          "content-length": String(harness.ctx.config.maxBackupUploadBytes + 1024 * 1024 + 1),
+        },
+        payload: multipart.payload,
+      });
+      expect(oversize.statusCode).toBe(413);
+      expect(readdirSync(temporary)).toEqual([]);
+    } finally {
+      if (previous.TEMP === undefined) delete process.env.TEMP; else process.env.TEMP = previous.TEMP;
+      if (previous.TMP === undefined) delete process.env.TMP; else process.env.TMP = previous.TMP;
+      if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces the aggregate temporary-byte quota before creating a directory", async () => {
+    const harness = await createHarness({ maxBackupVerifyTempBytes: 1024 * 1024 });
+    const temporary = join(harness.dir, "package-upload-temp");
+    const { mkdirSync, readdirSync } = await import("node:fs");
+    mkdirSync(temporary, { recursive: true });
+    const previous = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = temporary;
+    process.env.TMP = temporary;
+    process.env.TMPDIR = temporary;
+    try {
+      const multipart = packageMultipart(Buffer.from("not a package"), "a valid long passphrase 灾备");
+      const response = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/backup/package/verify",
+        ...adminHeaders(harness),
+        headers: { "x-csrf-token": harness.csrf, "content-type": multipart.contentType },
+        payload: multipart.payload,
+      });
+      expect(response.statusCode).toBe(429);
+      expect(readdirSync(temporary)).toEqual([]);
+    } finally {
+      if (previous.TEMP === undefined) delete process.env.TEMP; else process.env.TEMP = previous.TEMP;
+      if (previous.TMP === undefined) delete process.env.TMP; else process.env.TMP = previous.TMP;
+      if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces the verification concurrency quota while extraction is active", async () => {
+    const maxUploadBytes = loadConfig().maxBackupUploadBytes;
+    const harness = await createHarness({
+      maxBackupVerifyConcurrency: 1,
+      maxBackupVerifyTempBytes: maxUploadBytes * 2 + 16 * 1024 * 1024,
+    });
+    const passphrase = "concurrent verification passphrase 灾备";
+    const created = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/package",
+      ...adminHeaders(harness),
+      payload: { passphrase },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const multipart = packageMultipart(Buffer.from(created.rawPayload), passphrase);
+    const request = () => harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/package/verify",
+      ...adminHeaders(harness),
+      headers: { "x-csrf-token": harness.csrf, "content-type": multipart.contentType },
+      payload: multipart.payload,
+    });
+    const responses = await Promise.all([request(), request()]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 429]);
+  });
+
+  it("applies the route rate limit before parsing an anonymous body", async () => {
+    const harness = await createHarness();
+    const temporary = join(harness.dir, "package-upload-temp");
+    const { mkdirSync, readdirSync } = await import("node:fs");
+    mkdirSync(temporary, { recursive: true });
+    const previous = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    process.env.TEMP = temporary;
+    process.env.TMP = temporary;
+    process.env.TMPDIR = temporary;
+    try {
+      const multipart = packageMultipart(Buffer.from("not a package"), "a valid long passphrase 灾备");
+      const statuses: number[] = [];
+      for (let index = 0; index < 4; index += 1) {
+        const response = await harness.app.inject({
+          method: "POST",
+          url: "/api/admin/backup/package/verify",
+          headers: { "content-type": multipart.contentType },
+          payload: multipart.payload,
+        });
+        statuses.push(response.statusCode);
+      }
+      expect(statuses).toEqual([401, 401, 401, 429]);
+      expect(readdirSync(temporary)).toEqual([]);
+    } finally {
+      if (previous.TEMP === undefined) delete process.env.TEMP; else process.env.TEMP = previous.TEMP;
+      if (previous.TMP === undefined) delete process.env.TMP; else process.env.TMP = previous.TMP;
+      if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("POST /api/admin/backup/verify", () => {
   it("accepts a valid snapshot and reports schema/tables/rows", async () => {
     const harness = await createHarness();
@@ -379,6 +771,27 @@ describe("POST /api/admin/backup/verify", () => {
     expect(body.rowCounts.provider_instances).toBe(1);
     expect(body.rowCounts.admin_users).toBe(1);
     expect(body.pendingMigrations).toEqual([]);
+  });
+
+  it("accepts a streaming multipart file upload for compatibility", async () => {
+    const harness = await createHarness();
+    const path = await snapshotTo(harness);
+    const boundary = `----searchhub${Date.now()}`;
+    const body = readFileSync(path);
+    const payload = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="snapshot.db"\r\nContent-Type: application/vnd.sqlite3\r\n\r\n`),
+      body,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/backup/verify",
+      ...adminHeaders(harness),
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "x-csrf-token": harness.csrf },
+      payload,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true, format: "legacy-db", structuralOk: true });
   });
 
   it("flags a snapshot created by a newer release", async () => {

@@ -112,6 +112,12 @@ async function main() {
     console.error(`[bundle] native addon for ${wanted} is missing at ${binding}`);
     process.exit(4);
   }
+  // better-sqlite3 checks prebuilds first and then build/Release. Keep both
+  // layouts so a packaged runtime still resolves the addon if prebuild detection
+  // differs (for example musl vs glibc) without depending on the host tree.
+  const releaseBinding = join(sqliteDst, "build", "Release", "better_sqlite3.node");
+  mkdirSync(dirname(releaseBinding), { recursive: true });
+  copyFileSync(binding, releaseBinding);
 
   console.log(`[bundle] done; ${count(APP)} files in package app/`);
 }
@@ -140,13 +146,15 @@ function platformKey() {
   const target = process.env["PACKAGE_TARGET"] ?? "";
   if (target.startsWith("windows")) return "win32";
   if (target.startsWith("macos")) return "darwin";
-  return "linux";
+  if (target.startsWith("linux")) return "linux";
+  return process.platform;
 }
 
 function archKey() {
   const target = process.env["PACKAGE_TARGET"] ?? "";
   if (target.includes("arm64")) return "arm64";
-  return "x64";
+  if (target.includes("x64")) return "x64";
+  return process.arch;
 }
 
 /** Node's platform name mapped to better-sqlite3's prebuild naming. */

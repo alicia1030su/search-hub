@@ -1,12 +1,13 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { desc, eq } from "drizzle-orm";
 import {
   SearchHubError,
   settingsUpdateSchema,
   tokenCreateSchema,
 } from "@search-hub/shared";
-import { auditLogs, modelConfigs, providerInstances, searchGroups } from "@search-hub/db";
+import { auditLogs, listMigrations, modelConfigs, openDatabaseFile, providerInstances, searchGroups } from "@search-hub/db";
+import { parseMasterKey, readMasterKey, validateBackupPassphrase, verifyBackupPackage, verifyDatabaseBackup, type BackupVerificationReport } from "@search-hub/backup";
 import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, authenticateAdminSessionReadOnly, requireAdmin, type Actor } from "../auth.js";
 import { audit, jsonFor, parseInput, sendError } from "../http.js";
@@ -22,8 +23,10 @@ import {
   snapshotFileName,
   snapshotReadStream,
   type UploadedSnapshot,
+  type UploadedBackupPackage,
 } from "../services/backup.js";
 import { newId } from "../security/crypto.js";
+import { BackupPackageService } from "../services/backup-package.js";
 import { validateAllSkills } from "../services/skills.js";
 import { existsSync as fileExists, readFileSync as readFile } from "node:fs";
 import { REPO_ROOT } from "../config.js";
@@ -68,6 +71,11 @@ const MCP_TOOLS = [
 ];
 
 export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void {
+  const backupPackages = new BackupPackageService(ctx);
+  void backupPackages.initialize().catch((error: unknown) => {
+    ctx.logger.warn({ err: error }, "could not initialize backup package maintenance");
+  });
+
   app.get(
     "/api/admin/dashboard",
     jsonFor(app, async (request) => {
@@ -409,6 +417,113 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
     }),
   );
 
+  /** Read-only disaster-recovery status; never returns key material. */
+  app.get("/api/admin/backups/status", jsonFor(app, async (request) => {
+    requireAdmin(actorOf(request, ctx));
+    return backupPackages.status();
+  }));
+
+  /** Creates and streams a passphrase-encrypted, complete recovery package. */
+  app.post(
+    "/api/admin/backup/package",
+    {
+      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      let generated: Awaited<ReturnType<BackupPackageService["create"]>> | null = null;
+      try {
+        const actor = requireAdmin(actorOf(request, ctx, true));
+        const body = (request.body ?? {}) as { passphrase?: unknown };
+        if (typeof body.passphrase !== "string") {
+          throw new SearchHubError("validation_error", "passphrase must be a string in the JSON body");
+        }
+        try {
+          validateBackupPassphrase(body.passphrase);
+        } catch (error) {
+          throw new SearchHubError("validation_error", error instanceof Error ? error.message : "Invalid passphrase");
+        }
+        try {
+          generated = await backupPackages.create(body.passphrase);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "backup package creation failed";
+          if (/quota|already being generated/i.test(message)) {
+            throw new SearchHubError("rate_limited", message, { status: 429 });
+          }
+          throw error;
+        }
+        audit(ctx, actorLabel(actor), "backup.package", null, {
+          bytes: generated.bytes,
+          sha256: generated.sha256,
+          restoreReadiness: generated.report.restoreReadiness,
+        }, request.ip);
+        reply
+          .header("content-disposition", `attachment; filename="${generated.name}"`)
+          .header("cache-control", "no-store")
+          .header("content-length", String(generated.bytes))
+          .header("x-search-hub-backup-sha256", generated.sha256)
+          .type("application/octet-stream");
+        return reply.send(snapshotReadStream(generated.path));
+      } catch (error) {
+        sendError(reply, error);
+      }
+    },
+  );
+
+  /** Verifies an uploaded complete package without staging a restore. */
+  app.post(
+    "/api/admin/backup/package/verify",
+    { config: { rateLimit: { max: 3, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      let upload: UploadedBackupPackage | null = null;
+      try {
+        const body = request.body as UploadedBackupPackage | null;
+        if (!body || typeof body.filePath !== "string" || typeof body.passphrase !== "string" || typeof body.dispose !== "function") {
+          throw new SearchHubError("validation_error", "Send one .shbackup file and passphrase as multipart/form-data fields");
+        }
+        upload = body;
+        const actor = requireAdmin(actorOf(request, ctx, true));
+        try {
+          validateBackupPassphrase(upload.passphrase);
+        } catch (error) {
+          throw new SearchHubError("validation_error", error instanceof Error ? error.message : "Invalid passphrase");
+        }
+        const expectedKey = ctx.secrets.recoveryKey();
+        let report: BackupVerificationReport;
+        try {
+          report = await verifyBackupPackage({
+            path: upload.filePath,
+            passphrase: upload.passphrase,
+            expectedMasterKey: expectedKey,
+            privateWorkDir: dirname(upload.filePath),
+            maxArchiveBytes: ctx.config.maxBackupUploadBytes,
+            maxDatabaseBytes: ctx.config.maxBackupUploadBytes,
+            appVersion: ctx.config.version,
+            knownMigrations: listMigrations(ctx.config.migrationsDir),
+          });
+        } finally {
+          expectedKey.fill(0);
+        }
+        audit(ctx, actorLabel(actor), "backup.package.verify", null, {
+          formatOk: report.formatOk,
+          structuralOk: report.structuralOk,
+          schemaCompatible: report.schemaCompatible,
+          keyFingerprintMatch: report.keyFingerprintMatch,
+          ciphertextSampleDecryptable: report.ciphertextSampleDecryptable,
+          restoreReadiness: report.restoreReadiness,
+          keyReadiness: report.keyReadiness,
+          sampleCount: report.sampleCount,
+          keyProofValid: report.keyProofValid,
+          bytes: report.bytes,
+        }, request.ip);
+        return report;
+      } catch (error) {
+        sendError(reply, error);
+      } finally {
+        await upload?.dispose();
+      }
+    },
+  );
+
   /**
    * Downloads a consistent SQLite snapshot.
    *
@@ -481,7 +596,6 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
   app.post("/api/admin/backup/verify", async (request, reply) => {
     let upload: UploadedSnapshot | null = null;
     try {
-      const actor = requireAdmin(actorOf(request, ctx, true));
       const body = request.body as UploadedSnapshot | null;
       if (!body || typeof body.filePath !== "string" || typeof body.dispose !== "function") {
         throw new SearchHubError(
@@ -490,6 +604,7 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
         );
       }
       upload = body;
+      const actor = requireAdmin(actorOf(request, ctx, true));
       const report = await inspectDatabaseFile(upload.filePath, {
         migrationsDir: ctx.config.migrationsDir,
         appVersion: ctx.config.version,
@@ -512,8 +627,23 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
         { ok: report.ok, compatible: report.compatible, schemaVersion: report.schemaVersion },
         "backup snapshot verified",
       );
+      let masterKey: Buffer | null = null;
+      try {
+        masterKey = ctx.secrets.source === "env"
+          ? parseMasterKey(ctx.config.encryptionKey ?? "")
+          : await readMasterKey(join(ctx.config.dataDir, "master.key"));
+      } catch {
+        masterKey = null;
+      }
+      const recovery = await verifyDatabaseBackup({
+        path: upload.filePath,
+        ...(masterKey ? { expectedMasterKey: masterKey } : {}),
+        appVersion: ctx.config.version,
+        knownMigrations: listMigrations(ctx.config.migrationsDir),
+        openDatabase: (path, readonly) => openDatabaseFile(path, { readonly }) as unknown as import("@search-hub/backup").SqliteHandle,
+      });
       reply.header("x-search-hub-integrity", report.integrity === "ok" ? "ok" : "failed");
-      return report;
+      return { ...report, ...recovery, format: "legacy-db", reason: report.reason ?? recovery.reason };
     } catch (error) {
       sendError(reply, error);
     } finally {

@@ -4,4 +4,4 @@ declare const __SHUB_VERSION__: string | undefined;
 export const CLI_VERSION =
   typeof __SHUB_VERSION__ === "string" && __SHUB_VERSION__.length > 0
     ? __SHUB_VERSION__
-    : "0.1.14";
+    : "0.1.15";

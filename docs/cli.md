@@ -65,6 +65,11 @@ shub providers test --all --kind search --confirm-cost
 shub providers test --all --include-keyless --json
 shub providers test --job job_xxx
 shub providers test --cancel job_xxx
+shub backup create --output backup.shbackup --passphrase-stdin
+shub backup verify backup.shbackup --passphrase-stdin
+shub backup restore backup.shbackup --data-dir /srv/search-hub-restored --passphrase-stdin
+shub backup restore backup.shbackup --data-dir /srv/search-hub-restored --apply --start-check --passphrase-stdin
+shub doctor --local --data-dir /var/lib/search-hub
 ```
 
 `search` maps only real REST fields: `providers`, `group`, `limit`, `mode`,
@@ -75,6 +80,10 @@ server owns model selection and execution.
 Bearer token. It performs a read-only preview first, skips missing/disabled keys,
 keeps keyless sources opt-in, and requires `--confirm-cost` in unattended mode
 when the preview reports potential paid probes.
+
+## Local backup maintenance
+
+`backup create|verify|restore` and `doctor --local` run without a remote server. They honour `SEARCH_HUB_DATA_DIR`, `SEARCH_HUB_DB_PATH` and `SEARCH_HUB_MIGRATIONS_DIR`. Passphrases come only from `--passphrase-stdin` or `SEARCH_HUB_BACKUP_PASSPHRASE`; interactive TTY input is hidden and there is deliberately no passphrase argv option. Complete packages use the `.shbackup` extension and contain exactly `manifest.json`, `data/search-hub.db` and `keys/master.key` in that order. Verification is streaming for files larger than the HTTP 64 MiB cap. For restore, `--data-dir` selects the new target while `SEARCH_HUB_DATA_DIR` and `SEARCH_HUB_INSTALL_DIR` identify the original source locations for the origin guard; the target must not equal, contain or be contained by either source path. Restore refuses non-empty targets, defaults to dry-run when neither `--dry-run` nor `--apply` is supplied, and supports `--report <file>` and isolated `--start-check` with `--apply`. See [disaster recovery](./disaster-recovery.md) for Bash and PowerShell examples.
 
 ## Output and exit codes
 

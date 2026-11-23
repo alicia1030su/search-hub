@@ -28,6 +28,7 @@ export default defineConfig({
       "@search-hub/providers": resolvePath("./packages/providers/src/index.ts"),
       "@search-hub/models": resolvePath("./packages/models/src/index.ts"),
       "@search-hub/mcp": resolvePath("./packages/mcp/src/index.ts"),
+      "@search-hub/backup": resolvePath("./packages/backup/src/index.ts"),
     },
   },
 });

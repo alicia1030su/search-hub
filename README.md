@@ -4,9 +4,9 @@
 
 [English](./README_EN.md) · [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [旧版迁移](./docs/legacy-migration.md) · [测试](./docs/testing.md) · [验收矩阵](./docs/ac-matrix.md) · [验收报告](./docs/acceptance-report.md) · [发布就绪](./docs/release-readiness.md) · [真实联调方案](./docs/real-search-validation-plan.md) · [能力清单](./docs/capability-inventory.md) · [远端验收](./docs/github-remote-acceptance-plan.md) · [Provider 开发](./docs/provider-plugin-guide.md)
 
-> **状态：v0.1.14 · 候选版本，发布门禁执行中。**
+> **状态：v0.1.15 · 候选版本，发布门禁执行中。**
 >
-> **v0.1.14 主题**：资源感知的测试/构建门禁、缓存容量与 Singleflight 修复、只读运行时资源面板，以及绑定最终代码指纹的发布证据链。M04 性能门槛与完整回归结果以 `docs/release-readiness.md` 的实际记录为准，未执行项保持 PENDING/BLOCKED。
+> **v0.1.15 主题**：age/tar 完整灾备包、六项恢复验证、默认 dry-run 的隔离恢复、失败升级整目录回滚，以及绑定最终代码指纹的发布证据链。M04 性能门槛与完整回归结果以 `docs/release-readiness.md` 的实际记录为准，未执行项保持 PENDING/BLOCKED。
 >
 > **上一 Stable**：v0.1.13 已发布，包含独立 `shub` CLI；历史验收、资产、Provenance 与 GHCR 证据保留在 `docs/release-readiness.md`。
 >
@@ -149,18 +149,18 @@ Search Hub 把这些做成一个可部署的服务：
 >
 > 三种状态严格区分：**已编码实现**（`builtin`，按官方协议写的适配器）／**模拟契约测试通过**（`mock_verified`，只证明代码路径正确，不碰真实厂商）／**真实厂商联调通过**（`live_tested`，有可复查的真实调用记录）。除 Hacker News、Crossref、OpenAlex、PubMed 外，其余适配器都属于「已编码实现」而非「已联调」。
 
-## 下载安装（v0.1.14 候选）
+## 下载安装（v0.1.15 候选）
 
-v0.1.14 发布流程将生成以下资产；只有在 draft Release、资产摘要、Provenance、GHCR digest 与资源证据全部通过后才会转为 Stable。
+v0.1.15 发布流程将生成以下资产；只有在 draft Release、资产摘要、Provenance、GHCR digest 与资源证据全部通过后才会转为 Stable。
 
 | 平台 | 服务端 | CLI `shub` | 需要什么 |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.14-windows-x64.zip` | `shub-v0.1.14-windows-x64.zip` | **无** |
-| Linux x64 | `search-hub-v0.1.14-linux-x64.tar.gz` | `shub-v0.1.14-linux-x64.tar.gz` | **无** |
-| Linux arm64 | `search-hub-v0.1.14-linux-arm64.tar.gz` | `shub-v0.1.14-linux-arm64.tar.gz` | **无** |
-| Node.js 22+ | — | `shub-v0.1.14-node22.tar.gz` | Node.js 22+ |
+| Windows x64 | `search-hub-v0.1.15-windows-x64.zip` | `shub-v0.1.15-windows-x64.zip` | **无** |
+| Linux x64 | `search-hub-v0.1.15-linux-x64.tar.gz` | `shub-v0.1.15-linux-x64.tar.gz` | **无** |
+| Linux arm64 | `search-hub-v0.1.15-linux-arm64.tar.gz` | `shub-v0.1.15-linux-arm64.tar.gz` | **无** |
+| Node.js 22+ | — | `shub-v0.1.15-node22.tar.gz` | Node.js 22+ |
 
-发布后从 [v0.1.14 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.14) 下载同一份 `SHA256SUMS` 并执行 `sha256sum -c SHA256SUMS`；`resource-evidence.json` 与七个归档都在摘要覆盖范围内。CLI 不需要部署服务端，可连接本机或远程 Search Hub。
+发布后从 [v0.1.15 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.15) 下载同一份 `SHA256SUMS` 并执行 `sha256sum -c SHA256SUMS`；`resource-evidence.json` 与七个归档都在摘要覆盖范围内。CLI 不需要部署服务端，可连接本机或远程 Search Hub。
 
 ### CLI 快速开始
 
@@ -184,6 +184,22 @@ $env:SEARCH_HUB_TOKEN = "sh_..."
 ```
 
 Token 只从环境变量或 `--token-stdin` 读取，不写入明文配置。完整说明见 [docs/cli.md](./docs/cli.md)。
+
+### v0.1.15 备份与灾备
+
+管理后台新增 **备份中心**（`/backup`）：可下载 age 默认强度加密的完整 `.shbackup` 恢复包、兼容的 `.db` 快照，并上传 `.shbackup` 或 `.db` 校验。完整包包含清单、一致性数据库与 `master.key`；网页不显示密钥，也不提供原址恢复。浏览器下载采用流式写盘，不支持 File System Access API 时请使用 Chromium/Edge 或本地 CLI。
+
+```bash
+shub backup create --output search-hub.shbackup --passphrase-stdin
+shub backup verify search-hub.shbackup --passphrase-stdin
+# 默认 dry-run：只验证并展示计划，不写入目标目录
+shub backup restore search-hub.shbackup --data-dir /srv/search-hub-restored --passphrase-stdin
+# 确认 dry-run 报告后才显式应用
+shub backup restore search-hub.shbackup --data-dir /srv/search-hub-restored --apply --start-check --passphrase-stdin
+shub doctor --local
+```
+
+Bash、PowerShell、Docker Volume、systemd 与 nginx 超时可复制示例见 [灾备指南](./docs/disaster-recovery.md)。恢复只允许不存在或为空的目标目录。
 
 > **v0.1.12 收口凭据泄漏与探测计量**：修复 URL query API Key 在 JSON/HTML/编码错误、错误 `details.url`、SQLite 健康历史、Key `last_error`、审计与 MCP 输出中的泄漏；单源、批量、Key 与定时探测统一 in-flight 锁，重复请求为 409 `already_running`；连接探测改为按物理 HTTP 跳计数，默认单次 5 跳、每日 50 跳，`billingUnit=unknown`；本地连接预算拒绝为 429 `quota_exceeded`，批量记 `SKIPPED_BUDGET`；GET 健康预览只读；Key 创建/更新最短 8 字符。新增迁移 `0010`，归档旧连接账本并只增不减、幂等重算。
 
@@ -256,7 +272,7 @@ Token 只从环境变量或 `--token-stdin` 读取，不写入明文配置。完
 **Linux**：
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.14-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.15-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless 不打开浏览器
 ```
 
@@ -265,7 +281,7 @@ cd search-hub && ./bin/search-hub          # 默认 127.0.0.1:8787，headless �
 **Docker**：
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.14    # 候选 tag；最终发布后可用
+docker pull ghcr.io/alicia1030su/search-hub:0.1.15    # 候选 tag；最终发布后可用
 # 镜像当前只构建 linux/amd64；arm64 主机请使用上面的 arm64 独立包
 docker compose up -d                                        # 或从源码构建
 ```

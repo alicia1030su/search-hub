@@ -17,6 +17,20 @@ Two mechanisms:
 
 A cookie-authenticated mutation without `x-csrf-token` returns `403`, never a silent success. Bearer-token requests do not need CSRF. Tokens are shown once at creation; only their SHA-256 hash is stored.
 
+## Backup and disaster recovery
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/admin/backups/status` | Read-only DB/WAL/schema/key-source/latest-backup status; revalidates package SHA/size and current key fingerprint |
+| POST | `/api/admin/backup/package` | JSON `{passphrase}` → verified streamed age-encrypted `.shbackup`; checksum is returned in `x-search-hub-backup-sha256` |
+| POST | `/api/admin/backup/package/verify` | Multipart `file` (`.shbackup`) + `passphrase`; verifies without restoring |
+| GET | `/api/admin/backup` | Legacy unencrypted `.db` snapshot; never includes `master.key` |
+| POST | `/api/admin/backup/verify` | Raw `.db` upload (64 MiB cap) with integrity/schema/key-sample checks |
+
+Admin-session mutations require CSRF. Package-verify processing order is rate limit → administrator scope → CSRF → temporary quota reservation → body consumption. Anonymous, missing-CSRF, low-scope and known-oversize requests create no temporary directory or file. Uploads use owner-randomized 0700 directories and 0600 files, heartbeat/stale cleanup, aggregate byte/concurrency quotas and Windows ACLs. Passphrases are body-only, trimmed, at least 12 Unicode code points, and never logged or audited.
+
+Package verification returns six boolean business results: `formatOk`, `structuralOk`, `schemaCompatible`, `keyFingerprintMatch`, `ciphertextSampleDecryptable`, and `restoreReadiness`. `keyReadiness`, `sampleCount`, and `keyProofValid` provide supporting evidence; `sha256Match` is separate integrity evidence, not a seventh business result. Full contracts are in `/api/openapi.json`; operational steps are in [disaster recovery](./disaster-recovery.md).
+
 ## Error shape
 
 ```json

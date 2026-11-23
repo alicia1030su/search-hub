@@ -1,5 +1,48 @@
 # 发布就绪报告
 
+## v0.1.15 发布流程（候选 → 提升，不重复构建）
+
+> 本节只定义流程与门禁，不记录尚未发生的候选运行、tag、Release 或 GHCR 发布事实。真实结果只能在对应命令或工作流成功后追加。
+
+1. **无 tag 候选**：在 `main` 的最终完整 40 位 SHA 上手动运行 `Release candidate`（`.github/workflows/release-candidate.yml`），输入精确 SHA，且 dispatch 所选 branch ref 必须正位于该 SHA，确保 OIDC provenance 的 source digest 与输入一致。工作流不接受分支名或移动 ref 作为输入；候选内部只等待同 SHA 的五条 `main` push 工作流 `ci/cli/docker/systemd/upgrade` 全部 success，并记录自身 run id。五条中任何缺失、未完成或失败都会失败，不能用旧 SHA 或 PR 结果替代。
+2. **候选构建与验收**：Windows x64、Linux x64/arm64 服务端包与 CLI、Node22 CLI 在对应 runner 构建并执行现有启动/REST/MCP 或真实服务端 CLI 验收；保留 Secret Scan、依赖审计、数据库迁移、Docker 11 项、systemd、升级矩阵、资源证据和 M04 门禁。`main` push 的 CI 在 `$GITHUB_SHA` checkout 上现场运行 DR 回归、性能与同进程内存验收，只生产并上传 Linux/performance/memory 子证据，不要求 partial 50 项 gate 已 PASS；PR 保留历史 cache/resource 轻量校验。candidate 在五条 main workflow 全绿后构建候选包，并由 core-acceptance 与 Windows/Linux/Docker/systemd 平台 job 现场生成 exact-SHA 报告；assemble 下载 CI 子证据与全部候选平台报告后执行最终 50 项聚合，任何非 PASS 都拒绝组装。资源 runtime、DR 子报告与 flat artifact `release-evidence-v0.1.15` 都生成在 runner 临时目录，不要求提交前存在 `docs/evidence/v0.1.15`，也不在提交中自引用尚未产生的 SHA。`docs/evidence/v0.1.14` 的 8 份缓存 raw、baseline/benchmark commit 与指纹原样保留为历史子证据；runtime-only 构建将其适用性重绑到当前 exact SHA，并继续执行原有 9 项 SHA256SUMS、gzip、scope fingerprint 与容量校验，不删除、不降校验。
+3. **候选资产绑定**：候选生成 7 个包、`resource-evidence.json`、单一 `SHA256SUMS`、`candidate-manifest.json` 和 run 唯一 GHCR `candidate-<sha>-<run-id>-<attempt>` tag。manifest 绑定 source SHA、candidate run/attempt、CI run、五条门禁 run、每个资产字节数/SHA256/attestation bundle 引用、v0.1.15 资源与 DR gate 摘要，以及 GHCR `repo@digest`；镜像必须是 `linux/amd64` 单架构，并核验 manifest mediaType、config digest/config mediaType。资产、manifest 和候选镜像 digest 都生成并下载验证 SLSA build provenance bundle。
+4. **tag 前本地 preflight**：最终 SHA 全绿后运行：
+
+   ```bash
+   node packaging/check-release-gates.mjs \
+     --phase preflight \
+     --sha <main-最终完整SHA> \
+     --version 0.1.15 \
+     --tag v0.1.15 \
+     --report artifacts/v0.1.15/release-gate.json
+   ```
+
+   preflight 通过 `gh API` 要求六条 exact-SHA success（五条 main push + 一条 `workflow_dispatch` candidate）、候选 evidence/attestation/包 artifact 存在、本地和远端 tag 均不存在，并再次验证 v0.1.15 资源证据与 R01–R38/A01–A12 全 PASS 的 DR gate。只有 exit 0 且报告 `tagCreationAllowed=true` 才可创建 annotated tag；缺失候选、SHA 不匹配、tag 已存在/移动或任何门禁非 success 都必须失败。
+5. **不可变 Stable tag**：preflight 成功后，在同一个最终 SHA 上创建新的 annotated tag `v0.1.15`。不得移动、覆盖或删除已有 tag。
+6. **只提升、不重建**：tag 触发 `.github/workflows/release.yml`。它验证 annotated tag、远端 tag 对象未移动、tag commit 等于候选 source SHA、六条门禁和候选证据，再下载并逐字节校验候选资产、v0.1.15 资源/DR 证据、attestation bundle 与 GHCR manifest mediaType/digest/config digest/platform。随后仅创建/更新空 draft，用 `imagetools create` 从已验证 candidate digest 提升 `0.1.15`、`v0.1.15`、`latest` 三个同 digest 标签，最后发布 Stable。tag 后不运行包构建、CLI 构建、Docker build 或重新 attestation；已有资产或已发布 Release 会直接失败，避免重复或混用候选。
+
+### 8 个内容资产与来源
+
+| 资产 | 平台/架构 | 候选来源 job |
+|---|---|---|
+| `search-hub-v0.1.15-windows-x64.zip` | Windows x64 | `windows` |
+| `search-hub-v0.1.15-linux-x64.tar.gz` | Linux x64 | `linux` matrix x64 |
+| `search-hub-v0.1.15-linux-arm64.tar.gz` | Linux arm64 | `linux` matrix arm64 |
+| `shub-v0.1.15-windows-x64.zip` | Windows x64 | `cli-windows` |
+| `shub-v0.1.15-linux-x64.tar.gz` | Linux x64 | `cli-linux` matrix x64 |
+| `shub-v0.1.15-linux-arm64.tar.gz` | Linux arm64 | `cli-linux` matrix arm64 |
+| `shub-v0.1.15-node22.tar.gz` | Node.js 22+ portable | `cli-portable` |
+| `resource-evidence.json` | 平台无关，v0.1.15 exact-SHA 资源 + DR gate 摘要 | `assemble`，来自 CI `release-evidence-v0.1.15` |
+
+`SHA256SUMS` 覆盖上述 8 个内容资产，是 Release 的第 9 个上传文件；Provenance/attestation 保存在 GitHub attestation store 并随 candidate evidence 下载校验，不重复计为内容资产。`candidate-manifest.json` 绑定全部资产、attestation 引用和 GHCR `repo@digest`，自身也单独 attestation。
+
+### v0.1.15 灾备门禁
+
+候选 SHA 必须额外通过：核心包/快照/CLI/API 定向测试、`shub` SEA/portable 与 maintain bundle 验收、Windows ACL 与 Linux 权限实测、Docker Volume 与 systemd 目录恢复演练、v0.1.14→v0.1.15 数据保留、失败回滚后的 key 解密、>64MiB 流式验证与多轮资源峰值记录。任一门禁缺失或失败保持 BLOCKED；本地测试结果不能替代对应平台/同 SHA 证据。
+
+CI artifact 的 `disaster-recovery/gate.json` 必须绑定 exact release commit/code fingerprint，`verdict=PASS`，`requirements` 恰好包含 R01–R38 与 A01–A12 且每项均为 `PASS`，每项至少引用一个证据文件；同目录 `SHA256SUMS` 必须覆盖 gate 与全部证据文件。gate 只能由 aggregator 从独立 R/A 报告生成：每份报告都校验 exact SHA、releaseCodeFingerprint、clean source、相对路径和覆盖它的 SHA256SUMS。performance manifest 只是子证据，不能单独作为 DR gate；R20 来自真实 128MiB offline verify，R33 来自 legacy 与环境/端口/配置隔离矩阵，R34 必须同时具有 10/64/256 create/verify/restore 多轮性能子证据与同进程多轮内存/临时盘/句柄证据。A04/A11 即使性能子集 PASS 也保持 `BLOCKED`，直到 legacy/M04/fault/full regression/platform 独立证据齐备。未执行统一 `NOT TESTED`，缺实现为 `NOT IMPLEMENTED`，受环境或证据不齐阻挡为 `BLOCKED`；这些状态、缺失证据、dirty source 或哈希不一致都会阻止 preflight/tag promoter，不得伪造 PASS。平台独立报告由 candidate 自身的 core-acceptance 与 Windows/Linux/Docker/systemd job 在候选包构建后生成；assemble 才将它们与 CI 子证据汇总为最终 gate。若平台报告缺失或任何项非 PASS，candidate 组装失败，不会以部分证据启动发布。systemd drill 要求 PID 1 为 systemd 且具备 root；不满足的 runner 必须保持 BLOCKED/失败，不能跳过或伪造 PASS。
+
 ## v0.1.14 Stable（2026-11-23）
 
 | 项 | 状态 |

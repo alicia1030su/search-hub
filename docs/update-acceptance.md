@@ -2,6 +2,21 @@
 
 本文件记录 v0.1.6-beta.1 之后的更新链路验收：跨版本升级、故障注入、systemd、
 供应链审计与健康误判。**每一条都注明是在哪跑的和结果**，没跑的不写"通过"。
+第一章的 v0.1.15 addendum 描述当前事务化升级器；后续保留为历史版本验收记录。
+
+## v0.1.15 addendum：事务化升级器
+
+| 验收 | 环境 | 状态 |
+|---|---|---|
+| 健康升级、坏包回滚、篡改/降级/架构拒绝、数据保留 | Windows 本机真实 launcher/进程/ZIP | PASS |
+| 故障注入 A–G | Windows 本机隔离临时目录 | PASS |
+| 磁盘满 H | Linux 特权 tmpfs | NOT TESTED |
+| systemd 自定义 unit/data/db | 真实 systemd 容器/主机 | NOT TESTED |
+| Linux arm64 独立真机 | arm64 硬件 | NOT TESTED |
+
+当前实现使用流式 SHA-256、严格 semver/平台/架构、`ServiceConfigResolver`、只读
+`VACUUM INTO`、完整 dataDir 备份、目录级回滚和 journal 恢复。损坏归档在停服前拒绝
+（exit 1）；schema 前移失败后恢复升级前逻辑数据并保留失败 dataDir。
 
 ## 一、跨版本升级
 
@@ -26,12 +41,12 @@
 | 用例 | 注入方式 | 结果 |
 |---|---|---|
 | A 下载截断 | 声明长度 +4 KiB | exit 1，`size_mismatch`，程序与数据未变 |
-| B 归档损坏 | 校验和正确但内容不是归档 | exit 4，未替换，无遗留服务 |
+| B 归档损坏 | 校验和正确但内容不是归档 | 历史版本 exit 4；v0.1.15 在停服前拒绝，exit 1，未替换，无遗留服务 |
 | C 安装失败 | Windows：在 `app` 内持打开句柄制造 EBUSY；Linux：安装根只读 | exit 3，旧版本仍以**自己的版本号**对外服务 |
 | D 停止冲突 | 端口被另一进程占用 | 数据未损，失败可见 |
 | E 启动超时 | 新程序永不监听 | exit 3，回滚，旧程序恢复，单进程 |
 | F 健康检查失败 | 新程序返回 503 | exit 3，回滚 |
-| G 迁移不兼容 | 新程序把 `user_version` 改成 9 后启动失败 | exit 3，**数据库回到升级前字节**（schema=3） |
+| G 迁移不兼容 | 新程序把 `user_version` 改成 9 后启动失败 | 历史版本断言字节相同；v0.1.15 验证逻辑内容与 schema=3，失败版本数据目录保留 |
 | H 磁盘满 | `--data` 指向 512 KiB tmpfs，解压时 ENOSPC | 失败可见、该盘数据字节不变、仍有可运行程序、旧版本继续服务 |
 
 两点必须说明：
@@ -42,11 +57,9 @@
 - **C 早期版本在 Windows 上也是假测试**：断言"要么成功、要么还有文件"在任何结果下
   都成立。现在用真实 EBUSY 触发失败，并断言旧版本必须恢复服务。
 
-**"不留两个进程同时写同一个库"**的保证方式：
-launcher 单实例锁（O_EXCL）+ 更新器在替换前后都调用 `--stop` 并读取
-`launcher.lock` 强制终止残留 pid（`hardStop`），再等待进程消失。
-systemd 环境下改由 `systemctl stop/start` 驱动，`hardStop` 主动跳过——
-直接杀 unit 的子进程会被 `Restart=on-failure` 拉起并和新的启动竞争。
+**v0.1.15 的停服证明**：systemd 要求 `ActiveState=inactive/failed`、`SubState=dead`、
+`MainPID=0`；launcher 要求锁中 PID 不存在且配置端口不再响应。无法证明即拒绝，
+不再按 PID 盲杀可能已被复用的进程。systemd 只由 `systemctl stop/start` 驱动。
 
 ## 三、systemd（真实 systemd，不是同一 CLI 的模拟）
 

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +11,8 @@ import { buildSummary } from "../../scripts/build-resource-evidence.mjs";
 import { verifyEvidence } from "../../packaging/verify-resource-evidence.mjs";
 // @ts-expect-error -- plain ESM resource module
 import { stageResourceEvidence } from "../../scripts/stage-resource-evidence.mjs";
+import { aggregateDisasterRecoveryEvidence } from "../../packaging/aggregate-disaster-recovery-evidence.mjs";
+import { combineReleaseEvidence, verifyCombinedReleaseEvidence } from "../../packaging/release-evidence.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const temporary: string[] = [];
@@ -48,6 +50,36 @@ const verdict = {
 };
 
 describe("resource evidence", () => {
+  it("generates and verifies exact-SHA release evidence in main-push CI without committed self-reference", () => {
+    const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+    expect(ci).toContain("name: Resource evidence verification");
+    expect(ci).not.toMatch(/resource-evidence:[\s\S]{0,250}?\n    if:/);
+    expect(ci).toContain("if: github.event_name == 'push' && github.ref == 'refs/heads/main'");
+    expect(ci).toContain('--release-ref "$GITHUB_SHA"');
+    expect(ci).toContain("--source-evidence-dir docs/evidence/v0.1.14");
+    expect(ci).toContain("--sizes 10,64,128,256");
+    expect(ci).toContain("--rounds 5");
+    expect(ci).toContain("--fresh-rounds 5");
+    expect(ci).toContain("node --expose-gc --import tsx tests/disaster-recovery/backup-memory-loop.mjs --self-check");
+    expect(ci).toContain("node --expose-gc --import tsx tests/disaster-recovery/backup-performance.mjs --run");
+    expect(ci).not.toContain("aggregate-disaster-recovery-evidence.mjs");
+    expect(ci).not.toContain("--allow-incomplete");
+    expect(ci).not.toContain("verify-disaster-recovery-evidence.mjs");
+    expect(ci).not.toContain("release-evidence.mjs verify-combined");
+    const candidate = readFileSync(join(root, ".github", "workflows", "release-candidate.yml"), "utf8");
+    expect(candidate).toContain("core-acceptance.mjs --run");
+    expect(candidate).toContain("platform-windows.ps1");
+    expect(candidate).toContain("platform-linux.sh");
+    expect(candidate).toContain("platform-docker.sh");
+    expect(candidate).toContain("platform-systemd.sh");
+    expect(candidate).toContain("node packaging/aggregate-disaster-recovery-evidence.mjs");
+    expect(candidate).toContain("release-evidence.mjs combine");
+    expect(candidate).toContain("verify-disaster-recovery-evidence.mjs");
+    expect(ci).toContain("name: release-evidence-v0.1.15");
+    expect(ci).not.toContain("docs/evidence/v0.1.15");
+    expect(ci).not.toContain("--output-dir docs/evidence/v0.1.14");
+  });
+
   it("computes stable tree and per-benchmark scope fingerprints", () => {
     expect(codeFingerprint(root, "HEAD")).toMatch(/^[0-9a-f]{64}$/);
     expect(codeFingerprint(root, "HEAD")).toBe(codeFingerprint(root, "HEAD"));
@@ -73,6 +105,7 @@ describe("resource evidence", () => {
   it("builds a summary with separate baseline, benchmark and release fingerprints", () => {
     const summary = buildSummary({ repoRoot: root, releaseRef: BENCHMARK_COMMIT, artifactsDir: ".", reports: reports(), verdict, pkg: { devDependencies: { vitest: "5.1.0", "@playwright/test": "1.64.1" } }, generatedAt: "2026-11-23T00:00:00.000Z" });
     expect(summary.baseline.commit).toBe(BASELINE_COMMIT);
+    expect(summary.suite).toBe("search-hub-resource-v0.1.14");
     expect(summary.benchmarkCode.commit).toBe(BENCHMARK_COMMIT);
     expect(summary.releaseCode.codeFingerprint).toBe(codeFingerprint(root, BENCHMARK_COMMIT));
     expect(summary.baseline.machineFingerprint).toBe(machineFingerprint(machine()));
@@ -100,8 +133,63 @@ describe("resource evidence", () => {
     writeFileSync(doctorPath, "{}");
     const files = stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, outputDir });
     expect(files).toHaveLength(12);
-    expect(readdirSync(outputDir).sort()).toEqual(["SHA256SUMS", "cache-benchmark-summary.json", "raw", "resource-doctor.json", "resource-evidence-v0114.json"]);
+    expect(readdirSync(outputDir).sort()).toEqual(["SHA256SUMS", "cache-benchmark-summary.json", "raw", "resource-doctor.json", "resource-evidence-v0115.json"]);
     expect(readdirSync(join(outputDir, "raw"))).toHaveLength(8);
+    expect(() => stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, outputDir: directory })).toThrow(/stage_output_would_remove_source/);
+  });
+
+  it("rebinds historical cache raw evidence to the exact release without deleting it", () => {
+    const directory = mkdtempSync(join(tmpdir(), "search-hub-historical-runtime-"));
+    temporary.push(directory);
+    const evidenceDir = join(directory, "evidence");
+    const runtimePath = join(directory, "resource-evidence-v0115.json");
+    execFileSync(process.execPath, ["scripts/build-resource-evidence.mjs", "--runtime-only", "--release-ref", "HEAD", "--source-evidence-dir", "docs/evidence/v0.1.14", "--output-dir", evidenceDir, "--runtime-output", runtimePath], { cwd: root, encoding: "utf8" });
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    expect(verifyEvidence({ repoRoot: root, commit, summaryPath: join(evidenceDir, "cache-benchmark-summary.json"), sumsPath: join(evidenceDir, "SHA256SUMS"), evidenceDir })).toMatchObject({ ok: true, rawFileCount: 8 });
+    expect(JSON.parse(readFileSync(runtimePath, "utf8")).releaseCodeFingerprint).toBe(codeFingerprint(root, commit));
+    expect(readdirSync(join(root, "docs", "evidence", "v0.1.14", "raw"))).toHaveLength(8);
+  });
+
+  it("refuses to rebind tampered historical cache evidence", () => {
+    const directory = mkdtempSync(join(tmpdir(), "search-hub-tampered-history-"));
+    temporary.push(directory);
+    const sourceDir = join(directory, "history");
+    cpSync(join(root, "docs", "evidence", "v0.1.14"), sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, "raw", "cache-hit-candidate.json.gz"), "tampered");
+    expect(() => execFileSync(process.execPath, ["scripts/build-resource-evidence.mjs", "--runtime-only", "--release-ref", "HEAD", "--source-evidence-dir", sourceDir, "--output-dir", join(directory, "output"), "--runtime-output", join(directory, "runtime.json")], { cwd: root, encoding: "utf8", stdio: "pipe" })).toThrow(/raw (?:hash|size) mismatch/);
+  });
+
+  it("verifies a combined exact-SHA artifact against raw resource evidence and the aggregated DR gate", () => {
+    const directory = mkdtempSync(join(tmpdir(), "search-hub-combined-evidence-"));
+    temporary.push(directory);
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    const runtimePath = join(directory, "resource-evidence-v0115.json");
+    execFileSync(process.execPath, ["scripts/build-resource-evidence.mjs", "--runtime-only", "--release-ref", commit, "--source-evidence-dir", "docs/evidence/v0.1.14", "--output-dir", directory, "--runtime-output", runtimePath], { cwd: root, encoding: "utf8" });
+    const drDir = join(directory, "disaster-recovery");
+    const reportDir = join(drDir, "reports", "full");
+    mkdirSync(reportDir, { recursive: true });
+    const ids = [
+      ...Array.from({ length: 38 }, (_, index) => `R${String(index + 1).padStart(2, "0")}`),
+      ...Array.from({ length: 12 }, (_, index) => `A${String(index + 1).padStart(2, "0")}`),
+    ];
+    const report = {
+      schemaVersion: 1,
+      kind: "search-hub-disaster-recovery-test",
+      source: { commit, releaseCodeFingerprint: codeFingerprint(root, commit), dirty: false },
+      requirements: Object.fromEntries(ids.map((id) => [id, "PASS"])),
+      requirementEvidence: Object.fromEntries(ids.map((id) => [id, { result: "PASS" }])),
+    };
+    const reportBytes = JSON.stringify(report);
+    writeFileSync(join(reportDir, "report.json"), reportBytes);
+    writeFileSync(join(reportDir, "SHA256SUMS"), `${sha256(reportBytes)}  report.json\n`);
+    expect(aggregateDisasterRecoveryEvidence({ repoRoot: root, commit, evidenceDir: drDir }).gate.verdict).toBe("PASS");
+    const combinedPath = join(directory, "resource-evidence.json");
+    combineReleaseEvidence({ resourcePath: runtimePath, disasterRecoveryDir: drDir, output: combinedPath, commit });
+    expect(verifyCombinedReleaseEvidence({ combinedPath, disasterRecoveryDir: drDir, commit })).toMatchObject({ ok: true, requirementCount: 50 });
+    const combined = JSON.parse(readFileSync(combinedPath, "utf8"));
+    combined.resource.generatedAt = "tampered";
+    writeFileSync(combinedPath, JSON.stringify(combined));
+    expect(() => verifyCombinedReleaseEvidence({ combinedPath, disasterRecoveryDir: drDir, commit })).toThrow(/combined_resource_runtime_mismatch/);
   });
 
   it("verifies hashes, gzip payloads, fingerprints and capacity evidence", () => {

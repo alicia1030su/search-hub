@@ -1,40 +1,27 @@
 #!/usr/bin/env node
-/**
- * Search Hub updater — the process that swaps program files.
- *
- * It is deliberately a **separate process** from the server:
- * - on Windows the running `SearchHub.exe` (and the bundled `node.exe`) are locked
- *   and cannot be replaced in place;
- * - on Linux systemd owns the service, so the same flow is driven from outside.
- *
- * Flow:
- *   1. re-verify the staged package (SHA256 + size + archive layout)
- *   2. refuse downgrades, foreign architectures and path traversal
- *   3. back up the data directory (database + master key) and the current program
- *   4. install the new program files
- *   5. start it and wait for a health check
- *   6. on failure, restore the old program **and**, when the database schema moved
- *      forward irreversibly, restore the database from the pre-update backup too
- *
- * Everything that can destroy data is fail-closed: if a check cannot be performed,
- * the update does not proceed.
- */
+/** Fail-closed update primitives shared by the updater and its acceptance tests. */
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   copyFileSync,
   cpSync,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
+  readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-/** Thrown for every refusal; `code` is what the caller reports. */
 export class UpdateError extends Error {
   constructor(code, message) {
     super(message);
@@ -43,280 +30,370 @@ export class UpdateError extends Error {
   }
 }
 
-const ALLOWED_SUFFIX = {
-  win32: ".zip",
-  linux: ".tar.gz",
-};
+const ALLOWED_SUFFIX = { win32: ".zip", linux: ".tar.gz" };
 
-/**
- * Rejects an archive entry that would write outside the install root.
- *
- * Zip/Tar entries are attacker-influenced: `--prefix` style traversal (`../`),
- * absolute paths and Windows drive-relative names all exist in the wild.
- */
+function normalizedRealPath(path) {
+  const actual = realpathSync(path);
+  return process.platform === "win32" ? actual.toLowerCase() : actual;
+}
+
+export function assertNoReparsePath(path, label = "path") {
+  const absolute = resolve(path);
+  const info = lstatSync(absolute);
+  if (info.isSymbolicLink()) throw new UpdateError("unsafe_path", `${label} must not be a symlink or junction: ${absolute}`);
+  if (existsSync(absolute) && normalizedRealPath(absolute) !== (process.platform === "win32" ? absolute.toLowerCase() : absolute)) {
+    throw new UpdateError("unsafe_path", `${label} resolves through a reparse point: ${absolute}`);
+  }
+  return info;
+}
+
 export function assertSafeEntry(entry) {
-  if (typeof entry !== "string" || entry.length === 0) {
-    throw new UpdateError("unsafe_archive", "Archive contains an empty entry name");
+  if (typeof entry !== "string" || entry.length === 0 || entry.includes("\0")) {
+    throw new UpdateError("unsafe_archive", "Archive contains an empty or invalid entry name");
   }
-  const normalized = entry.replace(/\\/g, "/");
-  if (normalized.startsWith("/")) {
-    throw new UpdateError("unsafe_archive", `Archive entry is absolute: ${entry}`);
+  if (entry.includes("\\")) throw new UpdateError("unsafe_archive", `Archive entry uses a backslash: ${entry}`);
+  if (entry.startsWith("/") || /^[A-Za-z]:/.test(entry) || entry.startsWith("//")) {
+    throw new UpdateError("unsafe_archive", `Archive entry is absolute or drive-qualified: ${entry}`);
   }
-  if (/^[a-zA-Z]:/.test(normalized)) {
-    throw new UpdateError("unsafe_archive", `Archive entry is drive-qualified: ${entry}`);
+  if (Array.from(entry).some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x1f || code === 0x7f || ':*?"<>|'.includes(character);
+  })) {
+    throw new UpdateError("unsafe_archive", `Archive entry contains a forbidden path construct: ${entry}`);
   }
+  let normalized = entry;
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  if (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
   const parts = normalized.split("/");
-  if (parts.includes("..")) {
-    throw new UpdateError("unsafe_archive", `Archive entry escapes the install root: ${entry}`);
+  if (!normalized || parts.some((part) => part === "" || part === "." || part === "..")) {
+    throw new UpdateError("unsafe_archive", `Archive entry escapes or ambiguously addresses the install root: ${entry}`);
   }
   return normalized;
 }
 
-/** Refuses anything that is not a forward version change. */
+function parseSemver(value) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(value));
+  if (!match) throw new UpdateError("invalid_version", `Invalid semantic version: ${value}`);
+  return { core: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4] ?? null };
+}
+
+function comparePrerelease(left, right) {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  const a = left.split(".");
+  const b = right.split(".");
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if (a[index] === undefined) return -1;
+    if (b[index] === undefined) return 1;
+    if (a[index] === b[index]) continue;
+    const an = /^\d+$/.test(a[index]);
+    const bn = /^\d+$/.test(b[index]);
+    if (an && bn) return Number(a[index]) - Number(b[index]);
+    if (an !== bn) return an ? -1 : 1;
+    return a[index] < b[index] ? -1 : 1;
+  }
+  return 0;
+}
+
+export function compareVersions(left, right) {
+  const a = parseSemver(left);
+  const b = parseSemver(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return a.core[index] - b.core[index];
+  }
+  return comparePrerelease(a.pre, b.pre);
+}
+
 export function assertUpgrade(currentVersion, targetVersion) {
-  const parse = (value) => {
-    const [core, pre] = String(value).replace(/^v/, "").split("-");
-    const nums = (core ?? "").split(".").map((part) => Number(part.replace(/\D/g, "")) || 0);
-    return { nums, pre: pre ?? null };
-  };
-  const a = parse(targetVersion);
-  const b = parse(currentVersion);
-  for (let i = 0; i < Math.max(a.nums.length, b.nums.length); i += 1) {
-    const left = a.nums[i] ?? 0;
-    const right = b.nums[i] ?? 0;
-    if (left > right) return;
-    if (left < right) {
-      throw new UpdateError(
-        "downgrade_blocked",
-        `Refusing to install ${targetVersion} over ${currentVersion}: downgrades are not supported`,
-      );
-    }
+  const target = parseSemver(targetVersion);
+  const current = parseSemver(currentVersion);
+  const comparison = compareVersions(targetVersion, currentVersion);
+  if (comparison < 0 || (comparison === 0 && target.pre !== null && current.pre === null)) {
+    throw new UpdateError("downgrade_blocked", `Refusing to replace ${currentVersion} with ${targetVersion}: downgrades and prereleases over a stable release are not supported`);
   }
-  if (a.pre === null && b.pre !== null) return; // release over prerelease is fine
-  if (a.pre !== null && b.pre === null) {
-    throw new UpdateError(
-      "downgrade_blocked",
-      `Refusing to replace release ${currentVersion} with prerelease ${targetVersion}`,
-    );
-  }
-  if (a.pre !== null && b.pre !== null && a.pre === b.pre) {
-    throw new UpdateError("same_version", `${targetVersion} is already installed`);
-  }
+  if (comparison === 0) throw new UpdateError("same_version", `${targetVersion} is already installed`);
 }
 
-/** Refuses an asset built for another OS/arch. */
 export function assertArchMatches(assetName, platform = process.platform, arch = process.arch) {
-  const os = platform === "win32" ? "windows" : platform === "darwin" ? "macos" : "linux";
-  if (!assetName.includes(`-${os}-`)) {
-    throw new UpdateError("wrong_platform", `Asset ${assetName} is not built for ${os}`);
-  }
-  if (!assetName.includes(`-${arch}`)) {
-    throw new UpdateError("wrong_arch", `Asset ${assetName} is not built for ${arch}`);
-  }
-  if (!assetName.endsWith(ALLOWED_SUFFIX[platform] ?? ".tar.gz")) {
-    throw new UpdateError("wrong_format", `Asset ${assetName} does not match this platform's archive format`);
+  const os = platform === "win32" ? "windows" : platform === "linux" ? "linux" : null;
+  if (!os) throw new UpdateError("wrong_platform", `Unsupported update platform: ${platform}`);
+  const suffix = ALLOWED_SUFFIX[platform];
+  const expected = new RegExp(`^search-hub-v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?-${os}-${arch}${suffix.replace(".", "\\.")}$`);
+  if (!expected.test(assetName)) {
+    throw new UpdateError("wrong_platform", `Asset ${assetName} is not the exact ${os}/${arch} package for this installation`);
   }
 }
 
-/** Verifies size and digest of a staged file. Returns the computed digest. */
 export function verifyStagedFile(filePath, expectedSha256, expectedSize) {
-  if (!existsSync(filePath)) {
-    throw new UpdateError("missing_package", `Staged package not found: ${filePath}`);
+  if (!existsSync(filePath)) throw new UpdateError("missing_package", `Staged package not found: ${filePath}`);
+  assertNoReparsePath(filePath, "staged package");
+  const info = statSync(filePath);
+  if (!info.isFile()) throw new UpdateError("missing_package", `Staged package is not a regular file: ${filePath}`);
+  if (typeof expectedSize === "number" && expectedSize > 0 && info.size !== expectedSize) {
+    throw new UpdateError("size_mismatch", `Staged package is ${info.size} bytes, expected ${expectedSize}`);
   }
-  const bytes = readFileSync(filePath);
-  if (typeof expectedSize === "number" && expectedSize > 0 && bytes.byteLength !== expectedSize) {
-    throw new UpdateError(
-      "size_mismatch",
-      `Staged package is ${bytes.byteLength} bytes, expected ${expectedSize}`,
-    );
+  if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256 ?? "")) {
+    throw new UpdateError("checksum_mismatch", "A valid SHA-256 digest is required");
   }
-  const actual = createHash("sha256").update(bytes).digest("hex");
-  if (!expectedSha256 || actual !== expectedSha256.toLowerCase()) {
-    throw new UpdateError(
-      "checksum_mismatch",
-      `Staged package hashes to ${actual}, release metadata says ${expectedSha256 ?? "(none)"}`,
-    );
+  const hash = createHash("sha256");
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(1024 * 1024);
+    for (;;) {
+      const bytes = readSync(fd, buffer);
+      if (bytes === 0) break;
+      hash.update(buffer.subarray(0, bytes));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  const actual = hash.digest("hex");
+  if (actual !== expectedSha256.toLowerCase()) {
+    throw new UpdateError("checksum_mismatch", `Staged package hashes to ${actual}, release metadata says ${expectedSha256}`);
   }
   return actual;
 }
 
-/**
- * Backs up everything needed to come back: the database, the master key and the
- * program directory.
- *
- * `master.key` is included on purpose: a database backup without it cannot
- * decrypt stored provider credentials, so restoring only the .db would lose every
- * API key.
- */
-export function backupCurrent({ dataDir, appDir, backupRoot, stamp = new Date().toISOString() }) {
-  const target = join(backupRoot, stamp.replace(/[:.]/g, "-"));
-  mkdirSync(target, { recursive: true });
-
-  for (const name of ["search-hub.db", "search-hub.db-wal", "search-hub.db-shm", "master.key"]) {
-    const source = join(dataDir, name);
-    if (existsSync(source)) copyFileSync(source, join(target, name));
-  }
-  const manifest = {
-    createdAt: stamp,
-    dataDir,
-    appDir,
-    files: readdirSync(target),
-    // Recorded so a rollback can tell whether the database moved forward.
-    schemaVersion: readSchemaVersion(join(dataDir, "search-hub.db")),
-  };
-  writeFileSync(join(target, "backup.json"), JSON.stringify(manifest, null, 2), "utf8");
-
-  if (appDir && existsSync(appDir)) {
-    const programBackup = join(target, "app");
-    cpSync(appDir, programBackup, { recursive: true });
-  }
-  return { path: target, manifest };
-}
-
-/** Reads `PRAGMA user_version` without depending on better-sqlite3 (best effort). */
-export function readSchemaVersion(dbPath) {
+function syncDirectory(path) {
+  let fd;
   try {
-    if (!existsSync(dbPath)) return null;
-    const buffer = readFileSync(dbPath);
-    // Header layout: 100 bytes, user_version is a 4-byte big-endian int at offset 60.
-    if (buffer.byteLength < 100) return null;
-    if (buffer.subarray(0, 15).toString("utf8") !== "SQLite format 3") return null;
-    return buffer.readUInt32BE(60);
+    fd = openSync(path, "r");
+    fsyncSync(fd);
   } catch {
-    return null;
+    // Directory fsync is not available on every Windows filesystem. File fsync
+    // and atomic rename still provide the documented best available guarantee.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
-/**
- * Swaps the program directory.
- *
- * The old tree is renamed aside rather than deleted, so a failed health check can
- * put it back without re-downloading anything.
- */
+export function writeJsonAtomic(path, value) {
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
+  try {
+    writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temporary, path);
+  syncDirectory(dirname(path));
+}
+
+export function snapshotSqliteDatabase(sourcePath, destinationPath) {
+  assertNoReparsePath(sourcePath, "source database");
+  if (!statSync(sourcePath).isFile()) throw new UpdateError("invalid_database", "Source database is not a regular file");
+  if (existsSync(destinationPath)) throw new UpdateError("invalid_database", "Snapshot destination already exists");
+  let source;
+  try {
+    source = new DatabaseSync(sourcePath, { readOnly: true });
+    source.prepare("VACUUM INTO ?").run(destinationPath);
+  } catch (error) {
+    rmSync(destinationPath, { force: true });
+    throw new UpdateError("snapshot_failed", `Could not create a consistent SQLite snapshot: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    source?.close();
+  }
+  let destination;
+  try {
+    destination = new DatabaseSync(destinationPath, { readOnly: true });
+    const rows = destination.prepare("PRAGMA integrity_check").all();
+    if (rows.length !== 1 || rows[0]?.integrity_check !== "ok") {
+      throw new Error(rows.map((row) => String(row.integrity_check ?? "")).join("; ") || "no result");
+    }
+    return { method: "vacuum_into", userVersion: Number(destination.prepare("PRAGMA user_version").get()?.user_version ?? 0) };
+  } catch (error) {
+    rmSync(destinationPath, { force: true });
+    throw new UpdateError("snapshot_failed", `Snapshot verification failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    destination?.close();
+  }
+}
+
+function assertTreeSafe(root) {
+  const base = resolve(root);
+  const pending = [base];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    const info = lstatSync(current);
+    if (info.isSymbolicLink() || (!info.isDirectory() && !info.isFile())) {
+      throw new UpdateError("unsafe_path", `Unsafe tree entry: ${current}`);
+    }
+    if (info.isDirectory()) {
+      for (const name of readdirSync(current)) pending.push(join(current, name));
+    }
+  }
+}
+
+/** Creates a consistent, complete pre-update data backup outside dataDir. */
+export function backupCurrent({ dataDir, appDir, dbPath = join(dataDir, "search-hub.db"), backupRoot, stamp = new Date().toISOString() }) {
+  assertNoReparsePath(dataDir, "data directory");
+  if (!lstatSync(dataDir).isDirectory()) throw new UpdateError("invalid_database", "Data directory is not a directory");
+  assertTreeSafe(dataDir);
+  assertNoReparsePath(dbPath, "database");
+  const target = join(backupRoot, stamp.replace(/[:.]/g, "-"));
+  if (existsSync(target)) throw new UpdateError("backup_failed", `Backup target already exists: ${target}`);
+  const dataBackup = join(target, "data");
+  mkdirSync(dataBackup, { recursive: true, mode: 0o700 });
+  const dbRelative = relative(dataDir, dbPath);
+  const dbInside = dbRelative !== "" && !dbRelative.startsWith(`..${sep}`) && dbRelative !== ".." && !isAbsolute(dbRelative);
+  try {
+    for (const name of readdirSync(dataDir)) {
+      const source = join(dataDir, name);
+      if (name === "launcher.lock") continue;
+      if (dbInside && (source === dbPath || source === `${dbPath}-wal` || source === `${dbPath}-shm` || source === `${dbPath}-journal`)) continue;
+      const info = lstatSync(source);
+      if (info.isSymbolicLink()) throw new UpdateError("unsafe_path", `Data directory contains a symlink: ${source}`);
+      cpSync(source, join(dataBackup, name), {
+        recursive: true,
+        dereference: false,
+        filter: (candidate) => !dbInside || ![dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`].includes(resolve(candidate)),
+      });
+    }
+    const snapshotPath = dbInside ? join(dataBackup, dbRelative) : join(target, "external-db.sqlite");
+    mkdirSync(dirname(snapshotPath), { recursive: true, mode: 0o700 });
+    const snapshot = snapshotSqliteDatabase(dbPath, snapshotPath);
+    const manifest = {
+      format: "search-hub-pre-update-v2",
+      createdAt: stamp,
+      dataDir: resolve(dataDir),
+      dbPath: resolve(dbPath),
+      dbInsideDataDir: dbInside,
+      snapshot: { method: snapshot.method, userVersion: snapshot.userVersion, sha256: hashFile(snapshotPath) },
+      files: readdirSync(dataBackup),
+    };
+    writeJsonAtomic(join(target, "backup.json"), manifest);
+    if (appDir && existsSync(appDir)) {
+      assertNoReparsePath(appDir, "program directory");
+      cpSync(appDir, join(target, "app"), { recursive: true, dereference: false });
+    }
+    return { path: target, dataPath: dataBackup, manifest };
+  } catch (error) {
+    rmSync(target, { recursive: true, force: true });
+    throw error instanceof UpdateError ? error : new UpdateError("backup_failed", `Pre-update backup failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function hashFile(path) {
+  const hash = createHash("sha256");
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(1024 * 1024);
+    for (;;) {
+      const bytes = readSync(fd, buffer);
+      if (bytes === 0) break;
+      hash.update(buffer.subarray(0, bytes));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
 export function installProgram({ stagingDir, appDir, stamp = Date.now() }) {
-  const staged = resolve(stagingDir);
-  if (!existsSync(staged)) {
-    throw new UpdateError("missing_package", `Extracted package not found: ${staged}`);
-  }
-  const previous = `${appDir}.rollback-${stamp}`;
-  if (existsSync(appDir)) renameSync(appDir, previous);
+  if (!existsSync(stagingDir)) throw new UpdateError("missing_package", `Extracted package not found: ${stagingDir}`);
+  assertTreeSafe(stagingDir);
+  const staged = join(dirname(appDir), `.${basename(appDir)}.stage-${stamp}-${process.pid}`);
+  const previous = `${appDir}.rollback-${stamp}-${process.pid}`;
+  if (existsSync(staged) || existsSync(previous)) throw new UpdateError("install_failed", "Install staging or rollback path already exists");
+  cpSync(stagingDir, staged, { recursive: true, dereference: false });
   try {
-    cpSync(staged, appDir, { recursive: true });
+    if (existsSync(appDir)) renameSync(appDir, previous);
+    renameSync(staged, appDir);
+    return { previous: existsSync(previous) ? previous : null };
   } catch (error) {
-    // Put the old tree back before surfacing the error: leaving no program at all
-    // is the one outcome that is never acceptable.
-    if (existsSync(previous)) {
-      rmSync(appDir, { recursive: true, force: true });
-      renameSync(previous, appDir);
-    }
-    throw new UpdateError("install_failed", `Could not install the new program: ${String(error)}`);
+    if (existsSync(staged)) rmSync(staged, { recursive: true, force: true });
+    if (!existsSync(appDir) && existsSync(previous)) renameSync(previous, appDir);
+    throw new UpdateError("install_failed", `Could not atomically install the new program: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { previous };
 }
 
-/** Restores the program directory from a rollback copy. */
 export function rollbackProgram({ appDir, previous }) {
-  if (!previous || !existsSync(previous)) {
-    throw new UpdateError("rollback_unavailable", "No previous program directory to restore");
-  }
-  // Some Windows builds hold the directory handle even after the process exits.
-  // A short retry inside the helper makes the caller's single call robust.
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    try {
-      return swapRollback({ appDir, previous });
-    } catch (error) {
-      if (attempt === 5) throw error;
-      // Blocking sleep with no external command: Windows has no usable `sleep`.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
-    }
-  }
-  throw new UpdateError("rollback_blocked", "rollback retries exhausted");
-}
-
-function swapRollback({ appDir, previous }) {
-  // Windows keeps file handles for a moment after the process exits, and a
-  // directory holding an open file cannot be removed at all. Rename the failed
-  // build aside instead of deleting it in place, then move the old tree back:
-  // rename needs only the parent directory to be writable.
-  const failed = `${appDir}.failed-${Date.now()}`;
-  try {
-    renameSync(appDir, failed);
-  } catch (error) {
-    throw new UpdateError(
-      "rollback_blocked",
-      `Cannot move the failed build aside (${String(error)}). Stop the service and retry the update.`,
-    );
-  }
+  if (!previous || !existsSync(previous)) throw new UpdateError("rollback_unavailable", "No previous program directory to restore");
+  const failed = `${appDir}.failed-${Date.now()}-${process.pid}`;
+  if (existsSync(appDir)) renameSync(appDir, failed);
   try {
     renameSync(previous, appDir);
   } catch (error) {
-    throw new UpdateError("rollback_blocked", `Cannot restore the previous program: ${String(error)}`);
+    if (!existsSync(appDir) && existsSync(failed)) renameSync(failed, appDir);
+    throw new UpdateError("rollback_blocked", `Could not restore the previous program: ${error instanceof Error ? error.message : String(error)}`);
   }
-  // Best effort cleanup; a leftover directory is harmless once the old tree is back.
-  try {
-    rmSync(failed, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
-  } catch {
-    /* the service may still hold a handle; the operator can delete it later */
-  }
-  return { restored: true };
+  return { restored: true, failed };
 }
 
-/**
- * Decides whether the database can be rolled back with the program.
- *
- * A forward migration that dropped or rewrote data is not reversible by running
- * the old binary against the new file. When the schema version moved forward, the
- * only consistent rollback is restoring the backup taken before the update —
- * which also loses anything written since. Both options are reported so the
- * operator can choose instead of being silently downgraded.
- */
 export function planRollback({ schemaBefore, schemaAfter, hasDataBackup }) {
   if (schemaBefore === null || schemaAfter === null) {
-    return {
-      strategy: "program_only",
-      safe: false,
-      reason: "Schema version could not be determined; restoring the program alone may not match the database.",
-    };
+    return { strategy: hasDataBackup ? "restore_backup" : "blocked", safe: Boolean(hasDataBackup), reason: hasDataBackup ? "Schema could not be read; restoring the consistent pre-update data backup." : "Schema could not be read and no pre-update backup exists." };
   }
-  if (schemaAfter === schemaBefore) {
-    return { strategy: "program_only", safe: true, reason: "No schema change; restoring the program is sufficient." };
-  }
-  if (!hasDataBackup) {
-    return {
-      strategy: "blocked",
-      safe: false,
-      reason: `Schema moved ${schemaBefore} → ${schemaAfter} and no pre-update backup exists; refusing an unsafe rollback.`,
-    };
-  }
-  return {
-    strategy: "restore_backup",
-    safe: true,
-    reason: `Schema moved ${schemaBefore} → ${schemaAfter}; restoring the pre-update backup keeps program and database consistent.`,
-  };
+  if (schemaAfter === schemaBefore) return { strategy: "program_only", safe: true, reason: "No schema change; the failed data tree is still preserved and may be exchanged if needed." };
+  if (!hasDataBackup) return { strategy: "blocked", safe: false, reason: `Schema moved ${schemaBefore} → ${schemaAfter} and no pre-update backup exists; refusing an unsafe rollback.` };
+  return { strategy: "restore_backup", safe: true, reason: `Schema moved ${schemaBefore} → ${schemaAfter}; exchanging the complete pre-update data directory keeps program and database consistent.` };
 }
 
-/** Restores the data directory files from a backup manifest. */
-export function restoreData({ backupPath, dataDir }) {
+/** Atomically exchanges the entire data directory; failed data is retained. */
+export function restoreData({ backupPath, dataDir, dbPath = join(dataDir, "search-hub.db") }) {
   const manifestPath = join(backupPath, "backup.json");
-  if (!existsSync(manifestPath)) {
-    throw new UpdateError("rollback_unavailable", `Backup manifest missing at ${manifestPath}`);
-  }
+  if (!existsSync(manifestPath)) throw new UpdateError("rollback_unavailable", `Backup manifest missing at ${manifestPath}`);
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  for (const name of manifest.files ?? []) {
-    if (name === "backup.json" || name === "app") continue;
-    const source = join(backupPath, name);
-    if (!existsSync(source)) continue;
-    copyFileSync(source, join(dataDir, basename(name)));
+  if (resolve(manifest.dataDir) !== resolve(dataDir) || resolve(manifest.dbPath) !== resolve(dbPath)) {
+    throw new UpdateError("rollback_unavailable", "Backup paths do not match the active service configuration");
   }
-  return manifest;
+  const source = join(backupPath, "data");
+  let failed = null;
+  if (existsSync(source)) {
+    failed = `${dataDir}.failed-${Date.now()}-${process.pid}`;
+    if (existsSync(dataDir)) renameSync(dataDir, failed);
+    try {
+      renameSync(source, dataDir);
+    } catch (error) {
+      if (!existsSync(dataDir) && existsSync(failed)) renameSync(failed, dataDir);
+      throw new UpdateError("rollback_blocked", `Could not restore the pre-update data directory: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else if (!existsSync(dataDir)) {
+    throw new UpdateError("rollback_unavailable", "Pre-update data snapshot is missing and no restored data directory exists");
+  }
+  if (!manifest.dbInsideDataDir) {
+    const externalSource = join(backupPath, "external-db.sqlite");
+    if (!existsSync(externalSource)) throw new UpdateError("rollback_unavailable", "Pre-update external database snapshot is missing");
+    const temporary = `${dbPath}.restore-${Date.now()}-${process.pid}`;
+    const externalFailed = `${dbPath}.failed-${Date.now()}-${process.pid}`;
+    try {
+      copyFileSync(externalSource, temporary);
+      if (existsSync(dbPath)) renameSync(dbPath, externalFailed);
+      renameSync(temporary, dbPath);
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      if (!existsSync(dbPath) && existsSync(externalFailed)) renameSync(externalFailed, dbPath);
+      throw new UpdateError("rollback_blocked", `Could not restore the external database: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { manifest, failed };
 }
 
-/** True when every entry of the extracted tree stays inside `root`. */
+export function recoverInterruptedUpdate(journalPath) {
+  if (!existsSync(journalPath)) return null;
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  if (["complete", "refused", "recovered"].includes(journal.phase)) return journal;
+  if (journal.previousApp && existsSync(journal.previousApp)) {
+    if (existsSync(journal.appDir)) renameSync(journal.appDir, `${journal.appDir}.crashed-${Date.now()}-${process.pid}`);
+    renameSync(journal.previousApp, journal.appDir);
+  }
+  if (journal.backupPath) {
+    restoreData({ backupPath: journal.backupPath, dataDir: journal.dataDir, dbPath: journal.dbPath });
+  }
+  journal.phase = "recovered";
+  journal.recoveredAt = new Date().toISOString();
+  writeJsonAtomic(journalPath, journal);
+  return journal;
+}
+
 export function assertTreeContained(root) {
+  assertTreeSafe(root);
   const base = resolve(root);
   for (const entry of walk(base)) {
     const rel = relative(base, entry);
-    if (rel.startsWith("..") || rel.includes(`..${sep}`)) {
+    if (rel.startsWith("..") || rel.includes(`..${sep}`) || isAbsolute(rel)) {
       throw new UpdateError("unsafe_archive", `Extracted entry escapes the install root: ${rel}`);
     }
   }
@@ -328,10 +405,23 @@ function walk(dir) {
     const path = join(dir, entry.name);
     out.push(path);
     if (entry.isDirectory()) out.push(...walk(path));
-    else {
-      const stats = statSync(path);
-      if (stats.size === 0 && entry.isFile()) continue;
-    }
   }
   return out;
+}
+
+export function readSchemaVersion(dbPath) {
+  try {
+    assertNoReparsePath(dbPath, "database");
+    const fd = openSync(dbPath, "r");
+    try {
+      const buffer = Buffer.alloc(100);
+      const bytes = readSync(fd, buffer, 0, 100, 0);
+      if (bytes < 100 || buffer.subarray(0, 16).toString("latin1") !== "SQLite format 3\0") return null;
+      return buffer.readUInt32BE(60);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
 }

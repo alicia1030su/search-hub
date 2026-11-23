@@ -32,4 +32,5 @@ dist/package/
 
 # Local resource runs and temporary benchmark baselines (never product artifacts)
 artifacts/v0.1.14/*/
+artifacts/disaster-recovery/*-dev/
 .resource-bench/

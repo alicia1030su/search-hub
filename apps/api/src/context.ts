@@ -183,6 +183,8 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
         "*.apiKey",
         "*.api_key",
         "*.password",
+        "*.passphrase",
+        "req.body.passphrase",
         "*.token",
         "*.key",
         "*.csrfToken",

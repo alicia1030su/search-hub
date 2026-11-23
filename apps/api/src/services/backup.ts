@@ -1,12 +1,14 @@
 import { createReadStream, rmSync } from "node:fs";
-import { mkdir, mkdtemp, open, readdir, rename, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { SearchHubError } from "@search-hub/shared";
 import { listMigrations, openDatabaseFile } from "@search-hub/db";
 import type { AppContext } from "../context.js";
+import { authenticate, requireAdmin } from "../auth.js";
+import { createPrivateDirectory, openPrivateFile } from "@search-hub/backup";
 
 /**
  * Database snapshots.
@@ -93,6 +95,11 @@ export interface UploadedSnapshot {
   filePath: string;
   bytes: number;
   dispose: () => Promise<void>;
+  release: () => void;
+}
+
+export interface UploadedBackupPackage extends UploadedSnapshot {
+  passphrase: string;
 }
 
 /** Tables reported by `POST /api/admin/backup/verify`. Allowlist only. */
@@ -539,42 +546,323 @@ export function snapshotReadStream(path: string): ReturnType<typeof createReadSt
  * body sent anywhere else is rejected with 415 instead of being buffered.
  */
 export const BACKUP_VERIFY_PATH = "/api/admin/backup/verify";
+export const BACKUP_PACKAGE_VERIFY_PATH = "/api/admin/backup/package/verify";
+const MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
+const MAX_PASSPHRASE_FIELD_BYTES = 16 * 1024;
+let reservedVerifyBytes = 0;
+let activeVerifyUploads = 0;
+
+interface UploadReservation {
+  bytes: number;
+  release: () => void;
+}
+
+function reserveUpload(request: FastifyRequest, ctx: AppContext, packageUpload: boolean): UploadReservation {
+  const rawLength = request.headers["content-length"];
+  let declaredBytes: number | undefined;
+  if (rawLength !== undefined) {
+    if (typeof rawLength !== "string" || !/^\d+$/.test(rawLength)) {
+      throw new SearchHubError("validation_error", "Invalid Content-Length");
+    }
+    declaredBytes = Number(rawLength);
+    if (!Number.isSafeInteger(declaredBytes)) throw new SearchHubError("validation_error", "Invalid Content-Length");
+  }
+  const rawLimit = ctx.config.maxBackupUploadBytes + MULTIPART_OVERHEAD_BYTES;
+  if (declaredBytes !== undefined && declaredBytes > rawLimit) {
+    throw new SearchHubError("validation_error", "Backup upload exceeds the configured limit", { status: 413 });
+  }
+  // Package verification also extracts a bounded archive. Reserve the archive
+  // ceiling plus the core's staging headroom for the whole lease, even when a
+  // small Content-Length is declared. Legacy snapshots reserve their raw body.
+  const bytes = packageUpload
+    ? ctx.config.maxBackupUploadBytes * 2 + 16 * 1024 * 1024
+    : declaredBytes ?? rawLimit;
+  if (activeVerifyUploads >= ctx.config.maxBackupVerifyConcurrency ||
+    reservedVerifyBytes + bytes > ctx.config.maxBackupVerifyTempBytes) {
+    throw new SearchHubError("rate_limited", "Backup verification temporary-disk or concurrency quota exceeded", { status: 429 });
+  }
+  reservedVerifyBytes += bytes;
+  activeVerifyUploads += 1;
+  let released = false;
+  return {
+    bytes,
+    release: () => {
+      if (released) return;
+      released = true;
+      reservedVerifyBytes -= bytes;
+      activeVerifyUploads -= 1;
+    },
+  };
+}
+
+function heartbeatDirectory(directory: string): () => void {
+  const timer = setInterval(() => {
+    void utimes(directory, new Date(), new Date()).catch(() => undefined);
+  }, 15_000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+/** Removes old, owner-randomized upload staging left by a killed API process. */
+export async function pruneStaleUploads(maxAgeMs = 60 * 60 * 1000): Promise<number> {
+  let names: string[] = [];
+  try { names = await readdir(tmpdir()); } catch { return 0; }
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith("search-hub-upload-") && !name.startsWith("search-hub-package-verify-")) continue;
+    const path = join(tmpdir(), name);
+    try {
+      const info = await lstat(path);
+      if (info.isSymbolicLink() || !info.isDirectory() || info.mtimeMs >= cutoff) continue;
+      await rm(path, { recursive: true, force: true });
+      removed += 1;
+    } catch { /* a live request owns fresh directories */ }
+  }
+  return removed;
+}
+
+function authenticateBackupUpload(request: FastifyRequest, ctx: AppContext): void {
+  requireAdmin(authenticate(
+    {
+      headers: request.headers as Record<string, string | string[] | undefined>,
+      cookies: request.cookies as Record<string, string | undefined>,
+      ip: request.ip,
+    },
+    ctx.authDeps,
+    { scope: "admin", mutation: true },
+  ));
+}
+
+function parseUpload(request: FastifyRequest, ctx: AppContext): { pathname: string; reservation: UploadReservation } {
+  // @fastify/rate-limit runs in onRequest, before this parser. Authentication
+  // and CSRF therefore complete before quota reservation or any filesystem use.
+  authenticateBackupUpload(request, ctx);
+  const pathname = request.url.split("?")[0] ?? "";
+  if (pathname !== BACKUP_VERIFY_PATH && pathname !== BACKUP_PACKAGE_VERIFY_PATH) {
+    throw new SearchHubError("validation_error", "Backup uploads are only accepted on the verification endpoints", { status: 415 });
+  }
+  return { pathname, reservation: reserveUpload(request, ctx, pathname === BACKUP_PACKAGE_VERIFY_PATH) };
+}
 
 export function registerBackupUploadParser(app: FastifyInstance, ctx: AppContext): void {
   app.addContentTypeParser(
     ["application/octet-stream", "application/vnd.sqlite3", "application/x-sqlite3"],
     (request, payload, done) => {
-      const pathname = request.url.split("?")[0] ?? "";
-      if (pathname !== BACKUP_VERIFY_PATH) {
-        done(
-          new SearchHubError(
-            "validation_error",
-            `Raw binary bodies are only accepted on ${BACKUP_VERIFY_PATH}`,
-            { status: 415 },
-          ),
-        );
+      let reservation: UploadReservation | undefined;
+      try {
+        const parsed = parseUpload(request, ctx);
+        reservation = parsed.reservation;
+        if (parsed.pathname !== BACKUP_VERIFY_PATH) {
+          throw new SearchHubError("validation_error", "Complete .shbackup packages require multipart/form-data", { status: 415 });
+        }
+      } catch (error) {
+        reservation?.release();
+        done(error instanceof Error ? error : new Error(String(error)));
         return;
       }
-      void receiveSnapshotUpload(payload, ctx.config.maxBackupUploadBytes).then(
+      void receiveSnapshotUpload(payload, ctx.config.maxBackupUploadBytes, reservation).then(
         (upload) => done(null, upload),
         (error: unknown) => done(error instanceof Error ? error : new Error(String(error))),
       );
     },
   );
+  app.addContentTypeParser("multipart/form-data", (request, payload, done) => {
+    let reservation: UploadReservation | undefined;
+    try {
+      const parsed = parseUpload(request, ctx);
+      reservation = parsed.reservation;
+      const boundary = multipartBoundary(request.headers["content-type"]);
+      const packageUpload = parsed.pathname === BACKUP_PACKAGE_VERIFY_PATH;
+      void receiveMultipartSnapshot(payload, boundary, ctx.config.maxBackupUploadBytes, reservation, packageUpload).then(
+        (upload) => done(null, upload),
+        (error: unknown) => done(error instanceof Error ? error : new Error(String(error))),
+      );
+    } catch (error) {
+      reservation?.release();
+      done(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+function multipartBoundary(contentType: string | undefined): string {
+  const match = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType ?? "");
+  const boundary = match?.[1] ?? match?.[2];
+  if (!boundary || boundary.length > 70 || /[\r\n\0]/.test(boundary)) {
+    throw new SearchHubError("validation_error", "A valid multipart boundary is required");
+  }
+  return boundary;
+}
+
+async function writeAll(handle: Awaited<ReturnType<typeof open>>, chunk: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.length) {
+    const result = await handle.write(chunk, offset, chunk.length - offset);
+    if (result.bytesWritten <= 0) throw new Error("Could not write uploaded backup");
+    offset += result.bytesWritten;
+  }
+}
+
+/** Streaming multipart for legacy .db files and complete .shbackup packages. */
+async function receiveMultipartSnapshot(
+  stream: NodeJS.ReadableStream,
+  boundary: string,
+  limitBytes: number,
+  reservation: UploadReservation,
+  packageUpload: boolean,
+): Promise<UploadedSnapshot | UploadedBackupPackage> {
+  let directory = "";
+  let stopHeartbeat: (() => void) | undefined;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  const dispose = async (): Promise<void> => {
+    stopHeartbeat?.();
+    if (directory) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    reservation.release();
+  };
+  try {
+    directory = await createPrivateDirectory(tmpdir(), packageUpload ? "search-hub-package-verify-" : "search-hub-upload-");
+    stopHeartbeat = heartbeatDirectory(directory);
+    const filePath = join(directory, `${randomUUID()}${packageUpload ? ".shbackup" : ".db"}`);
+    const marker = Buffer.from(`--${boundary}`);
+  const delimiter = Buffer.from(`\r\n--${boundary}`);
+  let pending: Buffer = Buffer.alloc(0);
+  let started = false;
+  let inHeaders = false;
+  let isFile = false;
+  let isPassphrase = false;
+  let fileSeen = false;
+  let passphraseSeen = false;
+  let passphrase = "";
+  let finished = false;
+  let bytes = 0;
+  let rawBytes = 0;
+  const appendPassphrase = (body: Buffer): void => {
+    passphraseSeen = true;
+    if (Buffer.byteLength(passphrase, "utf8") + body.length > MAX_PASSPHRASE_FIELD_BYTES) {
+      throw new SearchHubError("validation_error", "Multipart passphrase field is too large");
+    }
+    passphrase += body.toString("utf8");
+  };
+    for await (const raw of stream as AsyncIterable<Buffer | string>) {
+      const chunk = typeof raw === "string" ? Buffer.from(raw) : raw;
+      rawBytes += chunk.length;
+      if (rawBytes > limitBytes + 1024 * 1024) throw new SearchHubError("validation_error", "Backup upload exceeds the configured limit", { status: 413 });
+      pending = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk;
+      for (;;) {
+        if (!started) {
+          const index = pending.indexOf(marker);
+          if (index < 0) {
+            pending = pending.subarray(Math.max(0, pending.length - marker.length));
+            break;
+          }
+          pending = pending.subarray(index + marker.length);
+          started = true;
+          inHeaders = true;
+        }
+        if (inHeaders) {
+          const end = pending.indexOf("\r\n\r\n");
+          if (end < 0) {
+            if (pending.length > 16 * 1024) throw new SearchHubError("validation_error", "Multipart headers are too large");
+            break;
+          }
+          const headers = pending.subarray(0, end).toString("latin1");
+          pending = pending.subarray(end + 4);
+          const disposition = /content-disposition:\s*form-data;[^\r\n]*/i.exec(headers)?.[0] ?? "";
+          const name = /name="([^"]+)"/i.exec(disposition)?.[1];
+          const filename = /filename="([^"]*)"/i.exec(disposition)?.[1];
+          isFile = name === "file" && filename !== undefined;
+          isPassphrase = packageUpload && name === "passphrase" && filename === undefined;
+          if (isFile) {
+            if (fileSeen) throw new SearchHubError("validation_error", "Multipart upload must contain exactly one file");
+            if (packageUpload && !filename?.toLowerCase().endsWith(".shbackup")) {
+              throw new SearchHubError("validation_error", "The multipart file field must use the .shbackup extension");
+            }
+            fileSeen = true;
+            handle = await openPrivateFile(filePath);
+          } else if (isPassphrase) {
+            if (passphraseSeen) throw new SearchHubError("validation_error", "Multipart upload must contain exactly one passphrase field");
+          } else {
+            throw new SearchHubError("validation_error", "Unsupported multipart field");
+          }
+          inHeaders = false;
+        }
+        const index = pending.indexOf(delimiter);
+        if (index >= 0) {
+          const body = pending.subarray(0, index);
+          pending = pending.subarray(index + delimiter.length);
+          if (isFile && handle) {
+            bytes += body.length;
+            if (bytes > limitBytes) throw new SearchHubError("validation_error", "Backup upload exceeds the configured limit", { status: 413 });
+            await writeAll(handle, body);
+            await handle.sync();
+            await handle.close();
+            handle = null;
+          } else if (isPassphrase) {
+            appendPassphrase(body);
+          }
+          if (pending.subarray(0, 2).toString("ascii") === "--") {
+            finished = true;
+            pending = Buffer.alloc(0);
+            break;
+          }
+          if (pending.subarray(0, 2).toString("ascii") !== "\r\n") {
+            throw new SearchHubError("validation_error", "Malformed multipart boundary");
+          }
+          pending = pending.subarray(2);
+          inHeaders = true;
+          continue;
+        }
+        if (isFile && handle) {
+          const keep = Math.max(0, delimiter.length - 1);
+          const flush = pending.subarray(0, Math.max(0, pending.length - keep));
+          pending = pending.subarray(flush.length);
+          bytes += flush.length;
+          if (bytes > limitBytes) throw new SearchHubError("validation_error", "Backup upload exceeds the configured limit", { status: 413 });
+          if (flush.length > 0) await writeAll(handle, flush);
+        } else if (isPassphrase) {
+          const keep = Math.max(0, delimiter.length - 1);
+          const flush = pending.subarray(0, Math.max(0, pending.length - keep));
+          pending = pending.subarray(flush.length);
+          appendPassphrase(flush);
+        } else {
+          pending = pending.subarray(Math.max(0, pending.length - delimiter.length));
+        }
+        break;
+      }
+      if (finished) break;
+    }
+    if (!finished || !fileSeen || bytes === 0 || (packageUpload && !passphraseSeen)) {
+      throw new SearchHubError("validation_error", "Multipart upload is incomplete or missing file/passphrase");
+    }
+    const upload = { filePath, bytes, dispose, release: reservation.release };
+    return packageUpload ? { ...upload, passphrase } : upload;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await dispose();
+    if (error instanceof SearchHubError) throw error;
+    throw new SearchHubError("validation_error", `Could not read multipart backup: ${(error as Error).message}`);
+  }
 }
 
 async function receiveSnapshotUpload(
   stream: NodeJS.ReadableStream,
   limitBytes: number,
+  reservation: UploadReservation,
 ): Promise<UploadedSnapshot> {
-  const directory = await mkdtemp(join(tmpdir(), "search-hub-upload-"));
-  const filePath = join(directory, `${randomUUID()}.db`);
-  const dispose = () => rm(directory, { recursive: true, force: true }).catch(() => undefined);
-  let bytes = 0;
+  let directory = "";
+  let stopHeartbeat: (() => void) | undefined;
   let handle: Awaited<ReturnType<typeof open>> | null = null;
-
+  const dispose = async (): Promise<void> => {
+    stopHeartbeat?.();
+    if (directory) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    reservation.release();
+  };
   try {
-    handle = await open(filePath, "wx", 0o600);
+    directory = await createPrivateDirectory(tmpdir(), "search-hub-upload-");
+    stopHeartbeat = heartbeatDirectory(directory);
+    const filePath = join(directory, `${randomUUID()}.db`);
+    let bytes = 0;
+    handle = await openPrivateFile(filePath);
     for await (const chunk of stream as AsyncIterable<Buffer | string>) {
       const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
       bytes += buffer.byteLength;
@@ -585,7 +873,7 @@ async function receiveSnapshotUpload(
           { status: 413 },
         );
       }
-      await handle.write(buffer);
+      await writeAll(handle, buffer);
     }
     if (bytes === 0) {
       throw new SearchHubError(
@@ -593,7 +881,8 @@ async function receiveSnapshotUpload(
         "Empty request body. Send the .db file as the raw body with content-type: application/octet-stream",
       );
     }
-    return { filePath, bytes, dispose };
+    await handle.sync();
+    return { filePath, bytes, dispose, release: reservation.release };
   } catch (error) {
     await handle?.close().catch(() => undefined);
     handle = null;

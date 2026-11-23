@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { userInfo } from "node:os";
 import {
   createCipheriv,
   createDecipheriv,
@@ -7,13 +9,29 @@ import {
   timingSafeEqual,
   randomUUID,
 } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SearchHubError } from "@search-hub/shared";
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
+
+function restrictMasterKeyPermissions(path: string): void {
+  if (process.platform === "win32") {
+    const principal = process.env["USERNAME"]?.trim() || userInfo().username;
+    const systemDirectory = process.env["SystemRoot"] ? join(process.env["SystemRoot"], "System32") : "C:/Windows/System32";
+    execFileSync(join(systemDirectory, "icacls.exe"), [path, "/inheritance:r", "/grant:r", `${principal}:F`, "*S-1-5-18:F", "*S-1-5-32-544:F"], { windowsHide: true });
+  } else {
+    chmodSync(path, 0o600);
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  if (process.platform === "win32") return;
+  const descriptor = openSync(path, "r");
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
 
 export interface EncryptedSecret {
   ciphertext: string;
@@ -43,24 +61,43 @@ export class SecretBox {
   }
 
   static fromEnvOrFile(dataDir: string, envKey?: string): SecretBox {
-    if (envKey && envKey.trim()) {
+    if (envKey !== undefined) {
+      // A configured environment key is authoritative. Blank/invalid values fail
+      // closed instead of silently falling back to an unrelated on-disk key.
       const parsed = SecretBox.parseHexKey(envKey.trim());
       return new SecretBox(parsed, "env");
     }
     mkdirSync(dataDir, { recursive: true });
     const keyPath = join(dataDir, "master.key");
-    if (existsSync(keyPath)) {
-      const raw = readFileSync(keyPath, "utf8").trim();
-      return new SecretBox(SecretBox.parseHexKey(raw), "file");
+    let generated: string | null = null;
+    if (!existsSync(keyPath)) {
+      const candidate = randomBytes(KEY_BYTES).toString("hex");
+      const temporary = `${keyPath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+      let descriptor: number | undefined;
+      try {
+        descriptor = openSync(temporary, "wx", 0o600);
+        writeFileSync(descriptor, `${candidate}\n`, { encoding: "utf8" });
+        fsyncSync(descriptor);
+        closeSync(descriptor);
+        descriptor = undefined;
+        restrictMasterKeyPermissions(temporary);
+        // Publish only complete, synced bytes. link() fails atomically if another
+        // first start already won, so no process observes a partial key.
+        linkSync(temporary, keyPath);
+        generated = candidate;
+        fsyncDirectory(dataDir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+        try { unlinkSync(temporary); } catch { /* already absent */ }
+      }
     }
-    const generated = randomBytes(KEY_BYTES).toString("hex");
-    writeFileSync(keyPath, `${generated}\n`, { encoding: "utf8", mode: 0o600 });
-    try {
-      chmodSync(keyPath, 0o600);
-    } catch {
-      // Windows does not support POSIX modes; the file is still created 0600-equivalent via mode above.
-    }
-    return new SecretBox(Buffer.from(generated, "hex"), "file");
+    // An EEXIST race means another process published the authoritative key. Read
+    // that file; never substitute the losing random candidate.
+    const raw = generated ?? readFileSync(keyPath, "utf8").trim();
+    restrictMasterKeyPermissions(keyPath);
+    return new SecretBox(SecretBox.parseHexKey(raw), "file");
   }
 
   static fromKey(key: Buffer): SecretBox {
@@ -83,6 +120,16 @@ export class SecretBox {
 
   get source(): "env" | "file" {
     return this.keySource;
+  }
+
+  /** Non-reversible fingerprint used to detect a changed master key. */
+  fingerprint(): string {
+    return sha256Hex(this.key);
+  }
+
+  /** Server-internal copy for encrypted recovery packages; never serialized by itself. */
+  recoveryKey(): Buffer {
+    return Buffer.from(this.key);
   }
 
   encrypt(plaintext: string, version = 1): EncryptedSecret {
@@ -153,7 +200,7 @@ export function verifyPassword(password: string, stored: string): boolean {
   return derived.length === expected.length && timingSafeEqual(derived, expected);
 }
 
-export function sha256Hex(value: string): string {
+export function sha256Hex(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 

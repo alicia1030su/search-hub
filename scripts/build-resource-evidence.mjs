@@ -3,13 +3,15 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { verifyEvidence } from "../packaging/verify-resource-evidence.mjs";
 import {
   BASELINE_COMMIT, BENCHMARK_COMMIT, EVIDENCE_VERSION, RAW_BENCHMARKS,
-  changedPaths, codeFingerprint, createRawFile, gzipJson, machineFingerprint,
+  changedPaths, codeFingerprint, createRawFile, gzipJson, machineFingerprint, readGzipJson,
   resolveCommit, sanitizeEvidence, scopeFingerprint, sha256, validateStatus,
 } from "./lib/resource-evidence.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const HISTORICAL_RELEASE_COMMIT = "c35778169bde2737e566f53aa176abfa10519d27";
 const COMMANDS = Object.freeze({
   cacheCapacity: "node --import tsx scripts/bench-cache-capacity.mjs --label {label}",
   cacheHit: "node --import tsx scripts/bench-cache-hit.mjs --requests 20000 --repeat 5 --label {label}",
@@ -154,7 +156,7 @@ export function buildSummary({ repoRoot, releaseRef, artifactsDir, reports, verd
   const baselineCapacity = reports.cacheCapacity.baseline;
   const summary = {
     schemaVersion: 1,
-    suite: "search-hub-resource-v0.1.14",
+    suite: `search-hub-resource-${EVIDENCE_VERSION}`,
     generatedAt,
     baseline: { commit: baselineCommit, codeFingerprint: baselineCode, machineFingerprint: baselineMachine },
     benchmarkCode: { commit: benchmarkCommit, codeFingerprint: benchmarkCode, machineFingerprint: benchmarkMachine },
@@ -179,7 +181,7 @@ export function buildSummary({ repoRoot, releaseRef, artifactsDir, reports, verd
       benchmarkRelevantChangedPaths: relevant,
     },
     verdict: {
-      source: "artifacts/v0.1.14/candidate/cache-verdict.json",
+      source: `artifacts/${EVIDENCE_VERSION}/candidate/cache-verdict.json`,
       sha256: null,
       bytes: null,
       checks: Object.fromEntries(Object.entries(verdict).filter(([key]) => /^C\d+$/.test(key)).map(([key, value]) => [key, sanitizeEvidence(value)])),
@@ -189,11 +191,35 @@ export function buildSummary({ repoRoot, releaseRef, artifactsDir, reports, verd
   return summary;
 }
 
+function historicalRuntimeSummary(sourceDir, releaseRef, pkg) {
+  const previous = readJson(path.join(sourceDir, "cache-benchmark-summary.json"));
+  const reports = {};
+  for (const name of RAW_BENCHMARKS) {
+    const benchmark = previous.benchmarks?.[name];
+    if (!Array.isArray(benchmark?.rawFiles) || benchmark.rawFiles.length !== 2) throw new Error(`historical_raw_files_missing:${name}`);
+    reports[name] = {
+      baseline: readGzipJson(readFileSync(path.join(sourceDir, benchmark.rawFiles[0]))).value,
+      candidate: readGzipJson(readFileSync(path.join(sourceDir, benchmark.rawFiles[1]))).value,
+    };
+  }
+  const summary = buildSummary({ repoRoot: REPO_ROOT, releaseRef, artifactsDir: sourceDir, reports, verdict: previous.verdict?.checks ?? {}, pkg });
+  summary.verdict.sha256 = previous.verdict?.sha256 ?? null;
+  summary.verdict.bytes = previous.verdict?.bytes ?? null;
+  summary.historicalRawEvidence = {
+    suite: previous.suite,
+    generatedAt: previous.generatedAt,
+    releaseCode: previous.releaseCode,
+    sourceDir: path.relative(REPO_ROOT, sourceDir).replaceAll("\\", "/"),
+  };
+  return summary;
+}
+
 function parseArgs(args) {
   const options = {
     artifactsDir: arg("artifacts-dir", path.join(REPO_ROOT, "artifacts", EVIDENCE_VERSION)),
     releaseRef: arg("release-ref", "HEAD"),
     outputDir: arg("output-dir", path.join(REPO_ROOT, "docs", "evidence", EVIDENCE_VERSION)),
+    sourceEvidenceDir: arg("source-evidence-dir", path.join(REPO_ROOT, "docs", "evidence", EVIDENCE_VERSION)),
     runtimeOutput: arg("runtime-output"),
     runtimeOnly: args.includes("--runtime-only"),
   };
@@ -203,14 +229,31 @@ function parseArgs(args) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.runtimeOnly && path.resolve(options.sourceEvidenceDir) === path.resolve(options.outputDir)) throw new Error("runtime-only output must not overwrite historical evidence");
   mkdirSync(options.outputDir, { recursive: true });
   const summaryPath = path.join(options.outputDir, "cache-benchmark-summary.json");
   const sumsPath = path.join(options.outputDir, "SHA256SUMS");
   let summary;
   let rawDescriptors = [];
   if (options.runtimeOnly) {
-    summary = readJson(summaryPath);
-    rawDescriptors = summary.rawFiles;
+    verifyEvidence({
+      repoRoot: REPO_ROOT,
+      commit: HISTORICAL_RELEASE_COMMIT,
+      summaryPath: path.join(options.sourceEvidenceDir, "cache-benchmark-summary.json"),
+      sumsPath: path.join(options.sourceEvidenceDir, "SHA256SUMS"),
+      evidenceDir: options.sourceEvidenceDir,
+    });
+    const previous = readJson(path.join(options.sourceEvidenceDir, "cache-benchmark-summary.json"));
+    rawDescriptors = previous.rawFiles;
+    if (!Array.isArray(rawDescriptors) || rawDescriptors.length !== 8) throw new Error("historical_raw_descriptors_missing");
+    for (const descriptor of rawDescriptors) {
+      const target = path.join(options.outputDir, descriptor.path);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, readFileSync(path.join(options.sourceEvidenceDir, descriptor.path)));
+    }
+    summary = historicalRuntimeSummary(options.sourceEvidenceDir, options.releaseRef, readJson(path.join(REPO_ROOT, "package.json")));
+    summary.rawFiles = rawDescriptors;
+    writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
   } else {
     const reports = {};
     for (const name of RAW_BENCHMARKS) {

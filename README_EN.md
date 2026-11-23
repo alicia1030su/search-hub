@@ -4,9 +4,9 @@
 
 [中文](./README.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [API](./docs/api.md) · [MCP](./docs/mcp.md) · [Skills](./docs/skills.md) · [Legacy migration](./docs/legacy-migration.md) · [Testing](./docs/testing.md) · [AC matrix](./docs/ac-matrix.md) · [Acceptance report](./docs/acceptance-report.md) · [Release readiness](./docs/release-readiness.md) · [Live validation plan](./docs/real-search-validation-plan.md) · [Capability inventory](./docs/capability-inventory.md) · [Remote acceptance](./docs/github-remote-acceptance-plan.md) · [Provider guide](./docs/provider-plugin-guide.md)
 
-> **Status: v0.1.14 · release candidate; gates are running.**
+> **Status: v0.1.15 · release candidate; gates are running.**
 >
-> **v0.1.14 theme:** resource-aware test/build gates, cache capacity and Singleflight fixes, a read-only runtime resource panel, and release evidence bound to the final code fingerprint. M04 and full-regression results are recorded only when executed in `docs/release-readiness.md`; unfinished checks remain PENDING/BLOCKED.
+> **v0.1.15 theme:** age/tar disaster-recovery packages, six-part restore verification, isolated dry-run-by-default restore, whole-directory rollback after failed upgrades, and release evidence bound to the final code fingerprint. M04 and full-regression results are recorded only when executed in `docs/release-readiness.md`; unfinished checks remain PENDING/BLOCKED.
 >
 > **Previous Stable:** v0.1.13 shipped the standalone `shub` CLI. Its historical acceptance, asset, Provenance and GHCR evidence remains in `docs/release-readiness.md`.
 >
@@ -127,18 +127,18 @@ The table below lists the representative ones; the full, generated list is [`doc
 
 Three states are kept strictly apart: **implemented** (`builtin`, an adapter written against the vendor protocol), **contract-tested** (`mock_verified`, proves the code path against a local double and never touches the vendor), and **live-tested** (`live_tested`, backed by a recorded real call). Only Hacker News, Crossref, OpenAlex and PubMed are live-tested; every other adapter is implemented but unverified against the real service.
 
-## Download (v0.1.14 candidate)
+## Download (v0.1.15 candidate)
 
-The v0.1.14 release workflow will produce the assets below. It becomes Stable only after the draft Release, asset sums, Provenance, GHCR digests and resource evidence all pass.
+The v0.1.15 release workflow will produce the assets below. It becomes Stable only after the draft Release, asset sums, Provenance, GHCR digests and resource evidence all pass.
 
 | Platform | Server | CLI `shub` | Requirements |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.14-windows-x64.zip` | `shub-v0.1.14-windows-x64.zip` | **None** |
-| Linux x64 | `search-hub-v0.1.14-linux-x64.tar.gz` | `shub-v0.1.14-linux-x64.tar.gz` | **None** |
-| Linux arm64 | `search-hub-v0.1.14-linux-arm64.tar.gz` | `shub-v0.1.14-linux-arm64.tar.gz` | **None** |
-| Node.js 22+ | — | `shub-v0.1.14-node22.tar.gz` | Node.js 22+ |
+| Windows x64 | `search-hub-v0.1.15-windows-x64.zip` | `shub-v0.1.15-windows-x64.zip` | **None** |
+| Linux x64 | `search-hub-v0.1.15-linux-x64.tar.gz` | `shub-v0.1.15-linux-x64.tar.gz` | **None** |
+| Linux arm64 | `search-hub-v0.1.15-linux-arm64.tar.gz` | `shub-v0.1.15-linux-arm64.tar.gz` | **None** |
+| Node.js 22+ | — | `shub-v0.1.15-node22.tar.gz` | Node.js 22+ |
 
-After publication, download `SHA256SUMS` from the [v0.1.14 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.14) and run `sha256sum -c SHA256SUMS`. The sums cover `resource-evidence.json` and all seven archives. The CLI does not require a local server; it can connect to a local or remote Search Hub instance.
+After publication, download `SHA256SUMS` from the [v0.1.15 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.15) and run `sha256sum -c SHA256SUMS`. The sums cover `resource-evidence.json` and all seven archives. The CLI does not require a local server; it can connect to a local or remote Search Hub instance.
 
 ### CLI quick start
 
@@ -162,6 +162,22 @@ $env:SEARCH_HUB_TOKEN = "sh_..."
 ```
 
 Tokens are read only from the environment or `--token-stdin`; they are never written to plaintext config. See [docs/cli.md](./docs/cli.md).
+
+### v0.1.15 backup and disaster recovery
+
+The admin **Backup center** (`/backup`) downloads age-encrypted complete `.shbackup` recovery packages, compatibility `.db` snapshots, and verifies uploaded `.shbackup` or `.db` files. A complete package contains the manifest, consistent database and `master.key`; the UI never displays key material or offers in-place restore. Browser downloads stream to disk; without File System Access API support, use Chromium/Edge or the local CLI.
+
+```bash
+shub backup create --output search-hub.shbackup --passphrase-stdin
+shub backup verify search-hub.shbackup --passphrase-stdin
+# Dry-run is the default: validate and show the plan without writing the target
+shub backup restore search-hub.shbackup --data-dir /srv/search-hub-restored --passphrase-stdin
+# Apply only after reviewing the dry-run report
+shub backup restore search-hub.shbackup --data-dir /srv/search-hub-restored --apply --start-check --passphrase-stdin
+shub doctor --local
+```
+
+Copyable Bash/PowerShell, Docker Volume, systemd and nginx timeout examples are in the [disaster-recovery guide](./docs/disaster-recovery.md). Restore accepts only a missing or empty target directory.
 
 > **v0.1.12 closes credential-leak and probe-accounting gaps.** URL query API
 > keys are redacted from JSON/HTML/encoded errors, error `details.url`, SQLite
@@ -275,7 +291,7 @@ Tokens are read only from the environment or `--token-stdin`; they are never wri
 **Linux**:
 
 ```bash
-mkdir search-hub && tar -xzf search-hub-v0.1.14-linux-x64.tar.gz -C search-hub
+mkdir search-hub && tar -xzf search-hub-v0.1.15-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub          # 127.0.0.1:8787, headless, no browser
 ```
 
@@ -284,7 +300,7 @@ For long-running use, the package ships `search-hub.service` (non-root, `Protect
 **Docker**:
 
 ```bash
-docker pull ghcr.io/alicia1030su/search-hub:0.1.14    # candidate tag; available after publication
+docker pull ghcr.io/alicia1030su/search-hub:0.1.15    # candidate tag; available after publication
 # The image is built for linux/amd64 only; use the arm64 package above on arm64 hosts
 docker compose up -d                                        # or build from source
 ```

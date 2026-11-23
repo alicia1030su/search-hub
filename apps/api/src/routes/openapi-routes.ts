@@ -8,7 +8,7 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "Search Hub API",
-    version: "0.1.14",
+    version: "0.1.15",
     description:
       "Self-hosted multi-provider search infrastructure. Search endpoints accept either an admin session cookie + CSRF header or a Bearer access token.",
     license: { name: "MIT" },
@@ -220,6 +220,119 @@ export const openApiDocument = {
             },
           },
           "500": { description: "Snapshot could not be created or failed integrity_check" },
+        },
+      },
+    },
+    "/api/admin/backups/status": {
+      get: {
+        tags: ["admin"],
+        summary: "Read disaster-recovery status without exposing key material",
+        responses: {
+          "200": {
+            description: "Database size/schema, WAL size, key source, latest verified package and restore readiness",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["dbBytes", "schema", "keySource", "walBytes", "latestBackup", "backupDirWritable", "restoreReadiness", "keyReadiness"],
+                  properties: {
+                    dbBytes: { type: "integer" },
+                    schema: { type: ["string", "null"] },
+                    keySource: { type: "string", enum: ["env", "file"] },
+                    walBytes: { type: "integer" },
+                    latestBackup: { type: ["object", "null"] },
+                    backupDirWritable: { type: "boolean" },
+                    restoreReadiness: { type: "boolean" },
+                    keyReadiness: { type: "string", enum: ["verified", "unverified", "missing", "mismatch"] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/api/admin/backup/package": {
+      post: {
+        tags: ["admin"],
+        summary: "Create, verify and download an age-encrypted complete recovery package",
+        description: "Requires an administrator session and CSRF token. The passphrase is accepted only in the JSON body, is never logged, and must contain at least 12 Unicode characters after trimming. The .shbackup contains exactly manifest.json, data/search-hub.db and keys/master.key. The response checksum header identifies the randomized encrypted output.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["passphrase"],
+                properties: {
+                  passphrase: { type: "string", minLength: 12, writeOnly: true },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Streamed age-encrypted tar package",
+            headers: {
+              "x-search-hub-backup-sha256": { description: "SHA-256 of the generated package", schema: { type: "string" } },
+            },
+            content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } },
+          },
+          "400": { description: "Invalid passphrase or checksum" },
+          "401": { description: "Administrator session required" },
+          "403": { description: "Invalid CSRF token" },
+          "429": { description: "Backup concurrency or temporary-disk quota exceeded" },
+        },
+      },
+    },
+    "/api/admin/backup/package/verify": {
+      post: {
+        tags: ["admin"],
+        summary: "Verify an uploaded .shbackup package without restoring it",
+        description: "Requires an administrator session and CSRF token. Rate limiting, authorization and temporary-disk quota reservation complete before the multipart body is consumed. The file and passphrase are streamed to owner-randomized private temporary storage and removed after verification.",
+        requestBody: {
+          required: true,
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                required: ["file", "passphrase"],
+                properties: {
+                  file: { type: "string", format: "binary", description: "One .shbackup file" },
+                  passphrase: { type: "string", minLength: 12, writeOnly: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Six boolean verification results plus key/sample evidence",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["formatOk", "structuralOk", "schemaCompatible", "keyFingerprintMatch", "ciphertextSampleDecryptable", "restoreReadiness", "keyReadiness", "sampleCount", "keyProofValid"],
+                  properties: {
+                    formatOk: { type: "boolean" },
+                    structuralOk: { type: "boolean" },
+                    schemaCompatible: { type: "boolean" },
+                    keyFingerprintMatch: { type: "boolean" },
+                    ciphertextSampleDecryptable: { type: "boolean" },
+                    restoreReadiness: { type: "boolean" },
+                    keyReadiness: { type: "string", enum: ["verified", "unverified", "missing", "mismatch"] },
+                    sampleCount: { type: "integer", minimum: 0 },
+                    keyProofValid: { type: ["boolean", "null"] },
+                  },
+                },
+              },
+            },
+          },
+          "400": { description: "Invalid passphrase or malformed multipart body" },
+          "413": { description: "Upload exceeds the configured limit" },
+          "429": { description: "Rate, concurrency or temporary-disk quota exceeded" },
         },
       },
     },

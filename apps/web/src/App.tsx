@@ -13,6 +13,7 @@ import { LabPage } from "./pages/lab";
 import { QualityPage } from "./pages/quality";
 import { IntegrationsPage } from "./pages/integrations";
 import { SettingsPage } from "./pages/settings";
+import { BackupPage } from "./pages/backup";
 
 function BootScreen() {
   return (
@@ -114,6 +115,7 @@ function AppRoutes() {
         <Route path="/quality" element={<QualityPage />} />
         <Route path="/integrations" element={<IntegrationsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/backup" element={<BackupPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

@@ -102,7 +102,7 @@ jobs:
           test -f packages/mcp/dist/stdio.mjs
           test -f packages/cli/dist/index.mjs
           test -f packages/cli/dist/index.cjs
-          node packages/cli/dist/index.mjs --version | grep -qx "0.1.14"
+          node packages/cli/dist/index.mjs --version | grep -qx "0.1.15"
 
       - name: Production-only install and boot
         run: |
@@ -200,7 +200,7 @@ jobs:
   resource-evidence:
     name: Resource evidence verification
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 180
     needs: quality
     steps:
       - uses: actions/checkout@v7.0.1
@@ -220,22 +220,77 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify committed resource evidence
+      - name: Build the exact-SHA server and CLI for disaster-recovery evidence
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node packaging/verify-resource-evidence.mjs --commit "$GITHUB_SHA" --evidence-dir docs/evidence/v0.1.14
-          node scripts/build-resource-evidence.mjs --runtime-only --release-ref "$GITHUB_SHA" --output-dir docs/evidence/v0.1.14 --runtime-output artifacts/resource-evidence-v0114.json
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+
+      - name: Run serial DR performance with integrated same-process memory acceptance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          dr_root="$RUNNER_TEMP/dr-evidence-v0.1.15"
+          mkdir -p "$dr_root/reports"
+          node --expose-gc --import tsx tests/disaster-recovery/backup-memory-loop.mjs --self-check
+          node_bin="$(command -v node)"
+          printf '#!/bin/sh\nexec "%s" "%s/packages/cli/dist/index.mjs" "$@"\n' "$node_bin" "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/dr-cli"
+          chmod 700 "$RUNNER_TEMP/dr-cli"
+          # The performance harness invokes backup-memory-loop.mjs in the same
+          # process for each 10/64/256 MiB fixture and emits independent reports.
+          node --expose-gc --import tsx tests/disaster-recovery/backup-performance.mjs --run \
+            --cli "$RUNNER_TEMP/dr-cli" \
+            --sizes 10,64,128,256 \
+            --rounds 5 \
+            --fresh-rounds 5 \
+            --output-dir "$dr_root/reports/performance"
+
+      - name: Rebind and verify historical cache evidence
+        run: |
+          set -euo pipefail
+          cache_dir="$RUNNER_TEMP/cache-evidence-v0.1.15"
+          node scripts/build-resource-evidence.mjs --runtime-only \
+            --source-evidence-dir docs/evidence/v0.1.14 \
+            --release-ref "$GITHUB_SHA" \
+            --output-dir "$cache_dir" \
+            --runtime-output "$cache_dir/resource-evidence-v0115.json"
+          node packaging/verify-resource-evidence.mjs --commit "$GITHUB_SHA" --evidence-dir "$cache_dir"
 
       - name: Capture resource doctor
-        run: node scripts/resource-doctor.mjs --json > artifacts/resource-doctor.json
+        run: node scripts/resource-doctor.mjs --json > "$RUNNER_TEMP/resource-doctor.json"
 
-      - name: Stage flat resource evidence artifact
-        run: node scripts/stage-resource-evidence.mjs --output resource-evidence-artifact
+      - name: Stage the exact-SHA cache and DR subset evidence artifact
+        run: |
+          set -euo pipefail
+          artifact="$RUNNER_TEMP/release-evidence-v0.1.15"
+          dr_args=()
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            dr_args=(--dr-dir "$RUNNER_TEMP/dr-evidence-v0.1.15")
+          fi
+          node scripts/stage-resource-evidence.mjs \
+            --evidence-dir "$RUNNER_TEMP/cache-evidence-v0.1.15" \
+            --runtime "$RUNNER_TEMP/cache-evidence-v0.1.15/resource-evidence-v0115.json" \
+            --doctor "$RUNNER_TEMP/resource-doctor.json" \
+            "${dr_args[@]}" \
+            --output "$artifact"
+          node packaging/verify-resource-evidence.mjs --commit "$GITHUB_SHA" --evidence-dir "$artifact"
 
       - uses: actions/upload-artifact@v7.0.2
+        if: always()
         with:
-          name: resource-evidence-v0114
-          path: resource-evidence-artifact/
+          name: release-evidence-v0.1.15
+          path: ${{ runner.temp }}/release-evidence-v0.1.15/
           if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: release-evidence-diagnostics-v0.1.15
+          path: |
+            ${{ runner.temp }}/dr-evidence-v0.1.15/
+            ${{ runner.temp }}/cache-evidence-v0.1.15/
+          if-no-files-found: warn
           retention-days: 30
 
   launcher:

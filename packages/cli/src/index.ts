@@ -9,6 +9,8 @@ import { runStatus } from "./commands/status.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runConfig } from "./commands/config.js";
 import { runProvidersTest } from "./commands/providers.js";
+import { runBackup } from "./commands/backup.js";
+import { runLocalDoctor } from "./commands/local-doctor.js";
 import { CLI_VERSION } from "./version.js";
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -25,6 +27,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const format = outputFormat(args.values);
   const command = args.positionals[0];
   if (command === "config") return runConfig(args, format);
+  if (command === "backup") return runBackup(args, format);
+  if (command === "doctor" && args.values["local"] === true) return runLocalDoctor(args, format);
 
   const url = resolveUrl(stringValue(args.values, "url"));
   const token = await resolveToken(args.values["token-stdin"] === true);
