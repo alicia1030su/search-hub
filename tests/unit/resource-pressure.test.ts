@@ -66,6 +66,7 @@ describe("D02 owned process identity and telemetry", () => {
     const io = {
       listProcesses: async () => alive ? [entry] : [],
       listProcessesStrict: async () => alive ? [entry] : [],
+      listProcessPidsStrict: async () => alive ? [43] : [],
       readProcess: async () => alive ? entry : null,
       terminateProcess: async () => { signals.push("term"); },
       killProcess: async () => { signals.push("kill"); alive = false; },
