@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "suite": "search-hub-resource-v0.1.14",
-  "generatedAt": "2026-11-23T07:14:53.453Z",
+  "generatedAt": "2026-11-23T07:37:52.684Z",
   "baseline": {
     "commit": "4d2e25249f90a085b28ea05ee479b393d716c99e",
     "codeFingerprint": "bfbd1a6eb2699296b78cb44c56415e4bc299a0c90b54036eb907d4675dd0d138",
@@ -13,9 +13,9 @@
     "machineFingerprint": "51d6c2c18af8e4dd94bf8596e86f8917a2e03a9e60f7747a536ec1b5522af107"
   },
   "releaseCode": {
-    "codeFingerprint": "d72a56ba7f16830e0e9570f77af7116818dc5199291dedcb4af665a6ac490e9c",
-    "computedFromRef": "bf2b795bdb47de4d8b3048ccb20078d36acbbfef",
-    "computedAt": "2026-11-23T07:14:53.453Z"
+    "codeFingerprint": "a8ad2e7965b7ba4c4738b4c70395c49d295db0cb287e4a70cefaebb1cb4ee66a",
+    "computedFromRef": "7d5e6e9ff1a33360b0c01712280413ac10cd8e90",
+    "computedAt": "2026-11-23T07:37:52.684Z"
   },
   "environment": {
     "platform": "win32",
@@ -173,7 +173,7 @@
   },
   "codeDelta": {
     "from": "e182f60703d179ec4d28f1dbf23ce04c0f2b0a25",
-    "to": "bf2b795bdb47de4d8b3048ccb20078d36acbbfef",
+    "to": "7d5e6e9ff1a33360b0c01712280413ac10cd8e90",
     "changedPaths": [
       ".github/workflows/ci.yml",
       ".github/workflows/release.yml",
@@ -202,6 +202,16 @@
       "docs/api.md",
       "docs/cli.md",
       "docs/deployment.md",
+      "docs/evidence/v0.1.14/SHA256SUMS",
+      "docs/evidence/v0.1.14/cache-benchmark-summary.json",
+      "docs/evidence/v0.1.14/raw/cache-capacity-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-capacity-candidate.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-hit-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-hit-candidate.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-stampede-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-stampede-candidate.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-storage-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-storage-candidate.json.gz",
       "docs/release-readiness.md",
       "docs/resource-management.md",
       "docs/testing.md",
@@ -234,9 +244,11 @@
       "scripts/lib/resource/process-tree.mjs",
       "scripts/lib/resource/terminal-state.mjs",
       "scripts/lib/resource/windows.mjs",
+      "scripts/stage-resource-evidence.mjs",
       "tests/e2e/resources.spec.ts",
       "tests/integration/cache-capacity.test.ts",
       "tests/integration/cli/basic.test.ts",
+      "tests/integration/cli/support.ts",
       "tests/integration/resource-cleanup.test.ts",
       "tests/integration/resource-monitor.test.ts",
       "tests/integration/resource-queue.test.ts",
@@ -277,6 +289,16 @@
       "docs/api.md",
       "docs/cli.md",
       "docs/deployment.md",
+      "docs/evidence/v0.1.14/SHA256SUMS",
+      "docs/evidence/v0.1.14/cache-benchmark-summary.json",
+      "docs/evidence/v0.1.14/raw/cache-capacity-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-capacity-candidate.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-hit-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-hit-candidate.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-stampede-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-stampede-candidate.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-storage-baseline.json.gz",
+      "docs/evidence/v0.1.14/raw/cache-storage-candidate.json.gz",
       "docs/release-readiness.md",
       "docs/resource-management.md",
       "docs/testing.md",
@@ -309,9 +331,11 @@
       "scripts/lib/resource/process-tree.mjs",
       "scripts/lib/resource/terminal-state.mjs",
       "scripts/lib/resource/windows.mjs",
+      "scripts/stage-resource-evidence.mjs",
       "tests/e2e/resources.spec.ts",
       "tests/integration/cache-capacity.test.ts",
       "tests/integration/cli/basic.test.ts",
+      "tests/integration/cli/support.ts",
       "tests/integration/resource-cleanup.test.ts",
       "tests/integration/resource-monitor.test.ts",
       "tests/integration/resource-queue.test.ts",
@@ -327,8 +351,8 @@
   },
   "verdict": {
     "source": "artifacts/v0.1.14/candidate/cache-verdict.json",
-    "sha256": "2d936d9ef30f67a6df03082320292e57acac12b2c1dbb8e6cea89691c868272f",
-    "bytes": 3867,
+    "sha256": "59ab3cc2e8573e1202d58709ac259a68a93022264d6c6f14f37e51724e496391",
+    "bytes": 3899,
     "checks": {
       "C01": {
         "status": "PASS",
@@ -422,7 +446,8 @@
         "candidateWalFileBytes": 2142432,
         "osPageCacheBytes": null,
         "osPageCacheReason": "page_cache_not_reliably_attributable",
-        "vacuumPerformed": true
+        "vacuumPerformed": false,
+        "noVacuumPerformed": true
       },
       "C13": {
         "status": "PASS",

@@ -7,9 +7,9 @@
 | T01–T03 资源工具与缓存修复 | PASS（本地）；最终缓存候选已在 `3860dc9` 同机重跑 |
 | T04 资源端点/UI/文档/包与 Docker smoke | 代码完成；M04 最终 evidence SHA 实测 PENDING |
 | M04 100k/100/1000 资源基准 | PENDING（最终 evidence SHA）；前序 `3860dc9` 为 P95 1.4459ms、RSS +1,060,864B、零写、query plan 全 PASS |
-| T05 版本/CI/Release exact-SHA 门禁 | PASS（本地）：typecheck、lint、118 文件 1437 项 Vitest、47 项 E2E、build、check:docs |
+| T05 版本/CI/Release exact-SHA 门禁 | PASS（本地）：typecheck、lint、118 文件 1438 项 Vitest、47 项 E2E、build、check:docs |
 | 资源证据 | PASS：C01 PASS、C08 PASS_NO_OPTIMIZATION、C09 PASS、C12 PASS；8 份 gzip raw + summary + SHA256SUMS，verifier exit 0 |
-| 代码 SHA | `bf2b795bdb47de4d8b3048ccb20078d36acbbfef`；evidence-only 提交不改变代码 fingerprint |
+| 代码 SHA | `7d5e6e9ff1a33360b0c01712280413ac10cd8e90`；evidence-only 提交不改变代码 fingerprint |
 | 三平台包/CLI/Node22 | PENDING |
 | Docker/systemd/upgrade v0.1.13→current | PENDING |
 | Draft/finalize、资产/Provenance/GHCR | PENDING；任一步失败保持 draft |
