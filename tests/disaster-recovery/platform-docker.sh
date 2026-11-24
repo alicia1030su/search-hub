@@ -85,7 +85,7 @@ docker run -i --rm --network none --user 1001:1001 --read-only \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PACKAGE_VOL:/packages:rw" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_DATA_DIR=/data -e SEARCH_HUB_INSTALL_DIR=/app -e SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
-  "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore \
+  "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore/target \
   --passphrase-stdin --json < "$WORK/passphrase" | tee "$EVIDENCE/dry-run.json"
 DRY_FILES=$(docker run --rm --user 1001 --entrypoint sh -v "$RESTORE_VOL:/restore:ro" "$IMAGE" -c 'find /restore -mindepth 1 -print | wc -l')
 [[ "$DRY_FILES" == "0" ]]
@@ -96,14 +96,16 @@ docker run -i --rm --network none --user 1001:1001 --read-only \
   -v "$PACKAGE_VOL:/packages:rw" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_DATA_DIR=/data -e SEARCH_HUB_INSTALL_DIR=/app -e SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
   -e SEARCH_HUB_APP_ENTRY=/app/apps/api/dist/server.mjs -e SEARCH_HUB_START_CHECK_NODE=/usr/local/bin/node \
-  "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore \
+  "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore/target \
   --apply --start-check --passphrase-stdin --json < "$WORK/passphrase" | tee "$EVIDENCE/apply.json"
 
 volume_hashes "$RESTORE_VOL" > "$EVIDENCE/restored-volume.sha256"
 
 docker run -d --name "$RESTORED_CONTAINER" --network "$NET" --user 1001:1001 \
   --read-only --tmpfs /tmp:rw,nosuid,noexec,size=512m \
-  -p 127.0.0.1::8787 -v "$RESTORE_VOL:/app/data" "$IMAGE" >/dev/null
+  -p 127.0.0.1::8787 -v "$RESTORE_VOL:/app/data" \
+  -e SEARCH_HUB_DATA_DIR=/app/data/target -e SEARCH_HUB_DB_PATH=/app/data/target/search-hub.db \
+  "$IMAGE" >/dev/null
 RESTORED_PORT=$(docker port "$RESTORED_CONTAINER" 8787/tcp | sed 's/.*://')
 for _ in $(seq 1 60); do
   curl -fsS "http://127.0.0.1:$RESTORED_PORT/api/health" >/dev/null 2>&1 && break
@@ -122,7 +124,7 @@ docker run -i --rm --network none --user 1001:1001 --read-only \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PACKAGE_VOL:/packages:rw" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_DATA_DIR=/data -e SEARCH_HUB_INSTALL_DIR=/app -e SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
-  "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore \
+  "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore/target \
   --apply --passphrase-stdin --json < "$WORK/passphrase" > "$EVIDENCE/repeat-restore.json" 2>&1
 REPEAT_CODE=$?
 set -e

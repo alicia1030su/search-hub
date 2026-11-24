@@ -79,6 +79,29 @@ describe("platform restore origin environment", () => {
     expect(script).toContain('cp "$WORK/production-before.sha256" "$EVIDENCE/production-volume-unchanged.sha256"');
   });
 
+  it("keeps Docker restore staging inside the writable volume and preserves repeat checks", () => {
+    const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-docker.sh"), "utf8");
+    expect(script.match(/--data-dir \/restore\/target/g)).toHaveLength(3);
+    expect(script).not.toContain("--data-dir /restore \\");
+    const restored = commandBlocks("tests/disaster-recovery/platform-docker.sh", 'docker run -d --name "$RESTORED_CONTAINER"');
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toContain('$RESTORE_VOL:/app/data');
+    expect(restored[0]).toContain("SEARCH_HUB_DATA_DIR=/app/data/target");
+    expect(restored[0]).toContain("SEARCH_HUB_DB_PATH=/app/data/target/search-hub.db");
+    expect(script).toContain("find /restore -mindepth 1 -print | wc -l");
+    expect(script).toContain('[[ "$DRY_FILES" == "0" ]]');
+    expect(script).toContain('[[ "$REPEAT_CODE" != "0" ]]');
+    expect(script).toContain('cmp "$WORK/restore-before-repeat.sha256" "$WORK/restore-after-repeat.sha256"');
+  });
+
+  it("makes systemd evidence readable before the drill without changing its exit code", () => {
+    const workflow = readFileSync(resolve(root, ".github/workflows/release-candidate.yml"), "utf8");
+    const trap = workflow.indexOf('trap "chmod -R a+rX /evidence" EXIT');
+    const drill = workflow.indexOf("bash /repo/tests/disaster-recovery/platform-systemd.sh");
+    expect(trap).toBeGreaterThan(-1);
+    expect(drill).toBeGreaterThan(trap);
+  });
+
   it("includes launcher server log diagnostics for failed updater runs", () => {
     const source = readFileSync(resolve(root, "packaging/launcher/updater-test.mjs"), "utf8");
     expect(source).toContain('join(root, "data", "logs", "server.log")');

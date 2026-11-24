@@ -455,6 +455,7 @@ jobs:
             apt-get install -y -qq curl tar jq git >/dev/null
             git config --global --add safe.directory /repo
             mkdir -p /evidence
+            trap "chmod -R a+rX /evidence" EXIT
             bash /repo/tests/disaster-recovery/platform-systemd.sh \
               /input/server /input/cli/shub /input/search-hub-*.tar.gz /evidence
           '
