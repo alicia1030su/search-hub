@@ -317,6 +317,7 @@ describe("release candidate evidence", () => {
     expect(candidate.match(/imagetools inspect[^\n]*--raw/g)).toHaveLength(1);
     expect(candidate).toContain("normalize-inspection");
     expect(candidate).toContain("image-manifest.json");
+    expect(candidate).toMatch(/assemble:[\s\S]*?fetch-depth: 0/);
     expect(promoter.match(/imagetools inspect[^\n]*--raw/g)).toHaveLength(3);
     expect(promoter.match(/normalize-inspection/g)).toHaveLength(3);
     expect(candidate).not.toContain("--allow-incomplete");
