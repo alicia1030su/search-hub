@@ -330,7 +330,7 @@ function assessSeries(samples, warmup, resolution = 1) {
   };
 }
 
-function assessGrowth(rounds, warmups) {
+export function assessGrowth(rounds, warmups) {
   const series = {};
   for (const [name, resolution] of [
     ["heapUsedBytes", 1],
@@ -360,6 +360,10 @@ function assessGrowth(rounds, warmups) {
     if (series.heapTotalBytes.result !== "PASS") {
       series.heapTotalBytes.classification = "heap_capacity_step_with_stable_used_heap";
       series.heapTotalBytes.result = "PASS";
+    }
+    if (series.maxRssBytes.result === "BLOCKED") {
+      series.maxRssBytes.classification = "isolated_lifetime_peak_step_without_retained_growth";
+      series.maxRssBytes.result = "PASS";
     }
   }
   const failed = corroborated || peakFailed || Object.values(series).some((entry) => entry.result === "FAIL");
@@ -492,6 +496,12 @@ async function selfCheck() {
     checks.push({ name: "same_process", ok: loop.spawnCount === 0 && loop.measured.every((round) => round.pid === process.pid) });
     checks.push({ name: "round_cleanup", ok: loop.measured.every((round) => round.cleanup.ok && round.tempBeforeCleanup.bytes === 0) });
     checks.push({ name: "growth_classifier", ok: ["PASS", "BLOCKED"].includes(loop.growth.result) });
+    const syntheticRound = (afterGc) => ({ afterGc: { heapUsedBytes: 1000, heapTotalBytes: 2000, externalBytes: 3000, arrayBuffersBytes: 4000, rssBytes: 5000, maxRssBytes: 6000, activeHandles: 2, ...afterGc } });
+    const warmupRounds = [syntheticRound({}), syntheticRound({})];
+    const isolatedPeak = assessGrowth([415662080, 415662080, 415662080, 415666176, 417583104].map((maxRssBytes) => syntheticRound({ maxRssBytes })), warmupRounds);
+    checks.push({ name: "growth_isolated_lifetime_peak", ok: isolatedPeak.result === "PASS" && isolatedPeak.series.maxRssBytes.result === "PASS" && isolatedPeak.series.maxRssBytes.classification === "isolated_lifetime_peak_step_without_retained_growth" && isolatedPeak.series.maxRssBytes.inconclusiveNoise === true });
+    checks.push({ name: "growth_maxrss_sustained", ok: assessGrowth([100, 120, 140, 160, 220].map((maxRssBytes) => syntheticRound({ maxRssBytes })), warmupRounds).result === "FAIL" });
+    checks.push({ name: "growth_retained_ambiguous", ok: assessGrowth([100, 110, 120, 130, 140, 150, 160, 170, 169, 168].map((heapUsedBytes) => syntheticRound({ heapUsedBytes })), warmupRounds).result === "BLOCKED" });
     checks.push({ name: "package_hash", ok: hashFile(packagePath) === packageHash });
   } finally {
     cleanup = removeOwned(root, ownerRoot);
