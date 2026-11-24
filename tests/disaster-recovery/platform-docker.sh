@@ -75,7 +75,7 @@ docker run -i --rm --network none --user 1001:1001 --read-only \
 docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
-  -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
+  -v "$PACKAGE_VOL:/packages:rw" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_INSTALL_DIR=/app -e SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
   "$IMAGE" /usr/local/bin/shub backup verify /packages/backup.shbackup --passphrase-stdin --json \
   < "$WORK/passphrase" | tee "$EVIDENCE/verify.json"
@@ -83,7 +83,7 @@ docker run -i --rm --network none --user 1001:1001 --read-only \
 docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
-  -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
+  -v "$PACKAGE_VOL:/packages:rw" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_DATA_DIR=/data -e SEARCH_HUB_INSTALL_DIR=/app -e SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
   "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore \
   --passphrase-stdin --json < "$WORK/passphrase" | tee "$EVIDENCE/dry-run.json"
@@ -93,7 +93,7 @@ DRY_FILES=$(docker run --rm --user 1001 --entrypoint sh -v "$RESTORE_VOL:/restor
 docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
-  -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
+  -v "$PACKAGE_VOL:/packages:rw" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_DATA_DIR=/data -e SEARCH_HUB_INSTALL_DIR=/app -e SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
   -e SEARCH_HUB_APP_ENTRY=/app/apps/api/dist/server.mjs -e SEARCH_HUB_START_CHECK_NODE=/usr/local/bin/node \
   "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore \
@@ -120,7 +120,7 @@ set +e
 docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
-  -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
+  -v "$PACKAGE_VOL:/packages:rw" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_DATA_DIR=/data -e SEARCH_HUB_INSTALL_DIR=/app -e SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
   "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore \
   --apply --passphrase-stdin --json < "$WORK/passphrase" > "$EVIDENCE/repeat-restore.json" 2>&1

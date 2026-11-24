@@ -69,6 +69,24 @@ describe("platform restore origin environment", () => {
     }
   });
 
+  it("mounts the package volume writable for verify and all restore lock operations", () => {
+    const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-docker.sh"), "utf8");
+    const blocks = [...commandBlocks("tests/disaster-recovery/platform-docker.sh", "backup verify"), ...restoreBlocks("tests/disaster-recovery/platform-docker.sh")];
+    expect(blocks).toHaveLength(4);
+    for (const block of blocks) expect(block).toContain("$PACKAGE_VOL:/packages:rw");
+    expect(script).not.toContain("$PACKAGE_VOL:/packages:ro");
+    expect(script).toContain('cmp "$WORK/production-before.sha256" "$WORK/production-after.sha256"');
+    expect(script).toContain('cp "$WORK/production-before.sha256" "$EVIDENCE/production-volume-unchanged.sha256"');
+  });
+
+  it("includes launcher server log diagnostics for failed updater runs", () => {
+    const source = readFileSync(resolve(root, "packaging/launcher/updater-test.mjs"), "utf8");
+    expect(source).toContain('join(root, "data", "logs", "server.log")');
+    expect(source).toContain("launcher server log: missing");
+    expect(source).toContain("text.slice(-8000)");
+    expect(source.split("\n").filter((line) => line.includes("updaterFailureDetail(root, run)") && !line.includes("function "))).toHaveLength(2);
+  });
+
   it("logs systemd helper output before returning the original exit code", () => {
     const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
     const start = script.indexOf("run_logged() {");
