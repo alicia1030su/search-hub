@@ -48,6 +48,7 @@ describe("CLI immutable SQLite snapshots", () => {
 
     expect(existsSync(`${source}-wal`)).toBe(false);
     expect(existsSync(`${source}-shm`)).toBe(false);
+    expect(existsSync(`${source}-journal`)).toBe(false);
     const sourceBytes = digest(source);
     const sourceMetadata = metadata(source);
 
@@ -80,11 +81,32 @@ describe("CLI immutable SQLite snapshots", () => {
     try {
       await expect(createNodeSqliteSnapshot(source, destination)).rejects.toThrow(/non-empty WAL.*stop Search Hub.*checkpoint/i);
       expect(existsSync(destination)).toBe(false);
+      expect(existsSync(`${source}-journal`)).toBe(false);
       for (const [path, expected] of before) {
         expect(digest(path)).toBe(expected.bytes);
         expect(metadata(path)).toBe(expected.metadata);
       }
     } finally { writer.close(); }
+  });
+
+  it("rejects a non-empty rollback journal without changing source or journal bytes", async () => {
+    const root = workspace();
+    const source = join(root, "source.db");
+    const destination = join(root, "snapshot.db");
+    const writer = new DatabaseSync(source);
+    writer.exec("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
+    writer.prepare("INSERT INTO records (value) VALUES (?)").run("rollback-journal");
+    writer.close();
+    const journalPath = `${source}-journal`;
+    writeFileSync(journalPath, Buffer.from("uncheckpointed rollback journal"));
+    const before = new Map([source, journalPath].map((path) => [path, { bytes: digest(path), metadata: metadata(path) }]));
+
+    await expect(createNodeSqliteSnapshot(source, destination)).rejects.toThrow(/non-empty WAL or rollback journal/i);
+    expect(existsSync(destination)).toBe(false);
+    for (const [path, expected] of before) {
+      expect(digest(path)).toBe(expected.bytes);
+      expect(metadata(path)).toBe(expected.metadata);
+    }
   });
 
   it("rejects and removes the snapshot when source metadata changes during VACUUM", async () => {
@@ -113,7 +135,7 @@ describe("CLI immutable SQLite snapshots", () => {
     prepare.mockRestore();
   });
 
-  it("preserves an existing empty WAL sidecar without deleting or changing it", async () => {
+  it("preserves existing empty WAL and rollback journal sidecars without deleting or changing them", async () => {
     const root = workspace();
     const source = join(root, "source.db");
     const destination = join(root, "snapshot.db");
@@ -123,14 +145,20 @@ describe("CLI immutable SQLite snapshots", () => {
     writer.prepare("INSERT INTO records (value) VALUES (?)").run("clean");
     writer.close();
     const walPath = `${source}-wal`;
+    const journalPath = `${source}-journal`;
     writeFileSync(walPath, Buffer.alloc(0));
-    const before = metadata(walPath);
+    writeFileSync(journalPath, Buffer.alloc(0));
+    const beforeWal = metadata(walPath);
+    const beforeJournal = metadata(journalPath);
 
     await createNodeSqliteSnapshot(source, destination);
 
     expect(existsSync(walPath)).toBe(true);
     expect(statSync(walPath).size).toBe(0);
-    expect(metadata(walPath)).toBe(before);
-    expect(readdirSync(root).sort()).toEqual(["snapshot.db", "source.db", "source.db-wal"]);
+    expect(metadata(walPath)).toBe(beforeWal);
+    expect(existsSync(journalPath)).toBe(true);
+    expect(statSync(journalPath).size).toBe(0);
+    expect(metadata(journalPath)).toBe(beforeJournal);
+    expect(readdirSync(root).sort()).toEqual(["snapshot.db", "source.db", "source.db-journal", "source.db-wal"]);
   });
 });

@@ -52,6 +52,7 @@ interface SourceState {
   database: SourceStat;
   wal: SourceStat | null;
   shm: SourceStat | null;
+  journal: SourceStat | null;
 }
 
 function captureStat(path: string): Stats {
@@ -88,6 +89,7 @@ function captureSourceState(sourcePath: string): SourceState {
     database: stableStat(captureStat(sourcePath)),
     wal: optionalStat(`${sourcePath}-wal`),
     shm: optionalStat(`${sourcePath}-shm`),
+    journal: optionalStat(`${sourcePath}-journal`),
   };
 }
 
@@ -98,24 +100,26 @@ function sameStat(left: SourceStat | null, right: SourceStat | null): boolean {
 
 function assertSourceUnchanged(sourcePath: string, before: SourceState): void {
   const after = captureSourceState(sourcePath);
-  if (!sameStat(before.database, after.database) || !sameStat(before.wal, after.wal) || !sameStat(before.shm, after.shm)) {
-    throw new Error("SQLite source database or WAL/SHM metadata changed during snapshot; refusing to publish the backup");
+  if (!sameStat(before.database, after.database) || !sameStat(before.wal, after.wal) ||
+      !sameStat(before.shm, after.shm) || !sameStat(before.journal, after.journal)) {
+    throw new Error("SQLite source database or WAL/SHM/journal metadata changed during snapshot; refusing to publish the backup");
   }
 }
 
 /**
  * Creates an immutable read-only VACUUM INTO snapshot without opening the source
- * in WAL mode. A live/non-empty WAL is rejected instead of copied or checkpointed.
+ * in WAL mode. A live/non-empty WAL or rollback journal is rejected instead of
+ * copied, checkpointed or deleted.
  */
 export async function createNodeSqliteSnapshot(sourcePath: string, destinationPath: string): Promise<void> {
   const source = resolve(sourcePath);
   const destination = resolve(destinationPath);
-  if (source === destination || destination === `${source}-wal` || destination === `${source}-shm`) {
+  if (source === destination || destination === `${source}-wal` || destination === `${source}-shm` || destination === `${source}-journal`) {
     throw new Error("SQLite snapshot destination must be distinct from the source database and its sidecars");
   }
   const before = captureSourceState(source);
-  if (before.wal !== null && before.wal.size > 0) {
-    throw new Error("SQLite source has a non-empty WAL; stop Search Hub or checkpoint the database before creating a backup");
+  if ((before.wal !== null && before.wal.size > 0) || (before.journal !== null && before.journal.size > 0)) {
+    throw new Error("SQLite source has a non-empty WAL or rollback journal; stop Search Hub or checkpoint the database before creating a backup");
   }
 
   let destinationExisted = true;
