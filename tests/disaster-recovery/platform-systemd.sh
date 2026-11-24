@@ -118,9 +118,9 @@ set -e
 systemctl start "$SOURCE_UNIT"
 wait_health "$PORT"
 "$RUNTIME" "$ROOT/tests/disaster-recovery/api-fixture.mjs" verify "http://127.0.0.1:$PORT" "$DATA" "$FIXTURE" | tee "$EVIDENCE/rollback-verify.json"
+systemctl stop "$SOURCE_UNIT"
 [[ ! -e "$DATA/search-hub.db-wal" && ! -e "$DATA/search-hub.db-shm" ]]
 stat -c '%a %U:%G %n' "$DATA" "$RESTORED" "$RESTORED/master.key" > "$EVIDENCE/modes.txt"
-systemctl stop "$SOURCE_UNIT"
 
 "$RUNTIME" "$ROOT/packaging/launcher/updater-test.mjs" > "$EVIDENCE/updater-test.log" 2>&1
 "$RUNTIME" "$ROOT/packaging/launcher/updater-faults.mjs" > "$EVIDENCE/updater-faults.log" 2>&1

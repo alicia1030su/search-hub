@@ -38,6 +38,36 @@ describe("platform restore origin environment", () => {
     if (script.endsWith("platform-docker.sh")) expect(startCheck).toContain("SEARCH_HUB_START_CHECK_NODE=/usr/local/bin/node");
   });
 
+  it("prefixes every Docker SEARCH_HUB environment assignment with -e", () => {
+    const lines = readFileSync(resolve(root, "tests/disaster-recovery/platform-docker.sh"), "utf8").split("\n");
+    let migrations = 0;
+    for (const line of lines) {
+      const tokens = line.trim().split(/\s+/);
+      for (let index = 0; index < tokens.length; index += 1) {
+        const token = tokens[index]!;
+        if (!token.startsWith("SEARCH_HUB_")) continue;
+        expect(token).toContain("=");
+        expect(["-e", "--env"]).toContain(tokens[index - 1]);
+        if (token.startsWith("SEARCH_HUB_MIGRATIONS_DIR=")) migrations += 1;
+      }
+    }
+    expect(migrations).toBe(5);
+  });
+
+  it("stops the rolled-back systemd source before WAL and mode assertions", () => {
+    const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
+    const verify = script.indexOf('rollback-verify.json');
+    const stop = script.indexOf('systemctl stop "$SOURCE_UNIT"', verify);
+    const wal = script.indexOf('[[ ! -e "$DATA/search-hub.db-wal"', stop);
+    const modes = script.indexOf('stat -c', wal);
+    const updater = script.indexOf('updater-test.mjs', modes);
+    expect(verify).toBeGreaterThan(-1);
+    expect(stop).toBeGreaterThan(verify);
+    expect(wal).toBeGreaterThan(stop);
+    expect(modes).toBeGreaterThan(wal);
+    expect(updater).toBeGreaterThan(modes);
+  });
+
   it("repairs systemd restore ownership and permissions before starting the unit", () => {
     const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
     const apply = script.indexOf('--apply --start-check');
