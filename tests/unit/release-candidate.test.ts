@@ -172,6 +172,26 @@ describe("release candidate evidence", () => {
     expect(() => verifyGhcrInspection(inspection, digest, { ...manifest.image, manifestMediaType: "application/vnd.oci.image.index.v1+json" })).toThrow(/candidate_image_manifest_media_type_mismatch/);
   });
 
+  it("accepts lowercase Buildx inspect output without weakening validation", () => {
+    const { inspection, manifest } = fixture();
+    const lowercase = {
+      manifest: {
+        digest: inspection.Manifest.Digest,
+        mediaType: inspection.Manifest.MediaType,
+        descriptor: { mediaType: inspection.Manifest.MediaType },
+        config: { ...inspection.Manifest.Config },
+      },
+      image: { ...inspection.Image },
+    };
+    expect(verifyGhcrInspection(lowercase, digest)).toMatchObject({ ok: true, digest, configDigest: inspection.Manifest.Config.digest });
+    expect(verifyGhcrInspection(lowercase, digest, manifest.image)).toMatchObject({ ok: true, platform: { os: "linux", architecture: "amd64" } });
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, digest: `sha256:${"f".repeat(64)}` } }, digest)).toThrow(/ghcr_manifest_digest_mismatch/);
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, mediaType: "application/vnd.oci.image.index.v1+json", descriptor: { mediaType: "application/vnd.oci.image.index.v1+json" } } }, digest)).toThrow(/ghcr_media_type_mismatch/);
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, config: { ...lowercase.manifest.config, digest: "sha256:abc" } } }, digest)).toThrow(/ghcr_config_digest_invalid/);
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, config: { ...lowercase.manifest.config, mediaType: "application/json" } } }, digest)).toThrow(/ghcr_config_media_type_mismatch/);
+    expect(() => verifyGhcrInspection({ ...lowercase, image: { os: "linux", architecture: "arm64" } }, digest)).toThrow(/ghcr_image_platform_mismatch/);
+  });
+
   it("requires the five successful main-push gates in the candidate manifest", () => {
     const { directory, manifest } = fixture();
     const gate = manifest.requiredWorkflowRuns[0];
@@ -212,7 +232,7 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("candidate-${SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}");
     expect(candidate).not.toContain(":rc-${SOURCE_SHA}");
     expect(candidate).toMatch(/--(?:dr-dir|disaster-recovery-dir) final-dr/);
-    expect(candidate).toContain("manifestMediaType:i.Manifest.MediaType||i.Manifest.Descriptor.mediaType");
+    expect(candidate).toContain("manifestMediaType:m.MediaType??m.mediaType??m.Descriptor?.mediaType??m.descriptor?.mediaType");
     expect(candidate).not.toContain("subjects: ${{ needs.container.outputs.reference }}");
     expect(candidate).toContain("subject-name: ${{ needs.container.outputs.repository }}");
     expect(candidate).toContain("subject-digest: ${{ needs.container.outputs.digest }}");
@@ -234,6 +254,8 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("--dr-dir final-dr");
     expect(candidate).toContain("derive-release-statuses.mjs");
     expect(candidate).toContain("--statuses-file \"$release_report/statuses.json\"");
+    expect(candidate).toContain("i.Manifest??i.manifest");
+    expect(candidate).toContain("i.Image??i.image");
     expect(candidate).not.toContain("--allow-incomplete");
     expect(candidate).not.toContain("--statuses '{\"A08\":\"PASS\",\"A11\":\"PASS\",\"A12\":\"PASS\",\"R35\":\"PASS\"}'");
   });

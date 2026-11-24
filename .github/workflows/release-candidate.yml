@@ -552,7 +552,7 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           docker buildx imagetools inspect "$ref" --format '{{json .}}' > image-inspection.json
           node packaging/release-evidence.mjs image --inspection image-inspection.json --digest "$digest"
-          node -e 'const fs=require("fs");const i=JSON.parse(fs.readFileSync("image-inspection.json"));const ref=process.argv[1],digest=process.argv[2],repository=process.argv[3];fs.writeFileSync("image.json",JSON.stringify({ref,digest,repository,reference:`${repository}@${digest}`,platform:{os:i.Image.os,architecture:i.Image.architecture},manifestMediaType:i.Manifest.MediaType||i.Manifest.Descriptor.mediaType,configDigest:i.Manifest.Config.digest,configMediaType:i.Manifest.Config.mediaType},null,2)+"\n")' "$ref" "$digest" "$base"
+          node -e 'const fs=require("fs");const i=JSON.parse(fs.readFileSync("image-inspection.json"));const m=i.Manifest??i.manifest;const im=i.Image??i.image;const c=m.Config??m.config;const ref=process.argv[1],digest=process.argv[2],repository=process.argv[3];fs.writeFileSync("image.json",JSON.stringify({ref,digest,repository,reference:`${repository}@${digest}`,platform:{os:im.os,architecture:im.architecture},manifestMediaType:m.MediaType??m.mediaType??m.Descriptor?.mediaType??m.descriptor?.mediaType,configDigest:c.digest,configMediaType:c.mediaType},null,2)+"\n")' "$ref" "$digest" "$base"
           node packaging/release-evidence.mjs image --inspection image-inspection.json --digest "$digest" --image image.json
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"

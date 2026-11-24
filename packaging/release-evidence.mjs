@@ -168,13 +168,16 @@ export function verifyGhcrImage(image) {
 
 export function verifyGhcrInspection(inspection, expectedDigest, image = null) {
   requireCondition(/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? ""), "ghcr_expected_digest_invalid");
-  requireCondition(inspection?.Manifest?.Digest === expectedDigest, "ghcr_manifest_digest_mismatch");
-  const mediaType = inspection?.Manifest?.MediaType || inspection?.Manifest?.Descriptor?.mediaType;
+  const manifest = inspection?.Manifest ?? inspection?.manifest;
+  const imageInspection = inspection?.Image ?? inspection?.image;
+  const config = manifest?.Config ?? manifest?.config;
+  requireCondition((manifest?.Digest ?? manifest?.digest) === expectedDigest, "ghcr_manifest_digest_mismatch");
+  const mediaType = manifest?.MediaType ?? manifest?.mediaType ?? manifest?.Descriptor?.mediaType ?? manifest?.descriptor?.mediaType;
   requireCondition(["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].includes(mediaType), "ghcr_media_type_mismatch");
-  requireCondition(/^sha256:[0-9a-f]{64}$/.test(inspection?.Manifest?.Config?.digest ?? ""), "ghcr_config_digest_invalid");
-  requireCondition(["application/vnd.oci.image.config.v1+json", "application/vnd.docker.container.image.v1+json"].includes(inspection?.Manifest?.Config?.mediaType), "ghcr_config_media_type_mismatch");
-  requireCondition(inspection?.Image?.os === "linux" && inspection?.Image?.architecture === "amd64", "ghcr_image_platform_mismatch");
-  const result = { ok: true, digest: expectedDigest, mediaType, configDigest: inspection.Manifest.Config.digest, configMediaType: inspection.Manifest.Config.mediaType, platform: { os: inspection.Image.os, architecture: inspection.Image.architecture } };
+  requireCondition(/^sha256:[0-9a-f]{64}$/.test(config?.digest ?? ""), "ghcr_config_digest_invalid");
+  requireCondition(["application/vnd.oci.image.config.v1+json", "application/vnd.docker.container.image.v1+json"].includes(config?.mediaType), "ghcr_config_media_type_mismatch");
+  requireCondition(imageInspection?.os === "linux" && imageInspection?.architecture === "amd64", "ghcr_image_platform_mismatch");
+  const result = { ok: true, digest: expectedDigest, mediaType, configDigest: config.digest, configMediaType: config.mediaType, platform: { os: imageInspection.os, architecture: imageInspection.architecture } };
   if (image) verifyImageDescriptorBinding(image, result);
   return result;
 }

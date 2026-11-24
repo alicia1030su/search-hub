@@ -79,7 +79,7 @@ export interface CandidateManifest {
   assets: ReleaseAsset[];
 }
 
-export interface GhcrInspection {
+export type GhcrInspection = {
   Manifest: {
     Digest: string;
     MediaType?: string;
@@ -87,7 +87,15 @@ export interface GhcrInspection {
     Config: { digest: string; mediaType: string };
   };
   Image: { os: string; architecture: string };
-}
+} | {
+  manifest: {
+    digest: string;
+    mediaType?: string;
+    descriptor?: { mediaType?: string };
+    config: { digest: string; mediaType: string };
+  };
+  image: { os: string; architecture: string };
+};
 
 export declare function expectedReleaseAssets(version: string): string[];
 export declare function sha256File(file: string): string;
