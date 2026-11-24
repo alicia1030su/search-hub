@@ -719,10 +719,12 @@ jobs:
           push-to-registry: true
       - name: Download the signed attestation bundles
         env:
+          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.gate.outputs.sha }}
         run: node packaging/candidate-attestations.mjs download --manifest candidate-manifest.json --dir release-assets --attestations candidate-evidence/attestations --source-sha "$SOURCE_SHA"
       - name: Verify every downloaded bundle against signer and source SHA
         env:
+          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.gate.outputs.sha }}
         run: node packaging/candidate-attestations.mjs verify --manifest candidate-manifest.json --dir release-assets --attestations candidate-evidence/attestations --source-sha "$SOURCE_SHA"
       - name: Verify candidate assets, manifest, attestations and GHCR platform

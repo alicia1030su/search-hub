@@ -317,6 +317,8 @@ describe("release candidate evidence", () => {
     expect(candidate.match(/imagetools inspect[^\n]*--raw/g)).toHaveLength(1);
     expect(candidate).toContain("normalize-inspection");
     expect(candidate).toContain("image-manifest.json");
+    expect(candidate).toMatch(/Download the signed attestation bundles[\s\S]*?GH_TOKEN: \$\{\{ github\.token \}\}/);
+    expect(candidate).toMatch(/Verify every downloaded bundle against signer and source SHA[\s\S]*?GH_TOKEN: \$\{\{ github\.token \}\}/);
     expect(candidate).toMatch(/assemble:[\s\S]*?fetch-depth: 0/);
     expect(candidate).toContain("version: ${{ steps.resolve.outputs.version }}");
     expect(candidate).not.toContain("steps.version.outputs.version");
