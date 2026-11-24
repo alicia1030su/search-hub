@@ -44,6 +44,8 @@ const REQUIRED_SIZES = [10, 64, 256];
 const DEFAULT_SIZES = [10, 64, 128, 256];
 const R_REQUIREMENTS = Array.from({ length: 38 }, (_, index) => `R${String(index + 1).padStart(2, "0")}`);
 const A_REQUIREMENTS = Array.from({ length: 12 }, (_, index) => `A${String(index + 1).padStart(2, "0")}`);
+const RESOURCE_POSITIVE_FIELDS = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes"];
+const RESOURCE_NONNEGATIVE_FIELDS = ["userCpuMs", "systemCpuMs"];
 const PRELOAD = `
 const fs = require("node:fs");
 process.on("exit", () => {
@@ -632,10 +634,17 @@ function killOwnedTree(pid) {
   }
 }
 
+function validResourceSidecar(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
+    RESOURCE_POSITIVE_FIELDS.every((field) => Number.isFinite(value[field]) && value[field] > 0) &&
+    RESOURCE_NONNEGATIVE_FIELDS.every((field) => Number.isFinite(value[field]) && value[field] >= 0);
+}
+
 function readResourceSidecar(path) {
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    return validResourceSidecar(value) ? value : null;
   } catch {
     return null;
   }
@@ -1045,12 +1054,10 @@ async function selfCheck() {
     });
     let sidecar = null;
     try { sidecar = JSON.parse(readFileSync(resourcePath, "utf8")); } catch { /* Reported as a failed check. */ }
-    const sidecarFields = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes", "userCpuMs", "systemCpuMs"];
-    checks.push({
-      name: "resource_preload_sidecar",
-      ok: sidecarRun.status === 0 && sidecarFields.every((field) => Number.isFinite(sidecar?.[field])) &&
-        sidecarFields.slice(0, 6).every((field) => sidecar[field] > 0) && sidecar.userCpuMs >= 0 && sidecar.systemCpuMs >= 0,
-    });
+    checks.push({ name: "resource_preload_sidecar", ok: sidecarRun.status === 0 && validResourceSidecar(sidecar) });
+    const malformedSidecar = join(root, "malformed-resource.json");
+    writeFileSync(malformedSidecar, "{}\n");
+    checks.push({ name: "resource_sidecar_shape", ok: readResourceSidecar(malformedSidecar) === null });
   } finally {
     cleanup = removeOwned(root, ownerRoot);
     checks.push({ name: "owned_cleanup", ok: cleanup.ok && !existsSync(root) });
