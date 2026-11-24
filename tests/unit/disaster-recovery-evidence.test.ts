@@ -150,19 +150,30 @@ describe("v0.1.15 disaster recovery release gate", () => {
       kind: "search-hub-disaster-recovery-performance",
       source: { commit, releaseCodeFingerprint: fingerprint, dirty: false },
       schedule: { sizesMiB: [10, 64, 128, 256], measuredRounds: 5, freshProcessRounds: 5, singleRoundSmoke: false },
-      results: [10, 64, 256].map((sizeMiB) => ({ sizeMiB, result: "PASS", growth: { result: "PASS" }, resourceComplete: true, rounds: Array.from({ length: 5 }, () => ({ result: "PASS" })), freshProcessRounds: [{ result: "PASS" }] })),
+      results: [10, 64, 256].map((sizeMiB) => ({ sizeMiB, result: "PASS", growth: { result: "PASS" }, resourceComplete: true, rounds: Array.from({ length: 5 }, () => ({ result: "PASS" })), freshProcessRounds: Array.from({ length: 5 }, () => ({ result: "PASS" })) })),
       requirements: { R34: "BLOCKED" },
       requirementEvidence: { R34: { performanceSubset: "PASS", sameProcessEvidence: "NOT TESTED" } },
     };
-    const performanceBytes = JSON.stringify(performance);
-    writeFileSync(join(evidenceDir, "reports", "performance", "manifest.json"), performanceBytes);
-    writeFileSync(join(evidenceDir, "reports", "performance", "SHA256SUMS"), `${hash(performanceBytes)}  manifest.json\n`);
+    const writePerformance = () => {
+      const bytes = JSON.stringify(performance);
+      writeFileSync(join(evidenceDir, "reports", "performance", "manifest.json"), bytes);
+      writeFileSync(join(evidenceDir, "reports", "performance", "SHA256SUMS"), `${hash(bytes)}  manifest.json\n`);
+    };
+    writePerformance();
     expect(aggregateDisasterRecoveryEvidence({ repoRoot: root, commit, evidenceDir }).gate.requirements.R34).toBe("PASS");
 
+    performance.schedule.freshProcessRounds = 4;
+    writePerformance();
+    expect(aggregateDisasterRecoveryEvidence({ repoRoot: root, commit, evidenceDir }).gate.requirements.R34).toBe("BLOCKED");
+
+    performance.schedule.freshProcessRounds = 5;
+    for (const result of performance.results) result.freshProcessRounds = result.freshProcessRounds.slice(0, 4);
+    writePerformance();
+    expect(aggregateDisasterRecoveryEvidence({ repoRoot: root, commit, evidenceDir }).gate.requirements.R34).toBe("BLOCKED");
+
+    for (const result of performance.results) result.freshProcessRounds = Array.from({ length: 5 }, () => ({ result: "PASS" }));
     performance.schedule.measuredRounds = 4;
-    const incompleteBytes = JSON.stringify(performance);
-    writeFileSync(join(evidenceDir, "reports", "performance", "manifest.json"), incompleteBytes);
-    writeFileSync(join(evidenceDir, "reports", "performance", "SHA256SUMS"), `${hash(incompleteBytes)}  manifest.json\n`);
+    writePerformance();
     expect(aggregateDisasterRecoveryEvidence({ repoRoot: root, commit, evidenceDir }).gate.requirements.R34).toBe("BLOCKED");
 
     mkdirSync(join(evidenceDir, "reports", "failure"), { recursive: true });
