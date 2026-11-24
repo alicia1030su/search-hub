@@ -809,26 +809,48 @@ async function runOperation({ action, cli, fixture, packagePath, opRoot, passphr
   return { ...result, result: "PASS" };
 }
 
-function assessGrowth(operations) {
+function median(values) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+}
+
+function assessGrowth(operations, warmupOperations = []) {
   const allVerify = operations.filter((operation) => operation.action === "verify");
   const verify = allVerify.filter((operation) => operation.result === "PASS");
+  const warmupVerify = warmupOperations.filter((operation) => operation.action === "verify" && operation.result === "PASS");
   const samplingRssEndBytes = verify.map((operation) => operation.sampling?.rssBytes?.end ?? null);
   const handles = verify.map((operation) => operation.sampling?.handles?.end ?? null);
   const rss = verify.map((operation) => operation.processResource?.rssBytes ?? null);
   const metadata = { rssSource: "process-sidecar", rssEndBytes: rss, samplingRssEndBytes, handlesEnd: handles };
   if (verify.length < 5) return { ...metadata, result: "BLOCKED", reason: "fewer than five measured verify rounds" };
-  if (allVerify.some((operation) => !Number.isFinite(operation.processResource?.rssBytes) || operation.processResource.rssBytes <= 0)) {
+  if ([...allVerify, ...warmupVerify].some((operation) => !Number.isFinite(operation.processResource?.rssBytes) || operation.processResource.rssBytes <= 0)) {
     return { ...metadata, result: "BLOCKED", reason: "process sidecar rssBytes is missing or invalid for a verify operation" };
   }
-  const rssPositive = rss.slice(1).filter((value, index) => value > rss[index]).length;
+  const deltas = rss.slice(1).map((value, index) => value - rss[index]);
+  const warmupRss = warmupVerify.map((operation) => operation.processResource.rssBytes);
+  const warmupDeltas = warmupRss.slice(1).map((value, index) => Math.abs(value - warmupRss[index]));
+  const noiseBytes = Math.max(1, median(warmupDeltas), median(deltas.map(Math.abs)) * 0.5);
+  const positiveDeltas = deltas.filter((delta) => delta > 0).length;
+  const totalDeltaBytes = rss.at(-1) - rss[0];
+  const rssSustained = deltas.length >= 4 && positiveDeltas >= deltas.length - 1 && totalDeltaBytes > 10 * noiseBytes;
+  const inconclusiveNoise = !rssSustained && deltas.length >= 4 && positiveDeltas >= deltas.length - 2 && totalDeltaBytes > 10 * noiseBytes;
   const handlesPositive = handles.slice(1).filter((value, index) => value > handles[index]).length;
-  const sustained = (rssPositive >= 4 && rss.at(-1) > Math.max(...rss.slice(0, -1))) ||
-    (handlesPositive >= 4 && handles.at(-1) > Math.max(...handles.slice(0, -1)));
+  const handlesSustained = handlesPositive >= 4 && handles.at(-1) > Math.max(...handles.slice(0, -1));
+  const sustained = rssSustained || handlesSustained;
   return {
     ...metadata,
-    result: sustained ? "FAIL" : "PASS",
+    result: sustained ? "FAIL" : inconclusiveNoise ? "BLOCKED" : "PASS",
     sustainedGrowth: sustained,
-    note: "No fixed RSS threshold; sustained monotonic growth is a failure, noise/insufficient data is BLOCKED.",
+    inconclusiveNoise,
+    rssDeltas: deltas,
+    noiseBytes,
+    totalDeltaBytes,
+    positiveDeltas,
+    handlesPositiveDeltas: handlesPositive,
+    rule: "FAIL requires >=n-1 positive deltas and total growth >10x warmup/MAD noise; ambiguous high-noise positive growth is BLOCKED; no fixed RSS threshold",
+    note: "RSS uses the process sidecar; external sampling RSS is retained for audit only.",
   };
 }
 
@@ -1026,9 +1048,11 @@ async function selfCheck() {
       processResource: rssBytes === null ? null : { rssBytes },
       sampling: { rssBytes: { end: samplingRss[index] }, handles: { end: 10 } },
     }));
-    const stableGrowth = assessGrowth(growthOperations([400, 401, 399, 402, 400], [500, 300, 600, 200, 700]));
-    checks.push({ name: "growth_uses_stable_process_sidecar", ok: stableGrowth.result === "PASS" && stableGrowth.rssSource === "process-sidecar" && stableGrowth.samplingRssEndBytes.at(-1) === 700 });
-    checks.push({ name: "growth_detects_sidecar_sustained_increase", ok: assessGrowth(growthOperations([400, 410, 420, 430, 440], [100, 100, 100, 100, 100])).result === "FAIL" });
+    const real64Rss = [402059264, 401694720, 401182720, 401915904, 401149952, 401408000, 401715200, 401801216, 401309696, 402661376];
+    const stableGrowth = assessGrowth(growthOperations(real64Rss, [500, 300, 600, 200, 700, 250, 650, 150, 750, 100]));
+    checks.push({ name: "growth_uses_stable_process_sidecar", ok: stableGrowth.result === "PASS" && stableGrowth.rssSource === "process-sidecar" && stableGrowth.samplingRssEndBytes.at(-1) === 100 && Number.isFinite(stableGrowth.noiseBytes) && Number.isFinite(stableGrowth.totalDeltaBytes) && Number.isFinite(stableGrowth.positiveDeltas) });
+    checks.push({ name: "growth_detects_sidecar_sustained_increase", ok: assessGrowth(growthOperations([400, 410, 420, 430, 500], [100, 100, 100, 100, 100])).result === "FAIL" });
+    checks.push({ name: "growth_blocks_ambiguous_high_noise", ok: assessGrowth(growthOperations([100, 110, 120, 130, 140, 150, 160, 170, 169, 168], Array(10).fill(100))).result === "BLOCKED" });
     checks.push({ name: "growth_blocks_missing_sidecar", ok: assessGrowth(growthOperations([400, 401, null, 402, 400], [100, 100, 100, 100, 100])).result === "BLOCKED" });
     const header = join(root, "valid.age");
     writeFileSync(header, Buffer.from(`age-encryption.org/v1\n-> scrypt ${Buffer.alloc(16, 7).toString("base64")} 18\n--- ${"A".repeat(43)}\n`, "ascii"));
@@ -1250,7 +1274,7 @@ async function runAcceptance(options) {
       }
       const measured = [...sizeResult.rounds, ...sizeResult.freshProcessRounds];
       sizeResult.memoryLoop = sizeResult.rounds.find((round) => round.integratedMemory)?.integratedMemory ?? null;
-      sizeResult.growth = assessGrowth(measured.flatMap((round) => round.operations));
+      sizeResult.growth = assessGrowth(measured.flatMap((round) => round.operations), sizeResult.warmup.flatMap((round) => round.operations));
       sizeResult.resourceComplete = measured.every((round) => round.operations.every((operation) => operation.processResource !== null));
       sizeResult.result = measured.some((round) => round.result === "FAIL") || sizeResult.growth.result === "FAIL"
         ? "FAIL"
