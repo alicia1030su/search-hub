@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Search Hub transactional updater. All destructive work uses isolated temp dirs. */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -72,14 +72,19 @@ function snapshotManifests(root) {
   for (const name of ["launcher.json", "package.json"]) {
     const path = join(root, name);
     if (!existsSync(path)) continue;
-    snapshot.push({ path, bytes: readFileSync(path).toString("base64") });
+    const info = statSync(path);
+    snapshot.push({ path, bytes: readFileSync(path).toString("base64"), mode: info.mode & 0o777, uid: info.uid, gid: info.gid });
   }
   return snapshot;
 }
 
 function restoreManifests(snapshot) {
   for (const entry of snapshot) {
-    writeFileSync(entry.path, Buffer.from(entry.bytes, "base64"));
+    writeFileSync(entry.path, Buffer.from(entry.bytes, "base64"), { mode: entry.mode ?? 0o600 });
+    if (process.platform !== "win32" && Number.isInteger(entry.uid) && Number.isInteger(entry.gid) && process.getuid?.() === 0) {
+      chownSync(entry.path, entry.uid, entry.gid);
+    }
+    if (process.platform !== "win32" && Number.isInteger(entry.mode)) chmodSync(entry.path, entry.mode);
   }
 }
 

@@ -422,17 +422,39 @@ jobs:
         with:
           name: cli-linux-x64
           path: ${{ runner.temp }}/linux-cli-artifact
-      - name: Run the disposable real-systemd drill
+      - name: Run the disposable real-systemd drill in a systemd container
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/linux-server" "$RUNNER_TEMP/linux-cli"
+          mkdir -p "$RUNNER_TEMP/linux-server" "$RUNNER_TEMP/linux-cli" "$RUNNER_TEMP/dr-systemd-input" "$RUNNER_TEMP/dr-platform-systemd"
           tar -xzf "$RUNNER_TEMP/linux-server-artifact/"*.tar.gz -C "$RUNNER_TEMP/linux-server"
           tar -xzf "$RUNNER_TEMP/linux-cli-artifact/"*.tar.gz -C "$RUNNER_TEMP/linux-cli"
-          sudo -E bash tests/disaster-recovery/platform-systemd.sh \
-            "$RUNNER_TEMP/linux-server" \
-            "$RUNNER_TEMP/linux-cli/shub" \
-            "$RUNNER_TEMP/linux-server-artifact/"*.tar.gz \
-            "$RUNNER_TEMP/dr-platform-systemd"
+          cp -a "$RUNNER_TEMP/linux-server" "$RUNNER_TEMP/dr-systemd-input/server"
+          cp -a "$RUNNER_TEMP/linux-cli" "$RUNNER_TEMP/dr-systemd-input/cli"
+          cp "$RUNNER_TEMP/linux-server-artifact/"*.tar.gz "$RUNNER_TEMP/dr-systemd-input/"
+          docker run -d --name sh-dr-systemd --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$RUNNER_TEMP/dr-systemd-input:/input:ro" \
+            -v "$RUNNER_TEMP/dr-platform-systemd:/evidence" \
+            jrei/systemd-ubuntu:24.04
+          for i in $(seq 1 30); do
+            if docker exec sh-dr-systemd systemctl is-system-running >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec -e GH_TOKEN -e GIT_OPTIONAL_LOCKS=0 sh-dr-systemd bash -lc '
+            set -euo pipefail
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq curl tar jq gh >/dev/null
+            git config --global --add safe.directory /repo
+            mkdir -p /evidence
+            bash /repo/tests/disaster-recovery/platform-systemd.sh \
+              /input/server /input/cli/shub /input/search-hub-*.tar.gz /evidence
+          '
+      - name: Remove the systemd drill container
+        if: always()
+        run: docker rm -f sh-dr-systemd >/dev/null 2>&1 || true
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:

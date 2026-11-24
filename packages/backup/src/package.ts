@@ -114,7 +114,7 @@ export async function createBackupPackage(options: CreateBackupPackageOptions): 
     }
     if (!snapshotPath) throw new Error("Snapshot path is unavailable");
     if (options.snapshotAdapter) sealSnapshotDatabase(snapshotPath, openDatabase);
-    const snapshotInfo = await assertSecureRegularFile(snapshotPath, limits.maxDatabaseBytes);
+    const snapshotInfo = await assertSecureRegularFile(snapshotPath, limits.maxDatabaseBytes, { allowPrivateParent: true });
     await requireDiskBytes(work, snapshotInfo.size + EXTRA_DISK_BYTES);
     await requireDiskBytes(dirname(outputPath), snapshotInfo.size * 2 + EXTRA_DISK_BYTES);
     const inspection = inspectSnapshotDatabase(snapshotPath, openDatabase, key);

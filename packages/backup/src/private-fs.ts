@@ -120,21 +120,26 @@ export async function assertNoReparseAncestors(path: string, includeLeaf = true)
   }
 }
 
+async function assertAllowedWindowsAcl(path: string, label: string): Promise<void> {
+  const readback = await readWindowsAcl(path);
+  if (/\([AD];[^;]*;[^)]*;ID\)/.test(readback) || /\(D;/.test(readback)) throw new Error(`${label} ACL must not inherit permissions or contain deny entries`);
+  const sid = await currentWindowsSid();
+  const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
+  const identities = aclIdentities(readback);
+  if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
+    throw new Error(`${label} ACL contains an unauthorized principal`);
+  }
+}
+
 /** Validates a regular input file, its size, ownership bits and Windows ACL. */
-export async function assertSecureRegularFile(path: string, maxBytes: number): Promise<Stats> {
+export async function assertSecureRegularFile(path: string, maxBytes: number, options: { allowPrivateParent?: boolean } = {}): Promise<Stats> {
   await assertNoReparseAncestors(path);
   const info = await lstat(path);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error("Input must be a regular file, not a link or special file");
   if (info.size > maxBytes) throw new Error(`Input exceeds the ${maxBytes}-byte safety limit`);
   if (process.platform === "win32") {
-    const readback = await readWindowsAcl(path);
-    if (/\([AD];[^;]*;[^)]*;ID\)/.test(readback) || /\(D;/.test(readback)) throw new Error("Input ACL must not inherit permissions or contain deny entries");
-    const sid = await currentWindowsSid();
-    const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
-    const identities = aclIdentities(readback);
-    if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-      throw new Error("Input ACL contains an unauthorized principal");
-    }
+    if (options.allowPrivateParent === true) await assertAllowedWindowsAcl(dirname(path), "Private parent");
+    else await assertAllowedWindowsAcl(path, "Input");
   } else if ((info.mode & 0o777) !== 0o600) {
     throw new Error(`Input file mode must be exactly 0600: ${path}`);
   }
