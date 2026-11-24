@@ -22,6 +22,7 @@ const migrations = listMigrations(migrationsDir);
 async function workspace(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "search-hub-backup-test-"));
   directories.push(directory);
+  if (process.platform === "win32") await restrictWindowsAcl(directory, true);
   return directory;
 }
 async function secureFile(path: string): Promise<void> {
@@ -223,10 +224,14 @@ describe("strict tar parser", () => {
 });
 
 describe("age header and input boundaries", () => {
-  function header(salt = Buffer.alloc(16, 1).toString("base64").replace(/=+$/, ""), extra = ""): Buffer {
+  function header(
+    salt = Buffer.alloc(16, 1).toString("base64").replace(/=+$/, ""),
+    extra = "",
+    mac = Buffer.alloc(32, 3).toString("base64").replace(/=+$/, ""),
+    separator = "--- ",
+  ): Buffer {
     const body = Buffer.alloc(32, 2).toString("base64").replace(/=+$/, "");
-    const mac = Buffer.alloc(32, 3).toString("base64").replace(/=+$/, "");
-    return Buffer.from(`age-encryption.org/v1\n-> scrypt ${salt} 18\n${extra}${body}\n--- ${mac}\n`, "ascii");
+    return Buffer.from(`age-encryption.org/v1\n-> scrypt ${salt} 18\n${extra}${body}\n${separator}${mac}\n`, "ascii");
   }
   it("accepts a complete canonical header and rejects malformed recipients, salts and MAC lines", async () => {
     const root = await workspace();
@@ -236,6 +241,11 @@ describe("age header and input boundaries", () => {
     const invalid = [
       header(Buffer.alloc(15, 1).toString("base64").replace(/=+$/, "")),
       header(undefined, "-> X25519 abc\n"),
+      header(undefined, "", undefined, "---"),
+      header(undefined, "", undefined, "---  "),
+      header(undefined, "", undefined, "---\t"),
+      header(undefined, "", "!!!!"),
+      header(undefined, "", "AAAA="),
       Buffer.from("age-encryption.org/v1\n-> scrypt AAAAAAAAAAAAAAAAAAAAAA 18\nAAAA\n--- ", "ascii"),
       Buffer.from("age-encryption.org/v1\n-> scrypt AAAAAAAAAAAAAAAAAAAAAA 18\nAAAA\n---AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n", "ascii"),
       Buffer.from("age-encryption.org/v1\n-> scrypt AAAAAAAAAAAAAAAAAAAAAA 18\nAAAA\n---  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n", "ascii"),
@@ -243,7 +253,7 @@ describe("age header and input boundaries", () => {
       Buffer.concat([Buffer.from("age-encryption.org/v1\n"), Buffer.alloc(64 * 1024, 0x41)]),
     ];
     for (const value of invalid) {
-      await writeFile(path, value); await secureFile(path);
+      await writeFile(path, value);
       await expect(readAgeHeader(path)).rejects.toThrow();
     }
   });

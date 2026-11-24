@@ -86,14 +86,14 @@ printf '%s\n' 'synthetic Linux platform passphrase 灾备' | \
 
 DRY="$WORK/restored-dry"
 printf '%s\n' 'synthetic Linux platform passphrase 灾备' | \
-  env -i HOME="$WORK/home" PATH=/nonexistent SEARCH_HUB_INSTALL_DIR="$PACKAGE_ROOT" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" \
+  env -i HOME="$WORK/home" PATH=/nonexistent SEARCH_HUB_DATA_DIR="$WORK/source-data" SEARCH_HUB_INSTALL_DIR="$PACKAGE_ROOT" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" \
   "$CLI" backup restore "$PACKAGE" --data-dir "$DRY" --passphrase-stdin --json \
   | tee "$EVIDENCE/dry-run.json"
 [[ ! -e "$DRY" ]]
 
 RESTORED="$WORK/restored"
 printf '%s\n' 'synthetic Linux platform passphrase 灾备' | \
-  env -i HOME="$WORK/home" PATH=/nonexistent SEARCH_HUB_INSTALL_DIR="$PACKAGE_ROOT" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" \
+  env -i HOME="$WORK/home" PATH=/nonexistent SEARCH_HUB_DATA_DIR="$WORK/source-data" SEARCH_HUB_INSTALL_DIR="$PACKAGE_ROOT" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" \
   SEARCH_HUB_APP_ENTRY="$SERVER" \
   "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --apply --start-check --passphrase-stdin --json \
   | tee "$EVIDENCE/apply.json"
@@ -110,7 +110,7 @@ stop_server
 BEFORE=$(sha256sum "$RESTORED/search-hub.db" | awk '{print $1}')
 set +e
 printf '%s\n' 'synthetic Linux platform passphrase 灾备' | \
-  env -i HOME="$WORK/home" PATH=/nonexistent SEARCH_HUB_INSTALL_DIR="$PACKAGE_ROOT" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" \
+  env -i HOME="$WORK/home" PATH=/nonexistent SEARCH_HUB_DATA_DIR="$WORK/source-data" SEARCH_HUB_INSTALL_DIR="$PACKAGE_ROOT" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" \
   "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --apply --passphrase-stdin --json \
   > "$EVIDENCE/repeat-restore.json" 2>&1
 REPEAT_CODE=$?
