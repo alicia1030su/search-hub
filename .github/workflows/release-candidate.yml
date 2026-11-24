@@ -593,12 +593,12 @@ jobs:
           SOURCE_SHA: ${{ needs.gate.outputs.sha }}
         run: |
           set -euo pipefail
-          gh run download "$CI_RUN_ID" -n release-evidence-v0.1.15 -D evidence-ci
-          node packaging/verify-resource-evidence.mjs --commit "$SOURCE_SHA" --evidence-dir evidence-ci
-          test -d evidence-ci/disaster-recovery/reports
+          gh run download "$CI_RUN_ID" -n release-evidence-v0.1.15 -D candidate/evidence-ci
+          node packaging/verify-resource-evidence.mjs --commit "$SOURCE_SHA" --evidence-dir candidate/evidence-ci
+          test -d candidate/evidence-ci/disaster-recovery/reports
           final_dr=final-dr
           mkdir -p "$final_dr/reports"
-          cp -a evidence-ci/disaster-recovery/. "$final_dr/"
+          cp -a candidate/evidence-ci/disaster-recovery/. "$final_dr/"
           for entry in \
             dr-core-v0.1.15:core \
             dr-cli-windows-x64-v0.1.15:cli-windows-x64 \
@@ -618,30 +618,30 @@ jobs:
             cp -a "candidate/$name/." "$final_dr/reports/$slug/"
           done
           release_report="$final_dr/reports/release"
-          mkdir -p "$release_report"
-          cp candidate/candidate-gate-v0.1.15/candidate-gate.json "$release_report/candidate-gate.json"
-          cp "$final_dr/reports/core/report.json" "$release_report/core-report.json"
-          cp "$final_dr/reports/performance/manifest.json" "$release_report/performance-manifest.json"
-          cp "$final_dr/reports/platform-windows/report.json" "$release_report/platform-windows.json"
-          cp "$final_dr/reports/platform-linux-x64/report.json" "$release_report/platform-linux-x64.json"
-          cp "$final_dr/reports/platform-linux-arm64/report.json" "$release_report/platform-linux-arm64.json"
-          cp "$final_dr/reports/platform-docker/report.json" "$release_report/platform-docker.json"
-          cp "$final_dr/reports/platform-systemd/report.json" "$release_report/platform-systemd.json"
-          cp .github/workflows/release-candidate.yml .github/workflows/release.yml "$release_report/"
+          node tests/disaster-recovery/derive-release-statuses.mjs \
+            --source-sha "$SOURCE_SHA" \
+            --evidence-dir "$final_dr" \
+            --candidate-gate candidate/candidate-gate-v0.1.15/candidate-gate.json \
+            --output-dir "$release_report"
+          node -e 'const fs=require("fs");const d=JSON.parse(fs.readFileSync(process.argv[1]));fs.writeFileSync(process.argv[2],JSON.stringify(d.statuses));fs.writeFileSync(process.argv[3],JSON.stringify(d.evidenceMap));' \
+            "$release_report/derived-release-statuses.json" \
+            "$release_report/statuses.json" \
+            "$release_report/evidence-map.json"
           node tests/disaster-recovery/write-platform-report.mjs \
             --evidence-dir "$release_report" \
-            --kind search-hub-candidate-release --verdict PASS \
+            --kind search-hub-candidate-release \
+            --verdict "$(node -p "require('./$release_report/derived-release-statuses.json').verdict")" \
             --scope "pre-tag exact-SHA aggregation; sixth candidate workflow, immutable annotated tag and digest-fixed promoter are enforced by preflight and release workflows" \
-            --statuses '{"A08":"PASS","A11":"PASS","A12":"PASS","R35":"PASS"}' \
-            --evidence-map '{"A08":["platform-windows.json","platform-linux-x64.json","platform-linux-arm64.json","platform-docker.json","platform-systemd.json"],"A11":["core-report.json","performance-manifest.json","candidate-gate.json"],"A12":["candidate-gate.json","release-candidate.yml","release.yml"],"R35":["candidate-gate.json"]}'
+            --statuses-file "$release_report/statuses.json" \
+            --evidence-map-file "$release_report/evidence-map.json"
           node packaging/aggregate-disaster-recovery-evidence.mjs \
             --commit "$SOURCE_SHA" --evidence-dir "$final_dr"
           node packaging/verify-disaster-recovery-evidence.mjs \
             --commit "$SOURCE_SHA" --evidence-dir "$final_dr"
           node scripts/stage-resource-evidence.mjs \
-            --evidence-dir evidence-ci \
-            --runtime evidence-ci/resource-evidence-v0115.json \
-            --doctor evidence-ci/resource-doctor.json \
+            --evidence-dir candidate/evidence-ci \
+            --runtime candidate/evidence-ci/resource-evidence-v0115.json \
+            --doctor candidate/evidence-ci/resource-doctor.json \
             --dr-dir "$final_dr" \
             --output combined-evidence
           node packaging/release-evidence.mjs combine \

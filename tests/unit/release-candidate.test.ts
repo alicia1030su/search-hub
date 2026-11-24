@@ -229,6 +229,9 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("name: dr-platform-docker-v0.1.15");
     expect(candidate).toContain("name: dr-platform-systemd-v0.1.15");
     expect(candidate).toContain("--dr-dir final-dr");
+    expect(candidate).toContain("derive-release-statuses.mjs");
+    expect(candidate).toContain("--statuses-file \"$release_report/statuses.json\"");
     expect(candidate).not.toContain("--allow-incomplete");
+    expect(candidate).not.toContain("--statuses '{\"A08\":\"PASS\",\"A11\":\"PASS\",\"A12\":\"PASS\",\"R35\":\"PASS\"}'");
   });
 });
