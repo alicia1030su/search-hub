@@ -845,7 +845,7 @@ async function runIntegratedMemoryLoop({ sizeMiB, fixture, packagePath, passphra
     startedAt: new Date().toISOString(),
     finishedAt: new Date().toISOString(),
     source,
-    tool: { script: "tests/disaster-recovery/backup-memory-loop.mjs", node: process.version, platform: process.platform, arch: process.arch, integratedFrom: "backup-performance.mjs" },
+    tool: { script: "tests/disaster-recovery/backup-memory-loop.mjs", node: process.version, platform: process.platform, arch: process.arch, gcAvailable: typeof globalThis.gc === "function", integratedFrom: "backup-performance.mjs" },
     schedule: { rounds: Math.max(5, options.rounds), warmup: Math.max(2, options.warmup), adapterMode: "final", serial: true, sameProcess: true, sizeMiB },
     preflight: {
       package: { bytes: statSync(packagePath).size, sha256: packageSha256, kdf: inspectAgeHeader(packagePath) },

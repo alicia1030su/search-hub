@@ -135,6 +135,11 @@ describe("candidate release status derivation", () => {
     expect(JSON.parse(readFileSync(join(value.outputDir, "derived-release-statuses.json"), "utf8")).verdict).toBe("PASS");
   });
 
+  it("requires integrated memory reports to record GC availability", () => {
+    const performance = readFileSync(join(root, "tests", "disaster-recovery", "backup-performance.mjs"), "utf8");
+    expect(performance).toContain('gcAvailable: typeof globalThis.gc === "function"');
+  });
+
   it("blocks when any required memory-loop report is missing", () => {
     const value = fixture();
     rmSync(join(value.evidenceDir, "reports", "performance", "reports", "memory-loop-64"), { recursive: true });
