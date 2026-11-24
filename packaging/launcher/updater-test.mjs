@@ -132,6 +132,21 @@ function makePackage({ version, mode }) {
   };
 }
 
+function launcherServerLog(root) {
+  const logPath = join(root, "data", "logs", "server.log");
+  if (!existsSync(logPath)) return "launcher server log: missing";
+  try {
+    const text = readFileSync(logPath, "utf8");
+    return `launcher server log:\n${text.slice(-8000) || "(empty)"}`;
+  } catch (error) {
+    return `launcher server log: unreadable (${error instanceof Error ? error.message : String(error)})`;
+  }
+}
+
+function updaterFailureDetail(root, run) {
+  return `code=${run.code}\n${run.output.slice(-8000)}\n${launcherServerLog(root)}`;
+}
+
 function runUpdater(root, pkg, overrides = {}) {
   const args = [
     join(HERE, "updater.mjs"),
@@ -199,7 +214,7 @@ try {
     roots.push(root);
     const pkg = makePackage({ version: "0.2.0", mode: "healthy" });
     const run = await runUpdater(root, pkg, { version: "0.2.0" });
-    check("healthy update exits 0", run.code === 0, run.code === 0 ? "code=0" : `code=${run.code}\n${run.output.slice(-8000)}`);
+    check("healthy update exits 0", run.code === 0, run.code === 0 ? "code=0" : updaterFailureDetail(root, run));
     check("new program is in place", readFileSync(join(root, "app", "apps", "api", "dist", "version.txt"), "utf8").trim() === "0.2.0");
     check("service answers after update", await healthy(p));
     check(
@@ -225,7 +240,7 @@ try {
       run.code === 3,
       run.code === 3
         ? `code=${run.code} ${run.output.split("\n").filter((l) => /REFUSED|failed|rollback/.test(l)).slice(-2).join(" | ").slice(0, 200)}`
-        : `code=${run.code}\n${run.output.slice(-8000)}`,
+        : updaterFailureDetail(root, run),
     );
     check(
       "old program restored",

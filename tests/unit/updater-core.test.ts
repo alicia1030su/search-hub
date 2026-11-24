@@ -325,3 +325,20 @@ describe("rollback safety", () => {
     expect(readSchemaVersion(path)).toBeNull();
   });
 });
+
+describe("updater launcher resolution", () => {
+  it("prefers the target root launcher before the updater bundle fallback", () => {
+    const source = readFileSync(join(import.meta.dirname, "../../packaging/launcher/updater.mjs"), "utf8");
+    const windows = source.indexOf('const exe = join(root, "SearchHub.exe")');
+    const shell = source.indexOf('const shell = join(root, "bin", "search-hub")');
+    const rootScript = source.indexOf('const rootScript = join(root, "launcher.mjs")');
+    const fallback = source.indexOf('const script = join(HERE, "launcher.mjs")');
+    const noLauncher = source.indexOf('new UpdateError("no_launcher"');
+    expect(windows).toBeGreaterThan(-1);
+    expect(shell).toBeGreaterThan(windows);
+    expect(rootScript).toBeGreaterThan(shell);
+    expect(fallback).toBeGreaterThan(rootScript);
+    expect(noLauncher).toBeGreaterThan(fallback);
+    expect(source).toContain("if (existsSync(rootScript)) return { command: process.execPath, args: [rootScript] };");
+  });
+});

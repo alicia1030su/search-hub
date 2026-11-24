@@ -69,6 +69,24 @@ describe("platform restore origin environment", () => {
     }
   });
 
+  it("mounts the package volume writable for verify and all restore lock operations", () => {
+    const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-docker.sh"), "utf8");
+    const blocks = [...commandBlocks("tests/disaster-recovery/platform-docker.sh", "backup verify"), ...restoreBlocks("tests/disaster-recovery/platform-docker.sh")];
+    expect(blocks).toHaveLength(4);
+    for (const block of blocks) expect(block).toContain("$PACKAGE_VOL:/packages:rw");
+    expect(script).not.toContain("$PACKAGE_VOL:/packages:ro");
+    expect(script).toContain('cmp "$WORK/production-before.sha256" "$WORK/production-after.sha256"');
+    expect(script).toContain('cp "$WORK/production-before.sha256" "$EVIDENCE/production-volume-unchanged.sha256"');
+  });
+
+  it("includes launcher server log diagnostics for failed updater runs", () => {
+    const source = readFileSync(resolve(root, "packaging/launcher/updater-test.mjs"), "utf8");
+    expect(source).toContain('join(root, "data", "logs", "server.log")');
+    expect(source).toContain("launcher server log: missing");
+    expect(source).toContain("text.slice(-8000)");
+    expect(source.split("\n").filter((line) => line.includes("updaterFailureDetail(root, run)") && !line.includes("function "))).toHaveLength(2);
+  });
+
   it("logs systemd helper output before returning the original exit code", () => {
     const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
     const start = script.indexOf("run_logged() {");
@@ -116,6 +134,22 @@ describe("platform restore origin environment", () => {
     expect(wal).toBeGreaterThan(stop);
     expect(modes).toBeGreaterThan(wal);
     expect(updater).toBeGreaterThan(modes);
+  });
+
+  it("runs launcher updater diagnostics after extraction and before installing the systemd unit", () => {
+    const workflow = readFileSync(resolve(root, ".github/workflows/systemd.yml"), "utf8");
+    expect(workflow).toContain('-v "$PWD:/repo:ro"');
+    const extract = workflow.indexOf("tar -xzf /pkgs/search-hub-v0.9.0-ci-linux-x64.tar.gz");
+    const diagnostics = workflow.indexOf("/opt/search-hub/runtime/bin/node /repo/packaging/launcher/updater-test.mjs");
+    const unitCheck = workflow.indexOf("test -f /opt/search-hub/search-hub.service");
+    const installUnit = workflow.indexOf("cp /opt/search-hub/search-hub.service /etc/systemd/system/");
+    expect(extract).toBeGreaterThan(-1);
+    expect(diagnostics).toBeGreaterThan(extract);
+    expect(unitCheck).toBeGreaterThan(diagnostics);
+    expect(installUnit).toBeGreaterThan(unitCheck);
+    expect(workflow).toContain("systemctl enable --now search-hub");
+    expect(workflow).toContain('if [ "$CODE" != "3" ]');
+    expect(workflow).toContain("PASS health scheduler under systemd");
   });
 
   it("repairs systemd restore ownership and permissions before starting the unit", () => {

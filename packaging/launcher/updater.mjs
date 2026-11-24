@@ -48,6 +48,8 @@ function resolveLauncher(root) {
   }
   const shell = join(root, "bin", "search-hub");
   if (existsSync(shell)) return { command: shell, args: [] };
+  const rootScript = join(root, "launcher.mjs");
+  if (existsSync(rootScript)) return { command: process.execPath, args: [rootScript] };
   const script = join(HERE, "launcher.mjs");
   if (existsSync(script)) return { command: process.execPath, args: [script] };
   throw new UpdateError("no_launcher", `No launcher found under ${root}`);
