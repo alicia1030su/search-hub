@@ -87,7 +87,7 @@ describe("CLI immutable SQLite snapshots", () => {
     } finally { snapshot.close(); }
   });
 
-  it("rejects a non-empty WAL without changing source or sidecar bytes", async () => {
+  it("snapshots live WAL-resident data without changing or deleting source files", async () => {
     const root = workspace();
     const source = join(root, "source.db");
     const destination = join(root, "snapshot.db");
@@ -99,16 +99,22 @@ describe("CLI immutable SQLite snapshots", () => {
     const walPath = `${source}-wal`;
     const shmPath = `${source}-shm`;
     expect(statSync(walPath).size).toBeGreaterThan(0);
-    const before = new Map([source, walPath, shmPath].map((path) => [path, { bytes: digest(path), metadata: metadata(path) }]));
+    const sourceBytes = digest(source);
+    const sourceMetadata = metadata(source);
 
     try {
-      await expect(createNodeSqliteSnapshot(source, destination)).rejects.toThrow(/non-empty WAL.*stop Search Hub.*checkpoint/i);
-      expect(existsSync(destination)).toBe(false);
+      await createNodeSqliteSnapshot(source, destination);
+
+      const snapshot = immutableDatabase(destination);
+      try {
+        expect(snapshot.prepare("SELECT value FROM records WHERE id = 1").get()).toEqual({ value: "wal-resident" });
+      } finally { snapshot.close(); }
+      expect(digest(source)).toBe(sourceBytes);
+      expect(metadata(source)).toBe(sourceMetadata);
+      expect(existsSync(walPath)).toBe(true);
+      expect(existsSync(shmPath)).toBe(true);
       expect(existsSync(`${source}-journal`)).toBe(false);
-      for (const [path, expected] of before) {
-        expect(digest(path)).toBe(expected.bytes);
-        expect(metadata(path)).toBe(expected.metadata);
-      }
+      expect(readdirSync(root).sort()).toEqual(["snapshot.db", "source.db", "source.db-shm", "source.db-wal"]);
     } finally { writer.close(); }
   });
 
@@ -124,7 +130,7 @@ describe("CLI immutable SQLite snapshots", () => {
     writeFileSync(journalPath, Buffer.from("uncheckpointed rollback journal"));
     const before = new Map([source, journalPath].map((path) => [path, { bytes: digest(path), metadata: metadata(path) }]));
 
-    await expect(createNodeSqliteSnapshot(source, destination)).rejects.toThrow(/non-empty WAL or rollback journal/i);
+    await expect(createNodeSqliteSnapshot(source, destination)).rejects.toThrow(/non-empty rollback journal.*stop Search Hub.*checkpoint/i);
     expect(existsSync(destination)).toBe(false);
     for (const [path, expected] of before) {
       expect(digest(path)).toBe(expected.bytes);

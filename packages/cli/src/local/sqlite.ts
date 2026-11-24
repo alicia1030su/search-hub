@@ -98,7 +98,7 @@ function sameStat(left: SourceStat | null, right: SourceStat | null): boolean {
   return Object.keys(left).every((key) => left[key as keyof SourceStat] === right[key as keyof SourceStat]);
 }
 
-function assertSourceUnchanged(sourcePath: string, before: SourceState): void {
+function assertImmutableSourceUnchanged(sourcePath: string, before: SourceState): void {
   const after = captureSourceState(sourcePath);
   if (!sameStat(before.database, after.database) || !sameStat(before.wal, after.wal) ||
       !sameStat(before.shm, after.shm) || !sameStat(before.journal, after.journal)) {
@@ -106,10 +106,22 @@ function assertSourceUnchanged(sourcePath: string, before: SourceState): void {
   }
 }
 
+function assertLiveSourceUnchanged(sourcePath: string, before: SourceState): void {
+  const after = captureSourceState(sourcePath);
+  if (!sameStat(before.database, after.database)) {
+    throw new Error("SQLite source database metadata changed during live-WAL snapshot; refusing to publish the backup");
+  }
+  if ((before.wal !== null && after.wal === null) || (before.shm !== null && after.shm === null) ||
+      (before.journal !== null && after.journal === null) || (before.journal === null && after.journal !== null)) {
+    throw new Error("SQLite source sidecars were removed or a rollback journal appeared during live-WAL snapshot; refusing to publish the backup");
+  }
+}
+
 /**
- * Creates an immutable read-only VACUUM INTO snapshot without opening the source
- * in WAL mode. A live/non-empty WAL or rollback journal is rejected instead of
- * copied, checkpointed or deleted.
+ * Uses an immutable read-only VACUUM INTO for a stopped/clean source. When a
+ * live WAL contains committed data, SQLite opens the source read-only and folds
+ * that WAL into a consistent snapshot without copying, checkpointing or deleting
+ * any source file. A non-empty rollback journal always fails closed.
  */
 export async function createNodeSqliteSnapshot(sourcePath: string, destinationPath: string): Promise<void> {
   const source = resolve(sourcePath);
@@ -118,9 +130,10 @@ export async function createNodeSqliteSnapshot(sourcePath: string, destinationPa
     throw new Error("SQLite snapshot destination must be distinct from the source database and its sidecars");
   }
   const before = captureSourceState(source);
-  if ((before.wal !== null && before.wal.size > 0) || (before.journal !== null && before.journal.size > 0)) {
-    throw new Error("SQLite source has a non-empty WAL or rollback journal; stop Search Hub or checkpoint the database before creating a backup");
+  if (before.journal !== null && before.journal.size > 0) {
+    throw new Error("SQLite source has a non-empty rollback journal; stop Search Hub or checkpoint the database before creating a backup");
   }
+  const liveWal = before.wal !== null && before.wal.size > 0;
 
   let destinationExisted = true;
   try { lstatSync(destination); }
@@ -130,13 +143,16 @@ export async function createNodeSqliteSnapshot(sourcePath: string, destinationPa
   }
   const ownsDestination = !destinationExisted;
   try {
-    const database = new (databaseConstructor())(`${pathToFileURL(source).href}?immutable=1`, { readOnly: true });
+    const database = liveWal
+      ? openNodeSqlite(source, true)
+      : new (databaseConstructor())(`${pathToFileURL(source).href}?immutable=1`, { readOnly: true });
     try {
       database.prepare("VACUUM INTO ?").run(destination);
     } finally {
       database.close();
     }
-    assertSourceUnchanged(source, before);
+    if (liveWal) assertLiveSourceUnchanged(source, before);
+    else assertImmutableSourceUnchanged(source, before);
     if (process.platform === "win32") await restrictWindowsAcl(destination, false);
     else chmodSync(destination, 0o600);
   } catch (error) {
