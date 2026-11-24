@@ -20,7 +20,7 @@ function arg(name) {
   return index >= 0 ? args[index + 1] : null;
 }
 if (args.includes("--help")) {
-  process.stdout.write("usage: write-platform-report.mjs --self-check\n       write-platform-report.mjs --evidence-dir <dir> --kind <kind> --verdict <PASS|FAIL|BLOCKED> (--statuses <json-object> | --statuses-file <file>) [--evidence-map <json-object> | --evidence-map-file <file>]\n");
+  process.stdout.write("usage: write-platform-report.mjs --self-check\n       write-platform-report.mjs --evidence-dir <dir> --kind <kind> --verdict <PASS|FAIL|BLOCKED> [--scope <text>] (--statuses <json-object> | --statuses-file <file>) [--evidence-map <json-object> | --evidence-map-file <file>]\n");
   process.exit(0);
 }
 const selfCheck = args.includes("--self-check");
@@ -34,6 +34,7 @@ if (selfCheck) {
 const evidenceDir = path.resolve(arg("evidence-dir") ?? "");
 const kind = arg("kind");
 const verdict = arg("verdict");
+const scope = arg("scope");
 const statuses = JSON.parse(arg("statuses-file") ? readFileSync(path.resolve(arg("statuses-file")), "utf8") : arg("statuses") ?? "{}");
 const evidenceMap = JSON.parse(arg("evidence-map-file") ? readFileSync(path.resolve(arg("evidence-map-file")), "utf8") : arg("evidence-map") ?? "{}");
 if (!evidenceDir || !kind || !STATUSES.has(verdict)) throw new Error("evidence-dir, kind and valid verdict are required");
@@ -61,6 +62,7 @@ const report = {
   kind,
   source: { commit, releaseCodeFingerprint: fingerprint, dirty },
   verdict: dirty && verdict === "PASS" ? "BLOCKED" : verdict,
+  ...(scope ? { scope } : {}),
   requirements,
   requirementEvidence: evidence,
   evidence,

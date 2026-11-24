@@ -52,6 +52,13 @@ ExecStart=/usr/bin/node /srv/search-hub/app/apps/api/dist/server.mjs --db-path /
     expect(parsed.execStart).toContain("/srv/search-hub/app/apps/api/dist/server.mjs");
   });
 
+  it("does not invent a systemd unit path when the default service is absent", () => {
+    const root = directory = mkdtempSync(join(tmpdir(), "shub-updater-no-unit-"));
+    const config = resolveServiceConfig({ root, env: {}, platform: "linux", unitName: "search-hub" });
+    expect(config.unitName).toBeNull();
+    expect(config.unitPath).toBeNull();
+  });
+
   it("keeps update work outside the data directory so backup cannot recurse", () => {
     const dataDir = join(directory = mkdtempSync(join(tmpdir(), "shub-updater-work-")), "data");
     expect(updateWorkRoot(dataDir)).toBe(join(directory, ".data.search-hub-updates"));

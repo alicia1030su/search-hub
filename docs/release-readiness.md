@@ -33,7 +33,7 @@
 | `shub-v0.1.15-linux-x64.tar.gz` | Linux x64 | `cli-linux` matrix x64 |
 | `shub-v0.1.15-linux-arm64.tar.gz` | Linux arm64 | `cli-linux` matrix arm64 |
 | `shub-v0.1.15-node22.tar.gz` | Node.js 22+ portable | `cli-portable` |
-| `resource-evidence.json` | 平台无关，v0.1.15 exact-SHA 资源 + DR gate 摘要 | `assemble`，来自 CI `release-evidence-v0.1.15` |
+| `resource-evidence.json` | 平台无关，v0.1.15 exact-SHA 资源 + 最终 DR gate 摘要 | `assemble`，由 CI 资源/性能子证据与 candidate 核心、CLI、四平台报告聚合 |
 
 `SHA256SUMS` 覆盖上述 8 个内容资产，是 Release 的第 9 个上传文件；Provenance/attestation 保存在 GitHub attestation store 并随 candidate evidence 下载校验，不重复计为内容资产。`candidate-manifest.json` 绑定全部资产、attestation 引用和 GHCR `repo@digest`，自身也单独 attestation。
 

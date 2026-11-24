@@ -18,6 +18,7 @@ if (!existsSync(command.command)) throw new Error(`CLI executable not found: ${c
 
 const work = mkdtempSync(join(tmpdir(), `shub-acceptance-${TARGET}-`));
 const data = join(work, "data");
+const dbPath = join(data, "search-hub.db");
 mkdirSync(data, { recursive: true });
 let server;
 let restoredServer;
@@ -46,6 +47,7 @@ try {
     env: {
       ...process.env,
       SEARCH_HUB_DATA_DIR: data,
+      SEARCH_HUB_DB_PATH: dbPath,
       SEARCH_HUB_PORT: String(port),
       SEARCH_HUB_HOST: "127.0.0.1",
       SEARCH_HUB_SETUP_TOKEN: setupToken,
@@ -109,11 +111,12 @@ try {
   const doctor = JSON.parse(run(["doctor", "--json"], { env }));
   check("shub doctor", doctor.ok === true && doctor.checks.filter((item) => item.name !== "backup_status").every((item) => item.ok));
   const backupPath = join(work, "acceptance.shbackup");
-  if (process.platform !== "win32") chmodSync(join(data, "search-hub.db"), 0o600);
+  if (process.platform !== "win32") chmodSync(dbPath, 0o600);
   const backupPassphrase = `acceptance-${randomBytes(18).toString("hex")}`;
   const backupEnv = {
     ...env,
     SEARCH_HUB_DATA_DIR: data,
+    SEARCH_HUB_DB_PATH: dbPath,
     SEARCH_HUB_INSTALL_DIR: REPO,
     SEARCH_HUB_APP_ENTRY: join(REPO, "apps", "api", "dist", "server.mjs"),
     SEARCH_HUB_START_CHECK_NODE: process.execPath,

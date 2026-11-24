@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { SqliteHandle, SqliteStatement } from "@search-hub/backup";
+import { restrictWindowsAcl, type SqliteHandle, type SqliteStatement } from "@search-hub/backup";
 
 const require = createRequire(join(process.cwd(), "package.json"));
 let DatabaseConstructor: typeof DatabaseSync | null = null;
@@ -35,11 +35,13 @@ export function openNodeSqlite(path: string, readonly: boolean): SqliteHandle {
 }
 
 /** VACUUM INTO is SQLite's consistent local snapshot primitive. */
-export function createNodeSqliteSnapshot(sourcePath: string, destinationPath: string): void {
+export async function createNodeSqliteSnapshot(sourcePath: string, destinationPath: string): Promise<void> {
   const source = openNodeSqlite(sourcePath, true);
   try {
     source.prepare("VACUUM INTO ?").run(destinationPath);
   } finally {
     source.close();
   }
+  if (process.platform === "win32") await restrictWindowsAcl(destinationPath, false);
+  else chmodSync(destinationPath, 0o600);
 }

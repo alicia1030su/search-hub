@@ -79,7 +79,7 @@ docs/evidence/v0.1.15/disaster-recovery/SHA256SUMS
 node packaging/verify-disaster-recovery-evidence.mjs --commit "$(git rev-parse HEAD)"
 ```
 
-`tests/disaster-recovery/requirement-matrix.json` maps every R01–R38/A01–A12 id to its command, isolated fixture, expected evidence and platform. Platform scripts write an aggregator-compatible `report.json` through `write-platform-report.mjs`; only requirements actually proven by that run are marked PASS, and all others remain NOT TESTED. Performance and memory-loop manifests are inputs to the aggregator, never replacements for it. Missing evidence is `NOT TESTED`; an executed but resource/telemetry-blocked case is `BLOCKED`; a missing implementation is reported as `NOT IMPLEMENTED`/`BLOCKED` with the reason. Never convert any of these to `PASS`.
+`tests/disaster-recovery/requirement-matrix.json` maps every R01–R38/A01–A12 id to its command, isolated fixture, expected evidence and platform. Platform scripts write an aggregator-compatible `report.json` through `write-platform-report.mjs`; only requirements actually proven by that run are marked PASS, and all others remain NOT TESTED. Performance and memory-loop manifests are inputs to the aggregator, never replacements for it. Missing evidence is `NOT TESTED`; an executed but resource/telemetry-blocked case is `BLOCKED`; a missing implementation is reported as `NOT IMPLEMENTED`/`BLOCKED` with the reason. Never convert any of these to `PASS`. A12's pre-tag PASS covers exact-SHA candidate aggregation, the five successful main-push gates and the candidate/promoter policy; the sixth candidate workflow, immutable annotated tag and digest-fixed promotion are verified by the subsequent preflight and release gates.
 
 ### Platform-isolated commands
 

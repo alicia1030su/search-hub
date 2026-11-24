@@ -103,7 +103,8 @@ describe("shub backup local maintenance", () => {
   it("returns non-zero for legacy verification without a key", async () => {
     const { root, dbPath } = await fixture();
     const legacy = join(root, "legacy.db");
-    writeFileSync(legacy, readFileSync(dbPath));
+    writeFileSync(legacy, readFileSync(dbPath), { mode: 0o600 });
+    if (process.platform !== "win32") await chmod(legacy, 0o600);
     if (process.platform === "win32") await restrictWindowsAcl(legacy, false);
     const emptyDataDir = join(root, "empty"); mkdirSync(emptyDataDir);
     const result = await invoke(["backup", "verify", legacy, "--legacy", "--data-dir", emptyDataDir]);

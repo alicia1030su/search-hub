@@ -218,6 +218,27 @@ describe("SQLite snapshot consistency", () => {
     );
   });
 
+  it("R04 includes a committed provider write that is still only in the WAL", async () => {
+    const harness = await createHarness();
+    harness.ctx.sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const walPath = `${harness.ctx.config.dbPath}-wal`;
+    expect(statSync(walPath).size).toBe(0);
+
+    const providerId = await createMockProvider(harness, "wal-only-commit");
+    expect(statSync(walPath).size).toBeGreaterThan(0);
+
+    const path = await snapshotTo(harness, "wal-commit.db");
+    const db = openDatabaseFile(path, { readonly: true });
+    try {
+      expect(db.prepare("SELECT id FROM provider_instances WHERE id = ?").get(providerId)).toEqual({ id: providerId });
+      expect(db.pragma("journal_mode", { simple: true })).toBe("delete");
+    } finally {
+      db.close();
+    }
+    expect(() => statSync(`${path}-wal`)).toThrow();
+    expect(() => statSync(`${path}-shm`)).toThrow();
+  });
+
   it("keeps API keys encrypted in the snapshot (no plaintext secrets)", async () => {
     const harness = await createHarness();
     const providerId = await createMockProvider(harness, "keyed");

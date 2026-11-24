@@ -34,3 +34,14 @@ dist/package/
 artifacts/v0.1.14/*/
 artifacts/disaster-recovery/*-dev/
 .resource-bench/
+
+# Generated release-candidate/promoter working directories
+/candidate/
+/candidate-manifest.json
+/final-dr/
+/combined-evidence/
+/release-assets/
+/promotion/
+/verified-promotion/
+/downloaded/
+/final-download/

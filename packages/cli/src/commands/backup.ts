@@ -92,7 +92,7 @@ export async function runBackupCreate(args: ParsedCliArgs, format: OutputFormat)
   const created = await createBackupPackage({
     snapshotAdapter: {
       createSnapshot: async (destinationPath) => {
-        createNodeSqliteSnapshot(paths.dbPath, destinationPath);
+        await createNodeSqliteSnapshot(paths.dbPath, destinationPath);
         return { method: "vacuum_into", walCheckpointed: true };
       },
       openDatabase: openNodeSqlite,

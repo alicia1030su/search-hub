@@ -235,7 +235,21 @@ jobs:
           node packaging/build-cli-package.mjs
       - name: Verify CLI against a real Search Hub server
         shell: bash
-        run: node packaging/verify-cli-package.mjs windows-x64
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dr-cli-windows-x64"
+          node packaging/verify-cli-package.mjs windows-x64 | tee "$RUNNER_TEMP/dr-cli-windows-x64/cli-acceptance.log"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$RUNNER_TEMP/dr-cli-windows-x64" \
+            --kind search-hub-cli-package --verdict PASS \
+            --statuses '{"A04":"PASS"}' \
+            --evidence-map '{"A04":["cli-acceptance.log"]}'
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-cli-windows-x64-v0.1.15
+          path: ${{ runner.temp }}/dr-cli-windows-x64/
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/download-artifact@v8.0.2
         with:
           name: windows-x64
@@ -298,7 +312,21 @@ jobs:
           pnpm --filter @search-hub/cli build
           node packaging/build-cli-package.mjs
       - name: Verify CLI against a real Search Hub server
-        run: node packaging/verify-cli-package.mjs linux-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dr-cli-linux-${{ matrix.arch }}"
+          node packaging/verify-cli-package.mjs linux-${{ matrix.arch }} | tee "$RUNNER_TEMP/dr-cli-linux-${{ matrix.arch }}/cli-acceptance.log"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$RUNNER_TEMP/dr-cli-linux-${{ matrix.arch }}" \
+            --kind search-hub-cli-package --verdict PASS \
+            --statuses '{"A04":"PASS"}' \
+            --evidence-map '{"A04":["cli-acceptance.log"]}'
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-cli-linux-${{ matrix.arch }}-v0.1.15
+          path: ${{ runner.temp }}/dr-cli-linux-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/download-artifact@v8.0.2
         with:
           name: linux-${{ matrix.arch }}
@@ -351,10 +379,23 @@ jobs:
           PACKAGE_TARGET: node22
           SEARCH_HUB_VERSION: ${{ needs.gate.outputs.version }}
         run: |
+          set -euo pipefail
           pnpm build:server
           pnpm --filter @search-hub/cli build
           node packaging/build-cli-package.mjs
-          node packaging/verify-cli-package.mjs node22
+          mkdir -p "$RUNNER_TEMP/dr-cli-node22"
+          node packaging/verify-cli-package.mjs node22 | tee "$RUNNER_TEMP/dr-cli-node22/cli-acceptance.log"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$RUNNER_TEMP/dr-cli-node22" \
+            --kind search-hub-cli-package --verdict PASS \
+            --statuses '{"A04":"PASS"}' \
+            --evidence-map '{"A04":["cli-acceptance.log"]}'
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-cli-node22-v0.1.15
+          path: ${{ runner.temp }}/dr-cli-node22/
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: cli-node22
@@ -511,7 +552,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for name in candidate-gate-v0.1.15 candidate-image-v0.1.15 windows-x64 linux-x64 linux-arm64 cli-windows-x64 cli-linux-x64 cli-linux-arm64 cli-node22 dr-core-v0.1.15 dr-platform-windows-v0.1.15 dr-platform-linux-x64-v0.1.15 dr-platform-linux-arm64-v0.1.15 dr-platform-docker-v0.1.15 dr-platform-systemd-v0.1.15; do
+          for name in candidate-gate-v0.1.15 candidate-image-v0.1.15 windows-x64 linux-x64 linux-arm64 cli-windows-x64 cli-linux-x64 cli-linux-arm64 cli-node22 dr-core-v0.1.15 dr-cli-windows-x64-v0.1.15 dr-cli-linux-x64-v0.1.15 dr-cli-linux-arm64-v0.1.15 dr-cli-node22-v0.1.15 dr-platform-windows-v0.1.15 dr-platform-linux-x64-v0.1.15 dr-platform-linux-arm64-v0.1.15 dr-platform-docker-v0.1.15 dr-platform-systemd-v0.1.15; do
             gh run download "$GITHUB_RUN_ID" -n "$name" -D "candidate/$name"
           done
           mkdir -p release-assets
@@ -532,6 +573,10 @@ jobs:
           cp -a evidence-ci/disaster-recovery/. "$final_dr/"
           for entry in \
             dr-core-v0.1.15:core \
+            dr-cli-windows-x64-v0.1.15:cli-windows-x64 \
+            dr-cli-linux-x64-v0.1.15:cli-linux-x64 \
+            dr-cli-linux-arm64-v0.1.15:cli-linux-arm64 \
+            dr-cli-node22-v0.1.15:cli-node22 \
             dr-platform-windows-v0.1.15:platform-windows \
             dr-platform-linux-x64-v0.1.15:platform-linux-x64 \
             dr-platform-linux-arm64-v0.1.15:platform-linux-arm64 \
@@ -544,6 +589,23 @@ jobs:
             mkdir -p "$final_dr/reports/$slug"
             cp -a "candidate/$name/." "$final_dr/reports/$slug/"
           done
+          release_report="$final_dr/reports/release"
+          mkdir -p "$release_report"
+          cp candidate/candidate-gate-v0.1.15/candidate-gate.json "$release_report/candidate-gate.json"
+          cp "$final_dr/reports/core/report.json" "$release_report/core-report.json"
+          cp "$final_dr/reports/performance/manifest.json" "$release_report/performance-manifest.json"
+          cp "$final_dr/reports/platform-windows/report.json" "$release_report/platform-windows.json"
+          cp "$final_dr/reports/platform-linux-x64/report.json" "$release_report/platform-linux-x64.json"
+          cp "$final_dr/reports/platform-linux-arm64/report.json" "$release_report/platform-linux-arm64.json"
+          cp "$final_dr/reports/platform-docker/report.json" "$release_report/platform-docker.json"
+          cp "$final_dr/reports/platform-systemd/report.json" "$release_report/platform-systemd.json"
+          cp .github/workflows/release-candidate.yml .github/workflows/release.yml "$release_report/"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$release_report" \
+            --kind search-hub-candidate-release --verdict PASS \
+            --scope "pre-tag exact-SHA aggregation; sixth candidate workflow, immutable annotated tag and digest-fixed promoter are enforced by preflight and release workflows" \
+            --statuses '{"A08":"PASS","A11":"PASS","A12":"PASS","R35":"PASS"}' \
+            --evidence-map '{"A08":["platform-windows.json","platform-linux-x64.json","platform-linux-arm64.json","platform-docker.json","platform-systemd.json"],"A11":["core-report.json","performance-manifest.json","candidate-gate.json"],"A12":["candidate-gate.json","release-candidate.yml","release.yml"],"R35":["candidate-gate.json"]}'
           node packaging/aggregate-disaster-recovery-evidence.mjs \
             --commit "$SOURCE_SHA" --evidence-dir "$final_dr"
           node packaging/verify-disaster-recovery-evidence.mjs \

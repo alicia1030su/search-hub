@@ -220,6 +220,10 @@ describe("release candidate evidence", () => {
     const attestations = readFileSync(new URL("../../packaging/candidate-attestations.mjs", import.meta.url), "utf8");
     expect(attestations).toContain("oci://${manifest.image.reference}");
     expect(candidate).toContain("name: dr-core-v0.1.15");
+    expect(candidate).toContain("name: dr-cli-windows-x64-v0.1.15");
+    expect(candidate).toContain("name: dr-cli-linux-${{ matrix.arch }}-v0.1.15");
+    expect(candidate).toContain("name: dr-cli-node22-v0.1.15");
+    expect(candidate).toContain("search-hub-candidate-release");
     expect(candidate).toContain("name: dr-platform-windows-v0.1.15");
     expect(candidate).toContain("name: dr-platform-linux-${{ matrix.arch }}-v0.1.15");
     expect(candidate).toContain("name: dr-platform-docker-v0.1.15");

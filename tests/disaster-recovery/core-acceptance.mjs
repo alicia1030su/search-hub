@@ -43,8 +43,22 @@ const COMMANDS = [
     name: "backup-api",
     command: PNPM,
     args: ["exec", "vitest", "run", "tests/integration/backup.test.ts", "--maxWorkers=1", "--no-file-parallelism"],
-    requirements: ["R03", "R05", "R06", "R09", "R35", "R36", "R37", "A02", "A05", "A09", "A10"],
+    requirements: ["R03", "R04", "R05", "R06", "R09", "R35", "R36", "R37", "A02", "A05", "A09", "A10"],
     timeoutMs: 300_000,
+  },
+  {
+    name: "backup-restore-isolated",
+    command: PNPM,
+    args: ["exec", "vitest", "run", "tests/integration/backup-restore-isolated.test.ts", "--maxWorkers=1", "--no-file-parallelism"],
+    requirements: ["R15", "R16"],
+    timeoutMs: 300_000,
+  },
+  {
+    name: "backup-faults",
+    command: PNPM,
+    args: ["exec", "vitest", "run", "tests/integration/backup-faults.test.ts", "--maxWorkers=1", "--no-file-parallelism"],
+    requirements: ["R23", "R24", "R25", "A02", "A10"],
+    timeoutMs: 600_000,
   },
   {
     name: "updater-e2e",

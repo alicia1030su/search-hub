@@ -116,7 +116,7 @@ export async function assertSecureRegularFile(path: string, maxBytes: number): P
       throw new Error("Input ACL contains an unauthorized principal");
     }
   } else if ((info.mode & 0o777) !== 0o600) {
-    throw new Error("Input file mode must be exactly 0600");
+    throw new Error(`Input file mode must be exactly 0600: ${path}`);
   }
   return info;
 }

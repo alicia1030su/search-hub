@@ -52,7 +52,7 @@ function readUnit(unitName, platform = process.platform) {
   if (platform === "win32") return null;
   const name = unitName.endsWith(".service") ? unitName : `${unitName}.service`;
   for (const candidate of UNIT_CANDIDATES) {
-    if (candidate.endsWith(name)) return candidate;
+    if (candidate.endsWith(name) && existsSync(candidate)) return candidate;
   }
   const result = spawnSync("systemctl", ["show", name, "--property=FragmentPath", "--value"], {
     encoding: "utf8",
