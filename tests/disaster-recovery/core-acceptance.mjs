@@ -247,6 +247,7 @@ async function run() {
     verdict,
     acceptanceComplete: allPass && !src.dirty,
     scope: "core command subset; platform, performance and release evidence are aggregated separately",
+    coveredRequirements: COVERED_REQUIREMENTS,
     requirements,
     requirementEvidence,
     evidence: requirementEvidence,
