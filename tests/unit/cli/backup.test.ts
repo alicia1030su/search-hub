@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDb, openDatabaseFile, runMigrations } from "@search-hub/db";
 import { masterKeyFingerprint, restrictWindowsAcl } from "@search-hub/backup";
 import { parseCliArgs } from "../../../packages/cli/src/args.js";
-import { runBackup } from "../../../packages/cli/src/commands/backup.js";
+import { bundledRuntime, runBackup } from "../../../packages/cli/src/commands/backup.js";
 import { runLocalDoctor } from "../../../packages/cli/src/commands/local-doctor.js";
 import { resolveBackupPassphrase } from "../../../packages/cli/src/local/index.js";
 import { SecretBox } from "../../../apps/api/src/security/crypto.js";
@@ -59,10 +59,34 @@ afterEach(() => {
   delete process.env.SEARCH_HUB_ENCRYPTION_KEY;
   delete process.env.SEARCH_HUB_DATA_DIR;
   delete process.env.SEARCH_HUB_INSTALL_DIR;
+  delete process.env.SEARCH_HUB_START_CHECK_NODE;
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 describe("shub backup local maintenance", () => {
+  it("resolves Linux runtime/bin/node without spawning the SEA executable", () => {
+    const root = workspace();
+    const installDir = join(root, "install");
+    const runtime = join(installDir, "runtime", "bin", "node");
+    mkdirSync(join(installDir, "runtime", "bin"), { recursive: true });
+    writeFileSync(runtime, "synthetic-node", { mode: 0o755 });
+    const sea = join(installDir, "shub");
+    expect(bundledRuntime(installDir, "linux", sea)).toBe(runtime);
+
+    const fallback = join(installDir, "node");
+    writeFileSync(fallback, "fallback-node", { mode: 0o755 });
+    rmSync(runtime);
+    expect(bundledRuntime(installDir, "linux", sea)).toBe(fallback);
+    expect(() => bundledRuntime(join(root, "missing"), "linux", sea)).toThrow(/refusing to spawn the SEA executable/i);
+
+    const windowsRuntime = join(installDir, "runtime", "node.exe");
+    writeFileSync(windowsRuntime, "synthetic-node.exe");
+    expect(bundledRuntime(installDir, "win32", join(installDir, "shub.exe"))).toBe(windowsRuntime);
+
+    process.env.SEARCH_HUB_START_CHECK_NODE = fallback;
+    expect(bundledRuntime(join(root, "missing"), "linux", sea)).toBe(fallback);
+  });
+
   it("creates, verifies, defaults to dry-run and restores only with --apply", async () => {
     const { root, dataDir, dbPath, key } = await fixture();
     const output = join(root, "fixture.shbackup");

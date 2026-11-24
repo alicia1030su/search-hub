@@ -177,16 +177,23 @@ function serverEntry(installDir: string): string {
   if (!found) throw new Error("Could not locate the real Search Hub server entry for --start-check");
   return found;
 }
-function bundledRuntime(installDir: string): string {
+export function bundledRuntime(
+  installDir: string,
+  platform: NodeJS.Platform = process.platform,
+  executablePath: string = process.execPath,
+): string {
   const explicit = process.env["SEARCH_HUB_START_CHECK_NODE"];
   if (explicit) {
     const resolved = resolve(explicit);
     if (!existsSync(resolved)) throw new Error("SEARCH_HUB_START_CHECK_NODE does not name a real Node runtime");
     return resolved;
   }
-  const bundled = [join(installDir, "runtime", process.platform === "win32" ? "node.exe" : "node"), join(installDir, process.platform === "win32" ? "node.exe" : "node")].find((candidate) => existsSync(candidate));
+  const bundledCandidates = platform === "win32"
+    ? [join(installDir, "runtime", "node.exe"), join(installDir, "node.exe")]
+    : [join(installDir, "runtime", "bin", "node"), join(installDir, "runtime", "node"), join(installDir, "node")];
+  const bundled = bundledCandidates.find((candidate) => existsSync(candidate));
   if (bundled) return bundled;
-  if (/^node(?:\.exe)?$/i.test(basename(process.execPath))) return process.execPath;
+  if (/^node(?:\.exe)?$/i.test(basename(executablePath))) return executablePath;
   throw new Error("Bundled Node runtime is required for --start-check; refusing to spawn the SEA executable");
 }
 async function stopOwnedChild(child: ChildProcess): Promise<void> {
