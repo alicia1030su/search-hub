@@ -14,7 +14,7 @@
  * a native addon and cannot be loaded from inside a SEA blob, so the launcher
  * spawns the bundled runtime against `app/`.
  */
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, renameSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, writeFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -369,10 +369,11 @@ async function makeArchive(fromDir, toFile) {
     log(`wrote ${toFile}`);
     return;
   }
-  // Create the archive from *inside* the directory ("./"), so its entries sit at
-  // the archive root exactly like the Windows zip. Wrapping everything in a
-  // top-level folder made the extracted layout differ per platform.
-  await run("tar", ["-czf", toFile, "-C", fromDir, "."], { cwd: parent });
+  // Name each top-level entry explicitly. Passing "." makes GNU tar emit a
+  // canonical but ambiguous "./" root member, which the strict updater rejects.
+  // Explicit names keep the archive root identical across platforms without
+  // weakening path validation.
+  await run("tar", ["--force-local", "-czf", toFile, "-C", fromDir, ...readdirSync(fromDir)], { cwd: parent });
 }
 
 function sha256(file) {

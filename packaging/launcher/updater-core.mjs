@@ -105,6 +105,13 @@ export function compareVersions(left, right) {
   return comparePrerelease(a.pre, b.pre);
 }
 
+export function systemdStateProvesStopped(properties) {
+  const mainPid = Number(properties?.MainPID ?? 0);
+  const inactiveDead = properties?.ActiveState === "inactive" && properties?.SubState === "dead";
+  const failedWithoutProcess = properties?.ActiveState === "failed" && mainPid === 0;
+  return mainPid === 0 && (inactiveDead || failedWithoutProcess);
+}
+
 export function assertUpgrade(currentVersion, targetVersion) {
   const target = parseSemver(targetVersion);
   const current = parseSemver(currentVersion);

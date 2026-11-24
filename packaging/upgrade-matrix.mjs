@@ -197,7 +197,7 @@ try {
   check(
     "updater reports the new version healthy",
     updaterRun.status === 0 && updaterOutput.includes("completed and healthy"),
-    `exit=${updaterRun.status} ${updaterOutput.split("\n").slice(-2).join(" | ").slice(0, 200)}`,
+    `exit=${updaterRun.status} ${updaterOutput.slice(0, 4000)}`,
   );
 
   const versionAfter = installedVersion(install);

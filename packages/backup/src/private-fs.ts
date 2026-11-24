@@ -13,6 +13,26 @@ const icaclsPath = join(systemDirectory, "icacls.exe");
 const powershellPath = join(process.env["SystemRoot"] ?? "C:/Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 let cachedSid: string | undefined;
 
+const WINDOWS_ACL = String.raw`$path = $env:SHUB_ACL_PATH;
+$directory = $env:SHUB_ACL_DIRECTORY -eq '1';
+$sid = $env:SHUB_ACL_SID;
+$acl = Get-Acl -LiteralPath $path;
+$acl.SetAccessRuleProtection($true, $false);
+$allowed = @($sid, 'S-1-5-18', 'S-1-5-32-544');
+foreach ($rule in @($acl.Access)) {
+  $identity = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;
+  if ($allowed -notcontains $identity) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+}
+$inheritance = if ($directory) { 'ContainerInherit,ObjectInherit' } else { 'None' };
+foreach ($identity in $allowed) {
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    [System.Security.Principal.SecurityIdentifier]$identity,
+    'FullControl', $inheritance, 'None', 'Allow');
+  $acl.SetAccessRule($rule);
+}
+if ($directory) { [System.IO.Directory]::SetAccessControl($path, $acl) }
+else { [System.IO.File]::SetAccessControl($path, $acl) }`;
+
 const WINDOWS_DIRECTORY_FSYNC = String.raw`$code = @'
 using System;
 using System.Runtime.InteropServices;
@@ -59,15 +79,15 @@ async function readWindowsAcl(path: string): Promise<string> {
 /** Applies and reads back a non-inherited ACL for only SID/SYSTEM/Administrators. */
 export async function restrictWindowsAcl(path: string, directory: boolean): Promise<void> {
   const sid = await currentWindowsSid();
-  const inheritance = directory ? "(OI)(CI)" : "";
-  await execFileAsync(icaclsPath, [
-    path,
-    "/inheritance:r",
-    "/grant:r",
-    `*${sid}:${inheritance}F`,
-    `*S-1-5-18:${inheritance}F`,
-    `*S-1-5-32-544:${inheritance}F`,
-  ], { windowsHide: true });
+  await execFileAsync(powershellPath, ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACL], {
+    windowsHide: true,
+    env: {
+      ...process.env,
+      SHUB_ACL_PATH: resolve(path),
+      SHUB_ACL_DIRECTORY: directory ? "1" : "0",
+      SHUB_ACL_SID: sid,
+    },
+  });
   const readback = await readWindowsAcl(path);
   if (/\([AD];[^;]*;[^)]*;ID\)/.test(readback) || /\(D;/.test(readback)) throw new Error("Private Windows ACL still contains inherited or deny entries");
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);

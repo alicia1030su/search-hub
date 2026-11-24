@@ -16,6 +16,7 @@ import {
   recoverInterruptedUpdate,
   restoreData,
   rollbackProgram,
+  systemdStateProvesStopped,
   verifyStagedFile,
   // @ts-expect-error -- the updater is a plain .mjs script without declarations
 } from "../../packaging/launcher/updater-core.mjs";
@@ -65,6 +66,16 @@ describe("archive safety", () => {
     mkdirSync(join(root, "app"), { recursive: true });
     writeFileSync(join(root, "app", "ok.txt"), "x");
     expect(() => assertTreeContained(join(root, "app"))).not.toThrow();
+  });
+});
+
+describe("systemd stop proof", () => {
+  it("accepts inactive/dead and failed/no-process states but rejects live or ambiguous units", () => {
+    expect(systemdStateProvesStopped({ ActiveState: "inactive", SubState: "dead", MainPID: "0" })).toBe(true);
+    expect(systemdStateProvesStopped({ ActiveState: "failed", SubState: "failed", MainPID: "0" })).toBe(true);
+    expect(systemdStateProvesStopped({ ActiveState: "active", SubState: "running", MainPID: "123" })).toBe(false);
+    expect(systemdStateProvesStopped({ ActiveState: "failed", SubState: "failed", MainPID: "123" })).toBe(false);
+    expect(systemdStateProvesStopped({ ActiveState: "deactivating", SubState: "stop", MainPID: "0" })).toBe(false);
   });
 });
 

@@ -17,6 +17,7 @@ import {
   recoverInterruptedUpdate,
   restoreData,
   rollbackProgram,
+  systemdStateProvesStopped,
   verifyStagedFile,
   writeJsonAtomic,
 } from "./updater-core.mjs";
@@ -185,7 +186,7 @@ async function assertServiceStopped(config) {
     const shown = systemctl(["show", config.unitName, "--property=ActiveState", "--property=SubState", "--property=MainPID"]);
     if (shown.status !== 0) throw new UpdateError("stop_unproven", `Could not prove systemd unit ${config.unitName} is stopped`);
     const properties = Object.fromEntries(shown.stdout.trim().split(/\r?\n/).map((line) => line.split("=", 2)));
-    if (!["inactive", "failed"].includes(properties.ActiveState) || properties.SubState !== "dead" || Number(properties.MainPID ?? 0) !== 0) {
+    if (!systemdStateProvesStopped(properties)) {
       throw new UpdateError("stop_unproven", `systemd unit is not proven stopped: ${JSON.stringify(properties)}`);
     }
   }
