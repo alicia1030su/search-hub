@@ -70,7 +70,11 @@ function currentWindowsSidSync(): string {
 }
 
 function aclIdentities(sddl: string): string[] {
-  return [...sddl.matchAll(/;;;(S-1-[0-9-]+|SY|BA)\)/g)].map((match) => match[1] as string);
+  const owner = /(?:^|\n)O:(S-1-[0-9-]+)/.exec(sddl)?.[1];
+  return [...new Set([
+    ...[...sddl.matchAll(/;;;(S-1-[0-9-]+|SY|BA)\)/g)].map((match) => match[1] as string),
+    ...(owner ? [owner] : []),
+  ])];
 }
 
 async function readWindowsAcl(path: string): Promise<string> {
