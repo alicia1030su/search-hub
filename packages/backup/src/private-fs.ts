@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import type { Stats } from "node:fs";
+import { readFileSync, rmSync, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, rm, statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
@@ -61,6 +61,14 @@ async function currentWindowsSid(): Promise<string> {
   return sid;
 }
 
+function currentWindowsSidSync(): string {
+  const output = execFileSync(whoamiPath, ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+  const fields = output.trim().match(/"([^"]*)"/g)?.map((field) => field.slice(1, -1));
+  const sid = fields?.at(-1);
+  if (!sid || !/^S-1-[0-9-]+$/.test(sid)) throw new Error("Cannot determine the current Windows SID");
+  return sid;
+}
+
 function aclIdentities(sddl: string): string[] {
   return [...sddl.matchAll(/;;;(S-1-[0-9-]+|SY|BA)\)/g)].map((match) => match[1] as string);
 }
@@ -73,6 +81,33 @@ async function readWindowsAcl(path: string): Promise<string> {
     return bytes[1] === 0 ? bytes.toString("utf16le") : bytes.toString("utf8");
   } finally {
     await rm(aclPath, { force: true }).catch(() => undefined);
+  }
+}
+
+function readWindowsAclSync(path: string): string {
+  const aclPath = join(tmpdir(), `.shbackup-acl-${process.pid}-${randomBytes(8).toString("hex")}`);
+  try {
+    execFileSync(icaclsPath, [path, "/save", aclPath], { windowsHide: true, stdio: "ignore" });
+    const bytes = readFileSync(aclPath);
+    return bytes[1] === 0 ? bytes.toString("utf16le") : bytes.toString("utf8");
+  } finally {
+    try { rmSync(aclPath, { force: true }); } catch { /* best-effort owned temp cleanup */ }
+  }
+}
+
+/** Synchronous variant for first-run master.key creation before async services exist. */
+export function restrictWindowsAclSync(path: string, directory: boolean): void {
+  const sid = currentWindowsSidSync();
+  execFileSync(powershellPath, ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACL], {
+    windowsHide: true,
+    env: { ...process.env, SHUB_ACL_PATH: resolve(path), SHUB_ACL_DIRECTORY: directory ? "1" : "0", SHUB_ACL_SID: sid },
+  });
+  const readback = readWindowsAclSync(path);
+  if (/\([AD];[^;]*;[^)]*;ID\)/.test(readback) || /\(D;/.test(readback)) throw new Error("Private Windows ACL still contains inherited or deny entries");
+  const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
+  const identities = aclIdentities(readback);
+  if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
+    throw new Error("Private Windows ACL read-back contains an unauthorized principal");
   }
 }
 

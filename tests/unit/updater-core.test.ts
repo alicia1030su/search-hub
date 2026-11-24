@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -155,6 +155,20 @@ describe("backup and install", () => {
     expect(existsSync(join(path, "app", "apps", "server.mjs"))).toBe(true);
     expect(manifest.files).toContain("master.key");
     expect(manifest.snapshot.method).toBe("vacuum_into");
+  });
+
+  it.skipIf(process.platform === "win32")("preserves data directory and private file modes in the backup", () => {
+    const root = tmp();
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    fixtureDatabase(join(dataDir, "search-hub.db"), 3);
+    writeFileSync(join(dataDir, "master.key"), "fake-key", { mode: 0o600 });
+    chmodSync(dataDir, 0o700);
+    chmodSync(join(dataDir, "master.key"), 0o600);
+    const { path } = backupCurrent({ dataDir, backupRoot: join(root, "backups"), stamp: "2026-11-16T00:00:00.000Z" });
+    expect(statSync(join(path, "data")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(path, "data", "master.key")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(path, "data", "search-hub.db")).mode & 0o777).toBe(statSync(join(dataDir, "search-hub.db")).mode & 0o777);
   });
 
   it("keeps the old program aside so a rollback needs no download", () => {

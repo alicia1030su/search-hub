@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { userInfo } from "node:os";
+import { restrictWindowsAclSync } from "@search-hub/backup";
 import {
   createCipheriv,
   createDecipheriv,
@@ -19,9 +18,7 @@ const IV_BYTES = 12;
 
 function restrictMasterKeyPermissions(path: string): void {
   if (process.platform === "win32") {
-    const principal = process.env["USERNAME"]?.trim() || userInfo().username;
-    const systemDirectory = process.env["SystemRoot"] ? join(process.env["SystemRoot"], "System32") : "C:/Windows/System32";
-    execFileSync(join(systemDirectory, "icacls.exe"), [path, "/inheritance:r", "/grant:r", `${principal}:F`, "*S-1-5-18:F", "*S-1-5-32-544:F"], { windowsHide: true });
+    restrictWindowsAclSync(path, false);
   } else {
     chmodSync(path, 0o600);
   }

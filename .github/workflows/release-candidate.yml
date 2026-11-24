@@ -433,6 +433,10 @@ jobs:
           cp -a "$RUNNER_TEMP/linux-server" "$RUNNER_TEMP/dr-systemd-input/server"
           cp -a "$RUNNER_TEMP/linux-cli" "$RUNNER_TEMP/dr-systemd-input/cli"
           cp "$RUNNER_TEMP/linux-server-artifact/"*.tar.gz "$RUNNER_TEMP/dr-systemd-input/"
+          mkdir -p "$RUNNER_TEMP/dr-systemd-input/old"
+          gh release download v0.1.14 --repo "$GITHUB_REPOSITORY" \
+            --pattern 'search-hub-v0.1.14-linux-x64.tar.gz' \
+            --dir "$RUNNER_TEMP/dr-systemd-input/old" --clobber
           docker run -d --name sh-dr-systemd --privileged --cgroupns=host \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
@@ -443,10 +447,12 @@ jobs:
             if docker exec sh-dr-systemd systemctl is-system-running >/dev/null 2>&1; then break; fi
             sleep 2
           done
-          docker exec -e GH_TOKEN -e GIT_OPTIONAL_LOCKS=0 sh-dr-systemd bash -lc '
+          docker exec -e GH_TOKEN -e GIT_OPTIONAL_LOCKS=0 \
+            -e SEARCH_HUB_UPGRADE_FROM_LOCAL=/input/old/search-hub-v0.1.14-linux-x64.tar.gz \
+            sh-dr-systemd bash -lc '
             set -euo pipefail
             apt-get update -qq >/dev/null
-            apt-get install -y -qq curl tar jq gh >/dev/null
+            apt-get install -y -qq curl tar jq >/dev/null
             git config --global --add safe.directory /repo
             mkdir -p /evidence
             bash /repo/tests/disaster-recovery/platform-systemd.sh \

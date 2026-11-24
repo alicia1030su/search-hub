@@ -2,6 +2,8 @@
 /** Fail-closed update primitives shared by the updater and its acceptance tests. */
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  chownSync,
   closeSync,
   copyFileSync,
   cpSync,
@@ -188,6 +190,30 @@ export function writeJsonAtomic(path, value) {
   syncDirectory(dirname(path));
 }
 
+function preserveFileMetadata(sourcePath, destinationPath) {
+  if (process.platform === "win32") return;
+  const source = lstatSync(sourcePath);
+  if (process.getuid?.() === 0) chownSync(destinationPath, source.uid, source.gid);
+  chmodSync(destinationPath, source.mode & 0o777);
+}
+
+function copyTreePreservingMetadata(sourcePath, destinationPath, shouldSkip = () => false) {
+  if (shouldSkip(sourcePath)) return;
+  const source = lstatSync(sourcePath);
+  if (source.isSymbolicLink() || (!source.isDirectory() && !source.isFile())) {
+    throw new UpdateError("unsafe_path", `Unsafe tree entry: ${sourcePath}`);
+  }
+  if (source.isDirectory()) {
+    mkdirSync(destinationPath, { recursive: true, mode: source.mode & 0o777 });
+    for (const name of readdirSync(sourcePath)) {
+      copyTreePreservingMetadata(join(sourcePath, name), join(destinationPath, name), shouldSkip);
+    }
+  } else {
+    copyFileSync(sourcePath, destinationPath);
+  }
+  preserveFileMetadata(sourcePath, destinationPath);
+}
+
 export function snapshotSqliteDatabase(sourcePath, destinationPath) {
   assertNoReparsePath(sourcePath, "source database");
   if (!statSync(sourcePath).isFile()) throw new UpdateError("invalid_database", "Source database is not a regular file");
@@ -209,6 +235,7 @@ export function snapshotSqliteDatabase(sourcePath, destinationPath) {
     if (rows.length !== 1 || rows[0]?.integrity_check !== "ok") {
       throw new Error(rows.map((row) => String(row.integrity_check ?? "")).join("; ") || "no result");
     }
+    preserveFileMetadata(sourcePath, destinationPath);
     return { method: "vacuum_into", userVersion: Number(destination.prepare("PRAGMA user_version").get()?.user_version ?? 0) };
   } catch (error) {
     rmSync(destinationPath, { force: true });
@@ -243,6 +270,7 @@ export function backupCurrent({ dataDir, appDir, dbPath = join(dataDir, "search-
   if (existsSync(target)) throw new UpdateError("backup_failed", `Backup target already exists: ${target}`);
   const dataBackup = join(target, "data");
   mkdirSync(dataBackup, { recursive: true, mode: 0o700 });
+  preserveFileMetadata(dataDir, dataBackup);
   const dbRelative = relative(dataDir, dbPath);
   const dbInside = dbRelative !== "" && !dbRelative.startsWith(`..${sep}`) && dbRelative !== ".." && !isAbsolute(dbRelative);
   try {
@@ -252,11 +280,8 @@ export function backupCurrent({ dataDir, appDir, dbPath = join(dataDir, "search-
       if (dbInside && (source === dbPath || source === `${dbPath}-wal` || source === `${dbPath}-shm` || source === `${dbPath}-journal`)) continue;
       const info = lstatSync(source);
       if (info.isSymbolicLink()) throw new UpdateError("unsafe_path", `Data directory contains a symlink: ${source}`);
-      cpSync(source, join(dataBackup, name), {
-        recursive: true,
-        dereference: false,
-        filter: (candidate) => !dbInside || ![dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`].includes(resolve(candidate)),
-      });
+      copyTreePreservingMetadata(source, join(dataBackup, name),
+        (candidate) => dbInside && [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`].includes(resolve(candidate)));
     }
     const snapshotPath = dbInside ? join(dataBackup, dbRelative) : join(target, "external-db.sqlite");
     mkdirSync(dirname(snapshotPath), { recursive: true, mode: 0o700 });

@@ -121,7 +121,11 @@ systemctl stop "$SOURCE_UNIT"
 
 "$RUNTIME" "$ROOT/packaging/launcher/updater-test.mjs" > "$EVIDENCE/updater-test.log" 2>&1
 "$RUNTIME" "$ROOT/packaging/launcher/updater-faults.mjs" > "$EVIDENCE/updater-faults.log" 2>&1
-"$RUNTIME" "$ROOT/packaging/upgrade-matrix.mjs" --from v0.1.14 --to "$CANDIDATE" > "$EVIDENCE/upgrade-matrix.log" 2>&1
+if [[ -n "${SEARCH_HUB_UPGRADE_FROM_LOCAL:-}" ]]; then
+  "$RUNTIME" "$ROOT/packaging/upgrade-matrix.mjs" --from-local "$SEARCH_HUB_UPGRADE_FROM_LOCAL" --to "$CANDIDATE" > "$EVIDENCE/upgrade-matrix.log" 2>&1
+else
+  "$RUNTIME" "$ROOT/packaging/upgrade-matrix.mjs" --from v0.1.14 --to "$CANDIDATE" > "$EVIDENCE/upgrade-matrix.log" 2>&1
+fi
 
 "$RUNTIME" "$ROOT/tests/disaster-recovery/write-platform-report.mjs" \
   --evidence-dir "$EVIDENCE" --kind search-hub-platform-systemd --verdict PASS \
