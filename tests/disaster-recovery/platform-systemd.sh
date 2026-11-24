@@ -83,9 +83,9 @@ export SEARCH_HUB_INSTALL_DIR="$BASE"
 
 SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup create --data-dir "$DATA" --output "$PACKAGE" --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/create.json"
 SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup verify "$PACKAGE" --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/verify.json"
-SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/dry-run.json"
+SEARCH_HUB_DATA_DIR="$DATA" SEARCH_HUB_INSTALL_DIR="$BASE" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/dry-run.json"
 [[ -z "$(find "$RESTORED" -mindepth 1 -print -quit)" ]]
-SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" SEARCH_HUB_APP_ENTRY="$SERVER" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --apply --start-check --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/apply.json"
+SEARCH_HUB_DATA_DIR="$DATA" SEARCH_HUB_INSTALL_DIR="$BASE" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" SEARCH_HUB_APP_ENTRY="$SERVER" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --apply --start-check --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/apply.json"
 systemctl start "$RESTORED_UNIT"
 wait_health "$RESTORED_PORT"
 curl -fsS "http://127.0.0.1:$RESTORED_PORT/api/health" | tee "$EVIDENCE/health.json"
@@ -94,7 +94,7 @@ systemctl stop "$RESTORED_UNIT"
 
 BEFORE=$(sha256sum "$RESTORED/search-hub.db" | awk '{print $1}')
 set +e
-SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --apply --passphrase-stdin --json < "$PASS" > "$EVIDENCE/repeat-restore.json" 2>&1
+SEARCH_HUB_DATA_DIR="$DATA" SEARCH_HUB_INSTALL_DIR="$BASE" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --apply --passphrase-stdin --json < "$PASS" > "$EVIDENCE/repeat-restore.json" 2>&1
 REPEAT_CODE=$?
 set -e
 [[ "$REPEAT_CODE" != "0" ]]
