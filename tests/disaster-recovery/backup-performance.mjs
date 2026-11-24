@@ -582,9 +582,10 @@ class Sampler {
 }
 
 function cliInvocation(cliPath) {
-  if (cliPath.endsWith(".ts")) return { command: process.execPath, prefix: ["--import", import.meta.resolve("tsx"), cliPath], runtime: "node-tsx" };
-  if (cliPath.endsWith(".mjs") || cliPath.endsWith(".js")) return { command: process.execPath, prefix: [cliPath], runtime: "node" };
-  return { command: cliPath, prefix: [], runtime: "standalone" };
+  const absolutePath = resolve(cliPath);
+  if (absolutePath.endsWith(".ts")) return { command: process.execPath, prefix: ["--import", import.meta.resolve("tsx"), absolutePath], runtime: "node-tsx" };
+  if (absolutePath.endsWith(".mjs") || absolutePath.endsWith(".js")) return { command: process.execPath, prefix: [absolutePath], runtime: "node" };
+  return { command: absolutePath, prefix: [], runtime: "standalone" };
 }
 
 function runSimple(command, args, options = {}) {
@@ -845,7 +846,7 @@ async function runIntegratedMemoryLoop({ sizeMiB, fixture, packagePath, passphra
     startedAt: new Date().toISOString(),
     finishedAt: new Date().toISOString(),
     source,
-    tool: { script: "tests/disaster-recovery/backup-memory-loop.mjs", node: process.version, platform: process.platform, arch: process.arch, integratedFrom: "backup-performance.mjs" },
+    tool: { script: "tests/disaster-recovery/backup-memory-loop.mjs", node: process.version, platform: process.platform, arch: process.arch, gcAvailable: typeof globalThis.gc === "function", integratedFrom: "backup-performance.mjs" },
     schedule: { rounds: Math.max(5, options.rounds), warmup: Math.max(2, options.warmup), adapterMode: "final", serial: true, sameProcess: true, sizeMiB },
     preflight: {
       package: { bytes: statSync(packagePath).size, sha256: packageSha256, kdf: inspectAgeHeader(packagePath) },
@@ -1002,6 +1003,9 @@ async function selfCheck() {
     }));
     const derived = deriveRequirementStatuses({ preflight: { cli: { runtime: "standalone" } }, results: mockResults }, { sizes: [10, 64, 128, 256], rounds: 5, freshRounds: 1, singleRound: false });
     checks.push({ name: "requirement_derivation", ok: derived.requirements.R20 === "PASS" && derived.requirements.R34 === "BLOCKED" && derived.evidence.R34.performanceSubset === "PASS" && derived.requirements.A04 === "BLOCKED" && derived.requirements.A11 === "BLOCKED" });
+    const relativeCli = "packages/cli/dist/index.mjs";
+    const invocation = cliInvocation(relativeCli);
+    checks.push({ name: "cli_path_absolute", ok: invocation.runtime === "node" && invocation.prefix[0] === resolve(relativeCli) });
     const header = join(root, "valid.age");
     writeFileSync(header, Buffer.from(`age-encryption.org/v1\n-> scrypt ${Buffer.alloc(16, 7).toString("base64")} 18\n--- ${"A".repeat(43)}\n`, "ascii"));
     checks.push({ name: "age_header", ok: inspectAgeHeader(header).workFactor === 18 });
@@ -1015,6 +1019,23 @@ async function selfCheck() {
     writeEvidenceManifest(output, { schemaVersion: 1, selfCheck: true });
     writeSums(output);
     checks.push({ name: "evidence_sums", ok: readFileSync(join(output, "SHA256SUMS"), "utf8").includes("manifest.json") });
+    const preloadPath = join(root, "resource-preload.cjs");
+    const resourcePath = join(root, "resource.json");
+    writeFileSync(preloadPath, PRELOAD, { mode: 0o600 });
+    const sidecarRun = spawnSync(process.execPath, ["--require", preloadPath, "-e", "process.stdout.write('sidecar-ok')"], {
+      cwd: root,
+      env: { ...process.env, NODE_OPTIONS: "", SHUB_QA_RESOURCE_FILE: resourcePath },
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    let sidecar = null;
+    try { sidecar = JSON.parse(readFileSync(resourcePath, "utf8")); } catch { /* Reported as a failed check. */ }
+    const sidecarFields = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes", "userCpuMs", "systemCpuMs"];
+    checks.push({
+      name: "resource_preload_sidecar",
+      ok: sidecarRun.status === 0 && sidecarFields.every((field) => Number.isFinite(sidecar?.[field])) &&
+        sidecarFields.slice(0, 6).every((field) => sidecar[field] > 0) && sidecar.userCpuMs >= 0 && sidecar.systemCpuMs >= 0,
+    });
   } finally {
     cleanup = removeOwned(root, ownerRoot);
     checks.push({ name: "owned_cleanup", ok: cleanup.ok && !existsSync(root) });
