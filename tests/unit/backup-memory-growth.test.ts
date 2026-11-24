@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM acceptance harness
-import { assessGrowth } from "../disaster-recovery/backup-memory-loop.mjs";
+import { assessGrowth, memoryLoop } from "../disaster-recovery/backup-memory-loop.mjs";
 
 function round(afterGc: Record<string, number>) {
   return {
@@ -48,5 +51,43 @@ describe("same-process retained-memory growth classification", () => {
     );
     expect(growth.result).toBe("BLOCKED");
     expect(growth.series.heapUsedBytes).toMatchObject({ result: "BLOCKED", sustainedGrowth: false, inconclusiveNoise: true });
+  });
+});
+
+describe("memory-loop GC settling evidence", () => {
+  it("records three complete GC passes and uses the last as afterGc", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sh-memory-gc-shape-"));
+    const previousGc = Object.getOwnPropertyDescriptor(globalThis, "gc");
+    let gcCalls = 0;
+    Object.defineProperty(globalThis, "gc", { configurable: true, value: () => { gcCalls += 1; } });
+    try {
+      const loop = await memoryLoop({
+        verifier: async () => ({ restoreReadiness: true }),
+        mode: "final",
+        packagePath: join(root, "fixture.shbackup"),
+        passphrase: "synthetic gc settling passphrase",
+        expectedMasterKey: null,
+        tempRoot: root,
+        ownerRoot: root,
+        rounds: 1,
+        warmup: 0,
+      });
+      const measured = loop.measured[0]!;
+      expect(gcCalls).toBe(3);
+      expect(measured.gcAvailable).toBe(true);
+      expect(measured.gcPasses).toHaveLength(3);
+      expect(measured.afterGc).toEqual(measured.gcPasses[2]);
+      for (const snapshot of measured.gcPasses) {
+        for (const field of ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes"] as const) {
+          expect(Number.isFinite(snapshot[field]) && snapshot[field] > 0).toBe(true);
+        }
+        expect(Number.isInteger(snapshot.activeHandles)).toBe(true);
+        expect(Array.isArray(snapshot.activeHandleTypes)).toBe(true);
+      }
+    } finally {
+      if (previousGc) Object.defineProperty(globalThis, "gc", previousGc);
+      else delete (globalThis as { gc?: unknown }).gc;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

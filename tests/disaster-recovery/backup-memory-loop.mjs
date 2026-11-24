@@ -432,9 +432,14 @@ async function runRound({ index, verifier, mode, packagePath, passphrase, expect
   }
   await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
   const immediate = memorySnapshot();
-  if (typeof globalThis.gc === "function") globalThis.gc();
-  await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
-  const afterGc = memorySnapshot();
+  const gcAvailable = typeof globalThis.gc === "function";
+  const gcPasses = [];
+  for (let pass = 0; pass < 3; pass += 1) {
+    if (gcAvailable) globalThis.gc();
+    await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
+    gcPasses.push(memorySnapshot());
+  }
+  const afterGc = gcPasses[2];
   const temp = await measureDirectory(roundDir);
   const cleanup = removeOwned(roundDir, ownerRoot);
   if (!cleanup.ok) process.stderr.write(`owned memory-loop cleanup failed; preserved path: ${cleanup.path}\n`);
@@ -445,6 +450,8 @@ async function runRound({ index, verifier, mode, packagePath, passphrase, expect
     durationMs: Date.now() - started,
     before,
     immediate,
+    gcPasses,
+    gcAvailable,
     afterGc,
     tempBeforeCleanup: temp,
     cleanup: { ok: cleanup.ok, removed: cleanup.removed, error: cleanup.error ?? null },
@@ -496,6 +503,14 @@ async function selfCheck() {
     checks.push({ name: "same_process", ok: loop.spawnCount === 0 && loop.measured.every((round) => round.pid === process.pid) });
     checks.push({ name: "round_cleanup", ok: loop.measured.every((round) => round.cleanup.ok && round.tempBeforeCleanup.bytes === 0) });
     checks.push({ name: "growth_classifier", ok: ["PASS", "BLOCKED"].includes(loop.growth.result) });
+    const gcSnapshotFields = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes"];
+    const gcEvidenceComplete = [...loop.warmups, ...loop.measured].every((round) =>
+      typeof round.gcAvailable === "boolean" && round.gcPasses.length === 3 &&
+      JSON.stringify(round.afterGc) === JSON.stringify(round.gcPasses[2]) &&
+      round.gcPasses.every((snapshot) => gcSnapshotFields.every((field) => Number.isFinite(snapshot[field]) && snapshot[field] > 0) &&
+        Number.isInteger(snapshot.activeHandles) && snapshot.activeHandles >= 0 && Array.isArray(snapshot.activeHandleTypes) &&
+        (snapshot.fdCount === null || Number.isInteger(snapshot.fdCount))));
+    checks.push({ name: "gc_settling_evidence", ok: gcEvidenceComplete });
     const syntheticRound = (afterGc) => ({ afterGc: { heapUsedBytes: 1000, heapTotalBytes: 2000, externalBytes: 3000, arrayBuffersBytes: 4000, rssBytes: 5000, maxRssBytes: 6000, activeHandles: 2, ...afterGc } });
     const warmupRounds = [syntheticRound({}), syntheticRound({})];
     const isolatedPeak = assessGrowth([415662080, 415662080, 415662080, 415666176, 417583104].map((maxRssBytes) => syntheticRound({ maxRssBytes })), warmupRounds);
@@ -525,8 +540,8 @@ async function runAcceptance(options) {
     kind: "search-hub-disaster-recovery-memory-loop",
     startedAt: new Date().toISOString(),
     source: gitSource(),
-    tool: { script: relative(REPO, SCRIPT).replaceAll("\\", "/"), node: process.version, platform: process.platform, arch: process.arch, pid: process.pid, gcAvailable: typeof globalThis.gc === "function" },
-    schedule: { rounds: options.rounds, warmup: options.warmup, adapterMode: options.adapterMode, serial: true, sameProcess: true },
+    tool: { script: relative(REPO, SCRIPT).replaceAll("\\", "/"), node: process.version, platform: process.platform, arch: process.arch, pid: process.pid, gcAvailable: typeof globalThis.gc === "function", gcPasses: 3 },
+    schedule: { rounds: options.rounds, warmup: options.warmup, adapterMode: options.adapterMode, serial: true, sameProcess: true, gcPasses: 3 },
     preflight: {},
     requirements: initialRequirements(),
     statusVocabulary: STATUS_VOCABULARY,
