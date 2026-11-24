@@ -169,6 +169,20 @@ describe("candidate release status derivation", () => {
     expect(derive(value)).toMatchObject({ verdict: "BLOCKED", statuses: { A12: "BLOCKED", R35: "BLOCKED" } });
   });
 
+  it("requires five scheduled and measured fresh-process rounds", () => {
+    const value = fixture();
+    const file = join(value.evidenceDir, "reports", "performance", "manifest.json");
+    const report = JSON.parse(readFileSync(file, "utf8"));
+    report.schedule.freshProcessRounds = 4;
+    writeJson(file, report);
+    expect(derive(value)).toMatchObject({ verdict: "BLOCKED", statuses: { A11: "BLOCKED" } });
+
+    report.schedule.freshProcessRounds = 5;
+    report.results[0].freshProcessRounds = report.results[0].freshProcessRounds.slice(0, 4);
+    writeJson(file, report);
+    expect(derive(value)).toMatchObject({ verdict: "BLOCKED", statuses: { A11: "BLOCKED" } });
+  });
+
   it("blocks an incomplete performance schedule even when its verdict says PASS", () => {
     const value = fixture();
     const file = join(value.evidenceDir, "reports", "performance", "manifest.json");

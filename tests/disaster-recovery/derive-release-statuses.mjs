@@ -70,13 +70,13 @@ function completePerformance(report) {
   const schedule = report.schedule ?? {};
   const sizes = Array.isArray(schedule.sizesMiB) ? schedule.sizesMiB : [];
   if (!PERFORMANCE_SIZES.every((size) => sizes.includes(size)) || schedule.measuredRounds < 5 ||
-      schedule.freshProcessRounds < 1 || schedule.singleRoundSmoke === true || !Array.isArray(report.results)) return false;
+      schedule.freshProcessRounds < 5 || schedule.singleRoundSmoke === true || !Array.isArray(report.results)) return false;
   return PERFORMANCE_SIZES.every((size) => {
     const result = report.results.find((entry) => entry?.sizeMiB === size);
     return result?.result === "PASS" && result.growth?.result === "PASS" && result.resourceComplete === true &&
       result.sourceUnchanged === true && Array.isArray(result.rounds) && result.rounds.length >= 5 &&
       result.rounds.every((round) => round.result === "PASS") &&
-      Array.isArray(result.freshProcessRounds) && result.freshProcessRounds.length >= 1 &&
+      Array.isArray(result.freshProcessRounds) && result.freshProcessRounds.length >= 5 &&
       result.freshProcessRounds.every((round) => round.result === "PASS");
   });
 }
