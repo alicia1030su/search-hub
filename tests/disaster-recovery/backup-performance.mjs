@@ -582,9 +582,10 @@ class Sampler {
 }
 
 function cliInvocation(cliPath) {
-  if (cliPath.endsWith(".ts")) return { command: process.execPath, prefix: ["--import", import.meta.resolve("tsx"), cliPath], runtime: "node-tsx" };
-  if (cliPath.endsWith(".mjs") || cliPath.endsWith(".js")) return { command: process.execPath, prefix: [cliPath], runtime: "node" };
-  return { command: cliPath, prefix: [], runtime: "standalone" };
+  const absolutePath = resolve(cliPath);
+  if (absolutePath.endsWith(".ts")) return { command: process.execPath, prefix: ["--import", import.meta.resolve("tsx"), absolutePath], runtime: "node-tsx" };
+  if (absolutePath.endsWith(".mjs") || absolutePath.endsWith(".js")) return { command: process.execPath, prefix: [absolutePath], runtime: "node" };
+  return { command: absolutePath, prefix: [], runtime: "standalone" };
 }
 
 function runSimple(command, args, options = {}) {
@@ -1002,6 +1003,9 @@ async function selfCheck() {
     }));
     const derived = deriveRequirementStatuses({ preflight: { cli: { runtime: "standalone" } }, results: mockResults }, { sizes: [10, 64, 128, 256], rounds: 5, freshRounds: 1, singleRound: false });
     checks.push({ name: "requirement_derivation", ok: derived.requirements.R20 === "PASS" && derived.requirements.R34 === "BLOCKED" && derived.evidence.R34.performanceSubset === "PASS" && derived.requirements.A04 === "BLOCKED" && derived.requirements.A11 === "BLOCKED" });
+    const relativeCli = "packages/cli/dist/index.mjs";
+    const invocation = cliInvocation(relativeCli);
+    checks.push({ name: "cli_path_absolute", ok: invocation.runtime === "node" && invocation.prefix[0] === resolve(relativeCli) });
     const header = join(root, "valid.age");
     writeFileSync(header, Buffer.from(`age-encryption.org/v1\n-> scrypt ${Buffer.alloc(16, 7).toString("base64")} 18\n--- ${"A".repeat(43)}\n`, "ascii"));
     checks.push({ name: "age_header", ok: inspectAgeHeader(header).workFactor === 18 });
