@@ -208,12 +208,15 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("--max-attempts 210 --poll-seconds 60");
     expect(candidate).not.toMatch(/^\s+push:/m);
     expect(candidate).not.toMatch(/^\s+pull_request:/m);
-    expect(candidate).toContain("actions/attest-build-provenance@v3.0.0");
+    expect(candidate.match(/actions\/attest-build-provenance@v3\.0\.0/g)).toHaveLength(2);
     expect(candidate).toContain("candidate-${SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}");
     expect(candidate).not.toContain(":rc-${SOURCE_SHA}");
     expect(candidate).toMatch(/--(?:dr-dir|disaster-recovery-dir) final-dr/);
     expect(candidate).toContain("manifestMediaType:i.Manifest.MediaType||i.Manifest.Descriptor.mediaType");
-    expect(candidate).toContain("subjects: ${{ needs.container.outputs.reference }}");
+    expect(candidate).not.toContain("subjects: ${{ needs.container.outputs.reference }}");
+    expect(candidate).toContain("subject-name: ${{ needs.container.outputs.repository }}");
+    expect(candidate).toContain("subject-digest: ${{ needs.container.outputs.digest }}");
+    expect(candidate).toContain("push-to-registry: true");
     const evidenceCli = readFileSync(new URL("../../packaging/release-evidence.mjs", import.meta.url), "utf8");
     expect(evidenceCli).toContain('arg("dr-dir", arg("disaster-recovery-dir"))');
     expect(evidenceCli).toContain('RESOURCE_RUNTIME_ARTIFACT = "resource-evidence-v0115.json"');

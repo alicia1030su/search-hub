@@ -478,6 +478,7 @@ jobs:
       ref: ${{ steps.image.outputs.ref }}
       digest: ${{ steps.image.outputs.digest }}
       reference: ${{ steps.image.outputs.reference }}
+      repository: ${{ steps.image.outputs.repository }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -553,6 +554,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "reference=${base}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "repository=$base" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: candidate-image-v0.1.15
@@ -681,7 +683,7 @@ jobs:
           cp release-assets/resource-evidence.json candidate-evidence/resource-evidence.json
           cp -a final-dr candidate-evidence/disaster-recovery
           cp candidate/candidate-image-v0.1.15/image.json candidate/candidate-image-v0.1.15/image-inspection.json candidate-evidence/
-      - name: Attest the exact candidate bytes and image digest
+      - name: Attest the exact candidate bytes
         uses: actions/attest-build-provenance@v3.0.0
         with:
           subject-path: |
@@ -690,12 +692,17 @@ jobs:
             release-assets/resource-evidence.json
             release-assets/SHA256SUMS
             candidate-manifest.json
-          subjects: ${{ needs.container.outputs.reference }}
       - uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attest and publish the candidate image digest
+        uses: actions/attest-build-provenance@v3.0.0
+        with:
+          subject-name: ${{ needs.container.outputs.repository }}
+          subject-digest: ${{ needs.container.outputs.digest }}
+          push-to-registry: true
       - name: Download the signed attestation bundles
         env:
           SOURCE_SHA: ${{ needs.gate.outputs.sha }}
