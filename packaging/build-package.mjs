@@ -14,7 +14,7 @@
  * a native addon and cannot be loaded from inside a SEA blob, so the launcher
  * spawns the bundled runtime against `app/`.
  */
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, renameSync, writeFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,10 @@ const IS_WINDOWS = TARGET.startsWith("windows");
 
 log(`building ${TARGET} v${VERSION}`);
 
-rmSync(OUT, { recursive: true, force: true });
+// Preserve the previous generated package instead of recursively deleting a
+// large tree. This keeps rebuilds safe on managed hosts and leaves a recoverable
+// previous output under the ignored dist/package directory.
+if (existsSync(OUT)) renameSync(OUT, `${OUT}.previous-${Date.now()}-${process.pid}`);
 mkdirSync(join(OUT, "app"), { recursive: true });
 mkdirSync(join(OUT, "runtime"), { recursive: true });
 
@@ -312,7 +315,7 @@ unit 已设置 User=search-hub，非 root 运行，数据目录可持久化。
 
 ## 备份与恢复
 
-在管理后台“备份恢复中心”创建加密 `.shbackup`，或使用 CLI 包：
+在管理后台“备份恢复中心”创建加密 .shbackup，或使用 CLI 包：
 
     shub backup create --output search-hub.shbackup --passphrase-stdin
     shub backup restore search-hub.shbackup --data-dir /srv/search-hub-restored --apply

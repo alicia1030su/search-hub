@@ -218,6 +218,7 @@ describe("age header and input boundaries", () => {
     await expect(readMasterKey(path)).rejects.toThrow(/safety limit/);
     if (process.platform !== "win32") {
       await writeFile(path, "ab".repeat(32), { mode: 0o644 });
+      await chmod(path, 0o644);
       await expect(readMasterKey(path)).rejects.toThrow(/0600/);
     }
   });

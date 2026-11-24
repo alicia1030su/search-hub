@@ -1,10 +1,12 @@
 import { loadConfig } from "./config.js";
 import { createContext } from "./context.js";
 import { buildApp } from "./app.js";
+import { restrictWindowsAcl } from "@search-hub/backup";
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const ctx = createContext(config);
+  if (process.platform === "win32") await restrictWindowsAcl(config.dbPath, false);
   const app = await buildApp(ctx);
 
   const runRetention = () => {

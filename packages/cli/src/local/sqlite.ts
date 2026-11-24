@@ -36,7 +36,7 @@ export function openNodeSqlite(path: string, readonly: boolean): SqliteHandle {
 
 /** VACUUM INTO is SQLite's consistent local snapshot primitive. */
 export function createNodeSqliteSnapshot(sourcePath: string, destinationPath: string): void {
-  const source = openNodeSqlite(sourcePath, false);
+  const source = openNodeSqlite(sourcePath, true);
   try {
     source.prepare("VACUUM INTO ?").run(destinationPath);
   } finally {

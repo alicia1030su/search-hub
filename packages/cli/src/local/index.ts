@@ -36,14 +36,16 @@ export function resolveLocalPaths(dataDirOverride?: string, dbPathOverride?: str
   const dataDir = resolve(dataDirOverride ?? process.env["SEARCH_HUB_DATA_DIR"] ?? join(process.cwd(), "data"));
   const dbPath = resolve(dbPathOverride ?? process.env["SEARCH_HUB_DB_PATH"] ?? join(dataDir, "search-hub.db"));
   const configuredMigrations = process.env["SEARCH_HUB_MIGRATIONS_DIR"];
+  const installDir = process.env["SEARCH_HUB_INSTALL_DIR"] ? resolve(process.env["SEARCH_HUB_INSTALL_DIR"]) : dirname(process.execPath);
   const entryDirectory = process.argv[1] ? dirname(resolve(process.argv[1])) : process.cwd();
   const candidates = [
     configuredMigrations,
-    join(process.cwd(), "packages", "db", "migrations"),
-    join(process.cwd(), "app", "migrations"),
+    join(installDir, "packages", "db", "migrations"),
+    join(installDir, "app", "packages", "db", "migrations"),
     join(entryDirectory, "..", "..", "..", "db", "migrations"),
     join(entryDirectory, "..", "packages", "db", "migrations"),
-    join(dirname(process.execPath), "packages", "db", "migrations"),
+    join(process.cwd(), "packages", "db", "migrations"),
+    join(process.cwd(), "app", "migrations"),
     join(homedir(), ".search-hub", "migrations"),
   ].filter((candidate): candidate is string => Boolean(candidate));
   const migrationsDir = candidates.find((candidate) => existsSync(candidate) && readdirSync(candidate).some((name) => name.endsWith(".sql"))) ?? candidates[0] ?? "";

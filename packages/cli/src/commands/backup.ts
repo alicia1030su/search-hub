@@ -159,6 +159,12 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 function serverEntry(installDir: string): string {
+  const explicit = process.env["SEARCH_HUB_APP_ENTRY"];
+  if (explicit) {
+    const resolved = resolve(explicit);
+    if (!existsSync(resolved)) throw new Error("SEARCH_HUB_APP_ENTRY does not name a real Search Hub server entry");
+    return resolved;
+  }
   const candidates = [
     join(installDir, "app", "server.mjs"),
     join(installDir, "app", "apps", "api", "dist", "server.mjs"),
@@ -169,6 +175,12 @@ function serverEntry(installDir: string): string {
   return found;
 }
 function bundledRuntime(installDir: string): string {
+  const explicit = process.env["SEARCH_HUB_START_CHECK_NODE"];
+  if (explicit) {
+    const resolved = resolve(explicit);
+    if (!existsSync(resolved)) throw new Error("SEARCH_HUB_START_CHECK_NODE does not name a real Node runtime");
+    return resolved;
+  }
   const bundled = [join(installDir, "runtime", process.platform === "win32" ? "node.exe" : "node"), join(installDir, process.platform === "win32" ? "node.exe" : "node")].find((candidate) => existsSync(candidate));
   if (bundled) return bundled;
   if (/^node(?:\.exe)?$/i.test(basename(process.execPath))) return process.execPath;

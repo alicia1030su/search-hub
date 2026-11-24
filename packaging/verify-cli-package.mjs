@@ -2,7 +2,7 @@
 /** Starts a real Search Hub server and verifies a built shub package against it. */
 import { randomBytes } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,8 +109,15 @@ try {
   const doctor = JSON.parse(run(["doctor", "--json"], { env }));
   check("shub doctor", doctor.ok === true && doctor.checks.filter((item) => item.name !== "backup_status").every((item) => item.ok));
   const backupPath = join(work, "acceptance.shbackup");
+  if (process.platform !== "win32") chmodSync(join(data, "search-hub.db"), 0o600);
   const backupPassphrase = `acceptance-${randomBytes(18).toString("hex")}`;
-  const backupEnv = { ...env, SEARCH_HUB_DATA_DIR: data };
+  const backupEnv = {
+    ...env,
+    SEARCH_HUB_DATA_DIR: data,
+    SEARCH_HUB_INSTALL_DIR: REPO,
+    SEARCH_HUB_APP_ENTRY: join(REPO, "apps", "api", "dist", "server.mjs"),
+    SEARCH_HUB_START_CHECK_NODE: process.execPath,
+  };
   const stdinOptions = { env: backupEnv, input: `${backupPassphrase}\n` };
   run(["backup", "create", "--output", backupPath, "--passphrase-stdin"], stdinOptions);
   const backup = JSON.parse(run(["backup", "verify", backupPath, "--passphrase-stdin"], stdinOptions));

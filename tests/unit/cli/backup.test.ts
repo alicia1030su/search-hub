@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -38,6 +39,7 @@ async function fixture(): Promise<{ root: string; dataDir: string; dbPath: strin
       .run("key_cli", "prv_cli", "fixture", encrypted.ciphertext, encrypted.iv, encrypted.tag, 1, "syn…cret", now, now);
   } finally { handle.close(); }
   writeFileSync(join(dataDir, "master.key"), `${key.toString("hex")}\n`, { mode: 0o600 });
+  if (process.platform !== "win32") await chmod(dbPath, 0o600);
   if (process.platform === "win32") {
     await restrictWindowsAcl(dbPath, false);
     await restrictWindowsAcl(join(dataDir, "master.key"), false);
