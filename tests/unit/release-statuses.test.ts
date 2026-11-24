@@ -36,8 +36,9 @@ function fixture() {
     verdict: "PASS",
     acceptanceComplete: false,
     commands: [{ name: "backup-api", status: "PASS", exitCode: 0 }],
-    requirements: {},
-    requirementEvidence: {},
+    coveredRequirements: ["R35"],
+    requirements: { R35: "PASS" },
+    requirementEvidence: { R35: [{ path: "logs/backup-api.log", status: "PASS" }] },
   });
   writeJson(join(evidenceDir, "reports", "performance", "manifest.json"), {
     schemaVersion: 1,
@@ -176,6 +177,24 @@ describe("candidate release status derivation", () => {
     const value = fixture();
     const result = deriveReleaseStatuses({ repoRoot: root, commit, evidenceDir: value.evidenceDir, candidateGatePath: value.candidateGatePath, outputDir: value.outputDir, sourceDirty: true });
     expect(result).toMatchObject({ verdict: "BLOCKED", source: { dirty: true } });
+  });
+
+  it("blocks when a covered core requirement has no evidence", () => {
+    const value = fixture();
+    const file = join(value.evidenceDir, "reports", "core", "report.json");
+    const report = JSON.parse(readFileSync(file, "utf8"));
+    report.requirementEvidence.R35 = [];
+    writeJson(file, report);
+    expect(derive(value)).toMatchObject({ verdict: "BLOCKED", statuses: { A11: "BLOCKED", R35: "BLOCKED" } });
+  });
+
+  it("blocks when a covered core requirement is not PASS", () => {
+    const value = fixture();
+    const file = join(value.evidenceDir, "reports", "core", "report.json");
+    const report = JSON.parse(readFileSync(file, "utf8"));
+    report.requirements.R35 = "NOT TESTED";
+    writeJson(file, report);
+    expect(derive(value)).toMatchObject({ verdict: "BLOCKED", statuses: { A11: "BLOCKED", R35: "BLOCKED" } });
   });
 
   it("blocks a core subset report that is not PASS", () => {

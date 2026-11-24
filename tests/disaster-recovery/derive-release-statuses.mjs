@@ -19,6 +19,10 @@ const PLATFORM_KINDS = Object.freeze({
   "platform-systemd": "search-hub-platform-systemd",
 });
 const RELEASE_REQUIREMENTS = Object.freeze(["A08", "A11", "A12", "R35"]);
+const REQUIREMENT_IDS = new Set([
+  ...Array.from({ length: 38 }, (_, index) => `R${String(index + 1).padStart(2, "0")}`),
+  ...Array.from({ length: 12 }, (_, index) => `A${String(index + 1).padStart(2, "0")}`),
+]);
 
 function arg(name, fallback = null) {
   const index = process.argv.indexOf(`--${name}`);
@@ -51,6 +55,10 @@ function listFiles(root) {
 
 function sourceMatches(report, commit, fingerprint) {
   return report?.source?.commit === commit && report.source?.releaseCodeFingerprint === fingerprint && report.source?.dirty === false;
+}
+
+function nonEmptyEvidence(value) {
+  return Array.isArray(value) ? value.length > 0 : Boolean(value && typeof value === "object" && Object.keys(value).length > 0);
 }
 
 function statusFor(check) {
@@ -125,7 +133,10 @@ export function deriveReleaseStatuses({ repoRoot = REPO_ROOT, commit, evidenceDi
   const corePath = path.join(evidenceDir, "reports", "core", "report.json");
   const core = existsSync(corePath) ? readJson(corePath) : null;
   const coreCommandsPass = Array.isArray(core?.commands) && core.commands.length > 0 && core.commands.every((command) => command.status === "PASS" && command.exitCode === 0);
-  addCheck("core", Boolean(core && core.kind === "search-hub-disaster-recovery-core" && sourceMatches(core, commit, fingerprint) && core.verdict === "PASS" && coreCommandsPass), core ? [corePath] : [], core?.verdict === "FAIL" || core?.commands?.some((command) => command.status === "FAIL") === true);
+  const covered = Array.isArray(core?.coveredRequirements) ? core.coveredRequirements : [];
+  const coreCoveragePass = covered.length > 0 && new Set(covered).size === covered.length &&
+    covered.every((id) => REQUIREMENT_IDS.has(id) && core.requirements?.[id] === "PASS" && nonEmptyEvidence(core.requirementEvidence?.[id]));
+  addCheck("core", Boolean(core && core.kind === "search-hub-disaster-recovery-core" && sourceMatches(core, commit, fingerprint) && core.verdict === "PASS" && coreCommandsPass && coreCoveragePass), core ? [corePath] : [], core?.verdict === "FAIL" || core?.commands?.some((command) => command.status === "FAIL") === true);
 
   const performancePath = path.join(evidenceDir, "reports", "performance", "manifest.json");
   const performance = existsSync(performancePath) ? readJson(performancePath) : null;
