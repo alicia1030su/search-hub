@@ -68,7 +68,10 @@ describe("release gate", () => {
     const candidate = readFileSync(new URL("../../.github/workflows/release-candidate.yml", import.meta.url), "utf8");
     expect(promoter).not.toContain("{{json .Manifest.Platforms}}");
     expect(candidate).toContain("node packaging/release-evidence.mjs image --inspection image-inspection.json");
-    expect(promoter).toContain("node packaging/release-evidence.mjs image --inspection stable-image.json");
+    expect(promoter).toContain("node packaging/release-evidence.mjs image --inspection stable-normalized.json");
+    expect(promoter).toContain("node packaging/release-evidence.mjs image --inspection final-normalized.json");
+    expect(promoter.match(/imagetools inspect[^\n]*--raw/g)).toHaveLength(3);
+    expect(promoter.match(/normalize-inspection/g)).toHaveLength(3);
   });
 
   it("requires an annotated tag on main with a matching stable version", () => {

@@ -166,15 +166,48 @@ export function verifyGhcrImage(image) {
   return { ok: true, digest: image.digest, platform: image.platform };
 }
 
+export function normalizeGhcrInspection(formatted, rawManifestBytes, expectedDigest) {
+  requireCondition(/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? ""), "ghcr_expected_digest_invalid");
+  requireCondition(Buffer.isBuffer(rawManifestBytes), "ghcr_raw_manifest_bytes_invalid");
+  const manifest = formatted?.Manifest ?? formatted?.manifest;
+  const image = formatted?.Image ?? formatted?.image;
+  requireCondition((manifest?.Digest ?? manifest?.digest) === expectedDigest, "ghcr_manifest_digest_mismatch");
+  const mediaType = manifest?.MediaType ?? manifest?.mediaType ?? manifest?.Descriptor?.mediaType ?? manifest?.descriptor?.mediaType;
+  requireCondition(Boolean(mediaType), "ghcr_media_type_mismatch");
+  const rawSha256 = createHash("sha256").update(rawManifestBytes).digest("hex");
+  requireCondition(`sha256:${rawSha256}` === expectedDigest, "ghcr_raw_manifest_digest_mismatch");
+  let raw;
+  try {
+    raw = JSON.parse(rawManifestBytes.toString("utf8"));
+  } catch {
+    throw new Error("ghcr_raw_manifest_invalid");
+  }
+  requireCondition(raw?.schemaVersion === 2, "ghcr_raw_manifest_schema_mismatch");
+  requireCondition(raw?.mediaType === mediaType, "ghcr_raw_manifest_media_type_mismatch");
+  const normalized = {
+    Manifest: { Digest: expectedDigest, MediaType: mediaType, Config: raw?.config },
+    Image: { os: image?.os, architecture: image?.architecture },
+    RawManifest: { sha256: expectedDigest, bytes: rawManifestBytes.length },
+  };
+  verifyGhcrInspection(normalized, expectedDigest);
+  return normalized;
+}
+
 export function verifyGhcrInspection(inspection, expectedDigest, image = null) {
   requireCondition(/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? ""), "ghcr_expected_digest_invalid");
-  requireCondition(inspection?.Manifest?.Digest === expectedDigest, "ghcr_manifest_digest_mismatch");
-  const mediaType = inspection?.Manifest?.MediaType || inspection?.Manifest?.Descriptor?.mediaType;
+  if (inspection?.RawManifest) {
+    requireCondition(inspection.RawManifest.sha256 === expectedDigest && Number.isSafeInteger(inspection.RawManifest.bytes) && inspection.RawManifest.bytes > 0, "ghcr_raw_manifest_metadata_mismatch");
+  }
+  const manifest = inspection?.Manifest ?? inspection?.manifest;
+  const imageInspection = inspection?.Image ?? inspection?.image;
+  const config = manifest?.Config ?? manifest?.config;
+  requireCondition((manifest?.Digest ?? manifest?.digest) === expectedDigest, "ghcr_manifest_digest_mismatch");
+  const mediaType = manifest?.MediaType ?? manifest?.mediaType ?? manifest?.Descriptor?.mediaType ?? manifest?.descriptor?.mediaType;
   requireCondition(["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].includes(mediaType), "ghcr_media_type_mismatch");
-  requireCondition(/^sha256:[0-9a-f]{64}$/.test(inspection?.Manifest?.Config?.digest ?? ""), "ghcr_config_digest_invalid");
-  requireCondition(["application/vnd.oci.image.config.v1+json", "application/vnd.docker.container.image.v1+json"].includes(inspection?.Manifest?.Config?.mediaType), "ghcr_config_media_type_mismatch");
-  requireCondition(inspection?.Image?.os === "linux" && inspection?.Image?.architecture === "amd64", "ghcr_image_platform_mismatch");
-  const result = { ok: true, digest: expectedDigest, mediaType, configDigest: inspection.Manifest.Config.digest, configMediaType: inspection.Manifest.Config.mediaType, platform: { os: inspection.Image.os, architecture: inspection.Image.architecture } };
+  requireCondition(/^sha256:[0-9a-f]{64}$/.test(config?.digest ?? ""), "ghcr_config_digest_invalid");
+  requireCondition(["application/vnd.oci.image.config.v1+json", "application/vnd.docker.container.image.v1+json"].includes(config?.mediaType), "ghcr_config_media_type_mismatch");
+  requireCondition(imageInspection?.os === "linux" && imageInspection?.architecture === "amd64", "ghcr_image_platform_mismatch");
+  const result = { ok: true, digest: expectedDigest, mediaType, configDigest: config.digest, configMediaType: config.mediaType, platform: { os: imageInspection.os, architecture: imageInspection.architecture } };
   if (image) verifyImageDescriptorBinding(image, result);
   return result;
 }
@@ -374,6 +407,15 @@ async function main() {
     console.log(JSON.stringify({ ...result, image: manifest.image, runId: manifest.runId }, null, 2));
     return;
   }
+  if (mode === "normalize-inspection") {
+    const formatted = readJson(path.resolve(arg("formatted")));
+    const rawManifestBytes = readFileSync(path.resolve(arg("raw")));
+    const normalized = normalizeGhcrInspection(formatted, rawManifestBytes, arg("digest"));
+    const output = path.resolve(arg("output"));
+    writeFileSync(output, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    console.log(JSON.stringify({ ok: true, output, rawManifest: normalized.RawManifest }, null, 2));
+    return;
+  }
   if (mode === "image") {
     const result = verifyGhcrInspection(readJson(path.resolve(arg("inspection"))), arg("digest"), arg("image") ? readJson(path.resolve(arg("image"))) : null);
     console.log(JSON.stringify(result, null, 2));
@@ -406,7 +448,7 @@ async function main() {
     console.log(`wrote SHA256SUMS (${lines.length} entries)`);
     return;
   }
-  throw new Error("usage: release-evidence.mjs create|combine|verify-combined|verify|image|sums");
+  throw new Error("usage: release-evidence.mjs create|combine|verify-combined|verify|normalize-inspection|image|sums");
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {

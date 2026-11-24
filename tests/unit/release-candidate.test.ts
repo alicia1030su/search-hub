@@ -9,7 +9,7 @@ import { codeFingerprint } from "../../scripts/lib/resource-evidence.mjs";
 import {
   createCandidateManifest, combineReleaseEvidence, expectedReleaseAssets, parseSha256Sums,
   verifyCandidateAttestationFiles, verifyCandidateManifest, verifyGhcrImage,
-  verifyGhcrInspection, verifyReleaseAssets,
+  verifyGhcrInspection, normalizeGhcrInspection, verifyReleaseAssets,
 } from "../../packaging/release-evidence.mjs";
 
 const temporary: string[] = [];
@@ -22,6 +22,16 @@ const digest = `sha256:${"b".repeat(64)}`;
 
 function hash(value: string | Buffer) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function rawInspectionFixture() {
+  const mediaType = "application/vnd.oci.image.manifest.v1+json";
+  const config = { mediaType: "application/vnd.oci.image.config.v1+json", digest: `sha256:${"c".repeat(64)}`, size: 512 };
+  const raw = { schemaVersion: 2, mediaType, config, layers: [{ mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: `sha256:${"d".repeat(64)}`, size: 1024 }] };
+  const rawBytes = Buffer.from(JSON.stringify(raw));
+  const rawDigest = `sha256:${hash(rawBytes)}`;
+  const formatted = { name: "ghcr.io/example/search-hub:candidate", manifest: { mediaType, digest: rawDigest, size: rawBytes.length }, image: { os: "linux", architecture: "amd64" } };
+  return { formatted, raw, rawBytes, rawDigest, mediaType, config };
 }
 
 function fixture() {
@@ -172,6 +182,74 @@ describe("release candidate evidence", () => {
     expect(() => verifyGhcrInspection(inspection, digest, { ...manifest.image, manifestMediaType: "application/vnd.oci.image.index.v1+json" })).toThrow(/candidate_image_manifest_media_type_mismatch/);
   });
 
+  it("accepts lowercase Buildx inspect output without weakening validation", () => {
+    const { inspection, manifest } = fixture();
+    const lowercase = {
+      manifest: {
+        digest: inspection.Manifest.Digest,
+        mediaType: inspection.Manifest.MediaType,
+        descriptor: { mediaType: inspection.Manifest.MediaType },
+        config: { ...inspection.Manifest.Config },
+      },
+      image: { ...inspection.Image },
+    };
+    expect(verifyGhcrInspection(lowercase, digest)).toMatchObject({ ok: true, digest, configDigest: inspection.Manifest.Config.digest });
+    expect(verifyGhcrInspection(lowercase, digest, manifest.image)).toMatchObject({ ok: true, platform: { os: "linux", architecture: "amd64" } });
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, digest: `sha256:${"f".repeat(64)}` } }, digest)).toThrow(/ghcr_manifest_digest_mismatch/);
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, mediaType: "application/vnd.oci.image.index.v1+json", descriptor: { mediaType: "application/vnd.oci.image.index.v1+json" } } }, digest)).toThrow(/ghcr_media_type_mismatch/);
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, config: { ...lowercase.manifest.config, digest: "sha256:abc" } } }, digest)).toThrow(/ghcr_config_digest_invalid/);
+    expect(() => verifyGhcrInspection({ ...lowercase, manifest: { ...lowercase.manifest, config: { ...lowercase.manifest.config, mediaType: "application/json" } } }, digest)).toThrow(/ghcr_config_media_type_mismatch/);
+    expect(() => verifyGhcrInspection({ ...lowercase, image: { os: "linux", architecture: "arm64" } }, digest)).toThrow(/ghcr_image_platform_mismatch/);
+  });
+
+  it("normalizes real formatted inspect output with the raw OCI manifest", () => {
+    const value = rawInspectionFixture();
+    const { manifest } = fixture();
+    const normalized = normalizeGhcrInspection(value.formatted, value.rawBytes, value.rawDigest);
+    expect(normalized).toEqual({
+      Manifest: { Digest: value.rawDigest, MediaType: value.mediaType, Config: value.config },
+      Image: { os: "linux", architecture: "amd64" },
+      RawManifest: { sha256: value.rawDigest, bytes: value.rawBytes.length },
+    });
+    expect(verifyGhcrInspection(normalized, value.rawDigest, { ...manifest.image, manifestMediaType: value.mediaType, configDigest: value.config.digest, configMediaType: value.config.mediaType })).toMatchObject({ ok: true, digest: value.rawDigest, configDigest: value.config.digest });
+  });
+
+  it("rejects raw manifest hash, mediaType, config and platform mismatches", () => {
+    const value = rawInspectionFixture();
+    expect(() => normalizeGhcrInspection(value.formatted, Buffer.concat([value.rawBytes, Buffer.from("\n")]), value.rawDigest)).toThrow(/ghcr_raw_manifest_digest_mismatch/);
+    expect(() => normalizeGhcrInspection({ ...value.formatted, manifest: { ...value.formatted.manifest, digest: `sha256:${"f".repeat(64)}` } }, value.rawBytes, value.rawDigest)).toThrow(/ghcr_manifest_digest_mismatch/);
+    expect(() => normalizeGhcrInspection({ ...value.formatted, image: { os: "linux", architecture: "arm64" } }, value.rawBytes, value.rawDigest)).toThrow(/ghcr_image_platform_mismatch/);
+
+    const wrongMedia = { ...value.raw, mediaType: "application/vnd.docker.distribution.manifest.v2+json" };
+    const wrongMediaBytes = Buffer.from(JSON.stringify(wrongMedia));
+    const wrongMediaDigest = `sha256:${hash(wrongMediaBytes)}`;
+    expect(() => normalizeGhcrInspection({ ...value.formatted, manifest: { ...value.formatted.manifest, digest: wrongMediaDigest } }, wrongMediaBytes, wrongMediaDigest)).toThrow(/ghcr_raw_manifest_media_type_mismatch/);
+
+    for (const [config, error] of [
+      [undefined, /ghcr_config_digest_invalid/],
+      [{ ...value.config, digest: "sha256:abc" }, /ghcr_config_digest_invalid/],
+      [{ ...value.config, mediaType: "application/json" }, /ghcr_config_media_type_mismatch/],
+    ] as const) {
+      const raw = { ...value.raw, config };
+      const bytes = Buffer.from(JSON.stringify(raw));
+      const rawDigest = `sha256:${hash(bytes)}`;
+      expect(() => normalizeGhcrInspection({ ...value.formatted, manifest: { ...value.formatted.manifest, digest: rawDigest } }, bytes, rawDigest)).toThrow(error);
+    }
+  });
+
+  it("normalizes inspection through the CLI without trimming raw bytes", () => {
+    const value = rawInspectionFixture();
+    const root = mkdtempSync(join(tmpdir(), "search-hub-normalize-inspection-"));
+    temporary.push(root);
+    const formattedPath = join(root, "formatted.json");
+    const rawPath = join(root, "manifest.json");
+    const outputPath = join(root, "normalized.json");
+    writeFileSync(formattedPath, JSON.stringify(value.formatted));
+    writeFileSync(rawPath, value.rawBytes);
+    execFileSync(process.execPath, [resolve(import.meta.dirname, "../../packaging/release-evidence.mjs"), "normalize-inspection", "--formatted", formattedPath, "--raw", rawPath, "--digest", value.rawDigest, "--output", outputPath], { encoding: "utf8" });
+    expect(JSON.parse(readFileSync(outputPath, "utf8")).RawManifest).toEqual({ sha256: value.rawDigest, bytes: value.rawBytes.length });
+  });
+
   it("requires the five successful main-push gates in the candidate manifest", () => {
     const { directory, manifest } = fixture();
     const gate = manifest.requiredWorkflowRuns[0];
@@ -212,7 +290,7 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("candidate-${SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}");
     expect(candidate).not.toContain(":rc-${SOURCE_SHA}");
     expect(candidate).toMatch(/--(?:dr-dir|disaster-recovery-dir) final-dr/);
-    expect(candidate).toContain("manifestMediaType:i.Manifest.MediaType||i.Manifest.Descriptor.mediaType");
+    expect(candidate).toContain("manifestMediaType:m.MediaType??m.mediaType??m.Descriptor?.mediaType??m.descriptor?.mediaType");
     expect(candidate).not.toContain("subjects: ${{ needs.container.outputs.reference }}");
     expect(candidate).toContain("subject-name: ${{ needs.container.outputs.repository }}");
     expect(candidate).toContain("subject-digest: ${{ needs.container.outputs.digest }}");
@@ -234,6 +312,13 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("--dr-dir final-dr");
     expect(candidate).toContain("derive-release-statuses.mjs");
     expect(candidate).toContain("--statuses-file \"$release_report/statuses.json\"");
+    expect(candidate).toContain("i.Manifest??i.manifest");
+    expect(candidate).toContain("i.Image??i.image");
+    expect(candidate.match(/imagetools inspect[^\n]*--raw/g)).toHaveLength(1);
+    expect(candidate).toContain("normalize-inspection");
+    expect(candidate).toContain("image-manifest.json");
+    expect(promoter.match(/imagetools inspect[^\n]*--raw/g)).toHaveLength(3);
+    expect(promoter.match(/normalize-inspection/g)).toHaveLength(3);
     expect(candidate).not.toContain("--allow-incomplete");
     expect(candidate).not.toContain("--statuses '{\"A08\":\"PASS\",\"A11\":\"PASS\",\"A12\":\"PASS\",\"R35\":\"PASS\"}'");
   });

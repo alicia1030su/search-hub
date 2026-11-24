@@ -79,7 +79,17 @@ export interface CandidateManifest {
   assets: ReleaseAsset[];
 }
 
-export interface GhcrInspection {
+export interface NormalizedGhcrInspection {
+  Manifest: {
+    Digest: string;
+    MediaType: string;
+    Config: { digest: string; mediaType: string };
+  };
+  Image: { os: string; architecture: string };
+  RawManifest: { sha256: string; bytes: number };
+}
+
+export type GhcrInspection = {
   Manifest: {
     Digest: string;
     MediaType?: string;
@@ -87,7 +97,16 @@ export interface GhcrInspection {
     Config: { digest: string; mediaType: string };
   };
   Image: { os: string; architecture: string };
-}
+  RawManifest?: { sha256: string; bytes: number };
+} | {
+  manifest: {
+    digest: string;
+    mediaType?: string;
+    descriptor?: { mediaType?: string };
+    config: { digest: string; mediaType: string };
+  };
+  image: { os: string; architecture: string };
+};
 
 export declare function expectedReleaseAssets(version: string): string[];
 export declare function sha256File(file: string): string;
@@ -95,6 +114,7 @@ export declare function parseSha256Sums(text: string): Map<string, string>;
 export declare function verifyReleaseAssets(directory: string, options: { version: string; sourceSha: string; manifest: CandidateManifest }): { ok: true; assets: string[]; sha256sumsSha256: string };
 export declare function verifyCandidateManifest(manifest: CandidateManifest, options: { version: string; sourceSha: string; runId: number; attempt: number }): { ok: true; image: CandidateImage };
 export declare function verifyGhcrImage(image: CandidateImageBase): { ok: true; digest: string; platform: { os: string; architecture: string } };
+export declare function normalizeGhcrInspection(formatted: unknown, rawManifestBytes: Buffer, expectedDigest: string): NormalizedGhcrInspection;
 export declare function verifyGhcrInspection(inspection: GhcrInspection, expectedDigest: string, image?: CandidateImage | null): { ok: true; digest: string; mediaType: string; configDigest: string; configMediaType: string; platform: { os: string; architecture: string } };
 export declare function verifyCandidateAttestationFiles(manifest: CandidateManifest, attestationDirectory: string, manifestDigest?: string | null): { ok: true; count: number };
 export declare function combineReleaseEvidence(options: { resourcePath: string; disasterRecoveryDir: string; output: string; repoRoot?: string; commit: string }): unknown;
