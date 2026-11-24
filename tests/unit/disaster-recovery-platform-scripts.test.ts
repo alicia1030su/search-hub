@@ -136,6 +136,20 @@ describe("platform restore origin environment", () => {
     expect(updater).toBeGreaterThan(modes);
   });
 
+  it("runs launcher updater diagnostics after extraction and before installing the systemd unit", () => {
+    const workflow = readFileSync(resolve(root, ".github/workflows/systemd.yml"), "utf8");
+    expect(workflow).toContain('-v "$PWD:/workspace:ro"');
+    const extract = workflow.indexOf("tar -xzf /pkgs/search-hub-v0.9.0-ci-linux-x64.tar.gz");
+    const diagnostics = workflow.indexOf("/opt/search-hub/runtime/bin/node /workspace/packaging/launcher/updater-test.mjs");
+    const installUnit = workflow.indexOf("cp /opt/search-hub/search-hub.service /etc/systemd/system/");
+    expect(extract).toBeGreaterThan(-1);
+    expect(diagnostics).toBeGreaterThan(extract);
+    expect(installUnit).toBeGreaterThan(diagnostics);
+    expect(workflow).toContain("systemctl enable --now search-hub");
+    expect(workflow).toContain('if [ "$CODE" != "3" ]');
+    expect(workflow).toContain("PASS health scheduler under systemd");
+  });
+
   it("repairs systemd restore ownership and permissions before starting the unit", () => {
     const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
     const apply = script.indexOf('--apply --start-check');

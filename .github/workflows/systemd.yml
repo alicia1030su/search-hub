@@ -80,7 +80,7 @@ jobs:
           set -euo pipefail
           docker run -d --name sh-systemd --privileged --cgroupns=host \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-            -v "$PWD/.data/systemd:/pkgs:ro" \
+            -v "$PWD/.data/systemd:/pkgs:ro" -v "$PWD:/workspace:ro" \
             jrei/systemd-ubuntu:24.04
           for i in $(seq 1 30); do
             if docker exec sh-systemd systemctl is-system-running >/dev/null 2>&1; then break; fi
@@ -100,6 +100,9 @@ jobs:
             mkdir -p /opt/search-hub
             tar -xzf /pkgs/search-hub-v0.9.0-ci-linux-x64.tar.gz -C /opt/search-hub
             test -f /opt/search-hub/search-hub.service || { echo "FAIL: unit file missing"; exit 1; }
+
+            echo "--- launcher updater diagnostics under real systemd ---"
+            /opt/search-hub/runtime/bin/node /workspace/packaging/launcher/updater-test.mjs
 
             id search-hub >/dev/null 2>&1 || useradd --system --home /var/lib/search-hub --shell /usr/sbin/nologin search-hub
             mkdir -p /var/lib/search-hub
