@@ -233,13 +233,12 @@ jobs:
           dr_root="$RUNNER_TEMP/dr-evidence-v0.1.15"
           mkdir -p "$dr_root/reports"
           node --expose-gc --import tsx tests/disaster-recovery/backup-memory-loop.mjs --self-check
-          node_bin="$(command -v node)"
-          printf '#!/bin/sh\nexec "%s" "%s/packages/cli/dist/index.mjs" "$@"\n' "$node_bin" "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/dr-cli"
-          chmod 700 "$RUNNER_TEMP/dr-cli"
+          # Pass the real Node entry directly so the harness loads its resource
+          # preload and records the heap/external/RSS sidecar for every operation.
           # The performance harness invokes backup-memory-loop.mjs in the same
           # process for each 10/64/256 MiB fixture and emits independent reports.
           node --expose-gc --import tsx tests/disaster-recovery/backup-performance.mjs --run \
-            --cli "$RUNNER_TEMP/dr-cli" \
+            --cli "$GITHUB_WORKSPACE/packages/cli/dist/index.mjs" \
             --sizes 10,64,128,256 \
             --rounds 5 \
             --fresh-rounds 5 \

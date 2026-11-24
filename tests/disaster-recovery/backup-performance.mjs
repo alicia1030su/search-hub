@@ -1015,6 +1015,23 @@ async function selfCheck() {
     writeEvidenceManifest(output, { schemaVersion: 1, selfCheck: true });
     writeSums(output);
     checks.push({ name: "evidence_sums", ok: readFileSync(join(output, "SHA256SUMS"), "utf8").includes("manifest.json") });
+    const preloadPath = join(root, "resource-preload.cjs");
+    const resourcePath = join(root, "resource.json");
+    writeFileSync(preloadPath, PRELOAD, { mode: 0o600 });
+    const sidecarRun = spawnSync(process.execPath, ["--require", preloadPath, "-e", "process.stdout.write('sidecar-ok')"], {
+      cwd: root,
+      env: { ...process.env, NODE_OPTIONS: "", SHUB_QA_RESOURCE_FILE: resourcePath },
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    let sidecar = null;
+    try { sidecar = JSON.parse(readFileSync(resourcePath, "utf8")); } catch { /* Reported as a failed check. */ }
+    const sidecarFields = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes", "userCpuMs", "systemCpuMs"];
+    checks.push({
+      name: "resource_preload_sidecar",
+      ok: sidecarRun.status === 0 && sidecarFields.every((field) => Number.isFinite(sidecar?.[field])) &&
+        sidecarFields.slice(0, 6).every((field) => sidecar[field] > 0) && sidecar.userCpuMs >= 0 && sidecar.systemCpuMs >= 0,
+    });
   } finally {
     cleanup = removeOwned(root, ownerRoot);
     checks.push({ name: "owned_cleanup", ok: cleanup.ok && !existsSync(root) });
