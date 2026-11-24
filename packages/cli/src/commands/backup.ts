@@ -5,7 +5,7 @@ import { lstat, mkdir, rename, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  assertSecureRegularFile, createBackupPackage, DEFAULT_TAR_LIMITS, openPrivateFile, parseMasterKey, publishNoOverwrite, readMasterKey,
+  assertNoReparseAncestors, createBackupPackage, DEFAULT_TAR_LIMITS, openPrivateFile, parseMasterKey, publishNoOverwrite, readMasterKey,
   restrictWindowsAcl, restoreBackupPackage, validateBackupPassphrase, verifyDatabaseBackup,
   type BackupVerificationReport,
 } from "@search-hub/backup";
@@ -88,7 +88,10 @@ export async function runBackupCreate(args: ParsedCliArgs, format: OutputFormat)
   if (existsSync(output) || existsSync(`${output}.json`) || existsSync(`${output}.report.json`)) throw new Error("Backup output or sidecar already exists; refusing to overwrite it");
   const passphrase = await passphraseFrom(args);
   const key = await currentKey(paths);
-  await assertSecureRegularFile(paths.dbPath, DEFAULT_TAR_LIMITS.maxDatabaseBytes);
+  await assertNoReparseAncestors(paths.dbPath);
+  const sourceInfo = await lstat(paths.dbPath);
+  if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error("Source database must be a regular file, not a link or special file");
+  if (sourceInfo.size > DEFAULT_TAR_LIMITS.maxDatabaseBytes) throw new Error(`Source database exceeds the ${DEFAULT_TAR_LIMITS.maxDatabaseBytes}-byte safety limit`);
   const created = await createBackupPackage({
     snapshotAdapter: {
       createSnapshot: async (destinationPath) => {

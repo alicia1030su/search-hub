@@ -218,6 +218,7 @@ function stopService(launcher, config) {
 const started = [];
 function startService(launcher, config) {
   if (config.unitName) {
+    systemctl(["reset-failed", config.unitName]);
     const result = systemctl(["start", config.unitName]);
     if (result.status !== 0) throw new UpdateError("start_failed", `systemctl start ${config.unitName} failed: ${result.stderr?.trim() || `exit ${result.status}`}`);
     return;

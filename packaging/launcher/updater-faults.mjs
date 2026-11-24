@@ -19,12 +19,10 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   rmSync,
   statSync,
@@ -243,28 +241,37 @@ try {
     const pkg = makePackage("healthy", "0.2.9");
     const before = snapshotData(root);
     const appDir = join(root, "app");
-    let release = () => {};
-    if (IS_WINDOWS) {
-      // Windows has no directory mode bit, so the injection has to be the real
-      // cause of a failed swap: an open handle inside `app` makes the rename
-      // fail with EBUSY, exactly as a still-running server would.
-      const open = openSync(join(appDir, "apps", "api", "dist", "server.mjs"), "r");
-      release = () => closeSync(open);
-    } else {
-      // Making the *directory* unwritable does not block a rename (rename needs
-      // the parent), so the injection has to remove write access from the parent.
-      execFileSync("chmod", ["-w", root]);
-      release = () => execFileSync("chmod", ["+w", root]);
+    const service = spawn(process.execPath, [join(root, "launcher.mjs"), "--service", "--no-browser"], {
+      env: { ...process.env, SEARCH_HUB_DATA_DIR: join(root, "data"), SEARCH_HUB_PORT: String(PORT) },
+      detached: true,
+      stdio: "ignore",
+    });
+    service.unref();
+    check("C old version serves before the failed install", await waitForVersion("0.1.0"), `got ${await boundVersion()}`);
+    const previousNodeOptions = process.env.NODE_OPTIONS;
+    const preload = join(HERE, "../../tests/integration/fixtures/updater-rename-fault.cjs").replaceAll("\\", "/");
+    process.env.NODE_OPTIONS = `${previousNodeOptions ? `${previousNodeOptions} ` : ""}--require "${preload}"`;
+    let run;
+    try {
+      run = await runUpdater(root, pkg, { version: "0.2.9" });
+    } finally {
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousNodeOptions;
     }
-    const run = await runUpdater(root, pkg, { version: "0.2.9" });
-    release();
-    check("C install failure is reported", run.code !== 0, `exit=${run.code}`);
+    check("C install failure is reported", run.code === 3, `exit=${run.code} ${run.output.slice(0, 4000)}`);
     check("C data untouched", dataIntact(root, before));
     // The old program must still be there: no half-swapped install.
     check("C old program still present", existsSync(join(appDir, "apps", "api", "dist", "server.mjs")));
     // A refused install must not leave the instance down: the previous build has
     // to be serving again, with its own version, not the failed one.
     check("C previous version is serving again", await waitForVersion("0.1.0"), `got ${await boundVersion()}`);
+    try {
+      execFileSync(process.execPath, [join(root, "launcher.mjs"), "--stop"], {
+        env: { ...process.env, SEARCH_HUB_DATA_DIR: join(root, "data"), SEARCH_HUB_PORT: String(PORT) },
+        stdio: "ignore",
+        timeout: 30_000,
+      });
+    } catch { /* already stopped */ }
   }
 
   PORT = nextPort();

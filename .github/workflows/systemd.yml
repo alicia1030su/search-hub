@@ -148,7 +148,14 @@ jobs:
             set -e
             echo "updater exit: $CODE"
             # 3 = rolled back and healthy again.
-            [ "$CODE" = "3" ] || { echo "FAIL: expected rollback exit 3, got $CODE"; exit 1; }
+            if [ "$CODE" != "3" ]; then
+              echo "FAIL: expected rollback exit 3, got $CODE"
+              systemctl status search-hub --no-pager || true
+              journalctl -u search-hub -n 120 --no-pager || true
+              ls -la /opt/search-hub
+              cat /opt/search-hub/launcher.json 2>/dev/null || true
+              exit 1
+            fi
 
             echo "--- after rollback ---"
             systemctl is-active search-hub || systemctl start search-hub
