@@ -39,6 +39,16 @@ trap cleanup EXIT
 
 pick_port() { "$RUNTIME" -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});'; }
 wait_health() { local port=$1; for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$port/api/health" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+run_logged() {
+  local log=$1
+  shift
+  set +e
+  "$@" >"$log" 2>&1
+  local code=$?
+  set -e
+  cat "$log"
+  return "$code"
+}
 make_unit() {
   local unit=$1 data=$2 port=$3
   cat > "/etc/systemd/system/$unit.service" <<EOF
@@ -122,12 +132,12 @@ systemctl stop "$SOURCE_UNIT"
 [[ ! -e "$DATA/search-hub.db-wal" && ! -e "$DATA/search-hub.db-shm" ]]
 stat -c '%a %U:%G %n' "$DATA" "$RESTORED" "$RESTORED/master.key" > "$EVIDENCE/modes.txt"
 
-"$RUNTIME" "$ROOT/packaging/launcher/updater-test.mjs" > "$EVIDENCE/updater-test.log" 2>&1
-"$RUNTIME" "$ROOT/packaging/launcher/updater-faults.mjs" > "$EVIDENCE/updater-faults.log" 2>&1
+run_logged "$EVIDENCE/updater-test.log" "$RUNTIME" "$ROOT/packaging/launcher/updater-test.mjs"
+run_logged "$EVIDENCE/updater-faults.log" "$RUNTIME" "$ROOT/packaging/launcher/updater-faults.mjs"
 if [[ -n "${SEARCH_HUB_UPGRADE_FROM_LOCAL:-}" ]]; then
-  "$RUNTIME" "$ROOT/packaging/upgrade-matrix.mjs" --from-local "$SEARCH_HUB_UPGRADE_FROM_LOCAL" --to "$CANDIDATE" > "$EVIDENCE/upgrade-matrix.log" 2>&1
+  run_logged "$EVIDENCE/upgrade-matrix.log" "$RUNTIME" "$ROOT/packaging/upgrade-matrix.mjs" --from-local "$SEARCH_HUB_UPGRADE_FROM_LOCAL" --to "$CANDIDATE"
 else
-  "$RUNTIME" "$ROOT/packaging/upgrade-matrix.mjs" --from v0.1.14 --to "$CANDIDATE" > "$EVIDENCE/upgrade-matrix.log" 2>&1
+  run_logged "$EVIDENCE/upgrade-matrix.log" "$RUNTIME" "$ROOT/packaging/upgrade-matrix.mjs" --from v0.1.14 --to "$CANDIDATE"
 fi
 
 "$RUNTIME" "$ROOT/tests/disaster-recovery/write-platform-report.mjs" \
