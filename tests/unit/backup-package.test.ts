@@ -143,6 +143,7 @@ describe("private staging permissions", () => {
         expect(acl).toContain(";;;BA)");
         expect(acl).not.toContain(users);
         expect(acl).not.toContain("(D;");
+        expect(acl).not.toContain(";AI)");
         expect(acl).not.toContain(";ID)");
         expect(acl).not.toContain(";IO)");
       }

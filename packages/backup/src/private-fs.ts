@@ -118,7 +118,7 @@ export function restrictWindowsAclSync(path: string, directory: boolean): void {
   });
   const readback = readWindowsAclSync(path);
   const entries = aclEntries(readback);
-  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
+  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("AI") || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
     throw new Error("Private Windows ACL still contains inherited or deny entries");
   }
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
@@ -143,7 +143,7 @@ export async function restrictWindowsAcl(path: string, directory: boolean): Prom
   });
   const readback = await readWindowsAcl(path);
   const entries = aclEntries(readback);
-  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
+  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("AI") || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
     throw new Error("Private Windows ACL still contains inherited or deny entries");
   }
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
