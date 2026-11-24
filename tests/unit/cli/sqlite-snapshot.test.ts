@@ -64,6 +64,29 @@ describe("CLI immutable SQLite snapshots", () => {
     if (process.platform !== "win32") expect(statSync(destination).mode & 0o777).toBe(0o600);
   });
 
+  it("snapshots a clean DELETE-mode database successfully without changing the source", async () => {
+    const root = workspace();
+    const source = join(root, "source.db");
+    const destination = join(root, "snapshot.db");
+    const writer = new DatabaseSync(source);
+    expect(writer.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "delete" });
+    writer.exec("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
+    writer.prepare("INSERT INTO records (value) VALUES (?)").run("delete-mode");
+    writer.close();
+    const sourceBytes = digest(source);
+    const sourceMetadata = metadata(source);
+
+    await createNodeSqliteSnapshot(source, destination);
+
+    expect(readdirSync(root).sort()).toEqual(["snapshot.db", "source.db"]);
+    expect(digest(source)).toBe(sourceBytes);
+    expect(metadata(source)).toBe(sourceMetadata);
+    const snapshot = immutableDatabase(destination);
+    try {
+      expect(snapshot.prepare("SELECT value FROM records WHERE id = 1").get()).toEqual({ value: "delete-mode" });
+    } finally { snapshot.close(); }
+  });
+
   it("rejects a non-empty WAL without changing source or sidecar bytes", async () => {
     const root = workspace();
     const source = join(root, "source.db");
