@@ -482,8 +482,8 @@ async function selfCheck() {
     checks.push({ name: "requirement_status_schema", ok: Object.keys(initialRequirements()).length === 50 && initialRequirements().R34 === "NOT TESTED" });
     const source = gitSource();
     checks.push({ name: "exact_sha_fingerprint", ok: /^[0-9a-f]{40}$/.test(source.commit ?? "") && /^[0-9a-f]{64}$/.test(source.releaseCodeFingerprint ?? "") });
+    const noise = Buffer.alloc(64 * 1024, 1);
     const fakeVerifier = async () => {
-      const noise = Buffer.alloc(64 * 1024, 1);
       await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
       if (noise[0] !== 1) throw new Error("unreachable");
       return { restoreReadiness: true };
