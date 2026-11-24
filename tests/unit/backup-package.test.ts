@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Encrypter } from "age-encryption";
 import { createDb, listMigrations, openDatabaseFile, runMigrations } from "@search-hub/db";
 import {
-  assertNoReparseAncestors, createBackupPackage, createPrivateDirectory, fsyncDirectory, fsyncFile, masterKeyFingerprint, openPrivateFile,
+  assertNoReparseAncestors, assertPrivateWindowsAcl, createBackupPackage, createPrivateDirectory, fsyncDirectory, fsyncFile, masterKeyFingerprint, openPrivateFile,
   parseStrictJson, readAgeHeader, readMasterKey, readStrictTar, restrictWindowsAcl, sealSnapshotDatabase,
   validateBackupPassphrase, verifyBackupPackage, withBackupLock,
   DEFAULT_TAR_LIMITS, type SqliteHandle,
@@ -114,6 +114,15 @@ describe("backup passphrase and JSON policy", () => {
 });
 
 describe("private staging permissions", () => {
+  it("accepts built-in Administrator ACL aliases but rejects every unauthorized identity", () => {
+    const administrator = "S-1-5-32-544";
+    const canonical = "data\r\nD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LA)\r\n";
+    expect(() => assertPrivateWindowsAcl(canonical, administrator)).not.toThrow();
+    expect(() => assertPrivateWindowsAcl(canonical.replace("(A;OICI;FA;;;LA)", "(A;OICI;FA;;;S-1-5-32-545)"), administrator)).toThrow(/unauthorized principal/);
+    expect(() => assertPrivateWindowsAcl("data\r\nD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", administrator)).toThrow(/unauthorized principal/);
+    expect(() => assertPrivateWindowsAcl(canonical.replace("A;OICI", "A;OICIID"), administrator)).toThrow(/inherited or deny/);
+  });
+
   it("uses 0700/0600 on POSIX and explicit non-inherited SID ACLs on Windows", async () => {
     const root = await workspace();
     const directory = await createPrivateDirectory(root, "private-");

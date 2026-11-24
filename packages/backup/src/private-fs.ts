@@ -87,6 +87,22 @@ function aclIdentities(sddl: string): string[] {
   ])];
 }
 
+export function assertPrivateWindowsAcl(readback: string, sid: string, label = "Private Windows ACL"): void {
+  const entries = aclEntries(readback);
+  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("AI") || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
+    throw new Error(`${label} still contains inherited or deny entries`);
+  }
+  const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA", "LA"]);
+  const identities = aclIdentities(readback);
+  const currentIdentityPresent = identities.includes(sid) ||
+    (sid === "S-1-5-18" && identities.includes("SY")) ||
+    (sid === "S-1-5-32-544" && identities.includes("LA"));
+  if (!currentIdentityPresent || identities.some((identity) => !allowed.has(identity))) {
+    const diagnostic = readback.replace(/\r?\n/g, " | ");
+    throw new Error(`${label} read-back contains an unauthorized principal: ${identities.join(",")}; expected=${sid}; sddl=${diagnostic}`);
+  }
+}
+
 async function readWindowsAcl(path: string): Promise<string> {
   const aclPath = join(tmpdir(), `.shbackup-acl-${process.pid}-${randomBytes(8).toString("hex")}`);
   try {
@@ -117,16 +133,7 @@ export function restrictWindowsAclSync(path: string, directory: boolean): void {
     env: { ...process.env, SHUB_ACL_PATH: resolve(path), SHUB_ACL_DIRECTORY: directory ? "1" : "0", SHUB_ACL_SID: sid },
   });
   const readback = readWindowsAclSync(path);
-  const entries = aclEntries(readback);
-  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("AI") || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
-    throw new Error("Private Windows ACL still contains inherited or deny entries");
-  }
-  const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
-  const identities = aclIdentities(readback);
-  if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    const diagnostic = readback.replace(/\r?\n/g, " | ");
-    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}; expected=${sid}; sddl=${diagnostic}`);
-  }
+  assertPrivateWindowsAcl(readback, sid);
 }
 
 /** Applies and reads back a non-inherited ACL for only SID/SYSTEM/Administrators. */
@@ -142,16 +149,7 @@ export async function restrictWindowsAcl(path: string, directory: boolean): Prom
     },
   });
   const readback = await readWindowsAcl(path);
-  const entries = aclEntries(readback);
-  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("AI") || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
-    throw new Error("Private Windows ACL still contains inherited or deny entries");
-  }
-  const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
-  const identities = aclIdentities(readback);
-  if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    const diagnostic = readback.replace(/\r?\n/g, " | ");
-    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}; expected=${sid}; sddl=${diagnostic}`);
-  }
+  assertPrivateWindowsAcl(readback, sid);
 }
 
 /** Rejects symlinks/junctions/reparse points at every existing path prefix. */
@@ -179,13 +177,8 @@ export async function assertNoReparseAncestors(path: string, includeLeaf = true)
 
 async function assertAllowedWindowsAcl(path: string, label: string): Promise<void> {
   const readback = await readWindowsAcl(path);
-  if (/\([AD];[^;]*;[^)]*;ID\)/.test(readback) || /\(D;/.test(readback)) throw new Error(`${label} ACL must not inherit permissions or contain deny entries`);
   const sid = await currentWindowsSid();
-  const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
-  const identities = aclIdentities(readback);
-  if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    throw new Error(`${label} ACL contains an unauthorized principal: ${identities.join(",")}`);
-  }
+  assertPrivateWindowsAcl(readback, sid, label);
 }
 
 /** Validates a regular input file, its size, ownership bits and Windows ACL. */
