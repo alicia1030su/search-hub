@@ -199,7 +199,7 @@ try {
     roots.push(root);
     const pkg = makePackage({ version: "0.2.0", mode: "healthy" });
     const run = await runUpdater(root, pkg, { version: "0.2.0" });
-    check("healthy update exits 0", run.code === 0, `code=${run.code}`);
+    check("healthy update exits 0", run.code === 0, run.code === 0 ? "code=0" : `code=${run.code}\n${run.output.slice(-8000)}`);
     check("new program is in place", readFileSync(join(root, "app", "apps", "api", "dist", "version.txt"), "utf8").trim() === "0.2.0");
     check("service answers after update", await healthy(p));
     check(
@@ -223,7 +223,9 @@ try {
     check(
       "broken update rolls back",
       run.code === 3,
-      `code=${run.code} ${run.output.split("\n").filter((l) => /REFUSED|failed|rollback/.test(l)).slice(-2).join(" | ").slice(0, 200)}`,
+      run.code === 3
+        ? `code=${run.code} ${run.output.split("\n").filter((l) => /REFUSED|failed|rollback/.test(l)).slice(-2).join(" | ").slice(0, 200)}`
+        : `code=${run.code}\n${run.output.slice(-8000)}`,
     );
     check(
       "old program restored",

@@ -1,14 +1,16 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "../..");
 
-function restoreBlocks(relative: string): string[] {
+function commandBlocks(relative: string, needle: string): string[] {
   const lines = readFileSync(resolve(root, relative), "utf8").split("\n");
   const blocks: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
-    if (!lines[index]?.includes("backup restore")) continue;
+    if (!lines[index]?.includes(needle)) continue;
     let start = index;
     while (start > 0 && lines[start - 1]!.trimEnd().endsWith("\\")) start -= 1;
     let end = index;
@@ -16,6 +18,10 @@ function restoreBlocks(relative: string): string[] {
     blocks.push(lines.slice(start, end + 1).join("\n"));
   }
   return blocks;
+}
+
+function restoreBlocks(relative: string): string[] {
+  return commandBlocks(relative, "backup restore");
 }
 
 describe("platform restore origin environment", () => {
@@ -52,6 +58,50 @@ describe("platform restore origin environment", () => {
       }
     }
     expect(migrations).toBe(5);
+  });
+
+  it("keeps Docker stdin interactive for all five passphrase commands", () => {
+    const blocks = commandBlocks("tests/disaster-recovery/platform-docker.sh", "--passphrase-stdin");
+    expect(blocks).toHaveLength(5);
+    for (const block of blocks) {
+      const tokens = block.split(/\s+/);
+      expect(tokens.includes("-i") || tokens.includes("--interactive")).toBe(true);
+    }
+  });
+
+  it("logs systemd helper output before returning the original exit code", () => {
+    const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
+    const start = script.indexOf("run_logged() {");
+    const end = script.indexOf("\n}\n", start) + 3;
+    expect(start).toBeGreaterThan(-1);
+    const helper = script.slice(start, end);
+    const redirect = helper.indexOf('"$@" >"$log" 2>&1');
+    const capture = helper.indexOf("local code=$?");
+    const cat = helper.indexOf('cat "$log"');
+    const returned = helper.indexOf('return "$code"');
+    expect(redirect).toBeGreaterThan(-1);
+    expect(capture).toBeGreaterThan(redirect);
+    expect(cat).toBeGreaterThan(capture);
+    expect(returned).toBeGreaterThan(cat);
+    expect(script.match(/run_logged "\$EVIDENCE\/updater-test\.log"/g)).toHaveLength(1);
+    expect(script.match(/run_logged "\$EVIDENCE\/updater-faults\.log"/g)).toHaveLength(1);
+    expect(script.match(/run_logged "\$EVIDENCE\/upgrade-matrix\.log"/g)).toHaveLength(2);
+  });
+
+  it.skipIf(process.platform === "win32")("run_logged cats diagnostics and preserves a non-zero exit", () => {
+    const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
+    const start = script.indexOf("run_logged() {");
+    const end = script.indexOf("\n}\n", start) + 3;
+    const directory = mkdtempSync(join(tmpdir(), "sh-dr-run-logged-"));
+    const log = join(directory, "diagnostic.log");
+    try {
+      const result = spawnSync("bash", ["-c", `set -e\n${script.slice(start, end)}\nrun_logged "$1" bash -c 'echo visible-diagnostic; exit 7'`, "run-logged-test", log], { encoding: "utf8" });
+      expect(result.status).toBe(7);
+      expect(result.stdout).toContain("visible-diagnostic");
+      expect(readFileSync(log, "utf8")).toContain("visible-diagnostic");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("stops the rolled-back systemd source before WAL and mode assertions", () => {

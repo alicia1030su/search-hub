@@ -62,7 +62,7 @@ volume_hashes() {
 }
 volume_hashes "$PROD_VOL" > "$WORK/production-before.sha256"
 
-docker run --rm --network none --user 1001:1001 --read-only \
+docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PROD_VOL:/data:rw" -v "$PACKAGE_VOL:/packages:rw" \
@@ -72,7 +72,7 @@ docker run --rm --network none --user 1001:1001 --read-only \
   "$IMAGE" /usr/local/bin/shub backup create --data-dir /data --output /packages/backup.shbackup \
   --passphrase-stdin --json < "$WORK/passphrase" | tee "$EVIDENCE/create.json"
 
-docker run --rm --network none --user 1001:1001 --read-only \
+docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
@@ -80,7 +80,7 @@ docker run --rm --network none --user 1001:1001 --read-only \
   "$IMAGE" /usr/local/bin/shub backup verify /packages/backup.shbackup --passphrase-stdin --json \
   < "$WORK/passphrase" | tee "$EVIDENCE/verify.json"
 
-docker run --rm --network none --user 1001:1001 --read-only \
+docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
@@ -90,7 +90,7 @@ docker run --rm --network none --user 1001:1001 --read-only \
 DRY_FILES=$(docker run --rm --user 1001 --entrypoint sh -v "$RESTORE_VOL:/restore:ro" "$IMAGE" -c 'find /restore -mindepth 1 -print | wc -l')
 [[ "$DRY_FILES" == "0" ]]
 
-docker run --rm --network none --user 1001:1001 --read-only \
+docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
@@ -117,7 +117,7 @@ cmp "$WORK/production-before.sha256" "$WORK/production-after.sha256"
 cp "$WORK/production-before.sha256" "$EVIDENCE/production-volume-unchanged.sha256"
 volume_hashes "$RESTORE_VOL" > "$WORK/restore-before-repeat.sha256"
 set +e
-docker run --rm --network none --user 1001:1001 --read-only \
+docker run -i --rm --network none --user 1001:1001 --read-only \
   --tmpfs /tmp:rw,nosuid,noexec,size=2g \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
