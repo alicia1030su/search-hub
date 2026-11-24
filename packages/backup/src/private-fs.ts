@@ -13,16 +13,15 @@ const icaclsPath = join(systemDirectory, "icacls.exe");
 const powershellPath = join(process.env["SystemRoot"] ?? "C:/Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 let cachedSid: string | undefined;
 
-const WINDOWS_ACL = String.raw`$path = $env:SHUB_ACL_PATH;
+const WINDOWS_ACL = String.raw`$ErrorActionPreference = 'Stop';
+$path = $env:SHUB_ACL_PATH;
 $directory = $env:SHUB_ACL_DIRECTORY -eq '1';
 $sid = $env:SHUB_ACL_SID;
-$acl = Get-Acl -LiteralPath $path;
+$acl = if ($directory) { [System.IO.Directory]::GetAccessControl($path) }
+       else { [System.IO.File]::GetAccessControl($path) };
 $acl.SetAccessRuleProtection($true, $false);
+foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
 $allowed = @($sid, 'S-1-5-18', 'S-1-5-32-544');
-foreach ($rule in @($acl.Access)) {
-  $identity = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;
-  if ($allowed -notcontains $identity) { [void]$acl.RemoveAccessRuleSpecific($rule) }
-}
 $inheritance = if ($directory) { 'ContainerInherit,ObjectInherit' } else { 'None' };
 foreach ($identity in $allowed) {
   $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
@@ -69,10 +68,21 @@ function currentWindowsSidSync(): string {
   return sid;
 }
 
+function aclEntries(sddl: string): Array<{ type: string; flags: string; identity: string }> {
+  const entries: Array<{ type: string; flags: string; identity: string }> = [];
+  for (const match of sddl.matchAll(/\(([^()]*)\)/g)) {
+    const fields = match[1]?.split(";");
+    if (!fields) continue;
+    const identity = fields.at(-1);
+    if (identity) entries.push({ type: fields[0] ?? "", flags: fields[1] ?? "", identity });
+  }
+  return entries;
+}
+
 function aclIdentities(sddl: string): string[] {
-  const owner = /(?:^|\n)O:(S-1-[0-9-]+)/.exec(sddl)?.[1];
+  const owner = /(?:^|\r?\n)O:(S-1-[0-9-]+)/.exec(sddl)?.[1];
   return [...new Set([
-    ...[...sddl.matchAll(/;;;(S-1-[0-9-]+|SY|BA)\)/g)].map((match) => match[1] as string),
+    ...aclEntries(sddl).map((entry) => entry.identity),
     ...(owner ? [owner] : []),
   ])];
 }
@@ -107,11 +117,15 @@ export function restrictWindowsAclSync(path: string, directory: boolean): void {
     env: { ...process.env, SHUB_ACL_PATH: resolve(path), SHUB_ACL_DIRECTORY: directory ? "1" : "0", SHUB_ACL_SID: sid },
   });
   const readback = readWindowsAclSync(path);
-  if (/\([AD];[^;]*;[^)]*;ID\)/.test(readback) || /\(D;/.test(readback)) throw new Error("Private Windows ACL still contains inherited or deny entries");
+  const entries = aclEntries(readback);
+  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
+    throw new Error("Private Windows ACL still contains inherited or deny entries");
+  }
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
   const identities = aclIdentities(readback);
   if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}`);
+    const diagnostic = readback.replace(/\r?\n/g, " | ");
+    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}; expected=${sid}; sddl=${diagnostic}`);
   }
 }
 
@@ -128,11 +142,15 @@ export async function restrictWindowsAcl(path: string, directory: boolean): Prom
     },
   });
   const readback = await readWindowsAcl(path);
-  if (/\([AD];[^;]*;[^)]*;ID\)/.test(readback) || /\(D;/.test(readback)) throw new Error("Private Windows ACL still contains inherited or deny entries");
+  const entries = aclEntries(readback);
+  if (entries.some((entry) => entry.type === "D" || entry.flags.includes("ID") || entry.flags.includes("IO"))) {
+    throw new Error("Private Windows ACL still contains inherited or deny entries");
+  }
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
   const identities = aclIdentities(readback);
   if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}`);
+    const diagnostic = readback.replace(/\r?\n/g, " | ");
+    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}; expected=${sid}; sddl=${diagnostic}`);
   }
 }
 

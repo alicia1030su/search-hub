@@ -123,8 +123,29 @@ describe("private staging permissions", () => {
     await fsyncFile(file);
     await fsyncDirectory(directory);
     if (process.platform === "win32") {
-      const acl = execFileSync(join(process.env["SystemRoot"] ?? "C:/Windows", "System32", "icacls.exe"), [directory], { encoding: "utf8" }).toLowerCase();
-      expect(acl.split(/\r?\n/).some((line) => line.includes("(i)"))).toBe(false);
+      const system32 = join(process.env["SystemRoot"] ?? "C:/Windows", "System32");
+      const icacls = join(system32, "icacls.exe");
+      const whoami = execFileSync(join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" });
+      const sid = whoami.trim().match(/"([^"]*)"/g)?.at(-1)?.slice(1, -1);
+      expect(sid).toMatch(/^S-1-[0-9-]+$/);
+      const users = "S-1-5-32-545";
+      execFileSync(icacls, [directory, "/grant", `*${users}:(OI)(CI)F`], { stdio: "ignore" });
+      execFileSync(icacls, [file, "/grant", `*${users}:F`], { stdio: "ignore" });
+      await restrictWindowsAcl(directory, true);
+      await restrictWindowsAcl(file, false);
+      for (const [target, name] of [[directory, "directory"], [file, "file"]] as const) {
+        const saved = join(root, `${name}.acl`);
+        execFileSync(icacls, [target, "/save", saved], { stdio: "ignore" });
+        const bytes = await readFile(saved);
+        const acl = (bytes[1] === 0 ? bytes.toString("utf16le") : bytes.toString("utf8")).toUpperCase();
+        expect(acl).toContain(sid);
+        expect(acl).toContain(";;;SY)");
+        expect(acl).toContain(";;;BA)");
+        expect(acl).not.toContain(users);
+        expect(acl).not.toContain("(D;");
+        expect(acl).not.toContain(";ID)");
+        expect(acl).not.toContain(";IO)");
+      }
     } else {
       expect((await stat(directory)).mode & 0o777).toBe(0o700);
       expect((await stat(file)).mode & 0o777).toBe(0o600);

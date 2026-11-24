@@ -104,9 +104,17 @@ const COMMANDS = [
   },
 ];
 
+const COVERED_REQUIREMENTS = [...new Set(COMMANDS.flatMap((entry) => entry.requirements))];
+
 function arg(name, fallback = null) {
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : fallback;
+}
+
+function coreVerdict(dirty, statuses) {
+  if (statuses.includes("FAIL")) return "FAIL";
+  if (dirty || !statuses.every((status) => status === "PASS")) return "BLOCKED";
+  return "PASS";
 }
 
 function sha256(value) {
@@ -156,6 +164,11 @@ function selfCheck() {
   const checks = [];
   checks.push({ name: "requirement_set", ok: REQUIREMENTS.length === 50 && new Set(REQUIREMENTS).size === 50 });
   checks.push({ name: "mapping", ok: COMMANDS.every((entry) => entry.requirements.every((id) => REQUIREMENTS.includes(id))) });
+  checks.push({ name: "scope_verdict", ok:
+    coreVerdict(false, ["PASS", "PASS"]) === "PASS" &&
+    coreVerdict(false, ["PASS", "NOT TESTED"]) === "BLOCKED" &&
+    coreVerdict(true, ["PASS"]) === "BLOCKED" &&
+    coreVerdict(false, ["FAIL"]) === "FAIL" });
   const root = mkdtempSync(path.join(tmpdir(), "shub-core-acceptance-self-"));
   try {
     mkdirSync(path.join(root, "logs"), { recursive: true });
@@ -225,9 +238,8 @@ async function run() {
     }
     commands.push({ name: entry.name, command: [entry.command, ...entry.args].join(" "), status, exitCode: result.status, signal: result.signal, error: result.error?.message ?? null, startedAt, finishedAt: new Date().toISOString(), log: logPath });
   }
-  const failed = Object.values(requirements).includes("FAIL");
   const allPass = Object.values(requirements).every((status) => status === "PASS");
-  const verdict = failed ? "FAIL" : src.dirty || !allPass ? "BLOCKED" : "PASS";
+  const verdict = coreVerdict(src.dirty, COVERED_REQUIREMENTS.map((id) => requirements[id]));
   const report = {
     schemaVersion: 1,
     kind: "search-hub-disaster-recovery-core",
