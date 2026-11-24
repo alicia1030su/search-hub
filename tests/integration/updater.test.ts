@@ -42,7 +42,7 @@ function makeService(options: {
             tag_name: "v0.2.0",
             published_at: "2026-11-16T00:00:00Z",
             html_url: "https://example.invalid/release",
-            prerelease: true,
+            prerelease: false,
             draft: false,
             assets: [asset],
           },
@@ -86,6 +86,7 @@ describe("asset naming", () => {
   it("matches the release asset convention per platform", () => {
     expect(assetNameFor("0.2.0", "win32", "x64")).toBe("search-hub-v0.2.0-windows-x64.zip");
     expect(assetNameFor("0.2.0", "linux", "arm64")).toBe("search-hub-v0.2.0-linux-arm64.tar.gz");
+    expect(() => assetNameFor("0.2.0", "darwin", "arm64")).toThrow(/not supported/);
   });
 });
 
@@ -102,6 +103,23 @@ describe("update check", () => {
     const service = makeService({ current: "0.3.0" });
     const status = await service.check({ force: true });
     expect(status.updateAvailable).toBe(false);
+  });
+
+  it("never offers a prerelease when no stable release is available", async () => {
+    const service = makeService({
+      release: [{
+        tag_name: "v0.2.0-beta.1",
+        published_at: "2026-11-16T00:00:00Z",
+        html_url: "https://example.invalid/release",
+        prerelease: true,
+        draft: false,
+        assets: [],
+      }],
+    });
+    const status = await service.check({ force: true });
+    expect(status.latest).toBeNull();
+    expect(status.updateAvailable).toBeNull();
+    expect(status.error).toContain("No published release");
   });
 
   it("reports unknown, never up-to-date, when the lookup fails", async () => {
@@ -161,7 +179,7 @@ describe("staging", () => {
           tag_name: "v0.2.0",
           published_at: "2026-11-16T00:00:00Z",
           html_url: "https://example.invalid",
-          prerelease: true,
+          prerelease: false,
           draft: false,
           assets: [
             {

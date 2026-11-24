@@ -9,6 +9,134 @@ pnpm build && pnpm test:e2e   # Playwright (needs a browser)
 bash tests/scripts/smoke.sh http://127.0.0.1:8787
 ```
 
+## Disaster-recovery tests
+
+All disaster-recovery runs use isolated temporary databases, synthetic keys, dynamic ports and disposable containers/units. Never point these commands at a production data directory, Docker volume, systemd unit, tag or release.
+
+### Fast local contract tests
+
+```bash
+pnpm exec vitest run tests/unit/backup-package.test.ts tests/unit/backup-snapshot.test.ts \
+  tests/unit/cli/backup.test.ts tests/integration/backup.test.ts
+node tests/disaster-recovery/backup-performance.mjs --self-check
+node --expose-gc --import tsx tests/disaster-recovery/backup-memory-loop.mjs --self-check
+```
+
+These tests cover fixed-member age packages, default work-factor enforcement, strict tar/path/link/duplicate/trailing-data rejection, SQLite sealing and real AES-GCM sample decryption, wrong/missing keys, upload authentication before disk writes, API/CSRF, CLI create/verify/dry-run/apply, and repeated-restore refusal. A local PASS is not a platform or release PASS.
+
+### Packaged CLI resource and offline verification
+
+`backup-performance.mjs` creates real SQLite fixtures and drives the public CLI. The default schedule is 10/64/128/256 MiB with one warm-up, five measured repeated rounds and five fresh-process controls. The 128 MiB case is the R20 offline-verify fixture; 10/64/256 MiB are the resource matrix. It records stage/operation time, process-tree RSS/peak/private memory, heap/external sidecars, CPU, handles, temporary/owned disk peaks, age work factor, source/package/restored-DB SHA256, redacted logs, `manifest.json` and `SHA256SUMS`.
+
+```bash
+node tests/disaster-recovery/backup-performance.mjs --help
+node tests/disaster-recovery/backup-performance.mjs --self-check
+
+# Full serial run against the final packaged CLI (not the TypeScript source entry).
+node --import tsx tests/disaster-recovery/backup-performance.mjs --run \
+  --cli /path/to/packaged/shub --sizes 10,64,128,256 \
+  --rounds 5 --warmup 1 --fresh-rounds 5 \
+  --output-dir artifacts/disaster-recovery/v0115-full
+
+# Optional 256 MiB single-round smoke. This is deliberately BLOCKED, not acceptance.
+node --import tsx tests/disaster-recovery/backup-performance.mjs --run \
+  --cli /path/to/packaged/shub --single-round \
+  --output-dir artifacts/disaster-recovery/v0115-256-smoke
+```
+
+The performance manifest is **sub-evidence only**. Its `requirements` object contains R01–R38/A01–A12, but uncovered entries stay `NOT TESTED`. R20 may pass from the real 128 MiB offline run. By default, before deleting the first 10/64/256 MiB round's package, the harness also runs an integrated same-process verifier loop and writes independent `reports/memory-loop-<size>/manifest.json` + `SHA256SUMS`; `--no-memory-loop` disables this and leaves R34 `BLOCKED`. R34 stays `BLOCKED` in the performance manifest itself and is passed only when the aggregator sees both `performanceSubset=PASS` and the independent same-process report PASS. A04/A11 also stay `BLOCKED` until their independent legacy/M04/fault/full-regression/platform evidence exists. Do not use the performance manifest directly as the release DR gate.
+
+### Same-process retained-memory verification
+
+Fresh CLI processes cannot prove that a long-lived verifier releases memory. `backup-memory-loop.mjs` calls `verifyDatabaseBackup` repeatedly in one Node process and records `heapUsed`, `heapTotal`, `external`, `arrayBuffers`, RSS, maxRSS, active-handle count/types, Linux FD count, per-round temporary cleanup and source/package hashes. Final evidence uses the default `final` adapter; `current` is development-only and is not a release mode.
+
+```bash
+node --expose-gc --import tsx tests/disaster-recovery/backup-memory-loop.mjs --help
+node --expose-gc --import tsx tests/disaster-recovery/backup-memory-loop.mjs --self-check
+
+# Run once for each real 10/64/256 MiB package + its source DB.
+node --expose-gc --import tsx tests/disaster-recovery/backup-memory-loop.mjs --run \
+  --package /isolated/10MiB.shbackup --source-db /isolated/10MiB-source.db \
+  --passphrase-file /isolated/0600-passphrase --adapter-mode final \
+  --rounds 5 --warmup 2 \
+  --output-dir artifacts/disaster-recovery/v0115-memory-10
+```
+
+A passphrase file must be a regular 0600 file on POSIX; `SEARCH_HUB_BACKUP_PASSPHRASE` is the environment fallback. The growth rule fails sustained monotonic growth whose total exceeds 10× warm-up/MAD noise; ambiguous high-noise growth is `BLOCKED`. Current-RSS or heap-capacity movement with a stable maxRSS and stable used-heap/external/active handles is classified as allocation noise, not a leak. There is no fabricated RSS≤64 MiB threshold and the age KDF is never lowered.
+
+### R01–R38 / A01–A12 evidence aggregation
+
+The release gate is produced only after every requirement has real evidence:
+
+```text
+docs/evidence/v0.1.15/disaster-recovery/gate.json
+docs/evidence/v0.1.15/disaster-recovery/SHA256SUMS
+```
+
+`gate.json` must use `schemaVersion=1`, `suite=search-hub-disaster-recovery-v0.1.15`, exact `releaseCommit` and `releaseCodeFingerprint`, `verdict=PASS`, exactly R01–R38/A01–A12 all `PASS`, and at least one relative evidence reference per id. Every referenced file must be listed in `SHA256SUMS`. Validate the finished gate with:
+
+```bash
+node packaging/verify-disaster-recovery-evidence.mjs --commit "$(git rev-parse HEAD)"
+```
+
+`tests/disaster-recovery/requirement-matrix.json` maps every R01–R38/A01–A12 id to its command, isolated fixture, expected evidence and platform. Platform scripts write an aggregator-compatible `report.json` through `write-platform-report.mjs`; only requirements actually proven by that run are marked PASS, and all others remain NOT TESTED. Performance and memory-loop manifests are inputs to the aggregator, never replacements for it. Missing evidence is `NOT TESTED`; an executed but resource/telemetry-blocked case is `BLOCKED`; a missing implementation is reported as `NOT IMPLEMENTED`/`BLOCKED` with the reason. Never convert any of these to `PASS`. A12's pre-tag PASS covers exact-SHA candidate aggregation, the five successful main-push gates and the candidate/promoter policy; the sixth candidate workflow, immutable annotated tag and digest-fixed promotion are verified by the subsequent preflight and release gates.
+
+### Platform-isolated commands
+
+#### Windows x64
+
+```powershell
+powershell -NoProfile -File tests/disaster-recovery/platform-windows.ps1 `
+  /path/to/extracted/search-hub-windows-x64 /path/to/packaged/shub.exe `
+  artifacts/disaster-recovery/platform-windows
+node packaging/verify-package.mjs windows-x64
+```
+
+`platform-windows.ps1` runs the packaged runtime and `shub.exe` through create/verify/default dry-run/apply with `--start-check`, then starts the restored service and verifies health, login, provider, key decryption, search and MCP. It also exercises non-empty and repeated targets, an ancestor junction, NTFS ACL readback, and a long Unicode path. It writes `report.json` and `SHA256SUMS`. If a required Windows feature cannot be exercised, record `BLOCKED`, not PASS.
+
+#### Linux x64 and arm64
+
+```bash
+bash tests/disaster-recovery/platform-linux.sh \
+  /path/to/extracted/search-hub-linux-x64 /path/to/packaged/shub \
+  artifacts/disaster-recovery/platform-linux-x64
+bash tests/disaster-recovery/platform-linux.sh \
+  /path/to/extracted/search-hub-linux-arm64 /path/to/packaged/shub-arm64 \
+  artifacts/disaster-recovery/platform-linux-arm64
+node packaging/verify-package.mjs linux-x64
+node packaging/verify-package.mjs linux-arm64
+```
+
+The script starts the packaged source server on a dynamic port, creates a synthetic admin/provider/key/search history, stops it, runs packaged CLI create/verify, asserts default dry-run leaves no target, runs apply with `--start-check`, starts the restored packaged server, checks `/api/health`, and verifies login, provider, key decryption, search and MCP through `api-fixture.mjs`. It records hashes/modes and `SHA256SUMS`. Run x64 and arm64 on their real architectures as a non-root user. CLI create/verify/restore run with `PATH=/nonexistent` to prove the standalone binary does not depend on host Node/pnpm.
+
+#### Docker
+
+```bash
+docker build --label org.opencontainers.image.revision="$(git rev-parse HEAD)" \
+  -t search-hub:v0115-candidate .
+bash tests/disaster-recovery/platform-docker.sh \
+  search-hub:v0115-candidate /path/to/packaged/shub \
+  artifacts/disaster-recovery/platform-docker
+bash scripts/docker-verify.sh
+```
+
+`platform-docker.sh` creates a unique project/network and three disposable volumes (production source, package output, restore target). It starts the source container as uid 1001 with a read-only rootfs and dynamic host port, seeds synthetic state, stops it, mounts the packaged CLI read-only into an offline `--network none` container, runs create/verify, proves dry-run leaves the restore volume empty, runs apply with `--start-check`, then starts a second container on the restore volume. It checks health/login/provider/key-decrypt/search/MCP and compares production-volume hashes before/after. Cleanup removes only the named project resources. Docker evidence remains linux/amd64; standalone arm64 does not replace it.
+
+#### systemd and updater rollback
+
+Run only in a disposable VM or container whose PID 1 is real systemd. The script creates custom source/restored units, explicit data/DB paths and dynamic ports; it never edits the production `search-hub.service`.
+
+```bash
+bash tests/disaster-recovery/platform-systemd.sh \
+  /path/to/extracted/search-hub-linux-x64 /path/to/packaged/shub \
+  /path/to/search-hub-v0.1.15-linux-x64.tar.gz \
+  artifacts/disaster-recovery/platform-systemd
+```
+
+`platform-systemd.sh` starts the source unit, seeds synthetic state, stops it, runs packaged CLI create/verify/default dry-run/apply with `--start-check`, starts the restored unit, checks health/login/provider/key-decrypt/search/MCP, and refuses repeated restore. It then installs a newer package that never becomes healthy, requires updater exit 3, starts the old unit again, rechecks key decryption, verifies no stale WAL/SHM, and runs `updater-test.mjs`, `updater-faults.mjs` and the real v0.1.14→v0.1.15 `upgrade-matrix.mjs`. It writes `report.json` and `SHA256SUMS`.
+
+The direct updater invocation proves the transaction and exit-3 rollback. A10's independent updater identity still requires a dedicated updater oneshot unit/user with narrowly scoped systemd permissions; until that run exists, A10 remains `NOT TESTED`, not PASS.
+
 ## Layers
 
 | Layer | Location | Proves | Does not prove |

@@ -1,61 +1,34 @@
 #!/usr/bin/env node
-/**
- * Search Hub updater CLI.
- *
- * Runs **outside** the server process: on Windows the running executable is
- * locked, and on Linux systemd owns the service.
- *
- * Usage:
- *   node updater.mjs --package <file> --version <v> --sha256 <hex> [--size n]
- *                    [--root <install dir>] [--data <data dir>]
- *
- * Exit codes:
- *   0  updated and healthy
- *   3  update applied but the health check failed and the rollback succeeded
- *   4  update failed and the rollback also failed (manual intervention)
- *   1  refused before touching anything (digest, downgrade, architecture, layout)
- */
+/** Search Hub transactional updater. All destructive work uses isolated temp dirs. */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   UpdateError,
   assertArchMatches,
+  assertSafeEntry,
   assertTreeContained,
   assertUpgrade,
   backupCurrent,
   installProgram,
   planRollback,
   readSchemaVersion,
+  recoverInterruptedUpdate,
   restoreData,
   rollbackProgram,
+  systemdStateProvesStopped,
   verifyStagedFile,
+  writeJsonAtomic,
 } from "./updater-core.mjs";
+import { resolveServiceConfig, updateWorkRoot } from "./updater-config.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/**
- * How to control the service in a *released* package.
- *
- * A released package does not ship `launcher.mjs`: on Windows the launcher is
- * `SearchHub.exe` (a Node SEA), on Linux it is `bin/search-hub`. The updater has to
- * drive whichever one exists, otherwise it can only ever work from the source tree.
- */
-function resolveLauncher(root) {
-  if (process.platform === "win32") {
-    const exe = join(root, "SearchHub.exe");
-    if (existsSync(exe)) return { command: exe, args: [] };
-  }
-  const shell = join(root, "bin", "search-hub");
-  if (existsSync(shell)) return { command: shell, args: [] };
-  // Development / test tree: run the launcher script through this Node runtime.
-  const script = join(HERE, "launcher.mjs");
-  if (existsSync(script)) return { command: process.execPath, args: [script] };
-  throw new UpdateError("no_launcher", `No launcher found under ${root}`);
-}
-
 function arg(name) {
+  const prefix = `--${name}=`;
+  const inline = process.argv.find((value) => value.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
@@ -64,350 +37,254 @@ function log(message) {
   console.log(`[updater] ${message}`);
 }
 
-/** Blocking sleep, so the CLI's verdict is complete before the process exits. */
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function extract(archive, into) {
-  mkdirSync(into, { recursive: true });
-  const base = resolve(dirname(archive));
-  const name = archive.split(/[\\/]/).pop();
-  if (name.endsWith(".zip")) {
-    try {
-      execFileSync("unzip", ["-q", "-o", name, "-d", into], { cwd: base, stdio: "inherit" });
-      return;
-    } catch {
-      execFileSync("tar", ["-xf", name, "-C", into], { cwd: base, stdio: "inherit" });
-      return;
-    }
+function resolveLauncher(root) {
+  if (process.platform === "win32") {
+    const exe = join(root, "SearchHub.exe");
+    if (existsSync(exe)) return { command: exe, args: [] };
   }
-  execFileSync("tar", ["-xzf", name, "-C", into], { cwd: base, stdio: "inherit" });
+  const shell = join(root, "bin", "search-hub");
+  if (existsSync(shell)) return { command: shell, args: [] };
+  const script = join(HERE, "launcher.mjs");
+  if (existsSync(script)) return { command: process.execPath, args: [script] };
+  throw new UpdateError("no_launcher", `No launcher found under ${root}`);
 }
 
-/** The installed version: `launcher.json` in a package, `package.json` in a source tree. */
 function readInstalledVersion(root) {
   for (const name of ["launcher.json", "package.json"]) {
     const path = join(root, name);
     if (!existsSync(path)) continue;
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8"));
-      if (typeof parsed.version === "string") return parsed.version;
+      if (typeof parsed.version === "string" && parsed.version) return parsed.version;
     } catch {
-      /* fall through */
+      /* try the next manifest */
     }
   }
-  throw new UpdateError(
-    "unknown_version",
-    `Cannot determine the installed version under ${root}; refusing to update without it.`,
-  );
+  throw new UpdateError("unknown_version", `Cannot determine the installed version under ${root}; refusing to update without it.`);
 }
 
-/** Writes the new version into the package manifest (and package.json if present). */
-function stampVersion(root, version) {
-  for (const name of ["launcher.json", "package.json"]) {
-    const path = join(root, name);
-    if (!existsSync(path)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf8"));
-      parsed.version = version;
-      writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-    } catch (error) {
-      throw new UpdateError("manifest_update_failed", `Could not update ${name}: ${String(error)}`);
-    }
-  }
-}
-
-/**
- * Remembers the exact manifest bytes before they are rewritten.
- *
- * The manifests live next to `app/`, not inside it, so restoring the program
- * directory alone leaves the *new* version in place: the old server would then
- * answer with a version that never shipped, and the post-rollback health check
- * (which insists on the previous version) would call a successful rollback a
- * failure. Restoring the bytes also puts back every other field.
- */
 function snapshotManifests(root) {
   const snapshot = [];
   for (const name of ["launcher.json", "package.json"]) {
     const path = join(root, name);
     if (!existsSync(path)) continue;
-    snapshot.push({ path, bytes: readFileSync(path) });
+    const info = statSync(path);
+    snapshot.push({ path, bytes: readFileSync(path).toString("base64"), mode: info.mode & 0o777, uid: info.uid, gid: info.gid });
   }
   return snapshot;
 }
 
 function restoreManifests(snapshot) {
-  for (const { path, bytes } of snapshot) {
-    try {
-      writeFileSync(path, bytes);
-    } catch (error) {
-      throw new UpdateError(
-        "manifest_restore_failed",
-        `Could not restore ${basename(path)}: ${String(error)}`,
-      );
+  for (const entry of snapshot) {
+    writeFileSync(entry.path, Buffer.from(entry.bytes, "base64"), { mode: entry.mode ?? 0o600 });
+    if (process.platform !== "win32" && Number.isInteger(entry.uid) && Number.isInteger(entry.gid) && process.getuid?.() === 0) {
+      chownSync(entry.path, entry.uid, entry.gid);
+    }
+    if (process.platform !== "win32" && Number.isInteger(entry.mode)) chmodSync(entry.path, entry.mode);
+  }
+}
+
+function stampVersion(root, version) {
+  for (const name of ["launcher.json", "package.json"]) {
+    const path = join(root, name);
+    if (!existsSync(path)) continue;
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed.version = version;
+    writeJsonAtomic(path, parsed);
+  }
+}
+
+function listArchive(archive) {
+  const name = basename(archive);
+  const result = name.endsWith(".zip")
+    ? spawnSync("unzip", ["-Z1", name], { cwd: dirname(archive), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 })
+    : spawnSync("tar", ["-tzf", name], { cwd: dirname(archive), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+  if (result.status !== 0) throw new UpdateError("unsafe_archive", `Could not list archive entries: ${result.stderr?.trim() || `exit ${result.status}`}`);
+  const entries = result.stdout.split(/\r?\n/).filter(Boolean);
+  for (const entry of entries) assertSafeEntry(entry);
+  if (entries.length === 0) throw new UpdateError("unsafe_archive", "Archive contains no entries");
+
+  // Reject link/device/FIFO entries before extraction. A post-extraction walk is
+  // still required, but it cannot undo a link written by a permissive extractor.
+  const verbose = name.endsWith(".zip")
+    ? spawnSync("unzip", ["-Z", "-v", name], { cwd: dirname(archive), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 })
+    : spawnSync("tar", ["-tvzf", name], { cwd: dirname(archive), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+  if (verbose.status !== 0) throw new UpdateError("unsafe_archive", `Could not inspect archive entry types: ${verbose.stderr?.trim() || `exit ${verbose.status}`}`);
+  for (const line of verbose.stdout.split(/\r?\n/)) {
+    const match = /^([-dlbcps])([rwxstST-]{9})/.exec(line.trim());
+    if (!match) continue;
+    if (!["-", "d"].includes(match[1])) throw new UpdateError("unsafe_archive", "Archive contains a link, device, FIFO, socket, or other special entry");
+    if ((match[1] === "-" || match[1] === "d") && /[stST]/.test(match[2])) {
+      throw new UpdateError("unsafe_archive", "Archive contains setuid/setgid/sticky permissions");
     }
   }
+  return entries;
 }
 
-function listEntries(dir) {
-  const out = [];
-  for (const name of readdirSync(dir)) {
-    const absolute = join(dir, name);
-    out.push(name);
-    if (statSync(absolute).isDirectory()) out.push(...listEntries(absolute));
+function extract(archive, into) {
+  const entries = listArchive(archive);
+  mkdirSync(into, { recursive: true, mode: 0o700 });
+  const name = basename(archive);
+  if (name.endsWith(".zip")) {
+    try {
+      execFileSync("unzip", ["-q", name, "-d", into], { cwd: dirname(archive), stdio: "inherit", timeout: 120_000 });
+    } catch {
+      execFileSync("tar", ["-xf", name, "-C", into], { cwd: dirname(archive), stdio: "inherit", timeout: 120_000 });
+    }
+  } else {
+    execFileSync("tar", ["-xzf", name, "-C", into, "--no-same-owner", "--no-same-permissions"], { cwd: dirname(archive), stdio: "inherit", timeout: 120_000 });
   }
-  return out;
-}
-
-/**
- * Detects a systemd-managed install.
- *
- * When a unit exists, the updater must drive `systemctl` instead of spawning the
- * launcher itself: systemd owns the process, restarts it on failure, and would
- * fight a second supervisor over the same port and database.
- */
-function systemdUnit() {
-  if (process.platform === "win32") return null;
-  for (const path of [
-    "/etc/systemd/system/search-hub.service",
-    "/lib/systemd/system/search-hub.service",
-    "/usr/lib/systemd/system/search-hub.service",
-  ]) {
-    if (existsSync(path)) return process.env["SEARCH_HUB_SYSTEMD_UNIT"] ?? "search-hub";
-  }
-  return null;
+  assertTreeContained(into);
+  return entries;
 }
 
 function systemctl(args) {
-  return spawnSync("systemctl", args, { stdio: "ignore", timeout: 120_000 });
+  return spawnSync("systemctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
 }
 
-function stopService(launcher, dataDir, port) {
-  const unit = systemdUnit();
-  if (unit) {
-    const result = systemctl(["stop", unit]);
-    log(`systemctl stop ${unit}: ${result.status === 0 ? "ok" : `exit ${result.status}`}`);
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function lockIsLive(dataDir) {
+  const path = join(dataDir, "launcher.lock");
+  if (!existsSync(path)) return false;
+  try {
+    const lock = JSON.parse(readFileSync(path, "utf8"));
+    return pidAlive(lock.pid);
+  } catch {
+    return false;
+  }
+}
+
+async function portResponds(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(750) });
+    await response.body?.cancel();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitPortFree(port, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await portResponds(port))) return;
+    sleep(250);
+  }
+  throw new UpdateError("stop_unproven", `Port ${port} still answers after the stop request; refusing to update a live instance`);
+}
+
+async function assertServiceStopped(config) {
+  if (config.unitName) {
+    const shown = systemctl(["show", config.unitName, "--property=ActiveState", "--property=SubState", "--property=MainPID"]);
+    if (shown.status !== 0) throw new UpdateError("stop_unproven", `Could not prove systemd unit ${config.unitName} is stopped`);
+    const properties = Object.fromEntries(shown.stdout.trim().split(/\r?\n/).map((line) => line.split("=", 2)));
+    if (!systemdStateProvesStopped(properties)) {
+      throw new UpdateError("stop_unproven", `systemd unit is not proven stopped: ${JSON.stringify(properties)}`);
+    }
+  }
+  if (lockIsLive(config.dataDir)) throw new UpdateError("stop_unproven", "Launcher lock still points to a live process");
+  await waitPortFree(config.port);
+}
+
+function stopService(launcher, config) {
+  if (config.unitName) {
+    const result = systemctl(["stop", config.unitName]);
+    if (result.status !== 0) throw new UpdateError("stop_unproven", `systemctl stop ${config.unitName} failed: ${result.stderr?.trim() || `exit ${result.status}`}`);
+    log(`systemctl stop ${config.unitName}: ok`);
     return;
   }
   try {
     execFileSync(launcher.command, [...launcher.args, "--stop"], {
-      env: { ...process.env, SEARCH_HUB_DATA_DIR: dataDir, SEARCH_HUB_PORT: String(port) },
+      env: { ...process.env, SEARCH_HUB_DATA_DIR: config.dataDir, SEARCH_HUB_DB_PATH: config.dbPath, SEARCH_HUB_PORT: String(config.port) },
       stdio: "inherit",
       timeout: 60_000,
     });
-  } catch {
-    // "not running" is a normal state before an update.
+  } catch (error) {
+    // A missing/stale lock is acceptable only when the independent checks below
+    // prove no process or service remains. Any other failure is still rechecked.
+    if (!existsSync(join(config.dataDir, "launcher.lock"))) log(`launcher stop returned ${String(error)}; verifying stopped state`);
+    else throw new UpdateError("stop_unproven", `Launcher stop failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-/**
- * Starts the service and returns immediately.
- *
- * `--service` keeps the launcher in the foreground on purpose (it supervises the
- * server and forwards signals), so this must spawn it detached rather than wait:
- * waiting would block until the timeout and then kill the very process we want
- * to keep running.
- */
-/**
- * Terminates a server that the launcher no longer tracks.
- *
- * When a new build never becomes healthy, the launcher's own health timeout can
- * fire first and clear its lock, leaving a live child that still holds the
- * program files. On Windows that makes the rollback fail with EBUSY — and an
- * orphaned server on the same database is exactly the state to avoid. So the
- * updater kills the recorded pid itself and waits for it to disappear.
- */
-function hardStop(dataDir) {
-  // Under systemd the unit owns the process; killing its pid directly would be
-  // undone by Restart=on-failure and could race a fresh start.
-  if (systemdUnit()) return;
-  const lockPath = join(dataDir, "launcher.lock");
-  if (!existsSync(lockPath)) return;
-  let pid = null;
-  try {
-    pid = JSON.parse(readFileSync(lockPath, "utf8")).pid ?? null;
-  } catch {
-    return;
-  }
-  if (typeof pid !== "number" || pid <= 0) return;
-  for (const signal of ["SIGTERM", "SIGKILL"]) {
-    try {
-      process.kill(pid, signal);
-    } catch {
-      return; // already gone
-    }
-    const deadline = Date.now() + 8_000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return; // exited
-      }
-      sleep(200);
-    }
-    log(`process ${pid} ignored ${signal}; escalating`);
-  }
-}
-
-/**
- * Pid of every service this process started.
- *
- * The launcher is detached and unref'd, so nothing below tracks it. When a new
- * build never becomes healthy, `stopService` cannot help — the launcher it
- * would signal is the one that has just failed — and the rejected build keeps
- * the port and the database open. The rollback then starts the previous
- * version, which cannot bind, and the update ends at exit 4 with the instance
- * still on the broken build.
- */
-const startedPids = [];
-
-function startService(launcher, dataDir, port) {
-  const unit = systemdUnit();
-  if (unit) {
-    const result = systemctl(["start", unit]);
-    log(`systemctl start ${unit}: ${result.status === 0 ? "ok" : `exit ${result.status}`}`);
+const started = [];
+function startService(launcher, config) {
+  if (config.unitName) {
+    systemctl(["reset-failed", config.unitName]);
+    const result = systemctl(["start", config.unitName]);
+    if (result.status !== 0) throw new UpdateError("start_failed", `systemctl start ${config.unitName} failed: ${result.stderr?.trim() || `exit ${result.status}`}`);
     return;
   }
   const child = spawn(launcher.command, [...launcher.args, "--service", "--no-browser"], {
-    env: { ...process.env, SEARCH_HUB_DATA_DIR: dataDir, SEARCH_HUB_PORT: String(port) },
+    env: { ...process.env, SEARCH_HUB_DATA_DIR: config.dataDir, SEARCH_HUB_DB_PATH: config.dbPath, SEARCH_HUB_PORT: String(config.port) },
     stdio: "ignore",
     detached: true,
     windowsHide: true,
   });
-  if (typeof child.pid === "number") startedPids.push(child.pid);
+  started.push(child);
   child.unref();
 }
 
-/**
- * Stops the launcher we started if it is still alive.
- *
- * Called immediately before starting the previous version during a rollback:
- * without it the previous version races a build that is holding the port, and
- * the operator is left on the rejected build with no error they can act on.
- */
 function stopStartedServices() {
-  for (const pid of startedPids.splice(0)) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      continue; // already gone
-    }
+  for (const child of started.splice(0)) {
+    if (child.exitCode !== null || child.signalCode !== null) continue;
+    child.kill("SIGTERM");
     const deadline = Date.now() + 8_000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        break; // exited
-      }
+    while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
       sleep(200);
     }
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* exited between the check and the signal */
-    }
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
 }
 
-/**
- * Health probe that also checks *which build* is answering.
- *
- * A bare HTTP 200 is not enough: if an old instance is still bound to the port
- * (a launcher that failed to stop, a manual start, a stuck child), the probe
- * would report success while the version the user asked for was never started.
- * `/api/health` returns `version`, so the updater compares it.
- */
-function probeOnce(port, expectedVersion) {
-  const script = `
-    fetch("http://127.0.0.1:${port}/api/health")
-      .then(async (r) => {
-        if (!r.ok) process.exit(1);
-        const body = await r.json().catch(() => ({}));
-        const want = ${JSON.stringify(expectedVersion)};
-        // Require an exact match. Accepting a missing version would let any
-        // process on the port (a leftover stub, an older build without the field)
-        // masquerade as the build we just installed.
-        if (want && (!body || body.version !== want)) process.exit(2);
-        process.exit(0);
-      })
-      .catch(() => process.exit(1));
-  `;
-  const result = spawnSync(process.execPath, ["-e", script], { stdio: "ignore", timeout: 5_000 });
-  return result.status === 0 ? "healthy" : result.status === 2 ? "stale" : "down";
+async function probeOnce(port, expectedVersion) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2_000) });
+    if (!response.ok) return "down";
+    const body = await response.json();
+    if (body?.version !== expectedVersion) return "stale";
+    return body?.status === "ok" || body?.ok === true ? "healthy" : "down";
+  } catch {
+    return "down";
+  }
 }
 
-function waitHealthy(port, expectedVersion, timeoutMs = 60_000) {
+async function waitHealthy(port, expectedVersion, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const state = probeOnce(port, expectedVersion);
+    const state = await probeOnce(port, expectedVersion);
     if (state === "healthy") return { ok: true, stale: false };
-    if (state === "stale") {
-      // A different build answers on this port: the new one never took over.
-      return { ok: false, stale: true };
-    }
-    sleep(1_000);
+    if (state === "stale") return { ok: false, stale: true };
+    sleep(500);
   }
   return { ok: false, stale: false };
 }
 
-/**
- * Puts the previous program back after a failed backup or install and starts it.
- *
- * The service is already stopped at this point, so returning without doing this
- * would turn "the update was refused" into "the instance is down" — the operator
- * asked for an upgrade, not an outage. `installProgram` restores the old tree
- * itself on a failed copy, so this only has to handle the cases where it could
- * not (and where the manifest was already stamped).
- */
-function recoverPrevious({
-  launcher,
-  dataDir,
-  port,
-  currentVersion,
-  appDir,
-  previous,
-  manifests,
-  workRoot,
-  version,
-}) {
-  if (previous && existsSync(previous)) {
-    try {
-      rollbackProgram({ appDir, previous });
-      log("previous program tree restored after the failed install");
-    } catch (error) {
-      log(`could not restore the previous program tree: ${String(error)}`);
-    }
-  }
-  if (manifests.length > 0) {
-    try {
-      restoreManifests(manifests);
-    } catch (error) {
-      log(`could not restore the manifest: ${String(error)}`);
-    }
-  }
+function record(workRoot, value) {
+  writeJsonAtomic(join(workRoot, "last-update.json"), value);
+}
 
-  // The install never swapped the program, but a start may already have failed
-  // to bind; clearing our own children keeps the retry from racing itself.
+async function recoverPrevious({ launcher, config, currentVersion, workRoot, version, appDir, previous, manifests }) {
+  if (previous && existsSync(previous)) rollbackProgram({ appDir, previous });
+  if (manifests.length > 0) restoreManifests(manifests);
   stopStartedServices();
-  startService(launcher, dataDir, port);
-  const probe = waitHealthy(port, currentVersion);
-  mkdirSync(workRoot, { recursive: true });
-  writeFileSync(
-    join(workRoot, "last-update.json"),
-    JSON.stringify(
-      { version, from: currentVersion, at: new Date().toISOString(), ok: false, rollback: "install_failed" },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  if (probe.ok) {
-    log(`the previous version is serving again (${currentVersion}); nothing was changed`);
-    return true;
-  }
-  log("CRITICAL: the previous version did not come back; this instance needs manual attention");
-  return false;
+  startService(launcher, config);
+  const probe = await waitHealthy(config.port, currentVersion);
+  record(workRoot, { version, from: currentVersion, at: new Date().toISOString(), ok: false, rollback: "install_failed" });
+  return probe.ok;
 }
 
 async function main() {
@@ -416,162 +293,146 @@ async function main() {
   const version = arg("version");
   const sha256 = arg("sha256");
   const size = Number(arg("size") ?? 0);
-  const dataDir = resolve(arg("data") ?? join(root, "data"));
-  const port = Number(arg("port") ?? process.env["SEARCH_HUB_PORT"] ?? 8787);
-
   if (!packagePath || !version || !sha256) {
-    log("usage: updater.mjs --package <file> --version <v> --sha256 <hex> [--size n] [--root dir] [--data dir]");
-    process.exit(1);
+    log("usage: updater.mjs --package <file> --version <v> --sha256 <hex> [--size n] [--root dir] [--data dir] [--db-path file] [--port n]");
+    return 1;
+  }
+  const config = resolveServiceConfig({ root, dataDirArg: arg("data"), dbPathArg: arg("db-path"), portArg: arg("port") });
+  const appDir = join(root, "app");
+  const workRoot = updateWorkRoot(config.dataDir);
+  const journalPath = join(workRoot, "transaction.json");
+  const launcher = resolveLauncher(root);
+  mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+
+  if (existsSync(journalPath)) {
+    const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+    if (!["complete", "refused", "recovered"].includes(journal.phase)) {
+      log(`recovering interrupted update phase ${journal.phase}`);
+      stopService(launcher, config);
+      await assertServiceStopped(config);
+      recoverInterruptedUpdate(journalPath);
+      if (Array.isArray(journal.manifests)) restoreManifests(journal.manifests);
+      startService(launcher, config);
+      const probe = await waitHealthy(config.port, journal.fromVersion ?? journal.currentVersion);
+      return probe.ok ? 3 : 4;
+    }
   }
 
   const currentVersion = readInstalledVersion(root);
-  const appDir = join(root, "app");
-  const workRoot = join(dataDir, "updates");
-  const staging = join(workRoot, `staging-${Date.now()}`);
-  const launcher = resolveLauncher(root);
-
-  // ---- 1. Refuse before touching anything -------------------------------
   assertUpgrade(currentVersion, version);
-  assertArchMatches(String(packagePath).split(/[\\/]/).pop());
+  assertArchMatches(basename(packagePath));
   const digest = verifyStagedFile(packagePath, sha256, size);
   log(`package verified (${digest.slice(0, 12)}...), ${currentVersion} -> ${version}`);
 
+  const staging = join(workRoot, `staging-${Date.now()}-${process.pid}`);
   extract(packagePath, staging);
-  assertTreeContained(staging);
-  const entries = listEntries(staging);
-  // A package may nest everything under one folder; install must copy the
-  // program itself, not that wrapper.
+  const entries = readdirSync(staging);
   const stagedApp = entries.includes("app") ? join(staging, "app") : staging;
-  log(`extracted; program root = ${stagedApp}`);
+  log("extracted; program tree verified");
 
-  // ---- 2. Stop the service ---------------------------------------------
-  stopService(launcher, dataDir, port);
-  hardStop(dataDir);
+  stopService(launcher, config);
+  await assertServiceStopped(config);
 
-  // ---- 3. Back up, then install ---------------------------------------
-  const schemaBefore = readSchemaVersion(join(dataDir, "search-hub.db"));
-  let previous = null;
-  let manifests = [];
-  let backup = null;
+  const schemaBefore = readSchemaVersion(config.dbPath);
+  const manifests = snapshotManifests(root);
+  let backup;
   try {
-    backup = backupCurrent({ dataDir, appDir, backupRoot: join(workRoot, "backups") });
-    log(`backup written to ${backup.path} (schema ${String(schemaBefore)})`);
-
-    ({ previous } = installProgram({ stagingDir: stagedApp, appDir }));
-    // The manifest is part of the program's identity: the server reads its version
-    // from launcher.json, so leaving the old value behind makes a successful
-    // upgrade report the previous version — and the health check would then reject
-    // the build it just installed. The original bytes are kept so a rollback can
-    // put back exactly what was there.
-    manifests = snapshotManifests(root);
-    stampVersion(root, version);
-    log(`program installed as ${version}; previous tree kept at ${previous}`);
+    backup = backupCurrent({ dataDir: config.dataDir, dbPath: config.dbPath, appDir, backupRoot: join(workRoot, "backups") });
+    log(`consistent backup written to ${backup.path} (schema ${String(schemaBefore)})`);
   } catch (error) {
-    // The service is already stopped. A failed backup or install must not leave
-    // the instance down: put the previous program back and start it again, so a
-    // refused update is a no-op for the operator rather than an outage.
-    log(`install failed: ${String(error)}`);
-    const recovered = recoverPrevious({
-      launcher,
-      dataDir,
-      port,
-      currentVersion,
-      appDir,
-      previous,
-      manifests,
-      workRoot,
-      version,
-    });
+    log(`pre-update backup failed: ${String(error)}`);
+    const recovered = await recoverPrevious({ launcher, config, currentVersion, workRoot, version, appDir, previous: null, manifests });
     return recovered ? 3 : 4;
   }
 
-  // ---- 4. Start and verify --------------------------------------------
-  startService(launcher, dataDir, port);
-  const probe = waitHealthy(port, version);
-  const healthy = probe.ok;
-  const schemaAfter = readSchemaVersion(join(dataDir, "search-hub.db"));
+  const journal = {
+    format: "search-hub-update-journal-v2",
+    phase: "prepared",
+    at: new Date().toISOString(),
+    root,
+    appDir,
+    dataDir: config.dataDir,
+    dbPath: config.dbPath,
+    backupPath: backup.path,
+    previousApp: null,
+    currentVersion,
+    fromVersion: currentVersion,
+    targetVersion: version,
+    manifests,
+  };
+  writeJsonAtomic(journalPath, journal);
 
-  if (probe.stale) {
-    log(`a different build is answering on port ${port}; treating the update as failed`);
+  let previous = null;
+  try {
+    const swapStamp = Date.now();
+    previous = `${appDir}.rollback-${swapStamp}-${process.pid}`;
+    journal.previousApp = previous;
+    journal.phase = "app_swap_started";
+    writeJsonAtomic(journalPath, journal);
+    ({ previous } = installProgram({ stagingDir: stagedApp, appDir, stamp: swapStamp }));
+    journal.previousApp = previous;
+    journal.phase = "app_swapped";
+    writeJsonAtomic(journalPath, journal);
+    stampVersion(root, version);
+    log(`program installed as ${version}; previous tree kept at ${previous}`);
+  } catch (error) {
+    log(`install failed: ${String(error)}`);
+    const recovered = await recoverPrevious({ launcher, config, currentVersion, workRoot, version, appDir, previous, manifests });
+    journal.phase = recovered ? "recovered" : "refused";
+    writeJsonAtomic(journalPath, journal);
+    return recovered ? 3 : 4;
   }
 
-  if (healthy) {
-    mkdirSync(workRoot, { recursive: true });
-    writeFileSync(
-      join(workRoot, "last-update.json"),
-      JSON.stringify({ version, from: currentVersion, at: new Date().toISOString(), ok: true }, null, 2),
-      "utf8",
-    );
+  try {
+    startService(launcher, config);
+  } catch (error) {
+    log(`start failed: ${String(error)}`);
+  }
+  const probe = await waitHealthy(config.port, version);
+  const schemaAfter = readSchemaVersion(config.dbPath);
+  if (probe.ok) {
+    journal.phase = "complete";
+    journal.completedAt = new Date().toISOString();
+    writeJsonAtomic(journalPath, journal);
+    record(workRoot, { version, from: currentVersion, at: new Date().toISOString(), ok: true });
     log(`update to ${version} completed and healthy`);
     return 0;
   }
 
-  // ---- 5. Roll back ---------------------------------------------------
-  log("health check failed; rolling back");
-  stopService(launcher, dataDir, port);
-  // The failed build may still be running with the program files open.
-  hardStop(dataDir);
-
-  // Put the previous program back BEFORE deciding about the database: the
-  // decision only affects the data files, and an install with no program is the
-  // one outcome that must never be left behind.
-  let rollbackError = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      rollbackProgram({ appDir, previous });
-      rollbackError = null;
-      break;
-    } catch (error) {
-      rollbackError = error;
-      sleep(700);
-    }
-  }
-  if (rollbackError) {
-    log(`rollback could not restore the program: ${String(rollbackError)}`);
-    return 4;
-  }
-
-  // The program is back; the manifest has to follow it, otherwise the restored
-  // build reports the version of the build that just failed.
-  try {
-    restoreManifests(manifests);
-  } catch (error) {
-    log(`rollback could not restore the manifest: ${String(error)}`);
-    return 4;
-  }
-
-  const plan = planRollback({
-    schemaBefore,
-    schemaAfter,
-    hasDataBackup: existsSync(join(backup.path, "search-hub.db")),
-  });
-  log(`rollback plan: ${plan.strategy} - ${plan.reason}`);
-  if (plan.strategy === "restore_backup") {
-    restoreData({ backupPath: backup.path, dataDir });
-    log("database restored from the pre-update backup so program and schema agree");
-  } else if (plan.strategy === "blocked") {
-    log("WARNING: program rolled back only; the database remains at the newer schema");
-  }
-
-  // The failed build was started by us and may still be holding the port. The
-  // launcher cannot be asked to stop it: the launcher we would signal belongs
-  // to that build. Stop our own children first, then start the previous one.
+  log(probe.stale ? "a different build is answering; rolling back" : "health check failed; rolling back");
   stopStartedServices();
-  startService(launcher, dataDir, port);
-  const restoredProbe = waitHealthy(port, currentVersion);
-  const restored = restoredProbe.ok;
-  mkdirSync(workRoot, { recursive: true });
-  writeFileSync(
-    join(workRoot, "last-update.json"),
-    JSON.stringify(
-      { version, from: currentVersion, at: new Date().toISOString(), ok: false, rollback: plan.strategy },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  if (restored) {
-    log("rolled back and healthy on the previous version");
+  try {
+    stopService(launcher, config);
+    await assertServiceStopped(config);
+  } catch (error) {
+    log(`could not prove failed service stopped: ${String(error)}`);
+    return 4;
+  }
+
+  journal.phase = "rollback_started";
+  writeJsonAtomic(journalPath, journal);
+  try {
+    rollbackProgram({ appDir, previous });
+    restoreManifests(manifests);
+    const restored = restoreData({ backupPath: backup.path, dataDir: config.dataDir, dbPath: config.dbPath });
+    journal.failedDataDir = restored.failed;
+    journal.phase = "rolled_back";
+    writeJsonAtomic(journalPath, journal);
+  } catch (error) {
+    log(`CRITICAL: rollback failed: ${String(error)}`);
+    return 4;
+  }
+
+  const plan = planRollback({ schemaBefore, schemaAfter, hasDataBackup: true });
+  log(`rollback plan: ${plan.strategy} - ${plan.reason}`);
+  startService(launcher, config);
+  const restoredProbe = await waitHealthy(config.port, currentVersion);
+  journal.phase = restoredProbe.ok ? "recovered" : "refused";
+  journal.recoveredAt = new Date().toISOString();
+  writeJsonAtomic(journalPath, journal);
+  record(workRoot, { version, from: currentVersion, at: new Date().toISOString(), ok: false, rollback: plan.strategy });
+  if (restoredProbe.ok) {
+    log("rolled back and healthy on the previous version; failed data retained");
     return 3;
   }
   log("CRITICAL: rollback did not come up healthy; this instance needs manual attention");
@@ -581,10 +442,7 @@ async function main() {
 main()
   .then((code) => process.exit(code))
   .catch((error) => {
-    if (error instanceof UpdateError) {
-      log(`REFUSED (${error.code}): ${error.message}`);
-      process.exit(1);
-    }
-    log(`failed: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(4);
+    if (error instanceof UpdateError) log(`REFUSED (${error.code}): ${error.message}`);
+    else log(`failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
   });

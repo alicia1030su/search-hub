@@ -27,6 +27,17 @@ const options = {
   job: { type: "string" },
   cancel: { type: "string" },
   "poll-interval": { type: "string" },
+  "passphrase-stdin": { type: "boolean" },
+  "data-dir": { type: "string" },
+  db: { type: "string" },
+  "master-key-file": { type: "string" },
+  legacy: { type: "boolean" },
+  output: { type: "string" },
+  "dry-run": { type: "boolean" },
+  apply: { type: "boolean" },
+  "start-check": { type: "boolean" },
+  local: { type: "boolean" },
+  report: { type: "string" },
 } as const;
 
 export interface ParsedCliArgs {
@@ -101,6 +112,10 @@ Usage:
   shub providers test --all [options]
   shub providers test --job <job-id>
   shub providers test --cancel <job-id>
+  shub backup create --output <file.shbackup> [--db <file>] [--data-dir <dir>] [--master-key-file <file>] [--passphrase-stdin]
+  shub backup verify <file.shbackup|file.db> [--legacy] [--master-key-file <file>] [--passphrase-stdin] [--report <file>]
+  shub backup restore <file.shbackup> --data-dir <new-dir> [--apply] [--start-check] [--passphrase-stdin] (default: dry-run)
+  shub doctor --local [--data-dir <dir>] [--db <file>]
 
 Global options:
   --url <url>                 Search Hub server URL
@@ -108,6 +123,10 @@ Global options:
   --format <table|json|ndjson> Output format (--json is an alias)
   --timeout <ms>              Request timeout
   --verbose                   Write diagnostics to stderr
+  --passphrase-stdin         Read backup passphrase from stdin or hidden TTY input
+  --data-dir <dir>            Local data directory
+  --db <file>                 Local SQLite path
+  --master-key-file <file>    Explicit master key file (default: <data-dir>/master.key)
   -h, --help                  Show help
   -v, --version               Show CLI version
 
@@ -121,5 +140,9 @@ Provider test options:
 Environment:
   SEARCH_HUB_URL              Default server URL
   SEARCH_HUB_TOKEN            Bearer token (never written to disk by shub)
+  SEARCH_HUB_BACKUP_PASSPHRASE  Backup passphrase (prefer --passphrase-stdin)
+  SEARCH_HUB_DATA_DIR         Local/original data directory (required for restore origin guard)
+  SEARCH_HUB_INSTALL_DIR      Original install directory (required for restore origin guard)
+  SEARCH_HUB_DB_PATH          Custom local SQLite path
 `;
 }

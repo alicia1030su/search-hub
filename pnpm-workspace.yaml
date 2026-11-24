@@ -24,3 +24,4 @@ auditConfig:
 
 minimumReleaseAgeExclude:
   - "@fastify/cors@11.4.2"
+  - tar-stream@3.3.0

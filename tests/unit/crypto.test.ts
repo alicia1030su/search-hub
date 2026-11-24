@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -58,6 +59,19 @@ describe("SecretBox (AES-256-GCM)", () => {
       const mode = statSync(join(dir, "master.key")).mode & 0o777;
       // Windows ignores POSIX modes; only assert on POSIX.
       if (process.platform !== "win32") expect(mode).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps one master key when first-start processes race", () => {
+    const dir = mkdtempSync(join(tmpdir(), "search-hub-key-race-"));
+    try {
+      const script = join(dir, "race.mts");
+      writeFileSync(script, `import { SecretBox } from ${JSON.stringify(new URL("../../apps/api/src/security/crypto.ts", import.meta.url).href)};\nconsole.log(SecretBox.fromEnvOrFile(${JSON.stringify(dir)}).fingerprint());\n`);
+      const fingerprints = Array.from({ length: 4 }, () => execFileSync(process.execPath, ["--import", "tsx", script], { encoding: "utf8" }).trim());
+      expect(new Set(fingerprints).size).toBe(1);
+      expect(SecretBox.fromEnvOrFile(dir).fingerprint()).toBe(fingerprints[0]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

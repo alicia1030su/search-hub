@@ -4,6 +4,41 @@
  * browser build never imports server-side modules.
  */
 
+export interface BackupStatus {
+  dbBytes: number;
+  schema: string | null;
+  keySource: "env" | "file";
+  walBytes: number;
+  latestBackup: {
+    time: string;
+    bytes: number;
+    file: string;
+    sha256: string;
+    keyFingerprint: string;
+    verified: boolean;
+    report: BackupVerification;
+  } | null;
+  backupDirWritable: boolean;
+  restoreReadiness: boolean;
+  keyReadiness: "verified" | "unverified" | "missing" | "mismatch";
+}
+
+export interface BackupVerification {
+  format: "shbackup-v1" | "legacy-db";
+  formatOk: boolean;
+  structuralOk: boolean;
+  schemaCompatible: boolean;
+  keyFingerprintMatch: boolean;
+  ciphertextSampleDecryptable: boolean;
+  restoreReadiness: boolean;
+  keyReadiness: "verified" | "unverified" | "missing" | "mismatch";
+  sampleCount: number;
+  keyProofValid: boolean | null;
+  sha256Match: boolean;
+  integrity: "ok" | "failed";
+  reason?: string;
+}
+
 export type ProviderCategory = "general" | "ai" | "vertical" | "compat" | "custom";
 export type ProviderAuthType = "none" | "api_key" | "bearer" | "basic";
 export type ProviderImplementation = "builtin" | "generic" | "planned" | "unavailable";

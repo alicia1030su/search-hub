@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM packaging module
-import { REQUIRED_WORKFLOWS, evaluateRuns, selectLatestRuns, verifyAnnotatedTag } from "../../packaging/check-release-gates.mjs";
+import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, selectLatestRuns, verifyAnnotatedTag } from "../../packaging/check-release-gates.mjs";
 
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -51,11 +51,24 @@ describe("release gate", () => {
     expect(result.pending).toEqual([expect.objectContaining({ workflowPath: "ci.yml", run: expect.objectContaining({ id: 2 }) })]);
   });
 
+  it("requires candidate workflow_dispatch evidence only in the six-workflow preflight", () => {
+    const mainPush = Object.keys(REQUIRED_WORKFLOWS).map((path) => run(path));
+    const candidate = run("release-candidate.yml", { event: "workflow_dispatch", head_branch: "feat/v0115-disaster-recovery" });
+    expect(evaluateRuns([...mainPush, candidate], sha).allGreen).toBe(true);
+    expect(evaluateRuns(mainPush, sha).allGreen).toBe(true);
+    expect(evaluateRuns(mainPush, sha, { includeCandidate: true }).allGreen).toBe(false);
+    expect(evaluateRuns([...mainPush, { ...candidate, event: "push" }], sha, { includeCandidate: true }).allGreen).toBe(false);
+    expect(evaluateRuns([...mainPush, { ...candidate, head_sha: "b".repeat(40) }], sha, { includeCandidate: true }).allGreen).toBe(false);
+    expect(evaluateRuns([...mainPush, run("other/release-candidate.yml", { event: "workflow_dispatch" })], sha, { includeCandidate: true }).allGreen).toBe(false);
+    expect(Object.keys(PREFLIGHT_WORKFLOWS)).toHaveLength(6);
+  });
+
   it("verifies single-arch GHCR images through the image config", () => {
-    const workflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
-    expect(workflow).not.toContain("{{json .Manifest.Platforms}}");
-    expect(workflow).toContain("--format '{{json .Image}}'");
-    expect(workflow).toContain('.os == "linux" and .architecture == "amd64"');
+    const promoter = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
+    const candidate = readFileSync(new URL("../../.github/workflows/release-candidate.yml", import.meta.url), "utf8");
+    expect(promoter).not.toContain("{{json .Manifest.Platforms}}");
+    expect(candidate).toContain("node packaging/release-evidence.mjs image --inspection image-inspection.json");
+    expect(promoter).toContain("node packaging/release-evidence.mjs image --inspection stable-image.json");
   });
 
   it("requires an annotated tag on main with a matching stable version", () => {

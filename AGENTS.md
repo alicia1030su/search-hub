@@ -88,7 +88,7 @@ a cleanup shortcut. Do not kill user processes, restart the host, or modify
 Swap/pagefile, Docker, or WSL configuration.
 
 Every formal release must leave a same SHA resource record (每次正式版本发布留资源记录)
-under `artifacts/v0.1.14/`, including real platform results and verification
+under `artifacts/<version>/`, including real platform results and verification
 verdicts. `verify:smart` and local lowmem runs never replace full CI coverage.
 
 ## Release requirements

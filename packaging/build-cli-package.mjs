@@ -48,6 +48,9 @@ if (IS_PORTABLE) {
   if (!IS_WINDOWS) chmodSync(executable, 0o755);
 }
 
+// Local backup verification needs the reviewed migration allowlist even when
+// shub runs as a SEA or portable bundle without the source repository.
+cpSync(join(REPO, "packages", "db", "migrations"), join(OUT, "packages", "db", "migrations"), { recursive: true });
 writeFileSync(join(OUT, IS_WINDOWS ? "README.txt" : "README.md"), readme(TARGET, VERSION), "utf8");
 const archive = `shub-v${VERSION}-${TARGET}.${IS_WINDOWS ? "zip" : "tar.gz"}`;
 const archivePath = join(REPO, "dist", "cli", archive);
@@ -58,9 +61,9 @@ process.stdout.write(`Built ${archive}\n`);
 
 function readme(target, version) {
   if (target === "node22") {
-    return `# shub ${version} (Node.js 22+ portable)\n\nRequires Node.js 22 or newer. Run bin/shub.mjs with node, or use bin/shub (POSIX) / bin/shub.cmd (Windows).\n\nSet SEARCH_HUB_URL and SEARCH_HUB_TOKEN, then run:\n  shub status\n  shub search "Linux"\n`;
+    return `# shub ${version} (Node.js 22+ portable)\n\nRequires Node.js 22 or newer. Run bin/shub.mjs with node, or use bin/shub (POSIX) / bin/shub.cmd (Windows).\n\nSet SEARCH_HUB_URL and SEARCH_HUB_TOKEN, then run:\n  shub status\n  shub search "Linux"\n  shub backup create --output backup.shbackup --passphrase-stdin\n  shub backup verify backup.shbackup --passphrase-stdin\n  shub doctor --local\n`;
   }
-  return `# shub ${version} (${target})\n\nStandalone Search Hub CLI. No Node.js installation is required.\n\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} --version\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} status\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} search "Linux" --json\n\nSet SEARCH_HUB_URL and SEARCH_HUB_TOKEN. Tokens are never written to disk by shub.\n`;
+  return `# shub ${version} (${target})\n\nStandalone Search Hub CLI. No Node.js installation is required.\n\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} --version\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} status\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} search "Linux" --json\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} backup create --output backup.shbackup --passphrase-stdin\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} backup verify backup.shbackup --passphrase-stdin\n${IS_WINDOWS ? ".\\shub.exe" : "./shub"} doctor --local\n\nSet SEARCH_HUB_URL and SEARCH_HUB_TOKEN. Tokens are never written to disk by shub.\n`;
 }
 
 function sha256(path) {

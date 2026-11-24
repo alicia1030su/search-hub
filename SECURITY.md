@@ -46,7 +46,7 @@ Out of scope:
 - Config export contains key **labels** only.
 - The structured logger redacts `authorization`, `cookie`, `apiKey`, `api_key`, `password`, `token`, `key`, and `csrfToken`.
 
-**Backup consequence.** `data/master.key` is required to decrypt stored keys. If you lose it, stored credentials cannot be recovered — they must be re-entered. Back up the database and the master key together, and keep them separate from public backups.
+**Backup consequence.** `data/master.key` is required to decrypt stored keys. If you lose it, stored credentials cannot be recovered — they must be re-entered. Use the encrypted `.shbackup` recovery package, which contains a consistent database snapshot and the master key under age encryption; store its passphrase separately. A legacy `.db` download or a live `db + WAL + SHM` copy is not a complete recovery point.
 
 **Outbound requests (SSRF).**
 

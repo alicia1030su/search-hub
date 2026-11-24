@@ -19,18 +19,17 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeZip } from "../zip.mjs";
@@ -74,6 +73,28 @@ process.on("SIGTERM", () => process.exit(0));
 `;
 }
 
+function fixtureDatabase(path, userVersion = 3) {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec("CREATE TABLE fixture (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO fixture(value) VALUES ('preserved');");
+    db.exec(`PRAGMA user_version = ${userVersion}`);
+  } finally {
+    db.close();
+  }
+}
+
+function fixtureState(path) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return {
+      userVersion: Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0),
+      values: db.prepare("SELECT value FROM fixture ORDER BY id").all().map((row) => row.value),
+    };
+  } finally {
+    db.close();
+  }
+}
+
 function makeRoot(version = "0.1.0") {
   // Each case installs a distinct target version so "already installed" can never
   // mask a real failure.
@@ -84,11 +105,7 @@ function makeRoot(version = "0.1.0") {
   writeFileSync(join(root, "launcher.json"), JSON.stringify({ defaultPort: PORT, version }), "utf8");
   writeFileSync(join(root, "app", "apps", "api", "dist", "server.mjs"), serverSource("healthy"), "utf8");
   writeFileSync(join(root, "app", "apps", "api", "dist", "version.txt"), `${version}\n`, "utf8");
-  // A real SQLite-looking header so the updater can read a schema version.
-  const header = Buffer.alloc(120);
-  header.write("SQLite format 3\0", 0, "utf8");
-  header.writeUInt32BE(3, 60);
-  writeFileSync(join(root, "data", "search-hub.db"), header);
+  fixtureDatabase(join(root, "data", "search-hub.db"), 3);
   writeFileSync(join(root, "data", "master.key"), "MASTER-KEY-BYTES", "utf8");
   writeFileSync(join(root, "launcher.mjs"), readFileSync(join(HERE, "launcher.mjs")), "utf8");
   return root;
@@ -135,14 +152,13 @@ function runUpdater(root, pkg, overrides = {}) {
 }
 
 function dataIntact(root, expected) {
-  const db = readFileSync(join(root, "data", "search-hub.db"));
   const key = readFileSync(join(root, "data", "master.key"), "utf8");
-  return sha(db) === expected.db && key === expected.key;
+  return JSON.stringify(fixtureState(join(root, "data", "search-hub.db"))) === JSON.stringify(expected.db) && key === expected.key;
 }
 
 function snapshotData(root) {
   return {
-    db: sha(readFileSync(join(root, "data", "search-hub.db"))),
+    db: fixtureState(join(root, "data", "search-hub.db")),
     key: readFileSync(join(root, "data", "master.key"), "utf8"),
   };
 }
@@ -211,7 +227,7 @@ try {
     const bytes = readFileSync(corrupt);
     const before = snapshotData(root);
     const run = await runUpdater(root, { path: corrupt, sha256: sha(bytes), size: bytes.byteLength });
-    check("B corrupt archive fails without swapping", run.code === 4, `exit=${run.code}`);
+    check("B corrupt archive refused before stopping or swapping", run.code === 1, `exit=${run.code}`);
     check("B data untouched", dataIntact(root, before));
     check("B old program still present", existsSync(join(root, "app", "apps", "api", "dist", "server.mjs")));
     check("B no service left running", (await processesOn(PORT)) === 0);
@@ -225,28 +241,37 @@ try {
     const pkg = makePackage("healthy", "0.2.9");
     const before = snapshotData(root);
     const appDir = join(root, "app");
-    let release = () => {};
-    if (IS_WINDOWS) {
-      // Windows has no directory mode bit, so the injection has to be the real
-      // cause of a failed swap: an open handle inside `app` makes the rename
-      // fail with EBUSY, exactly as a still-running server would.
-      const open = openSync(join(appDir, "apps", "api", "dist", "server.mjs"), "r");
-      release = () => closeSync(open);
-    } else {
-      // Making the *directory* unwritable does not block a rename (rename needs
-      // the parent), so the injection has to remove write access from the parent.
-      execFileSync("chmod", ["-w", root]);
-      release = () => execFileSync("chmod", ["+w", root]);
+    const service = spawn(process.execPath, [join(root, "launcher.mjs"), "--service", "--no-browser"], {
+      env: { ...process.env, SEARCH_HUB_DATA_DIR: join(root, "data"), SEARCH_HUB_PORT: String(PORT) },
+      detached: true,
+      stdio: "ignore",
+    });
+    service.unref();
+    check("C old version serves before the failed install", await waitForVersion("0.1.0"), `got ${await boundVersion()}`);
+    const previousNodeOptions = process.env.NODE_OPTIONS;
+    const preload = join(HERE, "../../tests/integration/fixtures/updater-rename-fault.cjs").replaceAll("\\", "/");
+    process.env.NODE_OPTIONS = `${previousNodeOptions ? `${previousNodeOptions} ` : ""}--require "${preload}"`;
+    let run;
+    try {
+      run = await runUpdater(root, pkg, { version: "0.2.9" });
+    } finally {
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousNodeOptions;
     }
-    const run = await runUpdater(root, pkg, { version: "0.2.9" });
-    release();
-    check("C install failure is reported", run.code !== 0, `exit=${run.code}`);
+    check("C install failure is reported", run.code === 3, `exit=${run.code} ${run.output.slice(0, 4000)}`);
     check("C data untouched", dataIntact(root, before));
     // The old program must still be there: no half-swapped install.
     check("C old program still present", existsSync(join(appDir, "apps", "api", "dist", "server.mjs")));
     // A refused install must not leave the instance down: the previous build has
     // to be serving again, with its own version, not the failed one.
     check("C previous version is serving again", await waitForVersion("0.1.0"), `got ${await boundVersion()}`);
+    try {
+      execFileSync(process.execPath, [join(root, "launcher.mjs"), "--stop"], {
+        env: { ...process.env, SEARCH_HUB_DATA_DIR: join(root, "data"), SEARCH_HUB_PORT: String(PORT) },
+        stdio: "ignore",
+        timeout: 30_000,
+      });
+    } catch { /* already stopped */ }
   }
 
   PORT = nextPort();
@@ -315,13 +340,12 @@ try {
     writeFileSync(
       join(stage, "app", "apps", "api", "dist", "server.mjs"),
       `${serverSource("unhealthy")}
-// Simulate an applied migration before failing the health check.
-import { readFileSync as rdb, writeFileSync as wdb } from "node:fs";
+// Simulate an applied migration and a write before failing the health check.
+import { DatabaseSync } from "node:sqlite";
 try {
-  const p = process.env.SEARCH_HUB_DATA_DIR + "/search-hub.db";
-  const b = rdb(p);
-  b.writeUInt32BE(9, 60);
-  wdb(p, b);
+  const db = new DatabaseSync(process.env.SEARCH_HUB_DATA_DIR + "/search-hub.db");
+  db.exec("PRAGMA user_version = 9; INSERT INTO fixture(value) VALUES ('failed-write');");
+  db.close();
 } catch {}
 `,
       "utf8",
@@ -334,9 +358,10 @@ try {
     const bytes = readFileSync(archive);
     const run = await runUpdater(root, { path: archive, sha256: sha(bytes), size: bytes.byteLength });
     check("G rollback ran after a migration", run.code === 3, `exit=${run.code}`);
-    const after = readFileSync(join(root, "data", "search-hub.db"));
-    // The database must be back at the pre-update bytes (schema 3, not 9).
-    check("G database restored to the pre-update state", sha(after) === before.db, `schema=${after.readUInt32BE(60)}`);
+    const after = fixtureState(join(root, "data", "search-hub.db"));
+    // The database must be back at the pre-update logical state (schema 3, no
+    // failed-build write), not merely a byte-identical VACUUM copy.
+    check("G database restored to the pre-update state", JSON.stringify(after) === JSON.stringify(before.db), `schema=${after.userVersion}`);
     check("G data directory has no half-written files", existsSync(join(root, "data", "master.key")));
   }
 

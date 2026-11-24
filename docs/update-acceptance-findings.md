@@ -1,7 +1,9 @@
 # Update acceptance: real findings
 
 This file records what the cross-version and fault-injection tests actually found.
-Every item below was reproduced, then fixed in the same PR.
+Every item below was reproduced, then fixed in the same PR. Items 1–12 and the
+original counts are historical v0.1.6 evidence; the v0.1.15 addendum below records
+the current updater behavior without rewriting history.
 
 ## Real defects found by the tests
 
@@ -38,12 +40,12 @@ fixes are what exposed defects #11 and #12.
 | Case | Injection | Result |
 |---|---|---|
 | A | declared size +4 KiB | exit 1 `size_mismatch`, nothing touched |
-| B | verified digest over non-archive bytes | exit 4, no swap, no orphan |
+| B | verified digest over non-archive bytes | 历史 exit 4；v0.1.15 在停服前 exit 1，no swap, no orphan |
 | C | open handle inside `app` (Windows) / read-only install root (Linux) | exit 3, previous version serving again |
 | D | port held by another process | data intact, failure visible |
 | E | new program never listens | exit 3, old program restored, one process |
 | F | new program answers 503 | exit 3, rollback |
-| G | migration bumps `user_version` to 9, then fails | exit 3, **database byte-identical to before** (`schema=3`) |
+| G | migration bumps `user_version` to 9, then fails | 历史字节相同；v0.1.15 恢复逻辑数据与 `schema=3`，保留失败 dataDir |
 | H | `--data` on a 512 KiB tmpfs (Linux) | failure reported, that filesystem's data unchanged, previous version still serving; skip is printed as a skip, never as a pass |
 
 `packaging/upgrade-matrix.mjs` — in CI, against real published packages:

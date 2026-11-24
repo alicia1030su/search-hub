@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   Activity,
+  DatabaseBackup,
   Cpu,
   FlaskConical,
   LayoutDashboard,
@@ -52,6 +53,7 @@ const sections: Array<{ title: MessageKey; items: NavItem[] }> = [
     title: "nav.section.system",
     items: [
       { to: "/integrations", label: "nav.integrations", icon: Plug },
+      { to: "/backup", label: "nav.backup", icon: DatabaseBackup },
       { to: "/settings", label: "nav.settings", icon: Settings },
     ],
   },

@@ -1,0 +1,736 @@
+name: Release candidate
+
+# Builds release bytes without a Git tag. The tag-triggered promoter only
+# downloads and verifies these artifacts; it never rebuilds them.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Exact 40-character main commit SHA to build (no tag or moving branch)"
+        required: true
+        type: string
+
+concurrency:
+  group: release-candidate-${{ inputs.sha }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22.22.2"
+  PNPM_VERSION: "12.18.0"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  gate:
+    name: Gate - exact SHA and five green main-push workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      ciRunId: ${{ steps.gates.outputs.ciRunId }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve the immutable source and stable package version
+        id: resolve
+        env:
+          SOURCE_SHA: ${{ inputs.sha }}
+          EVENT_SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full lowercase commit SHA"; exit 1; }
+          test "$REF_TYPE" = "branch" || { echo "::error::candidate must be dispatched from a branch, not a tag"; exit 1; }
+          test "$SOURCE_SHA" = "$EVENT_SHA" || { echo "::error::dispatch ref must be the exact source SHA so provenance is bound to it"; exit 1; }
+          git fetch --no-tags origin "$SOURCE_SHA"
+          test "$(git rev-parse "${SOURCE_SHA}^{commit}")" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          version=$(git show "$SOURCE_SHA:package.json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')
+          test "$version" = "0.1.15" || { echo "::error::candidate package version must be 0.1.15, got $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the exact source for gate scripts and evidence verification
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require only the five exact-SHA main-push workflows
+        id: gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.resolve.outputs.sha }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: node packaging/check-release-gates.mjs --phase candidate --sha "$SOURCE_SHA" --version "$VERSION" --max-attempts 210 --poll-seconds 60 --report artifacts/v0.1.15/candidate-gate.json
+
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: candidate-gate-v0.1.15
+          path: artifacts/v0.1.15/candidate-gate.json
+          if-no-files-found: error
+          retention-days: 30
+
+  core-acceptance:
+    name: Core disaster-recovery acceptance report
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run the exact-SHA core acceptance commands
+        run: |
+          set -euo pipefail
+          set +e
+          node tests/disaster-recovery/core-acceptance.mjs --run --output-dir "$RUNNER_TEMP/core-acceptance"
+          code=$?
+          set -e
+          test "$code" -eq 0 -o "$code" -eq 75
+          test -s "$RUNNER_TEMP/core-acceptance/report.json"
+          test -s "$RUNNER_TEMP/core-acceptance/SHA256SUMS"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-core-v0.1.15
+          path: ${{ runner.temp }}/core-acceptance/
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: Windows x64 package
+    needs: gate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build the Windows package
+        shell: bash
+        env:
+          PACKAGE_TARGET: windows-x64
+          SEARCH_HUB_VERSION: ${{ needs.gate.outputs.version }}
+        run: node packaging/build-package.mjs
+      - name: Verify the package starts and serves REST + MCP
+        shell: bash
+        run: node packaging/verify-package.mjs windows-x64
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windows-x64
+          path: |
+            dist/package/*windows-x64.zip
+            dist/package/*windows-x64.zip.sha256
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.arch }} package
+    needs: gate
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runtime_url: https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.xz
+          - arch: arm64
+            runtime_url: https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-arm64.tar.xz
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Fetch the target Node runtime
+        run: |
+          curl -fsSL "${{ matrix.runtime_url }}" -o /tmp/node.tar.xz
+          mkdir -p /tmp/node-runtime
+          tar -xJf /tmp/node.tar.xz -C /tmp/node-runtime --strip-components=1
+          cp /tmp/node-runtime/bin/node /tmp/node-${{ matrix.arch }}
+      - name: Build the Linux package
+        env:
+          PACKAGE_TARGET: linux-${{ matrix.arch }}
+          PACKAGE_NODE_BIN: /tmp/node-${{ matrix.arch }}
+          SEARCH_HUB_VERSION: ${{ needs.gate.outputs.version }}
+        run: node packaging/build-package.mjs
+      - name: Verify the package starts and serves REST + MCP
+        run: node packaging/verify-package.mjs linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            dist/package/*linux-${{ matrix.arch }}.tar.gz
+            dist/package/*linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+
+  cli-windows:
+    name: CLI Windows x64 standalone
+    needs: [gate, windows]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build server bundle and standalone CLI
+        shell: bash
+        env:
+          PACKAGE_TARGET: windows-x64
+          SEARCH_HUB_VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+          node packaging/build-cli-package.mjs
+      - name: Verify CLI against a real Search Hub server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dr-cli-windows-x64"
+          node packaging/verify-cli-package.mjs windows-x64 | tee "$RUNNER_TEMP/dr-cli-windows-x64/cli-acceptance.log"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$RUNNER_TEMP/dr-cli-windows-x64" \
+            --kind search-hub-cli-package --verdict PASS \
+            --statuses '{"A04":"PASS"}' \
+            --evidence-map '{"A04":["cli-acceptance.log"]}'
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-cli-windows-x64-v0.1.15
+          path: ${{ runner.temp }}/dr-cli-windows-x64/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: windows-x64
+          path: ${{ runner.temp }}/windows-server-artifact
+      - name: Run the packaged Windows disaster-recovery drill
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $serverArchive = (Get-ChildItem "$env:RUNNER_TEMP/windows-server-artifact/*windows-x64.zip").FullName
+          $cliArchive = (Get-ChildItem "dist/cli/*windows-x64.zip").FullName
+          Expand-Archive -LiteralPath $serverArchive -DestinationPath "$env:RUNNER_TEMP/windows-server" -Force
+          Expand-Archive -LiteralPath $cliArchive -DestinationPath "$env:RUNNER_TEMP/windows-cli" -Force
+          & ./tests/disaster-recovery/platform-windows.ps1 -PackageRoot "$env:RUNNER_TEMP/windows-server" -Cli "$env:RUNNER_TEMP/windows-cli/shub.exe" -Evidence "$env:RUNNER_TEMP/dr-platform-windows"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-platform-windows-v0.1.15
+          path: ${{ runner.temp }}/dr-platform-windows/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: cli-windows-x64
+          path: |
+            dist/cli/*windows-x64.zip
+            dist/cli/*windows-x64.zip.sha256
+          if-no-files-found: error
+
+  cli-linux:
+    name: CLI Linux ${{ matrix.arch }} standalone
+    needs: [gate, linux]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+          - arch: arm64
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build server bundle and standalone CLI
+        env:
+          PACKAGE_TARGET: linux-${{ matrix.arch }}
+          SEARCH_HUB_VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+          node packaging/build-cli-package.mjs
+      - name: Verify CLI against a real Search Hub server
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dr-cli-linux-${{ matrix.arch }}"
+          node packaging/verify-cli-package.mjs linux-${{ matrix.arch }} | tee "$RUNNER_TEMP/dr-cli-linux-${{ matrix.arch }}/cli-acceptance.log"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$RUNNER_TEMP/dr-cli-linux-${{ matrix.arch }}" \
+            --kind search-hub-cli-package --verdict PASS \
+            --statuses '{"A04":"PASS"}' \
+            --evidence-map '{"A04":["cli-acceptance.log"]}'
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-cli-linux-${{ matrix.arch }}-v0.1.15
+          path: ${{ runner.temp }}/dr-cli-linux-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/linux-server-artifact
+      - name: Run the packaged Linux disaster-recovery drill
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/linux-server" "$RUNNER_TEMP/linux-cli"
+          tar -xzf "$RUNNER_TEMP/linux-server-artifact/"*.tar.gz -C "$RUNNER_TEMP/linux-server"
+          tar -xzf dist/cli/*linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP/linux-cli"
+          bash tests/disaster-recovery/platform-linux.sh \
+            "$RUNNER_TEMP/linux-server" \
+            "$RUNNER_TEMP/linux-cli/shub" \
+            "$RUNNER_TEMP/dr-platform-linux-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-platform-linux-${{ matrix.arch }}-v0.1.15
+          path: ${{ runner.temp }}/dr-platform-linux-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: cli-linux-${{ matrix.arch }}
+          path: |
+            dist/cli/*linux-${{ matrix.arch }}.tar.gz
+            dist/cli/*linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+
+  cli-portable:
+    name: CLI Node.js 22 portable package
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and verify portable CLI
+        env:
+          PACKAGE_TARGET: node22
+          SEARCH_HUB_VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          pnpm build:server
+          pnpm --filter @search-hub/cli build
+          node packaging/build-cli-package.mjs
+          mkdir -p "$RUNNER_TEMP/dr-cli-node22"
+          node packaging/verify-cli-package.mjs node22 | tee "$RUNNER_TEMP/dr-cli-node22/cli-acceptance.log"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$RUNNER_TEMP/dr-cli-node22" \
+            --kind search-hub-cli-package --verdict PASS \
+            --statuses '{"A04":"PASS"}' \
+            --evidence-map '{"A04":["cli-acceptance.log"]}'
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-cli-node22-v0.1.15
+          path: ${{ runner.temp }}/dr-cli-node22/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: cli-node22
+          path: |
+            dist/cli/*node22.tar.gz
+            dist/cli/*node22.tar.gz.sha256
+          if-no-files-found: error
+
+  systemd:
+    name: Packaged systemd disaster-recovery report
+    needs: [gate, linux, cli-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: linux-x64
+          path: ${{ runner.temp }}/linux-server-artifact
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: cli-linux-x64
+          path: ${{ runner.temp }}/linux-cli-artifact
+      - name: Run the disposable real-systemd drill in a systemd container
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/linux-server" "$RUNNER_TEMP/linux-cli" "$RUNNER_TEMP/dr-systemd-input" "$RUNNER_TEMP/dr-platform-systemd"
+          tar -xzf "$RUNNER_TEMP/linux-server-artifact/"*.tar.gz -C "$RUNNER_TEMP/linux-server"
+          tar -xzf "$RUNNER_TEMP/linux-cli-artifact/"*.tar.gz -C "$RUNNER_TEMP/linux-cli"
+          cp -a "$RUNNER_TEMP/linux-server" "$RUNNER_TEMP/dr-systemd-input/server"
+          cp -a "$RUNNER_TEMP/linux-cli" "$RUNNER_TEMP/dr-systemd-input/cli"
+          cp "$RUNNER_TEMP/linux-server-artifact/"*.tar.gz "$RUNNER_TEMP/dr-systemd-input/"
+          mkdir -p "$RUNNER_TEMP/dr-systemd-input/old"
+          gh release download v0.1.14 --repo "$GITHUB_REPOSITORY" \
+            --pattern 'search-hub-v0.1.14-linux-x64.tar.gz' \
+            --dir "$RUNNER_TEMP/dr-systemd-input/old" --clobber
+          docker run -d --name sh-dr-systemd --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$RUNNER_TEMP/dr-systemd-input:/input:ro" \
+            -v "$RUNNER_TEMP/dr-platform-systemd:/evidence" \
+            jrei/systemd-ubuntu:24.04
+          for i in $(seq 1 30); do
+            if docker exec sh-dr-systemd systemctl is-system-running >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec -e GH_TOKEN -e GIT_OPTIONAL_LOCKS=0 \
+            -e SEARCH_HUB_UPGRADE_FROM_LOCAL=/input/old/search-hub-v0.1.14-linux-x64.tar.gz \
+            sh-dr-systemd bash -lc '
+            set -euo pipefail
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq curl tar jq >/dev/null
+            git config --global --add safe.directory /repo
+            mkdir -p /evidence
+            bash /repo/tests/disaster-recovery/platform-systemd.sh \
+              /input/server /input/cli/shub /input/search-hub-*.tar.gz /evidence
+          '
+      - name: Remove the systemd drill container
+        if: always()
+        run: docker rm -f sh-dr-systemd >/dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: dr-platform-systemd-v0.1.15
+          path: ${{ runner.temp }}/dr-platform-systemd/
+          if-no-files-found: warn
+          retention-days: 30
+
+  container:
+    name: Build and verify the immutable GHCR candidate image
+    needs: [gate, windows, linux, cli-windows, cli-linux, cli-portable]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      ref: ${{ steps.image.outputs.ref }}
+      digest: ${{ steps.image.outputs.digest }}
+      reference: ${{ steps.image.outputs.reference }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build the candidate image locally
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          load: true
+          tags: search-hub:candidate-check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start the candidate image and verify REST + MCP health
+        run: |
+          set -euo pipefail
+          docker run -d --name sh-candidate -p 8799:8787 \
+            -e SEARCH_HUB_SETUP_TOKEN=release-check-token \
+            -e SEARCH_HUB_COOKIE_SECURE=false \
+            search-hub:candidate-check
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8799/api/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8799/api/health >/dev/null
+          docker logs sh-candidate | tail -20
+          docker rm -f sh-candidate
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: cli-linux-x64
+          path: ${{ runner.temp }}/linux-cli-artifact
+      - name: Run the packaged Docker disaster-recovery drill
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/linux-cli"
+          tar -xzf "$RUNNER_TEMP/linux-cli-artifact/"*.tar.gz -C "$RUNNER_TEMP/linux-cli"
+          bash tests/disaster-recovery/platform-docker.sh \
+            search-hub:candidate-check \
+            "$RUNNER_TEMP/linux-cli/shub" \
+            "$RUNNER_TEMP/dr-platform-docker"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dr-platform-docker-v0.1.15
+          path: ${{ runner.temp }}/dr-platform-docker/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Push only the run-unique candidate tag
+        id: image
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          base="${REGISTRY}/${owner}/search-hub"
+          ref="${base}:candidate-${SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker tag search-hub:candidate-check "$ref"
+          docker push "$ref"
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '.')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools inspect "$ref" --format '{{json .}}' > image-inspection.json
+          node packaging/release-evidence.mjs image --inspection image-inspection.json --digest "$digest"
+          node -e 'const fs=require("fs");const i=JSON.parse(fs.readFileSync("image-inspection.json"));const ref=process.argv[1],digest=process.argv[2],repository=process.argv[3];fs.writeFileSync("image.json",JSON.stringify({ref,digest,repository,reference:`${repository}@${digest}`,platform:{os:i.Image.os,architecture:i.Image.architecture},manifestMediaType:i.Manifest.MediaType||i.Manifest.Descriptor.mediaType,configDigest:i.Manifest.Config.digest,configMediaType:i.Manifest.Config.mediaType},null,2)+"\n")' "$ref" "$digest" "$base"
+          node packaging/release-evidence.mjs image --inspection image-inspection.json --digest "$digest" --image image.json
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "reference=${base}@${digest}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: candidate-image-v0.1.15
+          path: |
+            image.json
+            image-inspection.json
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble:
+    name: Assemble, attest and verify candidate evidence
+    needs: [gate, core-acceptance, windows, linux, cli-windows, cli-linux, cli-portable, systemd, container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Download every candidate package artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for name in candidate-gate-v0.1.15 candidate-image-v0.1.15 windows-x64 linux-x64 linux-arm64 cli-windows-x64 cli-linux-x64 cli-linux-arm64 cli-node22 dr-core-v0.1.15 dr-cli-windows-x64-v0.1.15 dr-cli-linux-x64-v0.1.15 dr-cli-linux-arm64-v0.1.15 dr-cli-node22-v0.1.15 dr-platform-windows-v0.1.15 dr-platform-linux-x64-v0.1.15 dr-platform-linux-arm64-v0.1.15 dr-platform-docker-v0.1.15 dr-platform-systemd-v0.1.15; do
+            gh run download "$GITHUB_RUN_ID" -n "$name" -D "candidate/$name"
+          done
+          mkdir -p release-assets
+          find candidate -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release-assets/ \;
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 7
+      - name: Aggregate all exact-SHA DR reports and bind combined resource evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ needs.gate.outputs.ciRunId }}
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh run download "$CI_RUN_ID" -n release-evidence-v0.1.15 -D candidate/evidence-ci
+          node packaging/verify-resource-evidence.mjs --commit "$SOURCE_SHA" --evidence-dir candidate/evidence-ci
+          test -d candidate/evidence-ci/disaster-recovery/reports
+          final_dr=final-dr
+          mkdir -p "$final_dr/reports"
+          cp -a candidate/evidence-ci/disaster-recovery/. "$final_dr/"
+          for entry in \
+            dr-core-v0.1.15:core \
+            dr-cli-windows-x64-v0.1.15:cli-windows-x64 \
+            dr-cli-linux-x64-v0.1.15:cli-linux-x64 \
+            dr-cli-linux-arm64-v0.1.15:cli-linux-arm64 \
+            dr-cli-node22-v0.1.15:cli-node22 \
+            dr-platform-windows-v0.1.15:platform-windows \
+            dr-platform-linux-x64-v0.1.15:platform-linux-x64 \
+            dr-platform-linux-arm64-v0.1.15:platform-linux-arm64 \
+            dr-platform-docker-v0.1.15:platform-docker \
+            dr-platform-systemd-v0.1.15:platform-systemd; do
+            name=${entry%%:*}
+            slug=${entry#*:}
+            test -s "candidate/$name/report.json"
+            test -s "candidate/$name/SHA256SUMS"
+            mkdir -p "$final_dr/reports/$slug"
+            cp -a "candidate/$name/." "$final_dr/reports/$slug/"
+          done
+          release_report="$final_dr/reports/release"
+          node tests/disaster-recovery/derive-release-statuses.mjs \
+            --source-sha "$SOURCE_SHA" \
+            --evidence-dir "$final_dr" \
+            --candidate-gate candidate/candidate-gate-v0.1.15/candidate-gate.json \
+            --output-dir "$release_report"
+          node -e 'const fs=require("fs");const d=JSON.parse(fs.readFileSync(process.argv[1]));fs.writeFileSync(process.argv[2],JSON.stringify(d.statuses));fs.writeFileSync(process.argv[3],JSON.stringify(d.evidenceMap));' \
+            "$release_report/derived-release-statuses.json" \
+            "$release_report/statuses.json" \
+            "$release_report/evidence-map.json"
+          node tests/disaster-recovery/write-platform-report.mjs \
+            --evidence-dir "$release_report" \
+            --kind search-hub-candidate-release \
+            --verdict "$(node -p "require('./$release_report/derived-release-statuses.json').verdict")" \
+            --scope "pre-tag exact-SHA aggregation; sixth candidate workflow, immutable annotated tag and digest-fixed promoter are enforced by preflight and release workflows" \
+            --statuses-file "$release_report/statuses.json" \
+            --evidence-map-file "$release_report/evidence-map.json"
+          node packaging/aggregate-disaster-recovery-evidence.mjs \
+            --commit "$SOURCE_SHA" --evidence-dir "$final_dr"
+          node packaging/verify-disaster-recovery-evidence.mjs \
+            --commit "$SOURCE_SHA" --evidence-dir "$final_dr"
+          node scripts/stage-resource-evidence.mjs \
+            --evidence-dir candidate/evidence-ci \
+            --runtime candidate/evidence-ci/resource-evidence-v0115.json \
+            --doctor candidate/evidence-ci/resource-doctor.json \
+            --dr-dir "$final_dr" \
+            --output combined-evidence
+          node packaging/release-evidence.mjs combine \
+            --resource combined-evidence/resource-evidence-v0115.json \
+            --dr-dir combined-evidence/disaster-recovery \
+            --output combined-evidence/resource-evidence.json \
+            --source-sha "$SOURCE_SHA"
+          node packaging/release-evidence.mjs verify-combined \
+            --file combined-evidence/resource-evidence.json \
+            --dr-dir combined-evidence/disaster-recovery \
+            --source-sha "$SOURCE_SHA"
+          cp combined-evidence/resource-evidence.json release-assets/resource-evidence.json
+      - name: Assemble SHA256SUMS and bind the candidate manifest
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          CI_RUN_ID: ${{ needs.gate.outputs.ciRunId }}
+        run: |
+          set -euo pipefail
+          node packaging/release-evidence.mjs sums --dir release-assets --version "$VERSION"
+          node packaging/release-evidence.mjs create \
+            --dir release-assets \
+            --output candidate-manifest.json \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --ci-run-id "$CI_RUN_ID" \
+            --image candidate/candidate-image-v0.1.15/image.json \
+            --image-inspection candidate/candidate-image-v0.1.15/image-inspection.json \
+            --candidate-gate candidate/candidate-gate-v0.1.15/candidate-gate.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --dr-dir final-dr
+          mkdir -p candidate-evidence
+          cp release-assets/SHA256SUMS candidate-evidence/SHA256SUMS
+          cp candidate-manifest.json candidate-evidence/candidate-manifest.json
+          cp release-assets/resource-evidence.json candidate-evidence/resource-evidence.json
+          cp -a final-dr candidate-evidence/disaster-recovery
+          cp candidate/candidate-image-v0.1.15/image.json candidate/candidate-image-v0.1.15/image-inspection.json candidate-evidence/
+      - name: Attest the exact candidate bytes and image digest
+        uses: actions/attest-build-provenance@v3.0.0
+        with:
+          subject-path: |
+            release-assets/*.zip
+            release-assets/*.tar.gz
+            release-assets/resource-evidence.json
+            release-assets/SHA256SUMS
+            candidate-manifest.json
+          subjects: ${{ needs.container.outputs.reference }}
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download the signed attestation bundles
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+        run: node packaging/candidate-attestations.mjs download --manifest candidate-manifest.json --dir release-assets --attestations candidate-evidence/attestations --source-sha "$SOURCE_SHA"
+      - name: Verify every downloaded bundle against signer and source SHA
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+        run: node packaging/candidate-attestations.mjs verify --manifest candidate-manifest.json --dir release-assets --attestations candidate-evidence/attestations --source-sha "$SOURCE_SHA"
+      - name: Verify candidate assets, manifest, attestations and GHCR platform
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          node packaging/release-evidence.mjs verify \
+            --dir release-assets \
+            --manifest candidate-evidence/candidate-manifest.json \
+            --attestations candidate-evidence/attestations \
+            --image-inspection candidate/candidate-image-v0.1.15/image-inspection.json \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT"
+          mkdir -p promotion/release-assets promotion/candidate-evidence
+          cp -a release-assets/. promotion/release-assets/
+          cp -a candidate-evidence/. promotion/candidate-evidence/
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-candidate-evidence-v0.1.15
+          path: candidate-evidence/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-promotion-v0.1.15
+          path: promotion/
+          if-no-files-found: error
+          retention-days: 30

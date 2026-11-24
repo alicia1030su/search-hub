@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.15 (Unreleased) — Disaster recovery
+
+### Added
+
+- **Complete encrypted recovery packages.** `.shbackup` files use age passphrase AEAD with the default scrypt work factor, a fixed three-member tar layout, strict archive/path validation, streaming hashes, private staging and Windows ACL enforcement.
+- **Backup center and status API.** `/backup`, `GET /api/admin/backups/status`, streamed `POST /api/admin/backup/package`, and multipart `POST /api/admin/backup/package/verify`; the legacy unencrypted `.db` endpoint remains compatible and excludes `master.key`.
+- **Local maintenance CLI.** `shub backup create|verify|restore` with `--passphrase-stdin`, offline large-file verification, dry-run by default, empty-target-only atomic restore and isolated `--start-check`; `shub doctor --local` adds database/key/cache/WAL/disk/permission/backup/updater diagnostics.
+- **Recovery verification contract.** Six independent boolean results: `formatOk`, `structuralOk`, `schemaCompatible`, `keyFingerprintMatch`, `ciphertextSampleDecryptable`, and `restoreReadiness`, plus `keyReadiness`, `sampleCount`, and `keyProofValid`; SHA-256 remains separate evidence, and legacy databases without a key cannot claim restore readiness.
+- **Operational guide.** `docs/disaster-recovery.md` includes copyable Bash and PowerShell workflows plus Docker, systemd, nginx and Windows permission guidance.
+
+### Security
+
+- Upload rate limiting, administrator scope and CSRF complete before temporary quota reservation or any bytes are written; owner-randomized 0700/0600 staging, heartbeat, startup cleanup, aggregate byte/concurrency quotas and Windows ACLs bound verification resource use.
+- Passphrases and master-key plaintext are never logged or displayed. First-run `master.key` creation uses exclusive creation, fsync, atomic publication and private permissions; environment keys never fall back to a stale file.
+- Restore refuses non-empty targets, active/in-place overwrite, unsafe archives, incompatible schemas and insufficient disk space; failed verification never publishes a target.
+
+### Changed
+
+- Status revalidates the sidecar's package existence, size, SHA-256 and current key fingerprint, and probes backup-directory writability by creating/writing/deleting a real private file.
+- Browser package downloads stream directly to a user-selected file; unsupported browsers are directed to Chromium/Edge or CLI instead of buffering a whole-file Blob.
+- Update apply plans resolve the real install root and bundled runtime/updater, while rollback restores the whole data directory and retains the failed version.
+
 ## v0.1.14 (Unreleased) — Release candidate
 
 ### Added

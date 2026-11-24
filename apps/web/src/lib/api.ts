@@ -4,6 +4,8 @@ import type {
   AppSettings,
   AuditLog,
   AuthSession,
+  BackupStatus,
+  BackupVerification,
   CacheStats,
   DashboardStats,
   GenericProviderConfig,
@@ -247,6 +249,47 @@ export const api = {
     request<AuthSession>("/auth/session", { signal, allowUnauthorized: true }),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   health: (signal?: AbortSignal) => request<HealthStatus>("/health", { signal }),
+  backupStatus: (signal?: AbortSignal) => request<BackupStatus>("/admin/backups/status", { signal }),
+  async downloadBackupPackage(passphrase: string): Promise<{ response: Response; filename: string; sha256: string | null }> {
+    const csrf = await ensureCsrf(true);
+    const response = await fetch(`${API_PREFIX}/admin/backup/package`, {
+      method: "POST",
+      credentials: "include",
+      headers: { Accept: "application/octet-stream", "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      body: JSON.stringify({ passphrase }),
+    });
+    if (!response.ok) throw extractError(await readJson(response), response.status);
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "search-hub-backup.shbackup";
+    return { response, filename, sha256: response.headers.get("x-search-hub-backup-sha256") };
+  },
+  async verifyBackupPackage(file: File, passphrase: string): Promise<BackupVerification> {
+    const csrf = await ensureCsrf(true);
+    const body = new FormData();
+    body.append("file", file, file.name);
+    body.append("passphrase", passphrase);
+    const response = await fetch(`${API_PREFIX}/admin/backup/package/verify`, {
+      method: "POST",
+      credentials: "include",
+      headers: { Accept: "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      body,
+    });
+    const data = await readJson(response);
+    if (!response.ok) throw extractError(data, response.status);
+    return data as BackupVerification;
+  },
+  async verifyDatabaseBackup(file: File): Promise<BackupVerification> {
+    const csrf = await ensureCsrf(true);
+    const response = await fetch(`${API_PREFIX}/admin/backup/verify`, {
+      method: "POST",
+      credentials: "include",
+      headers: { Accept: "application/json", "Content-Type": "application/octet-stream", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      body: file,
+    });
+    const data = await readJson(response);
+    if (!response.ok) throw extractError(data, response.status);
+    return data as BackupVerification;
+  },
 
   // ---- search ----
   search: (body: SearchRequest, signal?: AbortSignal) =>

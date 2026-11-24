@@ -7,7 +7,8 @@ import type { AppContext } from "../context.js";
 import { authenticate, type Actor } from "../auth.js";
 import { jsonFor } from "../http.js";
 import { McpStatusService } from "../services/mcp-status.js";
-import { UpdateService } from "../services/updater.js";
+import { resolveUpdaterInvocation, UpdateService } from "../services/updater.js";
+import { REPO_ROOT } from "../config.js";
 import { validateSkillDir } from "../services/skills.js";
 import { writeZip } from "../services/zip.js";
 
@@ -194,28 +195,44 @@ export function registerMcpAdminRoutes(
           ],
         };
       }
-      const launcherDir = join(ctx.config.dataDir, "..", "launcher");
+      const invocation = resolveUpdaterInvocation(REPO_ROOT);
+      const argv = [
+        invocation.nodeExecutable,
+        invocation.updaterScript,
+        "--package",
+        pending.path,
+        "--version",
+        pending.version,
+        "--sha256",
+        pending.expectedSha256 ?? "",
+        "--size",
+        String(pending.bytes),
+        "--root",
+        invocation.installRoot,
+        "--data",
+        ctx.config.dataDir,
+        "--db-path",
+        ctx.config.dbPath,
+      ];
       return {
         deployment,
         executable: true,
-        command: [
-          "node",
-          join(launcherDir, "updater.mjs"),
-          "--package",
-          pending.path,
-          "--version",
-          pending.version,
-          "--sha256",
-          pending.expectedSha256 ?? "",
-        ].join(" "),
+        argv,
+        command: argv.map((part) => quoteCommandArg(part, process.platform)).join(" "),
         notes: [
-          "The updater stops the service, backs up the database and master.key, installs the staged program and health-checks the new version.",
-          "If the health check fails it restores the previous program; when the schema moved forward it also restores the pre-update database, because a program rollback alone would leave an incompatible file.",
+          "The updater stops the service, snapshots the entire dataDir, installs the staged program and health-checks the new version.",
+          "If the health check fails it restores the previous program and rolls the whole dataDir back to its pre-update state; the failed version is retained for diagnosis.",
           "Exit 3 means rolled back and healthy; exit 4 means manual attention is required.",
         ],
       };
     }),
   );
+}
+
+function quoteCommandArg(value: string, platform: NodeJS.Platform): string {
+  if (platform === "win32") return `"${value.replace(/"/g, '\\"')}"`;
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function safeSkillDir(name: string): string {

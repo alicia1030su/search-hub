@@ -25,12 +25,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeZip } from "../zip.mjs";
+import { updateWorkRoot } from "./updater-config.mjs";
 
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)));
-const REPO = resolve(HERE, "..", "..");
 const NODE = process.execPath;
 const BASE_PORT = Number(process.env["UPDATER_TEST_PORT"] ?? 8871);
 
@@ -69,6 +70,25 @@ process.on("SIGTERM", () => process.exit(0));
 `;
 }
 
+function fixtureDatabase(path, userVersion = 3) {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec("CREATE TABLE fixture (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO fixture(value) VALUES ('preserved');");
+    db.exec(`PRAGMA user_version = ${userVersion}`);
+  } finally {
+    db.close();
+  }
+}
+
+function fixtureValue(path) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return db.prepare("SELECT value FROM fixture").get()?.value ?? null;
+  } finally {
+    db.close();
+  }
+}
+
 function makeInstallRoot(currentVersion) {
   const root = mkdtempSync(join(tmpdir(), "search-hub-update-e2e-"));
   mkdirSync(join(root, "app", "apps", "api", "dist"), { recursive: true });
@@ -77,7 +97,7 @@ function makeInstallRoot(currentVersion) {
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "search-hub", version: currentVersion }), "utf8");
   writeFileSync(join(root, "app", "apps", "api", "dist", "server.mjs"), stubServer("healthy"), "utf8");
   writeFileSync(join(root, "app", "apps", "api", "dist", "version.txt"), `${currentVersion}\n`, "utf8");
-  writeFileSync(join(root, "data", "search-hub.db"), "PRE-EXISTING-DB", "utf8");
+  fixtureDatabase(join(root, "data", "search-hub.db"), 3);
   writeFileSync(join(root, "data", "master.key"), "PRE-EXISTING-KEY", "utf8");
   // The real launcher, so the update goes through the same process management the
   // user's install uses.
@@ -184,10 +204,10 @@ try {
     check("service answers after update", await healthy(p));
     check(
       "data preserved across update",
-      readFileSync(join(root, "data", "search-hub.db"), "utf8") === "PRE-EXISTING-DB" &&
+      fixtureValue(join(root, "data", "search-hub.db")) === "preserved" &&
         readFileSync(join(root, "data", "master.key"), "utf8") === "PRE-EXISTING-KEY",
     );
-    check("a backup was taken", existsSync(join(root, "data", "updates", "backups")));
+    check("a backup was taken", existsSync(join(updateWorkRoot(join(root, "data")), "backups")));
     killStray(root);
     await waitUntilDown(p);
   }
@@ -219,7 +239,7 @@ try {
     );
     check(
       "data survived the failed update",
-      readFileSync(join(root, "data", "search-hub.db"), "utf8") === "PRE-EXISTING-DB",
+      fixtureValue(join(root, "data", "search-hub.db")) === "preserved",
     );
     killStray(root);
     await waitUntilDown(p);

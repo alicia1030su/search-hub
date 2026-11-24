@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   UpdateError,
   assertArchMatches,
@@ -12,8 +13,10 @@ import {
   installProgram,
   planRollback,
   readSchemaVersion,
+  recoverInterruptedUpdate,
   restoreData,
   rollbackProgram,
+  systemdStateProvesStopped,
   verifyStagedFile,
   // @ts-expect-error -- the updater is a plain .mjs script without declarations
 } from "../../packaging/launcher/updater-core.mjs";
@@ -34,18 +37,28 @@ const tmp = () => {
   return dir;
 };
 
+function fixtureDatabase(path: string, userVersion = 3): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec("CREATE TABLE fixture (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO fixture(value) VALUES ('preserved');");
+    db.exec(`PRAGMA user_version = ${Number.isInteger(userVersion) && userVersion >= 0 ? userVersion : 0}`);
+  } finally {
+    db.close();
+  }
+}
+
 describe("archive safety", () => {
   it("rejects traversal, absolute and drive-qualified entries", () => {
     expect(() => assertSafeEntry("../etc/passwd")).toThrow(UpdateError);
     expect(() => assertSafeEntry("app/../../escape")).toThrow(/escapes/);
     expect(() => assertSafeEntry("/etc/passwd")).toThrow(/absolute/);
-    expect(() => assertSafeEntry("C:\\Windows\\system32")).toThrow(/drive-qualified/);
+    expect(() => assertSafeEntry("C:\\Windows\\system32")).toThrow(/backslash|drive-qualified/);
     expect(() => assertSafeEntry("")).toThrow(/empty/);
   });
 
-  it("accepts normal relative entries and normalises separators", () => {
+  it("accepts canonical relative entries and rejects backslash variants", () => {
     expect(assertSafeEntry("app/apps/api/dist/server.mjs")).toBe("app/apps/api/dist/server.mjs");
-    expect(assertSafeEntry("app\\runtime\\node.exe")).toBe("app/runtime/node.exe");
+    expect(() => assertSafeEntry("app\\runtime\\node.exe")).toThrow(/backslash/);
   });
 
   it("detects a file that escaped the extracted tree", () => {
@@ -56,18 +69,28 @@ describe("archive safety", () => {
   });
 });
 
+describe("systemd stop proof", () => {
+  it("accepts inactive/dead and failed/no-process states but rejects live or ambiguous units", () => {
+    expect(systemdStateProvesStopped({ ActiveState: "inactive", SubState: "dead", MainPID: "0" })).toBe(true);
+    expect(systemdStateProvesStopped({ ActiveState: "failed", SubState: "failed", MainPID: "0" })).toBe(true);
+    expect(systemdStateProvesStopped({ ActiveState: "active", SubState: "running", MainPID: "123" })).toBe(false);
+    expect(systemdStateProvesStopped({ ActiveState: "failed", SubState: "failed", MainPID: "123" })).toBe(false);
+    expect(systemdStateProvesStopped({ ActiveState: "deactivating", SubState: "stop", MainPID: "0" })).toBe(false);
+  });
+});
+
 describe("version and architecture guards", () => {
   it("allows a forward version and blocks a downgrade", () => {
     expect(() => assertUpgrade("0.1.5-beta.2", "0.1.5-beta.3")).not.toThrow();
-    expect(() => assertUpgrade("0.2.0", "0.1.5")).toThrow(/downgrades are not supported/);
+    expect(() => assertUpgrade("0.2.0", "0.1.5")).toThrow(/downgrades/);
     expect(() => assertUpgrade("0.1.5-beta.2", "0.1.5-beta.2")).toThrow(/already installed/);
   });
 
-  it("blocks replacing a release with a prerelease of the same version", () => {
-    // 0.2.1-beta.1 over 0.2.0 is a legitimate upgrade (higher core version).
+  it("orders numeric prerelease identifiers and blocks prereleases over stable", () => {
     expect(() => assertUpgrade("0.2.0", "0.2.1-beta.1")).not.toThrow();
-    // Dropping from the 0.2.0 release back to its own beta is not.
     expect(() => assertUpgrade("0.2.0", "0.2.0-beta.2")).toThrow(/prerelease/);
+    expect(() => assertUpgrade("0.2.0-beta.2", "0.2.0-beta.10")).not.toThrow();
+    expect(() => assertUpgrade("0.2.0-beta.10", "0.2.0-beta.2")).toThrow(/downgrades/);
   });
 
   it("refuses an asset for the wrong OS or architecture", () => {
@@ -75,10 +98,10 @@ describe("version and architecture guards", () => {
       assertArchMatches("search-hub-v0.1.5-windows-x64.zip", "win32", "x64"),
     ).not.toThrow();
     expect(() => assertArchMatches("search-hub-v0.1.5-linux-arm64.tar.gz", "linux", "x64")).toThrow(
-      /not built for x64/,
+      /exact linux\/x64/,
     );
     expect(() => assertArchMatches("search-hub-v0.1.5-linux-x64.tar.gz", "win32", "x64")).toThrow(
-      /not built for windows/,
+      /exact windows\/x64/,
     );
   });
 });
@@ -116,7 +139,7 @@ describe("backup and install", () => {
     const appDir = join(root, "app");
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(join(appDir, "apps"), { recursive: true });
-    writeFileSync(join(dataDir, "search-hub.db"), "fake-db");
+    fixtureDatabase(join(dataDir, "search-hub.db"), 3);
     writeFileSync(join(dataDir, "master.key"), "fake-key");
     writeFileSync(join(appDir, "apps", "server.mjs"), "old");
 
@@ -126,11 +149,26 @@ describe("backup and install", () => {
       backupRoot: join(root, "backups"),
       stamp: "2026-11-16T00:00:00.000Z",
     });
-    expect(existsSync(join(path, "search-hub.db"))).toBe(true);
+    expect(existsSync(join(path, "data", "search-hub.db"))).toBe(true);
     // Without master.key the restored database cannot decrypt stored API keys.
-    expect(existsSync(join(path, "master.key"))).toBe(true);
+    expect(existsSync(join(path, "data", "master.key"))).toBe(true);
     expect(existsSync(join(path, "app", "apps", "server.mjs"))).toBe(true);
     expect(manifest.files).toContain("master.key");
+    expect(manifest.snapshot.method).toBe("vacuum_into");
+  });
+
+  it.skipIf(process.platform === "win32")("preserves data directory and private file modes in the backup", () => {
+    const root = tmp();
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    fixtureDatabase(join(dataDir, "search-hub.db"), 3);
+    writeFileSync(join(dataDir, "master.key"), "fake-key", { mode: 0o600 });
+    chmodSync(dataDir, 0o700);
+    chmodSync(join(dataDir, "master.key"), 0o600);
+    const { path } = backupCurrent({ dataDir, backupRoot: join(root, "backups"), stamp: "2026-11-16T00:00:00.000Z" });
+    expect(statSync(join(path, "data")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(path, "data", "master.key")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(path, "data", "search-hub.db")).mode & 0o777).toBe(statSync(join(dataDir, "search-hub.db")).mode & 0o777);
   });
 
   it("keeps the old program aside so a rollback needs no download", () => {
@@ -180,28 +218,94 @@ describe("rollback safety", () => {
     expect(plan.reason).toContain("refusing an unsafe rollback");
   });
 
-  it("is conservative when the schema version cannot be read", () => {
-    expect(planRollback({ schemaBefore: null, schemaAfter: 4, hasDataBackup: true }).safe).toBe(false);
+  it("uses the consistent backup when the schema version cannot be read", () => {
+    expect(planRollback({ schemaBefore: null, schemaAfter: 4, hasDataBackup: true })).toMatchObject({
+      strategy: "restore_backup",
+      safe: true,
+    });
   });
 
-  it("restores the data files listed in the manifest", () => {
+  it("exchanges the complete data directory and retains the failed tree", () => {
     const root = tmp();
     const dataDir = join(root, "data");
+    const dbPath = join(dataDir, "search-hub.db");
     mkdirSync(dataDir, { recursive: true });
+    fixtureDatabase(dbPath, 3);
     const backupPath = join(root, "backup");
-    mkdirSync(backupPath, { recursive: true });
-    writeFileSync(join(backupPath, "search-hub.db"), "old-db");
-    writeFileSync(join(backupPath, "master.key"), "old-key");
+    mkdirSync(join(backupPath, "data"), { recursive: true });
+    fixtureDatabase(join(backupPath, "data", "search-hub.db"), 2);
+    writeFileSync(join(backupPath, "data", "master.key"), "old-key");
     writeFileSync(
       join(backupPath, "backup.json"),
-      JSON.stringify({ files: ["search-hub.db", "master.key", "backup.json"] }),
+      JSON.stringify({ dataDir, dbPath, dbInsideDataDir: true, files: ["search-hub.db", "master.key"] }),
       "utf8",
     );
-    writeFileSync(join(dataDir, "search-hub.db"), "new-db");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.prepare("PRAGMA user_version = 9").run();
+      db.prepare("INSERT INTO fixture(value) VALUES ('failed-write')").run();
+    } finally {
+      db.close();
+    }
 
-    restoreData({ backupPath, dataDir });
-    expect(readFileSync(join(dataDir, "search-hub.db"), "utf8")).toBe("old-db");
+    const result = restoreData({ backupPath, dataDir, dbPath });
+    const restored = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      expect(restored.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(restored.prepare("SELECT value FROM fixture").all()).toEqual([{ value: "preserved" }]);
+    } finally {
+      restored.close();
+    }
     expect(readFileSync(join(dataDir, "master.key"), "utf8")).toBe("old-key");
+    expect(existsSync(result.failed)).toBe(true);
+  });
+
+  it("backs up and restores a custom database path outside the data directory", () => {
+    const root = tmp();
+    const dataDir = join(root, "data");
+    const dbPath = join(root, "external", "custom.sqlite");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(dirname(dbPath), { recursive: true });
+    fixtureDatabase(dbPath, 3);
+    writeFileSync(join(dataDir, "master.key"), "old-key");
+    const backup = backupCurrent({ dataDir, dbPath, backupRoot: join(root, "backups"), stamp: "2026-11-16T00:00:00.000Z" });
+    const changed = new DatabaseSync(dbPath);
+    try {
+      changed.exec("PRAGMA user_version = 9; INSERT INTO fixture(value) VALUES ('failed-write');");
+    } finally {
+      changed.close();
+    }
+
+    restoreData({ backupPath: backup.path, dataDir, dbPath });
+    const restored = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      expect(restored.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+      expect(restored.prepare("SELECT value FROM fixture").all()).toEqual([{ value: "preserved" }]);
+    } finally {
+      restored.close();
+    }
+    expect(readFileSync(join(dataDir, "master.key"), "utf8")).toBe("old-key");
+  });
+
+  it("recovers an interrupted app swap from its journal", () => {
+    const root = tmp();
+    const appDir = join(root, "app");
+    const previousApp = join(root, "app.rollback-1-2");
+    mkdirSync(previousApp, { recursive: true });
+    writeFileSync(join(previousApp, "marker"), "old");
+    const journalPath = join(root, "transaction.json");
+    writeFileSync(journalPath, JSON.stringify({
+      phase: "app_swap_started",
+      appDir,
+      previousApp,
+      dataDir: join(root, "data"),
+      dbPath: join(root, "data", "search-hub.db"),
+      backupPath: null,
+    }));
+
+    const recovered = recoverInterruptedUpdate(journalPath);
+    expect(recovered?.phase).toBe("recovered");
+    expect(readFileSync(join(appDir, "marker"), "utf8")).toBe("old");
   });
 
   it("reads the schema version from a real SQLite header", () => {

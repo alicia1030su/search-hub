@@ -32,6 +32,7 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/providers/package.json packages/providers/package.json
 COPY packages/models/package.json packages/models/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
+COPY packages/backup/package.json packages/backup/package.json
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
     corepack pnpm install --frozen-lockfile
 
@@ -54,6 +55,7 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/providers/package.json packages/providers/package.json
 COPY packages/models/package.json packages/models/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
+COPY packages/backup/package.json packages/backup/package.json
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
     corepack pnpm install --frozen-lockfile --prod
 
@@ -92,6 +94,7 @@ COPY --chown=searchhub:searchhub --from=prod-deps /app/packages/core/node_module
 COPY --chown=searchhub:searchhub --from=prod-deps /app/packages/providers/node_modules ./packages/providers/node_modules
 COPY --chown=searchhub:searchhub --from=prod-deps /app/packages/models/node_modules ./packages/models/node_modules
 COPY --chown=searchhub:searchhub --from=prod-deps /app/packages/mcp/node_modules ./packages/mcp/node_modules
+COPY --chown=searchhub:searchhub --from=prod-deps /app/packages/backup/node_modules ./packages/backup/node_modules
 
 COPY --chown=searchhub:searchhub --from=build /app/apps/api/dist ./apps/api/dist
 COPY --chown=searchhub:searchhub --from=build /app/apps/api/migrations ./apps/api/migrations

@@ -285,7 +285,7 @@ describe("CLI sources, status and batch output", () => {
     expect(result.status).toBe(0);
     const body = JSON.parse(result.stdout);
     expect(body.version).toBe("0.1.12");
-    expect(body.cliVersion).toBe("0.1.14");
+    expect(body.cliVersion).toBe("0.1.15");
     expect(body.compatible).toBe(true);
     expect(body.proxy).toBeUndefined();
   });

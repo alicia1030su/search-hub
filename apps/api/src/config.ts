@@ -68,8 +68,12 @@ export interface AppConfig {
    * build that cannot report one leaves it null rather than guessing.
    */
   commit: string | null;
-  /** Hard cap for `POST /api/admin/backup/verify` raw uploads (default 64 MB). */
+  /** Hard cap for backup verification uploads (default 64 MB). */
   maxBackupUploadBytes: number;
+  /** Aggregate private temporary-disk budget for verification uploads. */
+  maxBackupVerifyTempBytes: number;
+  /** Maximum simultaneous verification uploads, including extraction time. */
+  maxBackupVerifyConcurrency: number;
   /** Global per-IP request budget (default 300/min). Raise for load testing. */
   rateLimitPerMin: number;
   /**
@@ -97,6 +101,12 @@ function listEnv(name: string): string[] {
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
+}
+
+function boundedIntegerEnv(name: string, fallback: number, min: number, max: number): number {
+  const value = Number(env(name) ?? fallback);
+  if (!Number.isSafeInteger(value)) return fallback;
+  return Math.min(Math.max(value, min), max);
 }
 
 /** Hostname (without port) -> lowercase, IPv6 brackets stripped. */
@@ -234,12 +244,11 @@ export function loadConfig(): AppConfig {
     version: resolveVersion(),
     commit: env("SEARCH_HUB_COMMIT") ?? null,
     rateLimitPerMin: Number(env("SEARCH_HUB_RATE_LIMIT_PER_MIN") ?? 300),
-    maxBackupUploadBytes: Math.min(
-      // Clamp: too small makes verification useless, too large lets one upload
-      // exhaust the temp disk.
-      Math.max(Number(env("SEARCH_HUB_BACKUP_MAX_UPLOAD_BYTES") ?? 64 * 1024 * 1024), 1024 * 1024),
-      1024 * 1024 * 1024,
-    ),
+    // Clamp: too small makes verification useless, too large lets one upload
+    // exhaust the temp disk.
+    maxBackupUploadBytes: boundedIntegerEnv("SEARCH_HUB_BACKUP_MAX_UPLOAD_BYTES", 64 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024),
+    maxBackupVerifyTempBytes: boundedIntegerEnv("SEARCH_HUB_BACKUP_MAX_VERIFY_TEMP_BYTES", 256 * 1024 * 1024, 1024 * 1024, 4 * 1024 * 1024 * 1024),
+    maxBackupVerifyConcurrency: boundedIntegerEnv("SEARCH_HUB_BACKUP_MAX_VERIFY_CONCURRENCY", 2, 1, 16),
     outboundProxy: readOutboundProxy(),
   };
 }

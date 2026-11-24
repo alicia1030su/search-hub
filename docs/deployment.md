@@ -37,6 +37,10 @@ gh attestation verify shub-v0.1.14-linux-x64.tar.gz --repo alicia1030su/search-h
 The two checks are independent: SHA256 proves the bytes match what was published, the
 attestation proves which workflow and commit produced them.
 
+## Backup and restore
+
+v0.1.15 adds encrypted complete recovery packages and a local `shub backup` maintenance command. Keep the `.shbak` and its passphrase separately, back up Docker named volumes rather than images, and require a successful `systemctl stop` before maintenance. nginx admin backup locations should allow up to 600 seconds and disable request buffering. Windows staging uses explicit non-inherited ACLs and fails closed if `icacls` cannot apply them. Copyable Bash/PowerShell and platform checklists: [disaster recovery](./disaster-recovery.md).
+
 ## Docker Compose
 
 ```bash
@@ -75,29 +79,19 @@ The compose file uses the named volume `search-hub-data` mounted at `/app/data`.
 | `master.key` | Encryption key generated on first start if no env key is set |
 | `setup-token` | One-time first-run token (deleted after initialization) |
 
-**Back up the database and `master.key` together.** Without the key, stored API keys cannot be decrypted.
+**Prefer a complete `.shbackup` package.** It contains a consistent SQLite snapshot and the matching `master.key`, encrypted with an age passphrase. Create it from the admin Backup center or stream it from the API:
 
 ```bash
-# Compose prefixes volume names with the project name (the directory name by
-# default). Resolve it instead of hard-coding "search-hub_...", which breaks
-# when the checkout directory has a different name.
-VOLUME=$(docker volume ls -q \
-  --filter label=com.docker.compose.project="$(basename "$PWD")" \
-  --filter label=com.docker.compose.volume=search-hub-data)
-[ -n "$VOLUME" ] || { echo "volume not found; start the stack once first" >&2; exit 1; }
-# Consistent database snapshot without stopping the service:
-curl -s -b cookies.txt -o backup.db http://127.0.0.1:8787/api/admin/backup
-
-# Or stop, then archive the whole volume including master.key:
-docker compose stop search-hub
-docker run --rm -v "$VOLUME":/data -v "$PWD":/backup alpine \
-  tar czf /backup/search-hub-backup-$(date +%F).tgz -C /data .
-docker compose start search-hub
+printf '%s' "$BACKUP_PASSPHRASE" | jq -Rs '{passphrase: .}' |
+  curl -sS -b cookies.txt -H "x-csrf-token: $CSRF" \
+    -H 'content-type: application/json' --data-binary @- \
+    -o search-hub.shbackup https://search.example.com/api/admin/backup/package
+shub backup verify search-hub.shbackup --passphrase-stdin
 ```
 
-A file-level copy while the service is running must include `search-hub.db`, `search-hub.db-wal` and `search-hub.db-shm`; copying only `.db` loses recent writes (observed during v0.1.1 acceptance: 383 KB of WAL was not in the main file). The API endpoint below takes a real snapshot instead — do not rely on a manual `cp` of `.db` while the service is up.
+The response header `x-search-hub-backup-sha256` identifies the randomized encrypted output. Store the passphrase separately. The legacy `GET /api/admin/backup` endpoint remains available for a consistent, unencrypted `.db` snapshot, but that file alone is not a complete recovery package because it excludes `master.key`.
 
-Restore into a fresh volume before starting the container. Migrations run automatically on boot and only add/alter tables; they never drop stored keys.
+Do not copy a live `.db`, `-wal`, or `-shm` file as a recovery procedure. Even a stopped raw directory copy is not the supported restore path: use `.shbackup` verification and the transactional CLI restore into a missing or empty target.
 
 #### How `GET /api/admin/backup` builds the snapshot
 
@@ -171,35 +165,17 @@ That is deliberate: starting older code against a newer schema would read tables
 
 #### Restore procedure
 
+Stop the service, preserve the current data directory, and restore only into a missing or empty target. The CLI defaults to dry-run; `--apply` is required to publish the staged database and key.
+
 ```bash
-# Compose prefixes volume names with the project name (the directory name by
-# default). Resolve it instead of hard-coding "search-hub_...", which breaks
-# when the checkout directory has a different name.
-VOLUME=$(docker volume ls -q \
-  --filter label=com.docker.compose.project="$(basename "$PWD")" \
-  --filter label=com.docker.compose.volume=search-hub-data)
-[ -n "$VOLUME" ] || { echo "volume not found; start the stack once first" >&2; exit 1; }
-# 1. Stop the service (or the container).
-docker compose stop search-hub
-
-# 2. Verify the file you are about to restore.
-curl -s -b cookies.txt -H 'content-type: application/octet-stream' \
-  --data-binary @backup.db https://search.example.com/api/admin/backup/verify | jq '.ok, .schemaVersion'
-
-# 3. Replace the database and the master key together.
-docker run --rm -v "$VOLUME":/data -v "$PWD":/backup alpine \
-  sh -c 'cp /backup/backup.db /data/search-hub.db && rm -f /data/search-hub.db-wal /data/search-hub.db-shm'
-# Copy master.key only if you are restoring onto a host that lost it:
-docker run --rm -v "$VOLUME":/data -v "$PWD":/backup alpine \
-  sh -c 'cp /backup/master.key /data/master.key && chmod 600 /data/master.key'
-
-# 4. Start again; migrations for this build run automatically.
-docker compose start search-hub
+shub backup restore search-hub.shbackup \
+  --data-dir /srv/search-hub-restored --passphrase-stdin
+# Review all six boolean results, then apply explicitly:
+shub backup restore search-hub.shbackup \
+  --data-dir /srv/search-hub-restored --apply --start-check --passphrase-stdin
 ```
 
-Without `master.key` (or the same `SEARCH_HUB_ENCRYPTION_KEY`) the restored instance keeps its providers and history, but stored provider/model keys cannot be decrypted and must be re-entered in the UI.
-
-A repeatable end-to-end check of this whole flow — concurrent writes, three downloads, restore into a fresh directory, newer-schema refusal, and failure handling — is `node tests/scripts/backup-restore.mjs`.
+The package carries the matching `master.key`, so a verified restore does not depend on a separate raw key copy. Non-empty targets, incompatible schemas, failed key proofs and failed ciphertext samples are refused before publication. See the [disaster-recovery guide](./disaster-recovery.md) for Docker volume and service-manager examples.
 
 ### Upgrade
 
@@ -345,20 +321,21 @@ WantedBy=multi-user.target
 ### Backup and restore
 
 ```bash
-# Consistent snapshot (online backup API, integrity-checked, single self-contained .db):
-curl -s -b cookies.txt -o backup.db https://search.example.com/api/admin/backup
+# Complete age-encrypted package (consistent SQLite snapshot + matching master.key):
+printf '%s' "$BACKUP_PASSPHRASE" | jq -Rs '{passphrase: .}' |
+  curl -sS -b cookies.txt -H "x-csrf-token: $CSRF" \
+    -H 'content-type: application/json' --data-binary @- \
+    -o search-hub.shbackup https://search.example.com/api/admin/backup/package
+shub backup verify search-hub.shbackup --passphrase-stdin
 
-# Verify it before you need it:
-curl -s -b cookies.txt -H "x-csrf-token: $CSRF" \
-  -H 'content-type: application/octet-stream' --data-binary @backup.db \
-  https://search.example.com/api/admin/backup/verify
-
-# Or offline: stop the container, then copy data/search-hub.db and data/master.key.
+# Dry-run is the default; --apply is explicit and the target must be empty:
+shub backup restore search-hub.shbackup \
+  --data-dir /srv/search-hub-restored --passphrase-stdin
+shub backup restore search-hub.shbackup \
+  --data-dir /srv/search-hub-restored --apply --start-check --passphrase-stdin
 ```
 
-`master.key` is **not** included in the API download: without it the restored database cannot decrypt stored provider keys, which is the safe failure mode. Back it up separately (or keep using `SEARCH_HUB_ENCRYPTION_KEY`) and store it outside the web root.
-
-Restore: stop the service, copy `search-hub.db` (and `master.key` or the same env key) into the data directory, start again. Migrations are applied automatically on boot. A database whose schema is *newer* than the running build is refused at startup rather than half-read — see "Backup and restore" above.
+The complete package includes `master.key`; the legacy `.db` snapshot does not. A database whose schema is *newer* than the running build is refused before restore publication and at startup rather than half-read.
 
 ## Environment reference
 
@@ -376,7 +353,10 @@ Restore: stop the service, copy `search-hub.db` (and `master.key` or the same en
 | `SEARCH_HUB_CORS_ORIGINS` | empty | Comma-separated extra origins |
 | `SEARCH_HUB_LOG_LEVEL` | `info` | `fatal`…`trace` |
 | `SEARCH_HUB_STATIC_DIR` | `apps/web/dist` | Pre-built UI location |
-| `SEARCH_HUB_BACKUP_MAX_UPLOAD_BYTES` | `67108864` (64 MB) | Cap for `POST /api/admin/backup/verify` uploads |
+| `SEARCH_HUB_BACKUP_MAX_UPLOAD_BYTES` | `67108864` (64 MB) | Per-file cap for legacy/package verification uploads and API package archive policy |
+| `SEARCH_HUB_BACKUP_MAX_VERIFY_TEMP_BYTES` | `268435456` (256 MB) | Aggregate private temporary-disk quota across active verification requests |
+| `SEARCH_HUB_BACKUP_MAX_VERIFY_CONCURRENCY` | `2` | Maximum simultaneous verification requests, including extraction |
+| `SEARCH_HUB_BACKUP_MAX_TEMP_BYTES` | `536870912` (512 MB) | Temporary-disk reservation ceiling for API package creation |
 | `SEARCH_HUB_PROXY` | unset | `http(s)://` forward proxy for all provider/model traffic. `socks5://` / `pac+http://` / `file://` are rejected at boot. See `SECURITY.md` “Outbound network and proxy trust boundary”. |
 | `SEARCH_HUB_NO_PROXY` | unset | Bypass list (`NO_PROXY` semantics: `*.example.com`, `host:port`, `10.0.0.0/8`, `*`). Bypassed targets are still SSRF-validated and keep the connect-time guard. |
 | `SEARCH_HUB_PROXY_TRUST` | unset | `untrusted`/`application-only` or `trusted-networks`/`egress-enforced`. Unset keeps the private host allowlist ineffective for proxied hops and flags the undeclared boundary on `/api/health`. |

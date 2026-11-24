@@ -1,670 +1,386 @@
-name: Release packages
+name: Promote release candidate
 
-# Builds the Windows and Linux standalone packages, verifies each one by
-# actually starting it, and only then publishes the Release.
-#
-# Triggered by a tag: v0.1.8 publishes a Stable Release, v0.1.9-beta.1 publishes
-# a prerelease. The channel is derived from the tag by
-# `packaging/release-channel.mjs` (unit-tested), never assumed: a workflow that
-# hardcodes `prerelease: true` cannot ship a stable version, and one that guesses
-# from the tag could publish a beta as stable.
-#
-# Everything runs on the real target OS: a package that only "builds" is not
-# evidence that it starts.
-
+# This workflow never builds program packages or container images. It promotes
+# the exact bytes and image digest produced by release-candidate.yml for the
+# annotated Stable tag's commit.
 on:
   push:
-    tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to build (must already exist)"
-        required: true
+    tags: ["v0.1.15"]
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-v0.1.15
   cancel-in-progress: false
 
 env:
   NODE_VERSION: "22.22.2"
-  PNPM_VERSION: "12.18.0"
-  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
   REGISTRY: ghcr.io
 
 permissions:
-  contents: write
+  contents: read
   actions: read
-  # Only what GHCR needs; no other secrets are exposed.
-  packages: write
-  # Build provenance: `attest-build-provenance` signs a statement that binds the
-  # uploaded bytes to this workflow file, this repository and this commit.
-  # Attestations are written to the repository's attestation store, never to the
-  # release assets, so nothing about them is downloadable from a PR run.
-  id-token: write
-  attestations: write
+  packages: read
 
 jobs:
   gate:
-    name: Gate - tag commit on main with green required workflows
+    name: Gate - immutable v0.1.15 tag and exact-SHA candidate
     runs-on: ubuntu-latest
     timeout-minutes: 75
     outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
+      sha: ${{ steps.gates.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
       ciRunId: ${{ steps.gates.outputs.ciRunId }}
-      channel: ${{ steps.channel.outputs.channel }}
-      prerelease: ${{ steps.channel.outputs.prerelease }}
-      version: ${{ steps.channel.outputs.version }}
-      name: ${{ steps.channel.outputs.name }}
+      candidateRunId: ${{ steps.gates.outputs.candidateRunId }}
+      candidateAttempt: ${{ steps.gates.outputs.candidateAttempt }}
+      candidateRef: ${{ steps.gates.outputs.candidateRef }}
+      candidateDigest: ${{ steps.gates.outputs.candidateDigest }}
+      candidateRepository: ${{ steps.gates.outputs.candidateRepository }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: v0.1.15
           persist-credentials: false
           fetch-depth: 0
 
-      # Rejects an unrecognised tag before anything is built. Guessing whether
-      # `v0.2.0-1` is a stable release or a beta is not a decision a workflow
-      # should make on its own.
-      - name: Classify the tag (stable or prerelease)
-        id: channel
+      - name: Require the exact Stable tag and package version
+        id: version
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: node packaging/release-channel.mjs "$TAG"
-
-      - name: Resolve the tag commit and require it to be on main
-        id: resolve
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          sha=$(git rev-parse "${TAG}^{commit}")
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "tag ${TAG} -> ${sha}"
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$sha" origin/main; then
-            echo "::error::Tag ${TAG} points at ${sha}, which is not on main."
-            exit 1
-          fi
+          test "$TAG" = "v0.1.15" || { echo "::error::only annotated v0.1.15 may be promoted"; exit 1; }
+          test "$(git cat-file -t "refs/tags/$TAG")" = "tag"
+          version=$(node -p "require('./package.json').version")
+          test "$version" = "0.1.15"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      # The packages are stamped from the tag, but the Docker image and the
-      # health endpoint read `package.json`. If those disagree, a user who
-      # installs 0.1.8 sees 0.1.7 in `/api/health` and the docs are wrong.
-      - name: A stable tag must match the version in package.json
-        if: steps.channel.outputs.prerelease == 'false'
-        env:
-          VERSION: ${{ steps.channel.outputs.version }}
-        run: |
-          set -euo pipefail
-          declared=$(node -p "require('./package.json').version")
-          echo "tag version ${VERSION} / package.json ${declared}"
-          if [ "$declared" != "$VERSION" ]; then
-            echo "::error::Tag is v${VERSION} but package.json says ${declared}. Bump the version in the same commit the tag points at."
-            exit 1
-          fi
-
-      - name: Require exact-SHA main-push workflows and resource evidence
+      - name: Verify six exact-SHA workflows, candidate evidence and remote tag immutability
         id: gates
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: node packaging/check-release-gates.mjs --tag "$TAG" --report artifacts/v0.1.14/release-gate.json
-
-  windows:
-    name: Windows x64 package
-    needs: gate
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          # Build from the gate's SHA, never from a moving ref.
-          ref: ${{ needs.gate.outputs.sha }}
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@v6.1.1
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build the Windows package
-        shell: bash
-        env:
-          PACKAGE_TARGET: windows-x64
-          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
-        run: node packaging/build-package.mjs
-
-      - name: Verify the package starts and serves REST + MCP
-        shell: bash
-        run: node packaging/verify-package.mjs windows-x64
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node packaging/check-release-gates.mjs --phase tag --tag "$TAG" --version "$VERSION" --event-sha "$GITHUB_SHA" --report artifacts/v0.1.15/release-gate.json
 
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: windows-x64
-          path: |
-            dist/package/*windows-x64.zip
-            dist/package/*windows-x64.zip.sha256
+          name: release-gate-v0.1.15
+          path: artifacts/v0.1.15/release-gate.json
           if-no-files-found: error
+          retention-days: 30
 
-  linux:
-    name: Linux ${{ matrix.arch }} package
-    # arm64 packages must be verified on arm64 hardware: a binary that only
-    # builds is not evidence that it starts.
+  candidate:
+    name: Download and verify the candidate bytes and attestations
     needs: gate
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runtime_url: https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.xz
-          - arch: arm64
-            runtime_url: https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-arm64.tar.xz
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@v6.1.1
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # arm64 packages must bundle an arm64 runtime; the runner is x64.
-      - name: Fetch the target Node runtime
-        run: |
-          curl -fsSL "${{ matrix.runtime_url }}" -o /tmp/node.tar.xz
-          mkdir -p /tmp/node-runtime
-          tar -xJf /tmp/node.tar.xz -C /tmp/node-runtime --strip-components=1
-          cp /tmp/node-runtime/bin/node /tmp/node-${{ matrix.arch }}
-
-      - name: Build the Linux package
-        env:
-          PACKAGE_TARGET: linux-${{ matrix.arch }}
-          PACKAGE_NODE_BIN: /tmp/node-${{ matrix.arch }}
-          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
-        run: node packaging/build-package.mjs
-
-      - name: Verify the package starts and serves REST + MCP
-        run: node packaging/verify-package.mjs linux-${{ matrix.arch }}
-
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: linux-${{ matrix.arch }}
-          path: |
-            dist/package/*linux-${{ matrix.arch }}.tar.gz
-            dist/package/*linux-${{ matrix.arch }}.tar.gz.sha256
-          if-no-files-found: error
-
-  cli-windows:
-    name: CLI Windows x64 standalone
-    needs: gate
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.1.1
-        with:
-          version: ${{ env.PNPM_VERSION }}
+          fetch-depth: 0
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Build server bundle and standalone CLI
-        shell: bash
-        env:
-          PACKAGE_TARGET: windows-x64
-          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
-        run: |
-          pnpm build:server
-          pnpm --filter @search-hub/cli build
-          node packaging/build-cli-package.mjs
-      - name: Verify CLI against a real Search Hub server
-        shell: bash
-        run: node packaging/verify-cli-package.mjs windows-x64
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: cli-windows-x64
-          path: |
-            dist/cli/*windows-x64.zip
-            dist/cli/*windows-x64.zip.sha256
-          if-no-files-found: error
-
-  cli-linux:
-    name: CLI Linux ${{ matrix.arch }} standalone
-    needs: gate
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-          - arch: arm64
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-          persist-credentials: false
-      - uses: pnpm/action-setup@v6.1.1
-        with:
-          version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Build server bundle and standalone CLI
-        env:
-          PACKAGE_TARGET: linux-${{ matrix.arch }}
-          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
-        run: |
-          pnpm build:server
-          pnpm --filter @search-hub/cli build
-          node packaging/build-cli-package.mjs
-      - name: Verify CLI against a real Search Hub server
-        run: node packaging/verify-cli-package.mjs linux-${{ matrix.arch }}
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: cli-linux-${{ matrix.arch }}
-          path: |
-            dist/cli/*linux-${{ matrix.arch }}.tar.gz
-            dist/cli/*linux-${{ matrix.arch }}.tar.gz.sha256
-          if-no-files-found: error
-
-  cli-portable:
-    name: CLI Node.js 22 portable package
-    needs: gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-          persist-credentials: false
-      - uses: pnpm/action-setup@v6.1.1
-        with:
-          version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Build and verify portable CLI
-        env:
-          PACKAGE_TARGET: node22
-          SEARCH_HUB_VERSION: ${{ inputs.tag || github.ref_name }}
-        run: |
-          pnpm build:server
-          pnpm --filter @search-hub/cli build
-          node packaging/build-cli-package.mjs
-          node packaging/verify-cli-package.mjs node22
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: cli-node22
-          path: |
-            dist/cli/*node22.tar.gz
-            dist/cli/*node22.tar.gz.sha256
-          if-no-files-found: error
-
-  publish:
-    name: Publish ${{ needs.gate.outputs.channel == 'stable' && 'stable release' || 'prerelease' }}
-    runs-on: ubuntu-latest
-    needs: [gate, windows, linux, cli-windows, cli-linux, cli-portable]
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-          persist-credentials: false
-
-      - uses: actions/download-artifact@v8.0.2
-        with:
-          path: artifacts
-
-      - name: Download verified resource evidence
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CI_RUN_ID: ${{ needs.gate.outputs.ciRunId }}
-        run: |
-          mkdir -p evidence-ci
-          gh run download "$CI_RUN_ID" -n resource-evidence-v0114 -D evidence-ci
-          cp evidence-ci/resource-evidence-v0114.json artifacts/resource-evidence.json
-
-      # A single SHA256SUMS covering every asset, so a user can verify one file.
-      - name: Assemble SHA256SUMS
-        run: |
-          cd artifacts
-          {
-            find . -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec sha256sum {} \;
-            sha256sum resource-evidence.json
-          } | sed 's#  \./[^/]*/#  #' | sort -k2 > ../SHA256SUMS
-          cat ../SHA256SUMS
-
-      # Re-running a release must not silently mix two builds of the same
-      # version. If a Release already exists with assets, fail loudly instead.
-      - name: Refuse to overwrite an existing release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            existing=$(gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets | length')
-            if [ "$existing" != "0" ]; then
-              echo "::error::Release $TAG already has $existing asset(s); refusing to overwrite published artifacts."
-              exit 1
-            fi
-            echo "release $TAG exists without assets; continuing"
-          fi
-
-      # Provenance is generated from the *artifact bytes* that are about to be
-      # uploaded, not from a rebuild: a rebuild could differ and the statement
-      # would then describe something nobody can download.
-      - name: Attest build provenance for the release assets
-        uses: actions/attest-build-provenance@v3.0.0
-        with:
-          subject-path: |
-            artifacts/*/*.zip
-            artifacts/*/*.tar.gz
-            artifacts/resource-evidence.json
-            SHA256SUMS
-
-      # The release note header is written to a file rather than inline: a
-      # multi-line `format()` inside a YAML block scalar is hard to read and
-      # easy to break, and this text is user-facing.
-      - name: Compose the release notes header
-        env:
-          CHANNEL: ${{ needs.gate.outputs.channel }}
-          VERSION: ${{ needs.gate.outputs.version }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          if [ "$CHANNEL" = "stable" ]; then
-            cat > release-body.md <<EOF
-          Search Hub **v${VERSION}** — stable release.
-
-          This release includes the standalone \`shub\` CLI for Windows x64, Linux x64,
-          Linux arm64 and Node.js 22+. The CLI connects to an existing Search Hub REST API.
-
-          See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md) for what
-          changed, and the known limitations stated there before relying on any
-          third-party integration.
-
-          Verify the downloads with \`sha256sum -c SHA256SUMS\`. Each asset also carries a
-          build provenance attestation:
-          \`gh attestation verify <asset> --repo ${REPO}\`.
-          EOF
-          else
-            cat > release-body.md <<EOF
-          Search Hub **v${VERSION}** — beta prerelease.
-
-          See the per-platform acceptance result in this workflow run before
-          treating any platform as verified. This build is not the stable channel.
-
-          Verify the downloads with \`sha256sum -c SHA256SUMS\`.
-          EOF
-          fi
-          echo "--- release body ---"
-          cat release-body.md
-
-      # `prerelease` and `make_latest` come from the tag classification, not
-      # from this file. A beta must never move `latest`; a stable release should
-      # become what the repository homepage shows.
-      - name: Create the release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          name: ${{ needs.gate.outputs.name }}
-          prerelease: ${{ needs.gate.outputs.prerelease }}
-          draft: true
-          make_latest: false
-          generate_release_notes: true
-          body_path: release-body.md
-          files: |
-            artifacts/*/*.zip
-            artifacts/*/*.tar.gz
-            artifacts/resource-evidence.json
-            SHA256SUMS
-          fail_on_unmatched_files: true
-
-      # Uploading is not proof that the asset is downloadable and intact.
-      - name: Verify the published assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          echo "--- published assets ---"
-          gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json assets \
-            --jq '.assets[] | "\(.name) \(.size) \(.state)"'
-          work=$(mktemp -d)
-          gh release download "$TAG" --repo "${GITHUB_REPOSITORY}" --dir "$work"
-          cd "$work"
-          # Two independent claims, reported separately on purpose:
-          #  - sha256sum proves the bytes I downloaded match the bytes I shipped;
-          #  - the attestation proves *who* built them, from which commit.
-          # Neither implies the other.
-          sha256sum -c SHA256SUMS
-          echo "--- build provenance ---"
-          for asset in *.zip *.tar.gz resource-evidence.json; do
-            gh attestation verify "$asset" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --format json > "/tmp/attest-${asset}.json" \
-              || { echo "::error::no valid attestation for $asset"; exit 1; }
-            signer=$(jq -r '.[0].verificationResult.signature.certificate.issuer // "unknown"' "/tmp/attest-${asset}.json" 2>/dev/null || echo unknown)
-            echo "attested: $asset (issuer=$signer)"
-          done
-          count=$(ls -1 | wc -l)
-          echo "verified $count files including SHA256SUMS, all attested"
-
-  container:
-    name: Publish GHCR image for the released version
-    runs-on: ubuntu-latest
-    needs: [gate, windows, linux, publish]
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-          persist-credentials: false
-
-      # Tags come from the classification, not from string matching here.
-      # A prerelease must never be tagged `latest`, and must not claim the plain
-      # `v0.1.8` tag either: that would read as a stable release and silently
-      # move anyone who pinned it onto a beta build.
-      #
-      # A stable release publishes three tags:
-      #   0.1.8     — the conventional Docker version tag
-      #   v0.1.8    — matches the Git tag, for people who pin that spelling
-      #   latest    — what `docker pull` gives a user with no tag
-      - name: Compute the image reference
-        id: image
-        env:
-          VERSION: ${{ needs.gate.outputs.version }}
-          PRERELEASE: ${{ needs.gate.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          base="${REGISTRY}/${owner}/search-hub"
-          echo "ref=${base}:${VERSION}" >> "$GITHUB_OUTPUT"
-          if [ "$PRERELEASE" = "true" ]; then
-            echo "version_ref=" >> "$GITHUB_OUTPUT"
-            echo "latest_ref=" >> "$GITHUB_OUTPUT"
-          else
-            echo "version_ref=${base}:v${VERSION}" >> "$GITHUB_OUTPUT"
-            echo "latest_ref=${base}:latest" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: docker/setup-buildx-action@v4.4.1
-
       - uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # The image is built from the same SHA the packages came from, then
-      # started and health-checked before it is pushed.
-      - name: Build the image locally first
-        uses: docker/build-push-action@v7.4.0
-        with:
-          context: .
-          load: true
-          tags: search-hub:release-check
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Start the image and verify REST + MCP before pushing
+      - name: Download the candidate run selected by the gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ needs.gate.outputs.candidateRunId }}
+          CI_RUN_ID: ${{ needs.gate.outputs.ciRunId }}
         run: |
           set -euo pipefail
-          docker run -d --name sh-release -p 8799:8787 \
-            -e SEARCH_HUB_SETUP_TOKEN=release-check-token \
-            -e SEARCH_HUB_COOKIE_SECURE=false \
-            search-hub:release-check
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8799/api/health >/dev/null 2>&1; then break; fi
-            sleep 2
+          for name in windows-x64 linux-x64 linux-arm64 cli-windows-x64 cli-linux-x64 cli-linux-arm64 cli-node22 release-candidate-evidence-v0.1.15; do
+            gh run download "$CANDIDATE_RUN_ID" -n "$name" -D "candidate/$name"
           done
-          curl -fsS http://127.0.0.1:8799/api/health >/dev/null
-          docker logs sh-release | tail -20
-          docker rm -f sh-release
-
-      - name: Push the verified image
+          gh run download "$CI_RUN_ID" -n release-evidence-v0.1.15 -D evidence-ci
+      - name: Reverify resource evidence and candidate assets without rebuilding
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          CANDIDATE_RUN_ID: ${{ needs.gate.outputs.candidateRunId }}
+          CANDIDATE_ATTEMPT: ${{ needs.gate.outputs.candidateAttempt }}
+          CANDIDATE_REF: ${{ needs.gate.outputs.candidateRef }}
+          CANDIDATE_DIGEST: ${{ needs.gate.outputs.candidateDigest }}
+          CANDIDATE_REPOSITORY: ${{ needs.gate.outputs.candidateRepository }}
         run: |
           set -euo pipefail
-          docker tag search-hub:release-check "${{ steps.image.outputs.ref }}"
-          docker push "${{ steps.image.outputs.ref }}"
-          echo "pushed ${{ steps.image.outputs.ref }}"
-          if [ -n "${{ steps.image.outputs.version_ref }}" ]; then
-            docker tag search-hub:release-check "${{ steps.image.outputs.version_ref }}"
-            docker push "${{ steps.image.outputs.version_ref }}"
-            echo "pushed ${{ steps.image.outputs.version_ref }}"
-          else
-            echo "prerelease: only ${{ steps.image.outputs.ref }} is published, latest is untouched"
-          fi
-          if [ -n "${{ steps.image.outputs.latest_ref }}" ]; then
-            docker tag search-hub:release-check "${{ steps.image.outputs.latest_ref }}"
-            docker push "${{ steps.image.outputs.latest_ref }}"
-            echo "pushed ${{ steps.image.outputs.latest_ref }} (stable channel)"
-          fi
+          node packaging/verify-resource-evidence.mjs --commit "$SOURCE_SHA" --evidence-dir evidence-ci
+          mkdir -p verified-promotion/release-assets verified-promotion/candidate-evidence
+          find candidate -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} verified-promotion/release-assets/ \;
+          test "$(find verified-promotion/release-assets -maxdepth 1 -type f | wc -l)" -eq 7
+          cp candidate/release-candidate-evidence-v0.1.15/resource-evidence.json verified-promotion/release-assets/resource-evidence.json
+          cp -a candidate/release-candidate-evidence-v0.1.15/. verified-promotion/candidate-evidence/
+          node packaging/verify-disaster-recovery-evidence.mjs --commit "$SOURCE_SHA" --evidence-dir verified-promotion/candidate-evidence/disaster-recovery > verified-dr.json
+          node -e 'const fs=require("fs");const m=require("./verified-promotion/candidate-evidence/candidate-manifest.json");const d=JSON.parse(fs.readFileSync("verified-dr.json"));if(m.disasterRecovery.gateSha256!==d.gateSha256||m.disasterRecovery.sumsSha256!==d.sumsSha256||m.disasterRecovery.verdict!=="PASS"||m.disasterRecovery.requirementCount!==50)process.exit(1)'
+          node scripts/stage-resource-evidence.mjs \
+            --evidence-dir evidence-ci \
+            --runtime evidence-ci/resource-evidence-v0115.json \
+            --doctor evidence-ci/resource-doctor.json \
+            --dr-dir verified-promotion/candidate-evidence/disaster-recovery \
+            --output verified-combined
+          node packaging/release-evidence.mjs combine \
+            --resource verified-combined/resource-evidence-v0115.json \
+            --dr-dir verified-combined/disaster-recovery \
+            --output verified-combined/resource-evidence.json \
+            --source-sha "$SOURCE_SHA"
+          node packaging/release-evidence.mjs verify-combined \
+            --file verified-combined/resource-evidence.json \
+            --dr-dir verified-combined/disaster-recovery \
+            --source-sha "$SOURCE_SHA"
+          cmp verified-combined/resource-evidence.json verified-promotion/release-assets/resource-evidence.json
+          cp verified-promotion/candidate-evidence/SHA256SUMS verified-promotion/release-assets/SHA256SUMS
+          node packaging/release-evidence.mjs verify \
+            --dir verified-promotion/release-assets \
+            --manifest verified-promotion/candidate-evidence/candidate-manifest.json \
+            --attestations verified-promotion/candidate-evidence/attestations \
+            --image-inspection verified-promotion/candidate-evidence/image-inspection.json \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --run-id "$CANDIDATE_RUN_ID" \
+            --attempt "$CANDIDATE_ATTEMPT"
+          test "$CANDIDATE_REF" = "$(node -p "require('./verified-promotion/candidate-evidence/image.json').ref")"
+          test "$CANDIDATE_DIGEST" = "$(node -p "require('./verified-promotion/candidate-evidence/image.json').digest")"
+          test "$CANDIDATE_REPOSITORY" = "$(node -p "require('./verified-promotion/candidate-evidence/image.json').repository")"
+          docker buildx imagetools inspect "$CANDIDATE_REF" --format '{{json .}}' > current-candidate-image.json
+          node packaging/release-evidence.mjs image --inspection current-candidate-image.json --digest "$CANDIDATE_DIGEST" --image verified-promotion/candidate-evidence/image.json
+          node packaging/candidate-attestations.mjs verify \
+            --manifest verified-promotion/candidate-evidence/candidate-manifest.json \
+            --dir verified-promotion/release-assets \
+            --attestations verified-promotion/candidate-evidence/attestations \
+            --source-sha "$SOURCE_SHA"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-promotion-v0.1.15
+          path: verified-promotion/
+          if-no-files-found: error
 
-      # The push is not proof that a user can pull it. Re-read the manifest and
-      # print the platform list: a single-arch image pulled on arm64 falls back
-      # to emulation or fails, and the report must say which one it is.
-      - name: Confirm every published image tag and record its platforms
-        run: |
-          set -euo pipefail
-          docker buildx imagetools inspect "${{ steps.image.outputs.ref }}"
-          if [ -n "${{ steps.image.outputs.version_ref }}" ]; then
-            docker buildx imagetools inspect "${{ steps.image.outputs.version_ref }}"
-          fi
-          if [ -n "${{ steps.image.outputs.latest_ref }}" ]; then
-            docker buildx imagetools inspect "${{ steps.image.outputs.latest_ref }}"
-          fi
-          echo "platforms=$(docker image inspect search-hub:release-check --format '{{.Os}}/{{.Architecture}}')"
-
-  finalize:
-    name: Finalize release after asset and GHCR verification
-    needs: [gate, windows, linux, cli-windows, cli-linux, cli-portable, publish, container]
+  draft:
+    name: Create and verify the Stable draft Release
+    needs: [gate, candidate]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+      packages: read
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
-          fetch-depth: 0
-
-      - name: Verify draft assets byte-for-byte
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-promotion-v0.1.15
+          path: promotion
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite an existing Release or mix candidate runs
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          gh release view "$TAG" --json isDraft,isPrerelease,assets > release-metadata.json
-          jq -e '.isDraft == true' release-metadata.json >/dev/null
-          work=$(mktemp -d)
-          gh release download "$TAG" --dir "$work"
-          cd "$work"
-          sha256sum -c SHA256SUMS
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
-          test -f resource-evidence.json
-
-      - name: Verify GHCR tags share one linux/amd64 digest
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets > existing-release.json 2>/dev/null; then
+            jq -e '.isDraft == true and (.assets | length) == 0' existing-release.json >/dev/null || {
+              echo "::error::Release $TAG already exists with assets or is published; refusing to overwrite it."
+              exit 1
+            }
+          fi
+      - name: Compose Stable release notes
         env:
           VERSION: ${{ needs.gate.outputs.version }}
-          CHANNEL: ${{ needs.gate.outputs.channel }}
-          REGISTRY: ${{ env.REGISTRY }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          CANDIDATE_RUN_ID: ${{ needs.gate.outputs.candidateRunId }}
         run: |
           set -euo pipefail
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          base="${REGISTRY}/${owner}/search-hub"
-          refs=("${base}:${VERSION}")
-          if [ "$CHANNEL" = "stable" ]; then
-            refs+=("${base}:v${VERSION}" "${base}:latest")
-          fi
-          digest=""
-          for ref in "${refs[@]}"; do
-            current=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}')
-            test -n "$current"
-            if [ -n "$digest" ]; then test "$current" = "$digest"; else digest="$current"; fi
-          done
-          # A single-arch push is an OCI image manifest, not a manifest index;
-          # .Manifest.Platforms only exists on the latter. Read the image config
-          # so the assertion works for the exact artifact this workflow pushes.
-          image=$(docker buildx imagetools inspect "${base}:${VERSION}" --format '{{json .Image}}')
-          echo "$image" | jq -e '.os == "linux" and .architecture == "amd64"' >/dev/null
-          platforms=$(echo "$image" | jq -c '{os,architecture}')
-          echo "digest=$digest"
-          echo "platforms=$platforms"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          cat > release-body.md <<EOF
+          Search Hub **v${VERSION}** — Stable release.
 
-      - name: Publish Stable or prerelease only after all checks
+          Promoted without rebuilding from candidate run \`${CANDIDATE_RUN_ID}\` at exact
+          source commit \`${SHA}\`. Windows x64, Linux x64/arm64 server packages, the
+          standalone CLI packages and the linux/amd64 container passed their candidate gates.
+
+          See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md) for changes
+          and known limitations. Verify downloads with \`sha256sum -c SHA256SUMS\` and
+          provenance with \`gh attestation verify <asset> --repo ${REPO}\`.
+          EOF
+      - name: Create or update only an empty draft
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ needs.gate.outputs.sha }}
+          name: Search Hub v${{ needs.gate.outputs.version }}
+          prerelease: false
+          draft: true
+          make_latest: false
+          generate_release_notes: true
+          body_path: release-body.md
+          files: promotion/release-assets/*
+          fail_on_unmatched_files: true
+      - name: Download the draft assets and verify bytes and provenance
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-          CHANNEL: ${{ needs.gate.outputs.channel }}
+          TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
         run: |
           set -euo pipefail
-          if [ "$CHANNEL" = "stable" ]; then
-            gh release edit "$TAG" --draft=false --latest
-          else
-            gh release edit "$TAG" --draft=false
-          fi
-          gh release view "$TAG" --json isDraft,isPrerelease,tagName > final-release.json
-          jq -e '.isDraft == false' final-release.json >/dev/null
-          if [ "$CHANNEL" = "stable" ]; then
-            jq -e '.isPrerelease == false' final-release.json >/dev/null
-            latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')
-            test "$latest" = "$TAG"
-          fi
-          mkdir -p artifacts/v0.1.14
-          cp final-release.json artifacts/v0.1.14/release-final.json
+          gh release view "$TAG" --json isDraft,isPrerelease,assets > draft-metadata.json
+          jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 9' draft-metadata.json >/dev/null
+          jq -e '.assets | all(.state == "uploaded")' draft-metadata.json >/dev/null
+          mkdir downloaded
+          gh release download "$TAG" --dir downloaded
+          test "$(find downloaded -maxdepth 1 -type f | wc -l)" -eq 9
+          (cd downloaded && sha256sum -c SHA256SUMS)
+          node packaging/candidate-attestations.mjs verify \
+            --manifest promotion/candidate-evidence/candidate-manifest.json \
+            --dir downloaded \
+            --attestations promotion/candidate-evidence/attestations \
+            --source-sha "$SOURCE_SHA"
 
+  container:
+    name: Promote the candidate GHCR digest without rebuilding
+    needs: [gate, candidate, draft]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    outputs:
+      digest: ${{ steps.promote.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-promotion-v0.1.15
+          path: promotion
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Stable tags from the verified candidate digest
+        id: promote
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          EXPECTED_DIGEST: ${{ needs.gate.outputs.candidateDigest }}
+          EXPECTED_REPOSITORY: ${{ needs.gate.outputs.candidateRepository }}
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          base="${REGISTRY}/${owner}/search-hub"
+          test "$base" = "$EXPECTED_REPOSITORY"
+          refs=("${base}:${VERSION}" "${base}:v${VERSION}" "${base}:latest")
+          for ref in "${refs[@]}"; do
+            docker buildx imagetools create "$ref" "${base}@${EXPECTED_DIGEST}"
+          done
+          for ref in "${refs[@]}"; do
+            current=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '.')
+            test "$current" = "$EXPECTED_DIGEST"
+            docker buildx imagetools inspect "$ref" --format '{{json .}}' > stable-image.json
+            node packaging/release-evidence.mjs image --inspection stable-image.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json
+          done
+          node packaging/candidate-attestations.mjs verify \
+            --manifest promotion/candidate-evidence/candidate-manifest.json \
+            --dir promotion/release-assets \
+            --attestations promotion/candidate-evidence/attestations \
+            --source-sha "$SOURCE_SHA"
+          echo "digest=$EXPECTED_DIGEST" >> "$GITHUB_OUTPUT"
+
+  finalize:
+    name: Publish Stable only after draft and GHCR verification
+    needs: [gate, candidate, draft, container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-promotion-v0.1.15
+          path: promotion
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the already verified Stable draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+          EXPECTED_DIGEST: ${{ needs.container.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json isDraft,isPrerelease,assets > before-publish.json
+          jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 9' before-publish.json >/dev/null
+          gh release edit "$TAG" --draft=false --latest
+          gh release view "$TAG" --json isDraft,isPrerelease,tagName,assets > release-final.json
+          jq -e '.isDraft == false and .isPrerelease == false and (.assets | length) == 9' release-final.json >/dev/null
+          mkdir -p final-download
+          gh release download "$TAG" --dir final-download
+          (cd final-download && sha256sum -c SHA256SUMS)
+          node packaging/candidate-attestations.mjs verify \
+            --manifest promotion/candidate-evidence/candidate-manifest.json \
+            --dir final-download \
+            --attestations promotion/candidate-evidence/attestations \
+            --source-sha "$SOURCE_SHA"
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')
+          test "$latest" = "$TAG"
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > final-tag-ref.json
+          tag_object=$(jq -er '.object.sha' final-tag-ref.json)
+          test "$(jq -r '.object.type' final-tag-ref.json)" = "tag"
+          gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" > final-tag-object.json
+          test "$(jq -r '.object.sha' final-tag-object.json)" = "$SOURCE_SHA"
+          test "$(jq -r '.object.type' final-tag-object.json)" = "commit"
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          base="${REGISTRY}/${owner}/search-hub"
+          for ref in "${base}:0.1.15" "${base}:v0.1.15" "${base}:latest"; do
+            current=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '.')
+            test "$current" = "$EXPECTED_DIGEST"
+            docker buildx imagetools inspect "$ref" --format '{{json .}}' > final-image.json
+            node packaging/release-evidence.mjs image --inspection final-image.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json > final-image-verification.json
+          done
+          mkdir -p artifacts/v0.1.15
+          cp release-final.json artifacts/v0.1.15/release-final.json
+          node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("release-final.json"));const image=JSON.parse(fs.readFileSync("final-image-verification.json"));const ref=JSON.parse(fs.readFileSync("final-tag-ref.json"));const tag=JSON.parse(fs.readFileSync("final-tag-object.json"));x.ghcrDigest=process.argv[1];x.ghcrMediaType=image.mediaType;x.ghcrConfigDigest=image.configDigest;x.ghcrPlatform=image.platform;x.candidateRunId=Number(process.argv[2]);x.tag={name:x.tagName,tagObject:ref.object.sha,commit:tag.object.sha,type:tag.type};fs.writeFileSync("artifacts/v0.1.15/release-final.json",JSON.stringify(x,null,2)+"\n")' "$EXPECTED_DIGEST" "${{ needs.gate.outputs.candidateRunId }}"
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: release-final-v0114
-          path: artifacts/v0.1.14/release-final.json
+          name: release-final-v0115
+          path: |
+            artifacts/v0.1.15/release-final.json
+            final-tag-ref.json
+            final-tag-object.json
           if-no-files-found: error
