@@ -148,7 +148,13 @@ jobs:
           test "$CANDIDATE_DIGEST" = "$(node -p "require('./verified-promotion/candidate-evidence/image.json').digest")"
           test "$CANDIDATE_REPOSITORY" = "$(node -p "require('./verified-promotion/candidate-evidence/image.json').repository")"
           docker buildx imagetools inspect "$CANDIDATE_REF" --format '{{json .}}' > current-candidate-image.json
-          node packaging/release-evidence.mjs image --inspection current-candidate-image.json --digest "$CANDIDATE_DIGEST" --image verified-promotion/candidate-evidence/image.json
+          docker buildx imagetools inspect "$CANDIDATE_REF" --raw > current-candidate-manifest.json
+          node packaging/release-evidence.mjs normalize-inspection \
+            --formatted current-candidate-image.json \
+            --raw current-candidate-manifest.json \
+            --digest "$CANDIDATE_DIGEST" \
+            --output current-candidate-normalized.json
+          node packaging/release-evidence.mjs image --inspection current-candidate-normalized.json --digest "$CANDIDATE_DIGEST" --image verified-promotion/candidate-evidence/image.json
           node packaging/candidate-attestations.mjs verify \
             --manifest verified-promotion/candidate-evidence/candidate-manifest.json \
             --dir verified-promotion/release-assets \
@@ -300,7 +306,13 @@ jobs:
             current=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '.')
             test "$current" = "$EXPECTED_DIGEST"
             docker buildx imagetools inspect "$ref" --format '{{json .}}' > stable-image.json
-            node packaging/release-evidence.mjs image --inspection stable-image.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json
+            docker buildx imagetools inspect "$ref" --raw > stable-manifest.json
+            node packaging/release-evidence.mjs normalize-inspection \
+              --formatted stable-image.json \
+              --raw stable-manifest.json \
+              --digest "$EXPECTED_DIGEST" \
+              --output stable-normalized.json
+            node packaging/release-evidence.mjs image --inspection stable-normalized.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json
           done
           node packaging/candidate-attestations.mjs verify \
             --manifest promotion/candidate-evidence/candidate-manifest.json \
@@ -371,7 +383,13 @@ jobs:
             current=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '.')
             test "$current" = "$EXPECTED_DIGEST"
             docker buildx imagetools inspect "$ref" --format '{{json .}}' > final-image.json
-            node packaging/release-evidence.mjs image --inspection final-image.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json > final-image-verification.json
+            docker buildx imagetools inspect "$ref" --raw > final-manifest.json
+            node packaging/release-evidence.mjs normalize-inspection \
+              --formatted final-image.json \
+              --raw final-manifest.json \
+              --digest "$EXPECTED_DIGEST" \
+              --output final-normalized.json
+            node packaging/release-evidence.mjs image --inspection final-normalized.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json > final-image-verification.json
           done
           mkdir -p artifacts/v0.1.15
           cp release-final.json artifacts/v0.1.15/release-final.json

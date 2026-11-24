@@ -551,6 +551,13 @@ jobs:
           digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '.')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           docker buildx imagetools inspect "$ref" --format '{{json .}}' > image-inspection.json
+          docker buildx imagetools inspect "$ref" --raw > image-manifest.json
+          node packaging/release-evidence.mjs normalize-inspection \
+            --formatted image-inspection.json \
+            --raw image-manifest.json \
+            --digest "$digest" \
+            --output normalized-image-inspection.json
+          mv normalized-image-inspection.json image-inspection.json
           node packaging/release-evidence.mjs image --inspection image-inspection.json --digest "$digest"
           node -e 'const fs=require("fs");const i=JSON.parse(fs.readFileSync("image-inspection.json"));const m=i.Manifest??i.manifest;const im=i.Image??i.image;const c=m.Config??m.config;const ref=process.argv[1],digest=process.argv[2],repository=process.argv[3];fs.writeFileSync("image.json",JSON.stringify({ref,digest,repository,reference:`${repository}@${digest}`,platform:{os:im.os,architecture:im.architecture},manifestMediaType:m.MediaType??m.mediaType??m.Descriptor?.mediaType??m.descriptor?.mediaType,configDigest:c.digest,configMediaType:c.mediaType},null,2)+"\n")' "$ref" "$digest" "$base"
           node packaging/release-evidence.mjs image --inspection image-inspection.json --digest "$digest" --image image.json
@@ -564,6 +571,7 @@ jobs:
           path: |
             image.json
             image-inspection.json
+            image-manifest.json
           if-no-files-found: error
           retention-days: 30
 
@@ -685,7 +693,7 @@ jobs:
           cp candidate-manifest.json candidate-evidence/candidate-manifest.json
           cp release-assets/resource-evidence.json candidate-evidence/resource-evidence.json
           cp -a final-dr candidate-evidence/disaster-recovery
-          cp candidate/candidate-image-v0.1.15/image.json candidate/candidate-image-v0.1.15/image-inspection.json candidate-evidence/
+          cp candidate/candidate-image-v0.1.15/image.json candidate/candidate-image-v0.1.15/image-inspection.json candidate/candidate-image-v0.1.15/image-manifest.json candidate-evidence/
       - name: Attest the exact candidate bytes
         uses: actions/attest-build-provenance@v3.0.0
         with:
