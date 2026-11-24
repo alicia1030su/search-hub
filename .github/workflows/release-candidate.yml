@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 240
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.resolve.outputs.version }}
       ciRunId: ${{ steps.gates.outputs.ciRunId }}
     steps:
       - uses: actions/checkout@v7.0.1

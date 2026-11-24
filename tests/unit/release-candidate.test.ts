@@ -318,6 +318,8 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("normalize-inspection");
     expect(candidate).toContain("image-manifest.json");
     expect(candidate).toMatch(/assemble:[\s\S]*?fetch-depth: 0/);
+    expect(candidate).toContain("version: ${{ steps.resolve.outputs.version }}");
+    expect(candidate).not.toContain("steps.version.outputs.version");
     expect(promoter.match(/imagetools inspect[^\n]*--raw/g)).toHaveLength(3);
     expect(promoter.match(/normalize-inspection/g)).toHaveLength(3);
     expect(candidate).not.toContain("--allow-incomplete");
