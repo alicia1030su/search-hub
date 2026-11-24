@@ -44,6 +44,8 @@ const REQUIRED_SIZES = [10, 64, 256];
 const DEFAULT_SIZES = [10, 64, 128, 256];
 const R_REQUIREMENTS = Array.from({ length: 38 }, (_, index) => `R${String(index + 1).padStart(2, "0")}`);
 const A_REQUIREMENTS = Array.from({ length: 12 }, (_, index) => `A${String(index + 1).padStart(2, "0")}`);
+const RESOURCE_POSITIVE_FIELDS = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes"];
+const RESOURCE_NONNEGATIVE_FIELDS = ["userCpuMs", "systemCpuMs"];
 const PRELOAD = `
 const fs = require("node:fs");
 process.on("exit", () => {
@@ -632,10 +634,17 @@ function killOwnedTree(pid) {
   }
 }
 
+function validResourceSidecar(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
+    RESOURCE_POSITIVE_FIELDS.every((field) => Number.isFinite(value[field]) && value[field] > 0) &&
+    RESOURCE_NONNEGATIVE_FIELDS.every((field) => Number.isFinite(value[field]) && value[field] >= 0);
+}
+
 function readResourceSidecar(path) {
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    return validResourceSidecar(value) ? value : null;
   } catch {
     return null;
   }
@@ -801,19 +810,24 @@ async function runOperation({ action, cli, fixture, packagePath, opRoot, passphr
 }
 
 function assessGrowth(operations) {
-  const verify = operations.filter((operation) => operation.action === "verify" && operation.result === "PASS");
-  if (verify.length < 5) return { result: "BLOCKED", reason: "fewer than five measured verify rounds" };
-  const rss = verify.map((operation) => operation.sampling.rssBytes.end);
-  const handles = verify.map((operation) => operation.sampling.handles.end);
+  const allVerify = operations.filter((operation) => operation.action === "verify");
+  const verify = allVerify.filter((operation) => operation.result === "PASS");
+  const samplingRssEndBytes = verify.map((operation) => operation.sampling?.rssBytes?.end ?? null);
+  const handles = verify.map((operation) => operation.sampling?.handles?.end ?? null);
+  const rss = verify.map((operation) => operation.processResource?.rssBytes ?? null);
+  const metadata = { rssSource: "process-sidecar", rssEndBytes: rss, samplingRssEndBytes, handlesEnd: handles };
+  if (verify.length < 5) return { ...metadata, result: "BLOCKED", reason: "fewer than five measured verify rounds" };
+  if (allVerify.some((operation) => !Number.isFinite(operation.processResource?.rssBytes) || operation.processResource.rssBytes <= 0)) {
+    return { ...metadata, result: "BLOCKED", reason: "process sidecar rssBytes is missing or invalid for a verify operation" };
+  }
   const rssPositive = rss.slice(1).filter((value, index) => value > rss[index]).length;
   const handlesPositive = handles.slice(1).filter((value, index) => value > handles[index]).length;
   const sustained = (rssPositive >= 4 && rss.at(-1) > Math.max(...rss.slice(0, -1))) ||
     (handlesPositive >= 4 && handles.at(-1) > Math.max(...handles.slice(0, -1)));
   return {
+    ...metadata,
     result: sustained ? "FAIL" : "PASS",
     sustainedGrowth: sustained,
-    rssEndBytes: rss,
-    handlesEnd: handles,
     note: "No fixed RSS threshold; sustained monotonic growth is a failure, noise/insufficient data is BLOCKED.",
   };
 }
@@ -1006,6 +1020,16 @@ async function selfCheck() {
     const relativeCli = "packages/cli/dist/index.mjs";
     const invocation = cliInvocation(relativeCli);
     checks.push({ name: "cli_path_absolute", ok: invocation.runtime === "node" && invocation.prefix[0] === resolve(relativeCli) });
+    const growthOperations = (sidecarRss, samplingRss) => sidecarRss.map((rssBytes, index) => ({
+      action: "verify",
+      result: "PASS",
+      processResource: rssBytes === null ? null : { rssBytes },
+      sampling: { rssBytes: { end: samplingRss[index] }, handles: { end: 10 } },
+    }));
+    const stableGrowth = assessGrowth(growthOperations([400, 401, 399, 402, 400], [500, 300, 600, 200, 700]));
+    checks.push({ name: "growth_uses_stable_process_sidecar", ok: stableGrowth.result === "PASS" && stableGrowth.rssSource === "process-sidecar" && stableGrowth.samplingRssEndBytes.at(-1) === 700 });
+    checks.push({ name: "growth_detects_sidecar_sustained_increase", ok: assessGrowth(growthOperations([400, 410, 420, 430, 440], [100, 100, 100, 100, 100])).result === "FAIL" });
+    checks.push({ name: "growth_blocks_missing_sidecar", ok: assessGrowth(growthOperations([400, 401, null, 402, 400], [100, 100, 100, 100, 100])).result === "BLOCKED" });
     const header = join(root, "valid.age");
     writeFileSync(header, Buffer.from(`age-encryption.org/v1\n-> scrypt ${Buffer.alloc(16, 7).toString("base64")} 18\n--- ${"A".repeat(43)}\n`, "ascii"));
     checks.push({ name: "age_header", ok: inspectAgeHeader(header).workFactor === 18 });
@@ -1030,12 +1054,10 @@ async function selfCheck() {
     });
     let sidecar = null;
     try { sidecar = JSON.parse(readFileSync(resourcePath, "utf8")); } catch { /* Reported as a failed check. */ }
-    const sidecarFields = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "rssBytes", "maxRssBytes", "userCpuMs", "systemCpuMs"];
-    checks.push({
-      name: "resource_preload_sidecar",
-      ok: sidecarRun.status === 0 && sidecarFields.every((field) => Number.isFinite(sidecar?.[field])) &&
-        sidecarFields.slice(0, 6).every((field) => sidecar[field] > 0) && sidecar.userCpuMs >= 0 && sidecar.systemCpuMs >= 0,
-    });
+    checks.push({ name: "resource_preload_sidecar", ok: sidecarRun.status === 0 && validResourceSidecar(sidecar) });
+    const malformedSidecar = join(root, "malformed-resource.json");
+    writeFileSync(malformedSidecar, "{}\n");
+    checks.push({ name: "resource_sidecar_shape", ok: readResourceSidecar(malformedSidecar) === null });
   } finally {
     cleanup = removeOwned(root, ownerRoot);
     checks.push({ name: "owned_cleanup", ok: cleanup.ok && !existsSync(root) });
