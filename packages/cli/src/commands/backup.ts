@@ -40,7 +40,7 @@ function passphraseFrom(args: ParsedCliArgs): Promise<string> {
 async function currentKey(paths: LocalPaths): Promise<{ key: Buffer; source: "env" | "file" }> {
   const envKey = process.env["SEARCH_HUB_ENCRYPTION_KEY"];
   if (envKey && envKey.trim()) return { key: parseMasterKey(envKey), source: "env" };
-  return { key: await readMasterKey(paths.masterKeyPath), source: "file" };
+  return { key: await readMasterKey(paths.masterKeyPath, { allowPrivateParent: true }), source: "file" };
 }
 function localPaths(args: ParsedCliArgs): LocalPaths {
   return resolveLocalPaths(stringValue(args.values, "data-dir"), stringValue(args.values, "db"), stringValue(args.values, "master-key-file"));

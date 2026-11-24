@@ -17,11 +17,12 @@ const KEY_BYTES = 32;
 const IV_BYTES = 12;
 
 function restrictMasterKeyPermissions(path: string): void {
-  if (process.platform === "win32") {
-    restrictWindowsAclSync(path, false);
-  } else {
-    chmodSync(path, 0o600);
-  }
+  if (process.platform !== "win32") chmodSync(path, 0o600);
+}
+
+function restrictDataDirPermissions(path: string): void {
+  if (process.platform === "win32") restrictWindowsAclSync(path, true);
+  else chmodSync(path, 0o700);
 }
 
 function fsyncDirectory(path: string): void {
@@ -65,6 +66,7 @@ export class SecretBox {
       return new SecretBox(parsed, "env");
     }
     mkdirSync(dataDir, { recursive: true });
+    restrictDataDirPermissions(dataDir);
     const keyPath = join(dataDir, "master.key");
     let generated: string | null = null;
     if (!existsSync(keyPath)) {

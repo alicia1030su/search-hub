@@ -41,6 +41,7 @@ async function fixture(): Promise<{ root: string; dataDir: string; dbPath: strin
   writeFileSync(join(dataDir, "master.key"), `${key.toString("hex")}\n`, { mode: 0o600 });
   if (process.platform !== "win32") await chmod(dbPath, 0o600);
   if (process.platform === "win32") {
+    await restrictWindowsAcl(dataDir, true);
     await restrictWindowsAcl(dbPath, false);
     await restrictWindowsAcl(join(dataDir, "master.key"), false);
   }

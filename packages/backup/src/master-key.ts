@@ -35,8 +35,8 @@ export function masterKeyFingerprint(value: string | Buffer): string {
 }
 
 /** Reads a bounded, regular, non-inherited 0600 master-key file. */
-export async function readMasterKey(path: string): Promise<Buffer> {
-  return parseMasterKey(await readSmallTextFile(path, 1024));
+export async function readMasterKey(path: string, options: { allowPrivateParent?: boolean } = {}): Promise<Buffer> {
+  return parseMasterKey(await readSmallTextFile(path, 1024, options));
 }
 
 function proofAad(packageId: string, fingerprint: string): Buffer {

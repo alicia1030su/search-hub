@@ -107,7 +107,7 @@ export function restrictWindowsAclSync(path: string, directory: boolean): void {
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
   const identities = aclIdentities(readback);
   if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    throw new Error("Private Windows ACL read-back contains an unauthorized principal");
+    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}`);
   }
 }
 
@@ -128,7 +128,7 @@ export async function restrictWindowsAcl(path: string, directory: boolean): Prom
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
   const identities = aclIdentities(readback);
   if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    throw new Error("Private Windows ACL read-back contains an unauthorized principal");
+    throw new Error(`Private Windows ACL read-back contains an unauthorized principal: ${identities.join(",")}`);
   }
 }
 
@@ -162,7 +162,7 @@ async function assertAllowedWindowsAcl(path: string, label: string): Promise<voi
   const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544", "SY", "BA"]);
   const identities = aclIdentities(readback);
   if (!identities.includes(sid) || identities.some((identity) => !allowed.has(identity))) {
-    throw new Error(`${label} ACL contains an unauthorized principal`);
+    throw new Error(`${label} ACL contains an unauthorized principal: ${identities.join(",")}`);
   }
 }
 
@@ -274,8 +274,8 @@ export async function requireDiskBytes(path: string, bytes: number): Promise<voi
   if (await availableDiskBytes(path) < bytes) throw new Error("Insufficient disk space for the requested backup operation");
 }
 
-export async function readSmallTextFile(path: string, maxBytes: number): Promise<string> {
-  await assertSecureRegularFile(path, maxBytes);
+export async function readSmallTextFile(path: string, maxBytes: number, options: { allowPrivateParent?: boolean } = {}): Promise<string> {
+  await assertSecureRegularFile(path, maxBytes, options);
   const value = await readFile(path, "utf8");
   if (Buffer.byteLength(value, "utf8") > maxBytes) throw new Error("Input exceeds its safety limit");
   return value;
