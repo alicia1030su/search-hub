@@ -29,7 +29,7 @@ export function stageResourceEvidence({ repoRoot = REPO_ROOT, evidenceDir, runti
   for (const name of rawFiles) cpSync(path.join(evidenceDir, "raw", name), path.join(outputDir, "raw", name));
   const files = [RESOURCE_RUNTIME_ARTIFACT, "resource-doctor.json", "cache-benchmark-summary.json", "SHA256SUMS", ...rawFiles.map((name) => `raw/${name}`)];
   if (disasterRecoveryDir) {
-    cpSync(disasterRecoveryDir, path.join(outputDir, "disaster-recovery"));
+    cpSync(disasterRecoveryDir, path.join(outputDir, "disaster-recovery"), { recursive: true });
     files.push("disaster-recovery");
   }
   return files;

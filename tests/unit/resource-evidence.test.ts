@@ -131,11 +131,16 @@ describe("resource evidence", () => {
     const doctorPath = join(directory, "doctor.json");
     writeFileSync(runtimePath, "{}");
     writeFileSync(doctorPath, "{}");
-    const files = stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, outputDir });
-    expect(files).toHaveLength(12);
-    expect(readdirSync(outputDir).sort()).toEqual(["SHA256SUMS", "cache-benchmark-summary.json", "raw", "resource-doctor.json", "resource-evidence-v0115.json"]);
+    const disasterRecoveryDir = join(directory, "dr-source");
+    const disasterReport = join(disasterRecoveryDir, "reports", "core", "report.json");
+    mkdirSync(join(disasterRecoveryDir, "reports", "core"), { recursive: true });
+    writeFileSync(disasterReport, '{"verdict":"PASS"}\n');
+    const files = stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, disasterRecoveryDir, outputDir });
+    expect(files).toHaveLength(13);
+    expect(readdirSync(outputDir).sort()).toEqual(["SHA256SUMS", "cache-benchmark-summary.json", "disaster-recovery", "raw", "resource-doctor.json", "resource-evidence-v0115.json"]);
     expect(readdirSync(join(outputDir, "raw"))).toHaveLength(8);
-    expect(() => stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, outputDir: directory })).toThrow(/stage_output_would_remove_source/);
+    expect(readFileSync(join(outputDir, "disaster-recovery", "reports", "core", "report.json"), "utf8")).toBe('{"verdict":"PASS"}\n');
+    expect(() => stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, disasterRecoveryDir, outputDir: directory })).toThrow(/stage_output_would_remove_source/);
   });
 
   it("rebinds historical cache raw evidence to the exact release without deleting it", () => {
