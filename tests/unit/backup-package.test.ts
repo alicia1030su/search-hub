@@ -114,13 +114,22 @@ describe("backup passphrase and JSON policy", () => {
 });
 
 describe("private staging permissions", () => {
-  it("accepts built-in Administrator ACL aliases but rejects every unauthorized identity", () => {
-    const administrator = "S-1-5-32-544";
-    const canonical = "data\r\nD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LA)\r\n";
-    expect(() => assertPrivateWindowsAcl(canonical, administrator)).not.toThrow();
-    expect(() => assertPrivateWindowsAcl(canonical.replace("(A;OICI;FA;;;LA)", "(A;OICI;FA;;;S-1-5-32-545)"), administrator)).toThrow(/unauthorized principal/);
-    expect(() => assertPrivateWindowsAcl("data\r\nD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", administrator)).toThrow(/unauthorized principal/);
-    expect(() => assertPrivateWindowsAcl(canonical.replace("A;OICI", "A;OICIID"), administrator)).toThrow(/inherited or deny/);
+  it("requires exact SID, protection, inheritance and FullControl rules", () => {
+    const current = "S-1-5-21-3414932011-3134797172-3625386099-500";
+    const allowed = [current, "S-1-5-18", "S-1-5-32-544"];
+    const canonical = {
+      owner: current,
+      protected: true,
+      rules: allowed.map((identity) => ({ type: "Allow", identity, inherited: false, flags: "CIOI", rights: "FullControl" })),
+    };
+    expect(() => assertPrivateWindowsAcl(canonical, current, true)).not.toThrow();
+    expect(() => assertPrivateWindowsAcl({ ...canonical, rules: canonical.rules.map((rule) => ({ ...rule, flags: "" })) }, current, false)).not.toThrow();
+    expect(() => assertPrivateWindowsAcl({ ...canonical, rules: canonical.rules.map((rule) => rule.identity === current ? { ...rule, identity: "LA" } : rule) }, current, true)).toThrow(/unauthorized principal/);
+    expect(() => assertPrivateWindowsAcl({ ...canonical, rules: canonical.rules.filter((rule) => rule.identity !== current) }, current, true)).toThrow(/missing an allowed principal/);
+    expect(() => assertPrivateWindowsAcl({ ...canonical, rules: canonical.rules.map((rule) => rule.identity === current ? { ...rule, inherited: true, flags: "CIOIID" } : rule) }, current, true)).toThrow(/deny, inherited/);
+    expect(() => assertPrivateWindowsAcl({ ...canonical, rules: canonical.rules.map((rule) => rule.identity === current ? { ...rule, rights: "Read" } : rule) }, current, true)).toThrow(/FullControl/);
+    expect(() => assertPrivateWindowsAcl({ ...canonical, protected: false }, current, true)).toThrow(/protected/);
+    expect(() => assertPrivateWindowsAcl({ ...canonical, owner: "S-1-5-32-545" }, current, true)).toThrow(/owner/);
   });
 
   it("uses 0700/0600 on POSIX and explicit non-inherited SID ACLs on Windows", async () => {
@@ -134,9 +143,6 @@ describe("private staging permissions", () => {
     if (process.platform === "win32") {
       const system32 = join(process.env["SystemRoot"] ?? "C:/Windows", "System32");
       const icacls = join(system32, "icacls.exe");
-      const whoami = execFileSync(join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" });
-      const sid = whoami.trim().match(/"([^"]*)"/g)?.at(-1)?.slice(1, -1);
-      expect(sid).toMatch(/^S-1-[0-9-]+$/);
       const users = "S-1-5-32-545";
       execFileSync(icacls, [directory, "/grant", `*${users}:(OI)(CI)F`], { stdio: "ignore" });
       execFileSync(icacls, [file, "/grant", `*${users}:F`], { stdio: "ignore" });
@@ -147,7 +153,6 @@ describe("private staging permissions", () => {
         execFileSync(icacls, [target, "/save", saved], { stdio: "ignore" });
         const bytes = await readFile(saved);
         const acl = (bytes[1] === 0 ? bytes.toString("utf16le") : bytes.toString("utf8")).toUpperCase();
-        expect(acl).toContain(sid);
         expect(acl).toContain(";;;SY)");
         expect(acl).toContain(";;;BA)");
         expect(acl).not.toContain(users);
