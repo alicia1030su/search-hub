@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Isolated Docker linux/amd64 packaged disaster-recovery drill.
 set -euo pipefail
+if [[ "${SEARCH_HUB_DR_TRACE:-0}" == "1" ]]; then set -x; fi
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 IMAGE=${1:?usage: platform-docker.sh <image> <packaged-shub> [evidence-dir]}

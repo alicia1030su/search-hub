@@ -452,7 +452,7 @@ jobs:
             sh-dr-systemd bash -lc '
             set -euo pipefail
             apt-get update -qq >/dev/null
-            apt-get install -y -qq curl tar jq >/dev/null
+            apt-get install -y -qq curl tar jq git >/dev/null
             git config --global --add safe.directory /repo
             mkdir -p /evidence
             bash /repo/tests/disaster-recovery/platform-systemd.sh \
@@ -520,6 +520,8 @@ jobs:
           name: cli-linux-x64
           path: ${{ runner.temp }}/linux-cli-artifact
       - name: Run the packaged Docker disaster-recovery drill
+        env:
+          SEARCH_HUB_DR_TRACE: "1"
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/linux-cli"
