@@ -35,5 +35,20 @@ describe("platform restore origin environment", () => {
     const startCheck = blocks.find((block) => block.includes("--start-check"));
     expect(startCheck).toBeDefined();
     expect(startCheck).toContain("SEARCH_HUB_APP_ENTRY");
+    if (script.endsWith("platform-docker.sh")) expect(startCheck).toContain("SEARCH_HUB_START_CHECK_NODE=/usr/local/bin/node");
+  });
+
+  it("repairs systemd restore ownership and permissions before starting the unit", () => {
+    const script = readFileSync(resolve(root, "tests/disaster-recovery/platform-systemd.sh"), "utf8");
+    const apply = script.indexOf('--apply --start-check');
+    const chown = script.indexOf('chown -R search-hub:search-hub "$RESTORED"');
+    const chmodDirectory = script.indexOf('chmod 700 "$RESTORED"');
+    const chmodKey = script.indexOf('chmod 600 "$RESTORED/master.key"');
+    const start = script.indexOf('systemctl start "$RESTORED_UNIT"');
+    expect(apply).toBeGreaterThan(-1);
+    expect(chown).toBeGreaterThan(apply);
+    expect(chmodDirectory).toBeGreaterThan(chown);
+    expect(chmodKey).toBeGreaterThan(chmodDirectory);
+    expect(start).toBeGreaterThan(chmodKey);
   });
 });

@@ -94,7 +94,7 @@ docker run --rm --network none --user 1001:1001 --read-only \
   -v "$CLI:/usr/local/bin/shub:ro" -v "$WORK/passphrase:/run/secrets/passphrase:ro" \
   -v "$PACKAGE_VOL:/packages:ro" -v "$RESTORE_VOL:/restore:rw" \
   -e HOME=/tmp -e SEARCH_HUB_DATA_DIR=/data -e SEARCH_HUB_INSTALL_DIR=/app SEARCH_HUB_MIGRATIONS_DIR=/app/apps/api/migrations \
-  -e SEARCH_HUB_APP_ENTRY=/app/apps/api/dist/server.mjs \
+  -e SEARCH_HUB_APP_ENTRY=/app/apps/api/dist/server.mjs -e SEARCH_HUB_START_CHECK_NODE=/usr/local/bin/node \
   "$IMAGE" /usr/local/bin/shub backup restore /packages/backup.shbackup --data-dir /restore \
   --apply --start-check --passphrase-stdin --json < "$WORK/passphrase" | tee "$EVIDENCE/apply.json"
 

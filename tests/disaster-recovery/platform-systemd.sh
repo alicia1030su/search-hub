@@ -86,6 +86,9 @@ SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup verify "$PACKAGE" --passph
 SEARCH_HUB_DATA_DIR="$DATA" SEARCH_HUB_INSTALL_DIR="$BASE" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/dry-run.json"
 [[ -z "$(find "$RESTORED" -mindepth 1 -print -quit)" ]]
 SEARCH_HUB_DATA_DIR="$DATA" SEARCH_HUB_INSTALL_DIR="$BASE" SEARCH_HUB_MIGRATIONS_DIR="$MIGRATIONS" SEARCH_HUB_APP_ENTRY="$SERVER" "$CLI" backup restore "$PACKAGE" --data-dir "$RESTORED" --apply --start-check --passphrase-stdin --json < "$PASS" | tee "$EVIDENCE/apply.json"
+chown -R search-hub:search-hub "$RESTORED"
+chmod 700 "$RESTORED"
+chmod 600 "$RESTORED/master.key"
 systemctl start "$RESTORED_UNIT"
 wait_health "$RESTORED_PORT"
 curl -fsS "http://127.0.0.1:$RESTORED_PORT/api/health" | tee "$EVIDENCE/health.json"
