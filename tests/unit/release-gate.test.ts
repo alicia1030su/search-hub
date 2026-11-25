@@ -93,6 +93,7 @@ describe("release gate", () => {
     expect(promoter).toContain("required: true");
     expect(promoter).toContain('default: "v0.1.15"');
     expect(promoter).toContain("ref: ${{ inputs.tag || github.ref_name }}");
+    expect(promoter).toContain("ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.tag || github.ref_name }}");
     expect(promoter).toContain("TAG: ${{ inputs.tag || github.ref_name }}");
     expect(promoter).toContain('if [[ "$EVENT_NAME" == "push" ]]; then');
     expect(promoter).toContain('args+=(--event-sha "$GITHUB_SHA")');
