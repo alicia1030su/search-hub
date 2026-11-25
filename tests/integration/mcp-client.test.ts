@@ -328,6 +328,7 @@ describe("MCP official client (AC-07)", () => {
             port: url.port,
             path: url.pathname,
             method: "POST",
+            // Node accepts string[] for repeated headers at runtime.
             headers: {
               "content-type": "application/json",
               accept: "application/json, text/event-stream",
@@ -335,7 +336,7 @@ describe("MCP official client (AC-07)", () => {
               origin,
               ...(host ? { host } : {}),
               "content-length": Buffer.byteLength(body),
-            },
+            } as unknown as Record<string, string>,
           },
           (res) => {
             res.resume();

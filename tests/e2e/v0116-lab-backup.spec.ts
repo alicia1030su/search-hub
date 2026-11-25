@@ -33,7 +33,7 @@ async function downloadText(download: Download): Promise<string> {
 
 test.describe("v0.1.16 Lab raw-data privacy", () => {
   test("does not request or export upstream raw canaries by default", async ({ page }) => {
-    let searchRequest: Record<string, unknown> | undefined;
+    let searchRequest: { includeRaw?: boolean } | undefined;
     await page.route("**/api/providers", async (route) => {
       await route.fulfill({
         status: 200,
@@ -48,7 +48,8 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
       await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
     });
     await page.route("**/api/search", async (route) => {
-      searchRequest = route.request().postDataJSON() as Record<string, unknown>;
+      const payload = route.request().postDataJSON() as { includeRaw?: unknown };
+      searchRequest = { includeRaw: payload.includeRaw === true };
       const result = {
         id: "result-local",
         title: "Local safe result",
@@ -103,11 +104,14 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
     await page.getByRole("button", { name: "运行", exact: true }).click();
     await expect(page.getByText("Local safe result", { exact: true })).toBeVisible();
 
-    expect.soft(searchRequest?.includeRaw, "Lab must default includeRaw to false").toBe(false);
+    expect(searchRequest, "Lab search route must be called").toBeDefined();
+    expect.soft(searchRequest!.includeRaw, "Lab must default includeRaw to false").toBe(false);
     await expect.soft(page.getByText(CANARY, { exact: false })).toHaveCount(0);
 
     await page.getByRole("button", { name: "复制 JSON", exact: true }).click();
-    const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+    const clipboard = await page.evaluate(() =>
+      (navigator as Navigator & { clipboard: { readText(): Promise<string> } }).clipboard.readText(),
+    );
     expect.soft(clipboard, "clipboard JSON must not contain the raw canary").not.toContain(CANARY);
 
     const downloadPromise = page.waitForEvent("download");

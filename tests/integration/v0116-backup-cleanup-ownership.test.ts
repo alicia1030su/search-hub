@@ -20,6 +20,10 @@ const directories: string[] = [];
 const migrationsDir = join(process.cwd(), "packages", "db", "migrations");
 const migrations = listMigrations(migrationsDir);
 
+function openDatabase(path: string, readonly: boolean): SqliteHandle {
+  return openDatabaseFile(path, { readonly }) as unknown as SqliteHandle;
+}
+
 async function workspace(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "v0116-backup-cleanup-"));
   directories.push(directory);
@@ -53,7 +57,7 @@ async function createValidPackage(
   } finally {
     db.close();
   }
-  sealSnapshotDatabase(snapshot, openDatabaseFile);
+  sealSnapshotDatabase(snapshot, openDatabase);
   await chmod(snapshot, 0o600);
   if (process.platform === "win32") await restrictWindowsAcl(snapshot, false);
   await writeFile(keyPath, `${key.toString("hex")}\n`, { mode: 0o600 });
