@@ -47,7 +47,13 @@ jobs:
       # This blocks a merge when a README count, a "not implemented" claim or a
       # live_tested claim disagrees with the code.
       - name: Documentation consistency (catalog vs docs)
-        run: pnpm check:matrix && pnpm check:docs
+        run: |
+          pnpm check:matrix
+          mode=interim
+          if [ -f docs/screenshots/v0116/dashboard.png ] && [ -f docs/screenshots/v0116/search-lab.png ] && [ -f docs/screenshots/v0116/provider-health.png ]; then
+            mode=final
+          fi
+          node --import tsx scripts/check-doc-consistency.mjs --mode "$mode"
 
       # The retrieval metrics are the product here: a formula change that moves
       # nDCG on the frozen fixture has to be acknowledged by updating

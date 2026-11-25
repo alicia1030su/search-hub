@@ -22,9 +22,20 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkNodeContract, checkReadmeConsistency, checkReadmeLinks } from "./check-readme-consistency.mjs";
+import { checkNodeContract, checkReadmeConsistency, checkReadmeLinks, SCREENSHOT_FILES } from "./check-readme-consistency.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Resolve the effective README mode. A complete screenshot set always promotes
+ * the gate to final so a captured SHA B cannot silently fall back to interim.
+ * An explicit final request still fails when the screenshots are incomplete.
+ */
+export function resolveReadmeMode({ requestedMode = "interim", root = REPO, fileExists = existsSync } = {}) {
+  if (!["interim", "final"].includes(requestedMode)) throw new Error(`unsupported_readme_mode:${requestedMode}`);
+  const screenshotsPresent = SCREENSHOT_FILES.every((file) => fileExists(join(root, file)));
+  return screenshotsPresent ? "final" : requestedMode;
+}
 
 const problems = [];
 const notes = [];
@@ -50,7 +61,8 @@ let byType = new Map();
  * Exported so a test can call it without spawning a process, and so importing
  * the module never terminates the host.
  */
-export async function main() {
+export async function main({ mode = "interim" } = {}) {
+  const readmeMode = resolveReadmeMode({ requestedMode: mode, root: REPO });
   const catalog = await loadCatalog();
   const adapters = await loadAdapters();
 
@@ -121,7 +133,7 @@ export async function main() {
     deploymentDoc: read("docs/deployment.md"),
     version: pkg.version,
   }));
-  problems.push(...checkReadmeConsistency({ zh: readme, en: readmeEn, version: pkg.version, mode: "interim", root: REPO }));
+  problems.push(...checkReadmeConsistency({ zh: readme, en: readmeEn, version: pkg.version, mode: readmeMode, root: REPO }));
   problems.push(...checkReadmeLinks({ text: readme, label: "README.md", file: "README.md", root: REPO }));
   problems.push(...checkReadmeLinks({ text: readmeEn, label: "README_EN.md", file: "README_EN.md", root: REPO }));
 
@@ -275,7 +287,9 @@ async function loadAdapters() {
 const invokedDirectly =
   process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
 if (invokedDirectly) {
-  const found = await main();
+  const modeIndex = process.argv.indexOf("--mode");
+  const mode = modeIndex >= 0 ? process.argv[modeIndex + 1] : "interim";
+  const found = await main({ mode });
   if (found.length === 0) {
     console.log("PASS: documentation matches the catalog");
     process.exit(0);

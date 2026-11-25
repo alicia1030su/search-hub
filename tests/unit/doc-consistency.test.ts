@@ -1,7 +1,12 @@
 import { execFileSync } from "node:child_process";
-// The script is plain ESM without types; declare the one helper the test uses.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+// The scripts are plain ESM without types; declare the helpers the tests use.
 // @ts-expect-error -- untyped .mjs script, signature declared below
-import { checkCountValue as rawCheckCountValue } from "../../scripts/check-doc-consistency.mjs";
+import { checkCountValue as rawCheckCountValue, resolveReadmeMode as rawResolveReadmeMode } from "../../scripts/check-doc-consistency.mjs";
+// @ts-expect-error -- untyped .mjs script, signature declared below
+import { SCREENSHOT_FILES as rawScreenshotFiles } from "../../scripts/check-readme-consistency.mjs";
 
 const checkCountValue = rawCheckCountValue as (
   text: string,
@@ -10,6 +15,12 @@ const checkCountValue = rawCheckCountValue as (
   expected: number,
   what: string,
 ) => string | null;
+const resolveReadmeMode = rawResolveReadmeMode as (options?: {
+  requestedMode?: "interim" | "final";
+  root?: string;
+  fileExists?: (file: string) => boolean;
+}) => "interim" | "final";
+const SCREENSHOT_FILES = rawScreenshotFiles as string[];
 import { describe, expect, it } from "vitest";
 import { PROVIDER_CATALOG, listAdapters, getAdapter } from "@search-hub/providers";
 
@@ -67,6 +78,21 @@ describe("catalog ↔ docs consistency", () => {
     );
     // A missing phrase is not a contradiction, so it must not fail either.
     expect(checkCountValue("no counts here", "README.md", pattern, builtinCount, "providers")).toBeNull();
+  });
+
+  it("auto-promotes a complete screenshot set without allowing final to downgrade", () => {
+    const root = mkdtempSync(join(tmpdir(), "search-hub-doc-mode-"));
+    try {
+      expect(resolveReadmeMode({ root })).toBe("interim");
+      expect(resolveReadmeMode({ requestedMode: "final", root })).toBe("final");
+      const screenshotDir = join(root, "docs", "screenshots", "v0116");
+      mkdirSync(screenshotDir, { recursive: true });
+      for (const file of SCREENSHOT_FILES) writeFileSync(join(root, file), "fixture");
+      expect(resolveReadmeMode({ requestedMode: "interim", root })).toBe("final");
+      expect(() => resolveReadmeMode({ requestedMode: "invalid" as "interim", root })).toThrow(/unsupported_readme_mode/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("passes the README consistency check", () => {

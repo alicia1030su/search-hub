@@ -106,6 +106,43 @@ describe("README consistency gate", () => {
       .toContain("screenshot file is missing");
   });
 
+  it("rejects old, duplicate, and out-of-scope screenshot links in final mode", () => {
+    const { pkg, zh, en } = actualReadmes();
+    const root = mkdtempSync(join(tmpdir(), "search-hub-readme-paths-"));
+    temporary.push(root);
+    const screenshotDir = join(root, "docs", "screenshots", "v0116");
+    mkdirSync(screenshotDir, { recursive: true });
+    for (const name of ["dashboard.png", "search-lab.png", "provider-health.png"]) {
+      writeFileSync(join(screenshotDir, name), "fixture");
+    }
+    const finalZh = replaceCaptureMarkers(zh, pkg.version);
+    const finalEn = replaceCaptureMarkers(en, pkg.version);
+    const oldVersion = finalZh.replace(
+      "(./docs/screenshots/v0116/dashboard.png)",
+      "(./docs/screenshots/v0115/dashboard.png)",
+    );
+    expect(checkReadmeConsistency({ zh: oldVersion, en: finalEn, version: pkg.version, mode: "final", root }).join("\n"))
+      .toContain("outside the expected set");
+    const duplicate = finalZh.replace(
+      "(./docs/screenshots/v0116/search-lab.png)",
+      "(./docs/screenshots/v0116/dashboard.png)",
+    );
+    expect(checkReadmeConsistency({ zh: duplicate, en: finalEn, version: pkg.version, mode: "final", root }).join("\n"))
+      .toContain("final screenshot links must be exactly");
+    const outOfScope = finalZh.replace(
+      "(./docs/screenshots/v0116/provider-health.png)",
+      "(./docs/screenshots/v0116/../private.png)",
+    );
+    expect(checkReadmeConsistency({ zh: outOfScope, en: finalEn, version: pkg.version, mode: "final", root }).join("\n"))
+      .toContain("outside the expected set");
+    const outsideTree = finalZh.replace(
+      "(./docs/screenshots/v0116/provider-health.png)",
+      "(./assets/dashboard.png)",
+    );
+    expect(checkReadmeConsistency({ zh: outsideTree, en: finalEn, version: pkg.version, mode: "final", root }).join("\n"))
+      .toContain("final screenshot links must be exactly");
+  });
+
   it("rejects untranslated Chinese in the English README", () => {
     const { pkg, zh, en } = actualReadmes();
     const problems = checkReadmeConsistency({ zh, en: `${en}\n中文残留`, version: pkg.version });

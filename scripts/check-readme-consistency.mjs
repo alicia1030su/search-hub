@@ -198,6 +198,20 @@ function checkFactGroups(zh, en, problems) {
   }
 }
 
+function localImageLinkTargets(text) {
+  return extractMarkdownLinks(text)
+    .filter((link) => link.image)
+    .map((link) => {
+      const target = link.target.replace(/^\.\//, "");
+      try {
+        return decodeURIComponent(target);
+      } catch {
+        return target;
+      }
+    })
+    .filter((target) => !/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith("//"));
+}
+
 /** Validate both README files against the release version and screenshot mode. */
 export function checkReadmeConsistency({ zh, en, version, mode = "interim", root = REPO_ROOT, fileExists = existsSync }) {
   const problems = [];
@@ -228,9 +242,13 @@ export function checkReadmeConsistency({ zh, en, version, mode = "interim", root
     }
 
     const placeholders = (text.match(/CAPTURE_REQUIRED/g) ?? []).length;
-    const screenshotLinks = extractMarkdownLinks(text)
-      .filter((link) => link.image && link.target.includes("docs/screenshots/v0116/"))
-      .map((link) => link.target.replace(/^\.\//, ""));
+    const screenshotLinks = localImageLinkTargets(text);
+    const unexpectedScreenshots = screenshotLinks.filter(
+      (target) => target.startsWith("docs/screenshots/") && !SCREENSHOT_FILES.includes(target),
+    );
+    if (unexpectedScreenshots.length > 0) {
+      problems.push(`${label} links screenshots outside the expected set: ${[...new Set(unexpectedScreenshots)].join(", ")}`);
+    }
     if (mode === "interim") {
       if (placeholders !== 3) problems.push(`${label} must contain exactly 3 CAPTURE_REQUIRED placeholders in interim mode`);
       if (screenshotLinks.length !== 0) problems.push(`${label} must not link screenshots before capture in interim mode`);
