@@ -71,6 +71,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Require final README screenshots and links
+        run: node scripts/check-readme-consistency.mjs --mode final
+
       - name: Require only the five exact-SHA main-push workflows
         id: gates
         env:

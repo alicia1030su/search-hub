@@ -1,16 +1,79 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM packaging module
-import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, ghApiArgv, githubRepoApiPath, selectLatestRuns, verifyAnnotatedTag } from "../../packaging/check-release-gates.mjs";
+import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, ghApiArgv, githubRepoApiPath, selectLatestRuns, verifyAnnotatedTag, verifyFinalReadme } from "../../packaging/check-release-gates.mjs";
 
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 const sha = "a".repeat(40);
 const version = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
 const currentTag = `v${version}`;
+const screenshotFiles = [
+  "docs/screenshots/v0116/dashboard.png",
+  "docs/screenshots/v0116/search-lab.png",
+  "docs/screenshots/v0116/provider-health.png",
+];
+const readmeAnchors = [
+  "top", "highlights", "screenshots", "quick-start", "interfaces",
+  "providers", "docs", "limits", "license",
+];
+
+function finalReadme(english: boolean): string {
+  const assets = [
+    `search-hub-v${version}-windows-x64.zip`,
+    `search-hub-v${version}-linux-x64.tar.gz`,
+    `search-hub-v${version}-linux-arm64.tar.gz`,
+    `shub-v${version}-windows-x64.zip`,
+    `shub-v${version}-linux-x64.tar.gz`,
+    `shub-v${version}-linux-arm64.tar.gz`,
+    `shub-v${version}-node22.tar.gz`,
+    "resource-evidence.json",
+    "SHA256SUMS",
+  ];
+  const facts = english
+    ? [
+        "mcp:use sources:read get_search_sources",
+        "Hacker News Crossref OpenAlex PubMed",
+        "live_tested documented mock_verified",
+        "Windows x64 Linux x64 Linux arm64 Docker Compose",
+        "SHA256SUMS resource-evidence.json best-effort",
+        "Multi-instance deployment is not implemented Redis PostgreSQL synthetic fixtures SSE",
+      ]
+    : [
+        "mcp:use sources:read get_search_sources",
+        "Hacker News Crossref OpenAlex PubMed",
+        "live_tested documented mock_verified",
+        "Windows x64 Linux x64 Linux arm64 Docker Compose",
+        "SHA256SUMS resource-evidence.json best-effort",
+        "多实例未实现 Redis PostgreSQL 合成基准 SSE",
+      ];
+  const lines = [
+    "# Search Hub",
+    `v${version} Stable`,
+    `https://github.com/alicia1030su/search-hub/releases/tag/v${version}`,
+    "Node.js >=22.12.0",
+    ...assets,
+    ...facts,
+    ...readmeAnchors.map((anchor) => `<a id="${anchor}"></a>`),
+    ...screenshotFiles.map((file, index) => `![screenshot ${index}](${file})`),
+  ];
+  while (lines.length < 110) lines.push(`Documentation line ${lines.length + 1}.`);
+  return `${lines.join("\n")}\n`;
+}
+
+function finalReadmeFixture(): string {
+  const directory = mkdtempSync(join(tmpdir(), "search-hub-final-readme-"));
+  temporary.push(directory);
+  writeFileSync(join(directory, "package.json"), JSON.stringify({ version, engines: { node: ">=22.12.0" } }));
+  writeFileSync(join(directory, "README.md"), finalReadme(false));
+  writeFileSync(join(directory, "README_EN.md"), finalReadme(true));
+  mkdirSync(join(directory, "docs", "screenshots", "v0116"), { recursive: true });
+  for (const file of screenshotFiles) writeFileSync(join(directory, file), "png-fixture");
+  return directory;
+}
 
 function run(path: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -129,6 +192,32 @@ describe("release gate", () => {
     }
     expect(finalize).not.toContain("name: Publish the already verified Stable draft");
     expect(finalize.match(/gh release edit /g)).toHaveLength(1);
+  });
+
+  it("accepts a final README fixture with three screenshots and valid links", () => {
+    expect(verifyFinalReadme(finalReadmeFixture())).toEqual({ ok: true, version });
+  });
+
+  it("rejects final README capture placeholders", () => {
+    const directory = finalReadmeFixture();
+    writeFileSync(join(directory, "README.md"), `${readFileSync(join(directory, "README.md"), "utf8")}\nCAPTURE_REQUIRED\n`);
+    expect(() => verifyFinalReadme(directory)).toThrow(/CAPTURE_REQUIRED/);
+  });
+
+  it("rejects a final README that links a missing screenshot", () => {
+    const directory = finalReadmeFixture();
+    rmSync(join(directory, screenshotFiles[1]!));
+    expect(() => verifyFinalReadme(directory)).toThrow(/screenshot file is missing/);
+  });
+
+  it("runs the final README gate after exact-SHA checkout and before workflow polling", () => {
+    const candidate = readFileSync(new URL("../../.github/workflows/release-candidate.yml", import.meta.url), "utf8");
+    const checkout = candidate.indexOf("ref: ${{ steps.resolve.outputs.sha }}");
+    const readmeGate = candidate.indexOf("node scripts/check-readme-consistency.mjs --mode final");
+    const workflowGate = candidate.indexOf("name: Require only the five exact-SHA main-push workflows");
+    expect(checkout).toBeGreaterThanOrEqual(0);
+    expect(readmeGate).toBeGreaterThan(checkout);
+    expect(workflowGate).toBeGreaterThan(readmeGate);
   });
 
   it("requires an annotated tag on main with a matching stable version", () => {

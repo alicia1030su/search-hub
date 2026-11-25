@@ -13,6 +13,7 @@ import {
 import { aggregateDisasterRecoveryEvidence } from "./aggregate-disaster-recovery-evidence.mjs";
 import { verifyDisasterRecoveryEvidence } from "./verify-disaster-recovery-evidence.mjs";
 import { verifyEvidence } from "./verify-resource-evidence.mjs";
+import { checkNodeContract, checkReadmeConsistency, checkReadmeLinks } from "../scripts/check-readme-consistency.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const REQUIRED_WORKFLOWS = Object.freeze({
@@ -90,6 +91,29 @@ export function evaluateRuns(runs, sha, options = {}) {
     if (!selected.has(workflowPath)) pending.push({ workflowPath, run: null });
   }
   return { ready, pending, failed, allGreen: ready.length === Object.keys(required).length };
+}
+
+export function verifyFinalReadme(repoRoot = REPO_ROOT) {
+  const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  const zh = readFileSync(path.join(repoRoot, "README.md"), "utf8");
+  const en = readFileSync(path.join(repoRoot, "README_EN.md"), "utf8");
+  const cliPath = path.join(repoRoot, "docs", "cli.md");
+  const deploymentPath = path.join(repoRoot, "docs", "deployment.md");
+  const problems = [
+    ...checkNodeContract({
+      engine: pkg.engines?.node,
+      zh,
+      en,
+      cliDoc: existsSync(cliPath) ? readFileSync(cliPath, "utf8") : undefined,
+      deploymentDoc: existsSync(deploymentPath) ? readFileSync(deploymentPath, "utf8") : undefined,
+      version: pkg.version,
+    }),
+    ...checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root: repoRoot }),
+    ...checkReadmeLinks({ text: zh, label: "README.md", file: "README.md", root: repoRoot }),
+    ...checkReadmeLinks({ text: en, label: "README_EN.md", file: "README_EN.md", root: repoRoot }),
+  ];
+  if (problems.length > 0) throw new Error(`final_readme_invalid: ${problems.join(" | ")}`);
+  return { ok: true, version: pkg.version };
 }
 
 export function verifyAnnotatedTag(repoRoot, tag, expectedVersion = null) {
@@ -298,6 +322,7 @@ async function main() {
         rmSync(candidateTemporary, { recursive: true, force: true });
       }
     }
+    if (phase === "preflight" || phase === "tag") verifyFinalReadme(REPO_ROOT);
     if (phase === "tag") verifyRemoteTag(repoSlug, tagInfo, env);
     const reportPath = arg("report", path.join(REPO_ROOT, "artifacts", `v${version}`, phase === "candidate" ? "candidate-gate.json" : "release-gate.json"));
     const report = {
