@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM documentation gate
-import { checkNodeContract, checkReadmeConsistency, countPhysicalLines, README_ANCHORS } from "../../scripts/check-readme-consistency.mjs";
+import { checkNodeContract, checkReadmeConsistency, countPhysicalLines, main as checkReadmeMain, README_ANCHORS, resolveReadmeMode } from "../../scripts/check-readme-consistency.mjs";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 const temporary: string[] = [];
@@ -32,15 +32,45 @@ function replaceCaptureMarkers(text: string, version: string) {
   return text.replace(pattern, (_match, file: string) => `![Search Hub screenshot](./${file})`);
 }
 
+function finalScreenshotRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "search-hub-readme-final-"));
+  temporary.push(root);
+  const screenshotDir = join(root, "docs", "screenshots", "v0116");
+  mkdirSync(screenshotDir, { recursive: true });
+  for (const name of ["dashboard.png", "search-lab.png", "provider-health.png"]) {
+    writeFileSync(join(screenshotDir, name), "fixture");
+  }
+  return root;
+}
+
 describe("README consistency gate", () => {
-  it("accepts the real bilingual READMEs in interim mode", () => {
+  it("accepts the real bilingual READMEs in auto mode", async () => {
     const { pkg, zh, en, cliDoc, deploymentDoc } = actualReadmes();
-    expect(checkReadmeConsistency({ zh, en, version: pkg.version, mode: "interim", root: ROOT })).toEqual([]);
+    expect(await checkReadmeMain({ mode: "auto", root: ROOT })).toEqual([]);
     expect(checkNodeContract({ engine: pkg.engines.node, zh, en, cliDoc, deploymentDoc, version: pkg.version })).toEqual([]);
     expect(countPhysicalLines(zh)).toBeGreaterThanOrEqual(100);
     expect(countPhysicalLines(zh)).toBeLessThanOrEqual(150);
     expect(countPhysicalLines(en)).toBeGreaterThanOrEqual(100);
     expect(countPhysicalLines(en)).toBeLessThanOrEqual(150);
+  });
+
+  it("accepts interim README content when auto mode resolves to interim", () => {
+    const { pkg, zh, en } = actualReadmes();
+    const root = mkdtempSync(join(tmpdir(), "search-hub-readme-auto-interim-"));
+    temporary.push(root);
+    const mode = resolveReadmeMode({ root, requested: "auto" });
+    expect(mode).toBe("interim");
+    expect(checkReadmeConsistency({ zh, en, version: pkg.version, mode, root })).toEqual([]);
+  });
+
+  it("accepts final README content when auto mode resolves to final", () => {
+    const { pkg, zh, en } = actualReadmes();
+    const root = finalScreenshotRoot();
+    const finalZh = replaceCaptureMarkers(zh, pkg.version);
+    const finalEn = replaceCaptureMarkers(en, pkg.version);
+    const mode = resolveReadmeMode({ root, requested: "auto" });
+    expect(mode).toBe("final");
+    expect(checkReadmeConsistency({ zh: finalZh, en: finalEn, version: pkg.version, mode, root })).toEqual([]);
   });
 
   it("rejects a stale Node engine or missing portable CLI contract", () => {
@@ -89,13 +119,7 @@ describe("README consistency gate", () => {
 
   it("requires zero placeholders and three real files in final mode", () => {
     const { pkg, zh, en } = actualReadmes();
-    const root = mkdtempSync(join(tmpdir(), "search-hub-readme-final-"));
-    temporary.push(root);
-    const screenshotDir = join(root, "docs", "screenshots", "v0116");
-    mkdirSync(screenshotDir, { recursive: true });
-    for (const name of ["dashboard.png", "search-lab.png", "provider-health.png"]) {
-      writeFileSync(join(screenshotDir, name), "fixture");
-    }
+    const root = finalScreenshotRoot();
     const finalZh = replaceCaptureMarkers(zh, pkg.version);
     const finalEn = replaceCaptureMarkers(en, pkg.version);
     expect(checkReadmeConsistency({ zh: finalZh, en: finalEn, version: pkg.version, mode: "final", root })).toEqual([]);
