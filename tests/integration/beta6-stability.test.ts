@@ -442,6 +442,20 @@ describe("task ownership", () => {
     expect(controller.signal.aborted).toBe(true);
   });
 
+  it("BUG-0116-03 trusted bypass cancels an in-memory task without a database row", async () => {
+    const harness = await createHarness();
+    const taskId = "task-in-memory-trusted-bypass";
+    const controller = new AbortController();
+    const controllers = (harness.ctx.search as unknown as { controllers: Map<string, AbortController> }).controllers;
+    controllers.set(taskId, controller);
+    expect(harness.ctx.search.getTask(taskId)).toBeNull();
+
+    expect(harness.ctx.search.cancel(taskId, "token:bob")).toBe(false);
+    expect(controller.signal.aborted).toBe(false);
+    expect(harness.ctx.search.cancel(taskId, undefined)).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
   it("BUG-0116-03 an owner token can still cancel its own task", async () => {
     const harness = await createHarness();
     const taskId = "task-owned-alice";
