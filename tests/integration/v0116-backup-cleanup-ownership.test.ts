@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import {
 } from "@search-hub/backup";
 import type { AppContext } from "../../apps/api/src/context.js";
 import { BackupPackageService } from "../../apps/api/src/services/backup-package.js";
+import { uploadOwnerNamespace } from "../../apps/api/src/services/backup.js";
 
 const execFileAsync = promisify(execFile);
 const directories: string[] = [];
@@ -38,6 +39,32 @@ async function currentAppVersion(): Promise<string> {
   return pkg.version as string;
 }
 
+function shortLivedPid(): number {
+  const child = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
+  expect(child.error).toBeUndefined();
+  expect(child.status).toBe(0);
+  expect(child.pid).toBeTypeOf("number");
+  return child.pid!;
+}
+
+async function pruneUploadsInSubprocess(root: string, namespace: string): Promise<{ directory: string; removed: number }> {
+  const script = [
+    'import { tmpdir } from "node:os";',
+    'import { pruneStaleUploads } from "./apps/api/src/services/backup.ts";',
+    `const removed = await pruneStaleUploads(${JSON.stringify(namespace)});`,
+    "process.stdout.write(JSON.stringify({ directory: tmpdir(), removed }));",
+  ].join("\n");
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", script],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, TEMP: root, TMP: root, TMPDIR: root },
+    },
+  );
+  return JSON.parse(stdout) as { directory: string; removed: number };
+}
+
 async function createValidPackage(
   root: string,
   dataDir: string,
@@ -46,6 +73,10 @@ async function createValidPackage(
 ): Promise<string> {
   await mkdir(dataDir, { recursive: true });
   await mkdir(installDir, { recursive: true });
+  if (process.platform === "win32") {
+    await restrictWindowsAcl(root, true);
+    await restrictWindowsAcl(dataDir, true);
+  }
   const source = join(dataDir, "source.db");
   const snapshot = join(root, "snapshot.db");
   const keyPath = join(dataDir, "master.key");
@@ -92,29 +123,78 @@ describe("backup cleanup ownership", () => {
     const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
     await utimes(foreign, old, old);
 
-    // os.tmpdir() reads TEMP/TMP on Windows and TMPDIR on POSIX. Run the
-    // cleanup in a child process so no other test in this worker observes the
-    // temporary environment override.
-    const script = [
-      'import { tmpdir } from "node:os";',
-      'import { pruneStaleUploads } from "./apps/api/src/services/backup.ts";',
-      "const removed = await pruneStaleUploads();",
-      "process.stdout.write(JSON.stringify({ directory: tmpdir(), removed }));",
-    ].join("\n");
-    const { stdout } = await execFileAsync(
-      process.execPath,
-      ["--import", "tsx", "--input-type=module", "--eval", script],
-      {
-        cwd: process.cwd(),
-        env: { ...process.env, TEMP: root, TMP: root, TMPDIR: root },
-      },
-    );
-    const outcome = JSON.parse(stdout) as { directory: string; removed: number };
+    // Run cleanup in a child process so no other test observes the TEMP override.
+    const outcome = await pruneUploadsInSubprocess(root, uploadOwnerNamespace(root));
 
     expect(outcome.directory).toBe(root);
     expect(outcome.removed).toBe(0);
     expect(await readFile(sentinel, "utf8")).toBe("foreign-owner-data");
   });
+
+  it("BACKUP-CLEANUP-03 preserves a valid marker owned by a foreign namespace", async () => {
+    const root = await workspace();
+    const foreign = join(root, "search-hub-upload-foreign-namespace");
+    await mkdir(foreign);
+    const sentinel = join(foreign, "keep.txt");
+    await writeFile(sentinel, "foreign-namespace-data");
+    await writeFile(join(foreign, ".search-hub-owner.json"), JSON.stringify({
+      schema: 1,
+      namespace: "f".repeat(64),
+      kind: "upload",
+      pid: shortLivedPid(),
+      processStartedAt: null,
+      createdAt: new Date().toISOString(),
+    }));
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(foreign, old, old);
+
+    const outcome = await pruneUploadsInSubprocess(root, uploadOwnerNamespace(root));
+
+    expect(outcome.removed).toBe(0);
+    expect(await readFile(sentinel, "utf8")).toBe("foreign-namespace-data");
+  });
+
+  it("BACKUP-CLEANUP-04 preserves a malformed owner marker", async () => {
+    const root = await workspace();
+    const malformed = join(root, "search-hub-upload-malformed");
+    await mkdir(malformed);
+    const sentinel = join(malformed, "keep.txt");
+    await writeFile(sentinel, "malformed-marker-data");
+    await writeFile(join(malformed, ".search-hub-owner.json"), "{not-json");
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(malformed, old, old);
+
+    const outcome = await pruneUploadsInSubprocess(root, uploadOwnerNamespace(root));
+
+    expect(outcome.removed).toBe(0);
+    expect(await readFile(sentinel, "utf8")).toBe("malformed-marker-data");
+  });
+
+  it.skipIf(process.platform === "linux")(
+    "BACKUP-CLEANUP-05 preserves a live PID when start time is unavailable",
+    async () => {
+      const root = await workspace();
+      const live = join(root, "search-hub-upload-live");
+      await mkdir(live);
+      const sentinel = join(live, "keep.txt");
+      await writeFile(sentinel, "live-owner-data");
+      await writeFile(join(live, ".search-hub-owner.json"), JSON.stringify({
+        schema: 1,
+        namespace: uploadOwnerNamespace(root),
+        kind: "upload",
+        pid: process.pid,
+        processStartedAt: "0",
+        createdAt: new Date().toISOString(),
+      }));
+      const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      await utimes(live, old, old);
+
+      const outcome = await pruneUploadsInSubprocess(root, uploadOwnerNamespace(root));
+
+      expect(outcome.removed).toBe(0);
+      expect(await readFile(sentinel, "utf8")).toBe("live-owner-data");
+    },
+  );
 
   it("BACKUP-CLEANUP-02 follows the current crash-orphan contract for a sidecar-less package", async () => {
     const root = await workspace();
@@ -160,7 +240,7 @@ describe("backup cleanup ownership", () => {
     });
   }
 
-  it("BACKUP-LOCK-01 allows dry-run when PID is reused with a different process start time", async () => {
+  it.skipIf(process.platform !== "linux")("BACKUP-LOCK-01 allows dry-run when PID is reused with a different process start time", async () => {
     const fixture = await createRestoreFixture();
     await writeFile(join(fixture.sourceDataDir, "launcher.lock"), JSON.stringify({
       pid: process.pid,
@@ -174,6 +254,29 @@ describe("backup cleanup ownership", () => {
     expect(result.report.restoreReadiness).toBe(true);
     expect(await readdir(fixture.targetDir)).toEqual([]);
   });
+
+  it.skipIf(process.platform === "linux")(
+    "BACKUP-LOCK-01 keeps legacy PID-only locks active on non-Linux platforms",
+    async () => {
+      const fixture = await createRestoreFixture();
+      await writeFile(join(fixture.sourceDataDir, "launcher.lock"), JSON.stringify({ pid: process.pid }));
+      await expect(restoreDryRun(fixture)).rejects.toThrow(/active Search Hub lock/i);
+      expect(await readdir(fixture.targetDir)).toEqual([]);
+    },
+  );
+
+  it.skipIf(process.platform === "linux")(
+    "BACKUP-LOCK-01 keeps a live PID active when start time cannot be read",
+    async () => {
+      const fixture = await createRestoreFixture();
+      await writeFile(join(fixture.sourceDataDir, "launcher.lock"), JSON.stringify({
+        pid: process.pid,
+        processStartedAt: "0",
+      }));
+      await expect(restoreDryRun(fixture)).rejects.toThrow(/active Search Hub lock/i);
+      expect(await readdir(fixture.targetDir)).toEqual([]);
+    },
+  );
 
   it.skipIf(process.platform !== "linux")(
     "BACKUP-LOCK-01 still rejects a live process with a matching start time",

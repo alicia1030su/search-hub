@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { createDb, openDatabaseFile } from "@search-hub/db";
 import { buildApp } from "../../apps/api/src/app.js";
 import { createContext, type AppContext } from "../../apps/api/src/context.js";
 import { loadConfig, type AppConfig } from "../../apps/api/src/config.js";
-import { checkIntegrity, createDatabaseSnapshot, pruneStaleUploads, schemaCompatibility } from "../../apps/api/src/services/backup.js";
+import { checkIntegrity, createDatabaseSnapshot, pruneStaleUploads, schemaCompatibility, uploadOwnerNamespace } from "../../apps/api/src/services/backup.js";
 
 interface Harness {
   app: FastifyInstance;
@@ -149,7 +150,7 @@ function poisonAsNewerVersion(sourcePath: string, targetPath: string): string {
 }
 
 describe("SQLite snapshot consistency", () => {
-  it("removes stale owned upload staging but preserves fresh requests", async () => {
+  it("removes stale dead-owner staging but preserves live-owner staging", async () => {
     const root = mkdtempSync(join(tmpdir(), "search-hub-upload-cleanup-"));
     const previous = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
     process.env.TEMP = root;
@@ -157,13 +158,38 @@ describe("SQLite snapshot consistency", () => {
     process.env.TMPDIR = root;
     try {
       const { mkdirSync, utimesSync } = await import("node:fs");
-      mkdirSync(join(root, "search-hub-upload-stale"));
-      mkdirSync(join(root, "search-hub-upload-fresh"));
+      const child = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(0);
+      expect(child.pid).toBeTypeOf("number");
+      const deadPid = child.pid!;
+      const namespace = uploadOwnerNamespace(root);
+      const stale = join(root, "search-hub-upload-stale");
+      const live = join(root, "search-hub-upload-live");
+      mkdirSync(stale);
+      mkdirSync(live);
+      writeFileSync(join(stale, ".search-hub-owner.json"), JSON.stringify({
+        schema: 1,
+        namespace,
+        kind: "upload",
+        pid: deadPid,
+        processStartedAt: null,
+        createdAt: new Date().toISOString(),
+      }));
+      writeFileSync(join(live, ".search-hub-owner.json"), JSON.stringify({
+        schema: 1,
+        namespace,
+        kind: "upload",
+        pid: process.pid,
+        processStartedAt: null,
+        createdAt: new Date().toISOString(),
+      }));
       const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
-      utimesSync(join(root, "search-hub-upload-stale"), old, old);
-      expect(await pruneStaleUploads()).toBe(1);
-      expect(() => statSync(join(root, "search-hub-upload-stale"))).toThrow();
-      expect(statSync(join(root, "search-hub-upload-fresh")).isDirectory()).toBe(true);
+      utimesSync(stale, old, old);
+      utimesSync(live, old, old);
+      expect(await pruneStaleUploads(namespace)).toBe(1);
+      expect(() => statSync(stale)).toThrow();
+      expect(statSync(live).isDirectory()).toBe(true);
     } finally {
       if (previous.TEMP === undefined) delete process.env.TEMP; else process.env.TEMP = previous.TEMP;
       if (previous.TMP === undefined) delete process.env.TMP; else process.env.TMP = previous.TMP;

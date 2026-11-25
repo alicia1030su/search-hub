@@ -1,14 +1,14 @@
 import { createReadStream, rmSync } from "node:fs";
-import { lstat, mkdir, open, readdir, rename, rm, stat, utimes } from "node:fs/promises";
-import { randomBytes, randomUUID } from "node:crypto";
+import { lstat, mkdir, open, readdir, readFile, rename, rm, stat, utimes } from "node:fs/promises";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { SearchHubError } from "@search-hub/shared";
 import { listMigrations, openDatabaseFile } from "@search-hub/db";
 import type { AppContext } from "../context.js";
 import { authenticate, requireAdmin } from "../auth.js";
-import { createPrivateDirectory, openPrivateFile } from "@search-hub/backup";
+import { createPrivateDirectory, isProcessAlive, openPrivateFile, readProcessStartTime } from "@search-hub/backup";
 
 /**
  * Database snapshots.
@@ -549,12 +549,50 @@ export const BACKUP_VERIFY_PATH = "/api/admin/backup/verify";
 export const BACKUP_PACKAGE_VERIFY_PATH = "/api/admin/backup/package/verify";
 const MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
 const MAX_PASSPHRASE_FIELD_BYTES = 16 * 1024;
+const UPLOAD_OWNER_MARKER = ".search-hub-owner.json";
 let reservedVerifyBytes = 0;
 let activeVerifyUploads = 0;
 
 interface UploadReservation {
   bytes: number;
   release: () => void;
+}
+
+interface UploadOwnerMarker {
+  schema: 1;
+  namespace: string;
+  kind: "upload" | "package-verify";
+  pid: number;
+  processStartedAt: string | null;
+  createdAt: string;
+}
+
+export function uploadOwnerNamespace(dataDir: string, platform: NodeJS.Platform = process.platform): string {
+  const resolved = resolve(dataDir);
+  const normalized = platform === "win32" ? resolved.toLowerCase() : resolved;
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+export async function writeUploadOwnerMarker(
+  directory: string,
+  kind: UploadOwnerMarker["kind"],
+  dataDir: string,
+): Promise<void> {
+  const marker: UploadOwnerMarker = {
+    schema: 1,
+    namespace: uploadOwnerNamespace(dataDir),
+    kind,
+    pid: process.pid,
+    processStartedAt: await readProcessStartTime(process.pid),
+    createdAt: new Date().toISOString(),
+  };
+  const handle = await openPrivateFile(join(directory, UPLOAD_OWNER_MARKER));
+  try {
+    await handle.writeFile(`${JSON.stringify(marker)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 function reserveUpload(request: FastifyRequest, ctx: AppContext, packageUpload: boolean): UploadReservation {
@@ -603,8 +641,9 @@ function heartbeatDirectory(directory: string): () => void {
   return () => clearInterval(timer);
 }
 
-/** Removes old, owner-randomized upload staging left by a killed API process. */
-export async function pruneStaleUploads(maxAgeMs = 60 * 60 * 1000): Promise<number> {
+/** Removes old, owner-marked upload staging left by a killed API process. */
+export async function pruneStaleUploads(namespace: string, maxAgeMs = 60 * 60 * 1000): Promise<number> {
+  if (!namespace) return 0;
   let names: string[] = [];
   try { names = await readdir(tmpdir()); } catch { return 0; }
   const cutoff = Date.now() - maxAgeMs;
@@ -615,9 +654,24 @@ export async function pruneStaleUploads(maxAgeMs = 60 * 60 * 1000): Promise<numb
     try {
       const info = await lstat(path);
       if (info.isSymbolicLink() || !info.isDirectory() || info.mtimeMs >= cutoff) continue;
+      const markerPath = join(path, UPLOAD_OWNER_MARKER);
+      const markerInfo = await lstat(markerPath);
+      if (markerInfo.isSymbolicLink() || !markerInfo.isFile() || markerInfo.size > 4096) continue;
+      const marker = JSON.parse(await readFile(markerPath, "utf8")) as Partial<UploadOwnerMarker>;
+      const expectedKind = name.startsWith("search-hub-upload-") ? "upload" : "package-verify";
+      if (marker.schema !== 1 || marker.namespace !== namespace || marker.kind !== expectedKind ||
+          typeof marker.pid !== "number" || !Number.isSafeInteger(marker.pid) || marker.pid <= 0 ||
+          typeof marker.createdAt !== "string" || !Number.isFinite(Date.parse(marker.createdAt)) ||
+          (marker.processStartedAt !== undefined && marker.processStartedAt !== null && typeof marker.processStartedAt !== "string")) continue;
+      let stale = !isProcessAlive(marker.pid);
+      if (!stale && typeof marker.processStartedAt === "string" && marker.processStartedAt.length > 0) {
+        const actual = await readProcessStartTime(marker.pid);
+        stale = actual !== null && actual !== marker.processStartedAt;
+      }
+      if (!stale) continue;
       await rm(path, { recursive: true, force: true });
       removed += 1;
-    } catch { /* a live request owns fresh directories */ }
+    } catch { /* unmarked, malformed, foreign, or live-owned directories are preserved */ }
   }
   return removed;
 }
@@ -661,7 +715,7 @@ export function registerBackupUploadParser(app: FastifyInstance, ctx: AppContext
         done(error instanceof Error ? error : new Error(String(error)));
         return;
       }
-      void receiveSnapshotUpload(payload, ctx.config.maxBackupUploadBytes, reservation).then(
+      void receiveSnapshotUpload(payload, ctx.config.maxBackupUploadBytes, reservation, ctx.config.dataDir).then(
         (upload) => done(null, upload),
         (error: unknown) => done(error instanceof Error ? error : new Error(String(error))),
       );
@@ -674,7 +728,7 @@ export function registerBackupUploadParser(app: FastifyInstance, ctx: AppContext
       reservation = parsed.reservation;
       const boundary = multipartBoundary(request.headers["content-type"]);
       const packageUpload = parsed.pathname === BACKUP_PACKAGE_VERIFY_PATH;
-      void receiveMultipartSnapshot(payload, boundary, ctx.config.maxBackupUploadBytes, reservation, packageUpload).then(
+      void receiveMultipartSnapshot(payload, boundary, ctx.config.maxBackupUploadBytes, reservation, packageUpload, ctx.config.dataDir).then(
         (upload) => done(null, upload),
         (error: unknown) => done(error instanceof Error ? error : new Error(String(error))),
       );
@@ -710,6 +764,7 @@ async function receiveMultipartSnapshot(
   limitBytes: number,
   reservation: UploadReservation,
   packageUpload: boolean,
+  dataDir: string,
 ): Promise<UploadedSnapshot | UploadedBackupPackage> {
   let directory = "";
   let stopHeartbeat: (() => void) | undefined;
@@ -721,6 +776,7 @@ async function receiveMultipartSnapshot(
   };
   try {
     directory = await createPrivateDirectory(tmpdir(), packageUpload ? "search-hub-package-verify-" : "search-hub-upload-");
+    await writeUploadOwnerMarker(directory, packageUpload ? "package-verify" : "upload", dataDir);
     stopHeartbeat = heartbeatDirectory(directory);
     const filePath = join(directory, `${randomUUID()}${packageUpload ? ".shbackup" : ".db"}`);
     const marker = Buffer.from(`--${boundary}`);
@@ -848,6 +904,7 @@ async function receiveSnapshotUpload(
   stream: NodeJS.ReadableStream,
   limitBytes: number,
   reservation: UploadReservation,
+  dataDir: string,
 ): Promise<UploadedSnapshot> {
   let directory = "";
   let stopHeartbeat: (() => void) | undefined;
@@ -859,6 +916,7 @@ async function receiveSnapshotUpload(
   };
   try {
     directory = await createPrivateDirectory(tmpdir(), "search-hub-upload-");
+    await writeUploadOwnerMarker(directory, "upload", dataDir);
     stopHeartbeat = heartbeatDirectory(directory);
     const filePath = join(directory, `${randomUUID()}.db`);
     let bytes = 0;
