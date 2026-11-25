@@ -491,10 +491,16 @@ export class SearchService {
    * Cancels a running task. `actor` is optional only for internal callers; the
    * HTTP route always passes it so one token cannot abort another's search.
    */
-  cancel(taskId: string, actor?: string): boolean {
+  cancel(
+    taskId: string,
+    actor?: string,
+    options: { allowUnowned?: boolean } = {},
+  ): boolean {
     if (actor !== undefined) {
       const task = this.getTask(taskId);
-      if (task && task.actor !== null && task.actor !== actor) return false;
+      if (!task || (task.actor !== actor && !(task.actor === null && options.allowUnowned))) {
+        return false;
+      }
     }
     const controller = this.controllers.get(taskId);
     if (!controller) return false;

@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { SearchHubError, searchRequestSchema } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
 import { authenticate, actorLabel } from "../auth.js";
-import { jsonFor, parseInput } from "../http.js";
+import { audit, jsonFor, parseInput } from "../http.js";
 
 export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): void {
   const execute = async (request: FastifyRequest, body: unknown) => {
@@ -58,7 +58,7 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
       // Task contents are per-caller data: a token must not read another
       // caller's query or results just because it guessed the id.
       const owner = actorLabel(actor);
-      if (task.actor !== null && task.actor !== owner) {
+      if (task.actor === null ? actor.type !== "admin" : task.actor !== owner) {
         throw new SearchHubError("not_found", `Search task ${id} not found`);
       }
       const { actor: _owner, ...visible } = task;
@@ -79,7 +79,19 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
         { scope: "search", mutation: true },
       );
       const { id } = request.params as { id: string };
-      const cancelled = ctx.search.cancel(id, actorLabel(actor));
+      const task = ctx.search.getTask(id);
+      const privileged = actor.type === "admin";
+      const cancelled = ctx.search.cancel(id, actorLabel(actor), { allowUnowned: privileged });
+      if (cancelled && privileged && task?.actor === null) {
+        audit(
+          ctx,
+          actorLabel(actor),
+          "search.task.cancel.unowned",
+          id,
+          { taskId: id, privileged: true, unowned: true },
+          request.ip,
+        );
+      }
       return { ok: cancelled, taskId: id };
     }),
   );

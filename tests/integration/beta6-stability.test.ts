@@ -395,6 +395,186 @@ describe("task ownership", () => {
     return { alice: await mint("alice"), bob: await mint("bob") };
   }
 
+  function insertUnownedTask(harness: Harness, id: string, status: "running" | "completed"): void {
+    const now = new Date().toISOString();
+    harness.ctx.db
+      .insert(searchTasks)
+      .values({
+        id,
+        query: "unowned private query",
+        mode: "basic",
+        status,
+        providersJson: "[]",
+        resultCount: 0,
+        rawCount: 0,
+        durationMs: null,
+        requestJson: JSON.stringify({ query: "unowned private query" }),
+        actor: null,
+        createdAt: now,
+        finishedAt: status === "completed" ? now : null,
+      })
+      .run();
+  }
+
+  it("BUG-0116-03 service cancel denies an unowned task to another actor", async () => {
+    const harness = await createHarness();
+    const taskId = "task-unowned-service";
+    insertUnownedTask(harness, taskId, "running");
+    const controller = new AbortController();
+    const controllers = (harness.ctx.search as unknown as { controllers: Map<string, AbortController> }).controllers;
+    controllers.set(taskId, controller);
+
+    const cancelled = harness.ctx.search.cancel(taskId, "token:bob");
+
+    expect(cancelled).toBe(false);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("BUG-0116-03 internal trusted bypass can cancel an unowned task", async () => {
+    const harness = await createHarness();
+    const taskId = "task-unowned-internal";
+    insertUnownedTask(harness, taskId, "running");
+    const controller = new AbortController();
+    const controllers = (harness.ctx.search as unknown as { controllers: Map<string, AbortController> }).controllers;
+    controllers.set(taskId, controller);
+
+    expect(harness.ctx.search.cancel(taskId, undefined)).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  it("BUG-0116-03 an owner token can still cancel its own task", async () => {
+    const harness = await createHarness();
+    const taskId = "task-owned-alice";
+    const now = new Date().toISOString();
+    harness.ctx.db.insert(searchTasks).values({
+      id: taskId,
+      query: "alice query",
+      mode: "basic",
+      status: "running",
+      providersJson: "[]",
+      resultCount: 0,
+      rawCount: 0,
+      durationMs: null,
+      requestJson: "{}",
+      actor: "token:alice",
+      createdAt: now,
+      finishedAt: null,
+    }).run();
+    const controller = new AbortController();
+    const controllers = (harness.ctx.search as unknown as { controllers: Map<string, AbortController> }).controllers;
+    controllers.set(taskId, controller);
+
+    expect(harness.ctx.search.cancel(taskId, "token:alice")).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  it("BUG-0116-03 HTTP read and cancel deny an unowned task to token:bob", async () => {
+    const harness = await createHarness();
+    const { bob } = await tokens(harness);
+    const completedId = "task-unowned-completed";
+    const runningId = "task-unowned-running";
+    insertUnownedTask(harness, completedId, "completed");
+    insertUnownedTask(harness, runningId, "running");
+    const controller = new AbortController();
+    const controllers = (harness.ctx.search as unknown as { controllers: Map<string, AbortController> }).controllers;
+    controllers.set(runningId, controller);
+
+    const read = await harness.app.inject({
+      method: "GET",
+      url: `/api/search/tasks/${completedId}`,
+      headers: { authorization: `Bearer ${bob}` },
+    });
+    const cancel = await harness.app.inject({
+      method: "POST",
+      url: `/api/search/tasks/${runningId}/cancel`,
+      headers: { authorization: `Bearer ${bob}` },
+    });
+
+    expect(read.statusCode).toBe(404);
+    expect(read.body).not.toContain("unowned private query");
+    expect(cancel.json().ok).toBe(false);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("BUG-0116-03 an admin-issued Bearer token cannot read or cancel a null task", async () => {
+    const harness = await createHarness();
+    const minted = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/tokens",
+      ...adminHeaders(harness),
+      payload: { name: "admin-bearer", scopes: ["search"], rateLimitPerMin: 600 },
+    });
+    expect(minted.statusCode).toBe(200);
+    const adminBearer = minted.json().token as string;
+    expect(harness.ctx.authDeps.tokens.verify(adminBearer)?.type).toBe("token");
+    const completedId = "task-unowned-admin-bearer-completed";
+    const runningId = "task-unowned-admin-bearer-running";
+    insertUnownedTask(harness, completedId, "completed");
+    insertUnownedTask(harness, runningId, "running");
+    const controller = new AbortController();
+    const controllers = (harness.ctx.search as unknown as { controllers: Map<string, AbortController> }).controllers;
+    controllers.set(runningId, controller);
+
+    const read = await harness.app.inject({
+      method: "GET",
+      url: `/api/search/tasks/${completedId}`,
+      headers: { authorization: `Bearer ${adminBearer}` },
+    });
+    const cancel = await harness.app.inject({
+      method: "POST",
+      url: `/api/search/tasks/${runningId}/cancel`,
+      headers: { authorization: `Bearer ${adminBearer}` },
+    });
+
+    expect(read.statusCode).toBe(404);
+    expect(read.body).not.toContain("unowned private query");
+    expect(cancel.json().ok).toBe(false);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("BUG-0116-03 admin session can read and cancel a null legacy task", async () => {
+    const harness = await createHarness();
+    const completedId = "task-unowned-admin-completed";
+    const runningId = "task-unowned-admin-running";
+    insertUnownedTask(harness, completedId, "completed");
+    insertUnownedTask(harness, runningId, "running");
+    const controller = new AbortController();
+    const controllers = (harness.ctx.search as unknown as { controllers: Map<string, AbortController> }).controllers;
+    controllers.set(runningId, controller);
+
+    const read = await harness.app.inject({
+      method: "GET",
+      url: `/api/search/tasks/${completedId}`,
+      cookies: { sh_session: harness.cookie },
+    });
+    const cancel = await harness.app.inject({
+      method: "POST",
+      url: `/api/search/tasks/${runningId}/cancel`,
+      ...adminHeaders(harness),
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(cancel.json().ok).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+
+    const auditRows = harness.ctx.sqlite
+      .prepare("SELECT actor, action, target, detail_json FROM audit_logs WHERE target = ?")
+      .all(runningId) as Array<{ actor: string; action: string; target: string; detail_json: string | null }>;
+    expect(auditRows).toHaveLength(1);
+    const [auditRow] = auditRows;
+    expect(auditRow).toMatchObject({
+      actor: "admin:admin@example.com",
+      action: "search.task.cancel.unowned",
+      target: runningId,
+    });
+    const auditDetail = JSON.parse(auditRow!.detail_json ?? "{}") as Record<string, unknown>;
+    expect(auditDetail).toMatchObject({ taskId: runningId, privileged: true, unowned: true });
+    const serializedAudit = JSON.stringify(auditRow);
+    expect(serializedAudit).not.toContain("unowned private query");
+    expect(serializedAudit).not.toContain(harness.cookie);
+    expect(serializedAudit).not.toContain(harness.csrf);
+  });
+
   it("does not expose one token's task to another token", async () => {
     const harness = await createHarness();
     await addMock(harness, "owner-mock", { resultCount: 2 });
