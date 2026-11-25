@@ -24,6 +24,17 @@ export const REQUIRED_WORKFLOWS = Object.freeze({
 });
 export const PREFLIGHT_WORKFLOWS = Object.freeze({ ...REQUIRED_WORKFLOWS, [CANDIDATE_WORKFLOW]: "Release candidate" });
 
+export function githubRepoApiPath(repoSlug, ...segments) {
+  const repoParts = String(repoSlug).split("/");
+  if (repoParts.length !== 2 || repoParts.some((part) => !part)) throw new Error("github_repo_slug_invalid");
+  return ["repos", ...repoParts, ...segments].map((part) => encodeURIComponent(String(part))).join("/");
+}
+
+export function ghApiArgv(endpoint) {
+  if (typeof endpoint !== "string" || !endpoint || /\s/.test(endpoint)) throw new Error("github_api_endpoint_invalid");
+  return ["api", endpoint];
+}
+
 function arg(name, fallback = null) {
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : fallback;
@@ -96,13 +107,14 @@ export function verifyAnnotatedTag(repoRoot, tag, expectedVersion = null) {
 }
 
 function listRuns(repoSlug, sha, env) {
-  const pages = JSON.parse(run("gh", ["api", "--paginate", "--slurp", `repos/${repoSlug}/actions/runs?head_sha=${sha}&per_page=100`], { env }));
+  const endpoint = `${githubRepoApiPath(repoSlug, "actions", "runs")}?head_sha=${encodeURIComponent(sha)}&per_page=100`;
+  const pages = JSON.parse(run("gh", ["api", "--paginate", "--slurp", endpoint], { env }));
   return pages.flatMap((page) => Array.isArray(page.workflow_runs) ? page.workflow_runs : []);
 }
 
-function ghJson(args, env, { allowNotFound = false } = {}) {
+function ghJson(endpoint, env, { allowNotFound = false } = {}) {
   try {
-    return JSON.parse(run("gh", ["api", ...args], { env, stdio: ["ignore", "pipe", "pipe"] }));
+    return JSON.parse(run("gh", ghApiArgv(endpoint), { env, stdio: ["ignore", "pipe", "pipe"] }));
   } catch (error) {
     if (allowNotFound && /HTTP 404|Not Found/i.test(`${error.message}\n${error.stderr ?? ""}`)) return null;
     throw error;
@@ -145,16 +157,16 @@ function verifyTagAbsent(repoSlug, tag, env) {
     local = run("git", ["rev-parse", "--verify", `refs/tags/${tag}`], { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch { /* absent locally */ }
   if (local) throw new Error(`tag_already_exists_locally:${tag}`);
-  const remote = ghJson(["repos", repoSlug, "git", "ref", "tags", tag], env, { allowNotFound: true });
+  const remote = ghJson(githubRepoApiPath(repoSlug, "git", "ref", "tags", tag), env, { allowNotFound: true });
   if (remote) throw new Error(`tag_already_exists_remotely:${tag}`);
 }
 
 function verifyRemoteTag(repoSlug, tagInfo, env) {
-  const remote = ghJson(["repos", repoSlug, "git", "ref", "tags", tagInfo.tag], env);
+  const remote = ghJson(githubRepoApiPath(repoSlug, "git", "ref", "tags", tagInfo.tag), env);
   if (remote?.object?.type !== "tag" || remote.object.sha !== tagInfo.tagObject) {
     throw new Error(`remote_tag_moved_or_not_annotated:${tagInfo.tag}`);
   }
-  const tagObject = ghJson(["repos", repoSlug, "git", "tags", tagInfo.tagObject], env);
+  const tagObject = ghJson(githubRepoApiPath(repoSlug, "git", "tags", tagInfo.tagObject), env);
   if (tagObject?.object?.type !== "commit" || tagObject.object.sha !== tagInfo.commit) {
     throw new Error(`remote_tag_commit_mismatch:${tagInfo.tag}`);
   }
@@ -168,7 +180,8 @@ function verifyCandidateEvidence(repoSlug, candidateRun, manifest, env) {
     attempt: candidateRun.run_attempt,
   });
   if (manifest.sourceSha !== candidateRun.head_sha) throw new Error("candidate_manifest_source_mismatch");
-  const artifacts = ghJson(["repos", repoSlug, "actions", "runs", String(candidateRun.id), "artifacts?per_page=100"], env).artifacts ?? [];
+  const artifactsEndpoint = `${githubRepoApiPath(repoSlug, "actions", "runs", String(candidateRun.id), "artifacts")}?per_page=100`;
+  const artifacts = ghJson(artifactsEndpoint, env).artifacts ?? [];
   const byName = new Map(artifacts.filter((artifact) => !artifact.expired).map((artifact) => [artifact.name, artifact]));
   for (const name of [...PACKAGE_ARTIFACTS, CANDIDATE_EVIDENCE_ARTIFACT]) {
     if (!byName.has(name)) throw new Error(`candidate_artifact_missing:${name}`);
