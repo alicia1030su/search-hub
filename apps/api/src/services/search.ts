@@ -774,16 +774,16 @@ export class SearchService {
     // that query failed. Treating it as valid is how a deep search used to
     // report `completed` with zero results.
     const outcomes = await Promise.all(
-      queries.map(async (query) => {
+      queries.map(async (query, index) => {
         try {
           const response = await executeSearch(
             deps,
             { ...request, query, mode: "rrf", summarize: false, timeoutMs: request.timeoutMs },
             { signal, taskId, ...(beforeRequest === undefined ? {} : { beforeRequest }) },
           );
-          return { query, index: queries.indexOf(query), response };
+          return { query, index, response };
         } catch (error) {
-          return { query, index: queries.indexOf(query), response: null, error };
+          return { query, index, response: null, error };
         }
       }),
     );
