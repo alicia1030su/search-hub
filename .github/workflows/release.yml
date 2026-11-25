@@ -193,7 +193,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          # Dispatch uses the updated recovery helper from main; tag pushes keep the exact tag checkout.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.tag || github.ref_name }}
           persist-credentials: false
       - uses: actions/download-artifact@v8.0.2
         with:
