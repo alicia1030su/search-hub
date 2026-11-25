@@ -13,9 +13,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Corrected Deep Search physical HTTP request accounting across pagination, retries and redirects.
-- Bound cache identity to credential identity without storing plaintext credentials, preventing cross-credential cache reuse.
-- Aligned MCP protocol-version reporting and handshake behavior with the measured SDK contract.
+- Corrected Deep Search physical HTTP request accounting across every query rewrite, including failed rewrites.
+- Prevented routine statistics flushes from invalidating identical-query cache entries while preserving credential rotation and weight invalidation.
+- Aligned MCP server version reporting across HTTP and stdio.
 - Corrected setup-token documentation: the value is never logged, is read from the 0600 file, and any residual token is invalid after best-effort deletion.
 
 ### Changed
