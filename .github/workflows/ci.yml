@@ -53,7 +53,7 @@ jobs:
           if [ -f docs/screenshots/v0116/dashboard.png ] && [ -f docs/screenshots/v0116/search-lab.png ] && [ -f docs/screenshots/v0116/provider-health.png ]; then
             mode=final
           fi
-          node --import tsx scripts/check-doc-consistency.mjs --mode "$mode"
+          pnpm run check:docs --mode "$mode"
 
       # The retrieval metrics are the product here: a formula change that moves
       # nDCG on the frozen fixture has to be acknowledged by updating
