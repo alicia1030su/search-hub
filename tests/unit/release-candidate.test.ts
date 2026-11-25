@@ -57,6 +57,7 @@ function fixture() {
     sha: sourceSha,
     candidateRunId: runId,
     ciRunId: 99,
+    readme_mode: "final",
     runs: ["ci.yml", "cli.yml", "docker.yml", "systemd.yml", "upgrade.yml"].map((workflowPath) => ({
       workflowPath, id: 1, headSha: sourceSha, event: "push", headBranch: "main", conclusion: "success",
     })),
@@ -107,7 +108,7 @@ function fixture() {
   const manifest = createCandidateManifest({
     directory, output: manifestPath, version, sourceSha, runId, attempt, ciRunId: 99,
     image, imageInspection: inspection, candidateGate: gatePath,
-    repo: "example/search-hub", disasterRecoveryDir: drDir,
+    repo: "example/search-hub", disasterRecoveryDir: drDir, readmeMode: "final",
   });
   for (const asset of manifest.assets) writeFileSync(join(attestations, asset.attestation.bundle), "signed bundle\n");
   writeFileSync(join(attestations, `sha256-${hash(readFileSync(manifestPath))}.jsonl`), "signed manifest\n");
@@ -124,8 +125,20 @@ describe("release candidate evidence", () => {
     const { directory, manifest, manifestPath, attestations } = fixture();
     expect(expectedReleaseAssets(version)).toHaveLength(8);
     expect(verifyReleaseAssets(directory, expected(manifest))).toMatchObject({ ok: true, assets: expect.arrayContaining(["SHA256SUMS", `shub-v${version}-node22.tar.gz`]) });
+    expect(manifest.readme_mode).toBe("final");
     expect(verifyCandidateManifest(manifest, { version, sourceSha, runId, attempt })).toMatchObject({ ok: true });
     expect(verifyCandidateAttestationFiles(manifest, attestations, hash(readFileSync(manifestPath)))).toEqual({ ok: true, count: 11 });
+  });
+
+  it("allows interim candidates but requires final mode for promotion", () => {
+    const { manifest } = fixture();
+    const interim = { ...manifest, readme_mode: "interim" as const };
+    expect(verifyCandidateManifest(interim, { version, sourceSha, runId, attempt })).toMatchObject({ ok: true });
+    expect(verifyCandidateManifest(manifest, { version, sourceSha, runId, attempt }, { requireFinal: true })).toMatchObject({ ok: true });
+    expect(() => verifyCandidateManifest(interim, { version, sourceSha, runId, attempt }, { requireFinal: true }))
+      .toThrow(/candidate_readme_mode_not_final/);
+    expect(() => verifyCandidateManifest({ ...manifest, readme_mode: "unknown" } as unknown as typeof manifest, { version, sourceSha, runId, attempt }))
+      .toThrow(/candidate_readme_mode_invalid/);
   });
 
   it("requires the manifest attestation bundle to match the exact manifest bytes", () => {

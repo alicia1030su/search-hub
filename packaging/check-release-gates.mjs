@@ -93,12 +93,16 @@ export function evaluateRuns(runs, sha, options = {}) {
   return { ready, pending, failed, allGreen: ready.length === Object.keys(required).length };
 }
 
-export function verifyFinalReadme(repoRoot = REPO_ROOT) {
-  const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
-  const zh = readFileSync(path.join(repoRoot, "README.md"), "utf8");
-  const en = readFileSync(path.join(repoRoot, "README_EN.md"), "utf8");
-  const cliDoc = readFileSync(path.join(repoRoot, "docs", "cli.md"), "utf8");
-  const deploymentDoc = readFileSync(path.join(repoRoot, "docs", "deployment.md"), "utf8");
+function verifyFinalReadmeContent({
+  repoRoot,
+  pkg,
+  zh,
+  en,
+  cliDoc,
+  deploymentDoc,
+  fileExists = existsSync,
+  readText = (target) => readFileSync(target, "utf8"),
+}) {
   const problems = [
     ...checkNodeContract({
       engine: pkg.engines?.node,
@@ -108,12 +112,56 @@ export function verifyFinalReadme(repoRoot = REPO_ROOT) {
       deploymentDoc,
       version: pkg.version,
     }),
-    ...checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root: repoRoot }),
-    ...checkReadmeLinks({ text: zh, label: "README.md", file: "README.md", root: repoRoot }),
-    ...checkReadmeLinks({ text: en, label: "README_EN.md", file: "README_EN.md", root: repoRoot }),
+    ...checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root: repoRoot, fileExists }),
+    ...checkReadmeLinks({ text: zh, label: "README.md", file: "README.md", root: repoRoot, fileExists, readText }),
+    ...checkReadmeLinks({ text: en, label: "README_EN.md", file: "README_EN.md", root: repoRoot, fileExists, readText }),
   ];
   if (problems.length > 0) throw new Error(`final_readme_invalid: ${problems.join(" | ")}`);
   return { ok: true, version: pkg.version };
+}
+
+export function verifyFinalReadme(repoRoot = REPO_ROOT) {
+  const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  return verifyFinalReadmeContent({
+    repoRoot,
+    pkg,
+    zh: readFileSync(path.join(repoRoot, "README.md"), "utf8"),
+    en: readFileSync(path.join(repoRoot, "README_EN.md"), "utf8"),
+    cliDoc: readFileSync(path.join(repoRoot, "docs", "cli.md"), "utf8"),
+    deploymentDoc: readFileSync(path.join(repoRoot, "docs", "deployment.md"), "utf8"),
+  });
+}
+
+/** Verify final README evidence from the target commit without checking out files. */
+export function verifyFinalReadmeAtCommit(repoRoot, commit) {
+  if (!/^[0-9a-f]{40}$/.test(commit ?? "")) throw new Error("readme_commit_invalid");
+  const head = run("git", ["rev-parse", "HEAD"], { cwd: repoRoot }).trim();
+  if (head !== commit) throw new Error(`readme_head_commit_mismatch:${head}/${commit}`);
+  const readTracked = (relativePath) => run("git", ["show", `${commit}:${relativePath}`], { cwd: repoRoot });
+  const gitPath = (target) => {
+    const relativePath = path.relative(repoRoot, target).split(path.sep).join("/");
+    return `${commit}:${relativePath}`;
+  };
+  const fileExists = (target) => {
+    try {
+      run("git", ["cat-file", "-e", gitPath(target)], { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const pkg = JSON.parse(readTracked("package.json"));
+  const result = verifyFinalReadmeContent({
+    repoRoot,
+    pkg,
+    zh: readTracked("README.md"),
+    en: readTracked("README_EN.md"),
+    cliDoc: readTracked("docs/cli.md"),
+    deploymentDoc: readTracked("docs/deployment.md"),
+    fileExists,
+    readText: (target) => readTracked(path.relative(repoRoot, target).split(path.sep).join("/")),
+  });
+  return { ...result, commit };
 }
 
 export function verifyAnnotatedTag(repoRoot, tag, expectedVersion = null) {
@@ -196,13 +244,13 @@ function verifyRemoteTag(repoSlug, tagInfo, env) {
   }
 }
 
-function verifyCandidateEvidence(repoSlug, candidateRun, manifest, env) {
+function verifyCandidateEvidence(repoSlug, candidateRun, manifest, env, options = {}) {
   verifyCandidateManifest(manifest, {
     version: manifest.version,
     sourceSha: candidateRun.head_sha,
     runId: candidateRun.id,
     attempt: candidateRun.run_attempt,
-  });
+  }, options);
   if (manifest.sourceSha !== candidateRun.head_sha) throw new Error("candidate_manifest_source_mismatch");
   const artifactsEndpoint = `${githubRepoApiPath(repoSlug, "actions", "runs", String(candidateRun.id), "artifacts")}?per_page=100`;
   const artifacts = ghJson(artifactsEndpoint, env).artifacts ?? [];
@@ -264,6 +312,10 @@ async function main() {
   const tag = arg("tag");
   const stable = tag ? /^v(\d+\.\d+\.\d+)$/.exec(tag) : null;
   const version = arg("version", stable?.[1] ?? null);
+  const readmeMode = arg("readme-mode");
+  if (phase === "candidate" && !["interim", "final"].includes(readmeMode)) {
+    throw new Error("candidate_readme_mode_invalid");
+  }
   let sha = arg("sha");
   let tagInfo = null;
   if (phase === "candidate") {
@@ -316,13 +368,13 @@ async function main() {
         const manifest = JSON.parse(readFileSync(path.join(candidateTemporary, "candidate-manifest.json"), "utf8"));
         if (manifest.version !== version) throw new Error("candidate_version_mismatch");
         if (manifest.ciRunId !== ciRun.id) throw new Error("candidate_ci_run_mismatch");
-        verifyCandidateEvidence(repoSlug, candidateRun, manifest, env);
+        verifyCandidateEvidence(repoSlug, candidateRun, manifest, env, { requireFinal: phase !== "candidate" });
         candidate = { runId: candidateRun.id, attempt: candidateRun.run_attempt, image: manifest.image, resourceEvidence: manifest.resourceEvidence, disasterRecovery: manifest.disasterRecovery };
       } finally {
         rmSync(candidateTemporary, { recursive: true, force: true });
       }
     }
-    if (phase === "preflight" || phase === "tag") verifyFinalReadme(REPO_ROOT);
+    if (phase === "preflight" || phase === "tag") verifyFinalReadmeAtCommit(REPO_ROOT, sha);
     if (phase === "tag") verifyRemoteTag(repoSlug, tagInfo, env);
     const reportPath = arg("report", path.join(REPO_ROOT, "artifacts", `v${version}`, phase === "candidate" ? "candidate-gate.json" : "release-gate.json"));
     const report = {
@@ -330,6 +382,7 @@ async function main() {
       phase,
       sha,
       version,
+      ...(phase === "candidate" ? { readme_mode: readmeMode } : {}),
       tag: tagInfo,
       requiredWorkflows: includeCandidate ? PREFLIGHT_WORKFLOWS : REQUIRED_WORKFLOWS,
       candidateRunId: phase === "candidate" ? Number(process.env.GITHUB_RUN_ID ?? 0) || null : candidateRun?.id ?? null,

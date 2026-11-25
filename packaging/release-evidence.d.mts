@@ -45,6 +45,7 @@ export interface CandidateManifest {
   ciRunId: number;
   workflowPath: string;
   event: string;
+  readme_mode: "interim" | "final";
   packageArtifacts: string[];
   evidenceArtifact: string;
   ciEvidenceArtifact: string;
@@ -112,7 +113,7 @@ export declare function expectedReleaseAssets(version: string): string[];
 export declare function sha256File(file: string): string;
 export declare function parseSha256Sums(text: string): Map<string, string>;
 export declare function verifyReleaseAssets(directory: string, options: { version: string; sourceSha: string; manifest: CandidateManifest }): { ok: true; assets: string[]; sha256sumsSha256: string };
-export declare function verifyCandidateManifest(manifest: CandidateManifest, options: { version: string; sourceSha: string; runId: number; attempt: number }): { ok: true; image: CandidateImage };
+export declare function verifyCandidateManifest(manifest: CandidateManifest, options: { version: string; sourceSha: string; runId: number; attempt: number }, policy?: { requireFinal?: boolean }): { ok: true; image: CandidateImage };
 export declare function verifyGhcrImage(image: CandidateImageBase): { ok: true; digest: string; platform: { os: string; architecture: string } };
 export declare function normalizeGhcrInspection(formatted: unknown, rawManifestBytes: Buffer, expectedDigest: string): NormalizedGhcrInspection;
 export declare function verifyGhcrInspection(inspection: GhcrInspection, expectedDigest: string, image?: CandidateImage | null): { ok: true; digest: string; mediaType: string; configDigest: string; configMediaType: string; platform: { os: string; architecture: string } };
@@ -132,4 +133,5 @@ export declare function createCandidateManifest(options: {
   candidateGate: string;
   repo: string;
   disasterRecoveryDir: string;
+  readmeMode: "interim" | "final";
 }): CandidateManifest;

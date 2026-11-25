@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM packaging module
-import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, ghApiArgv, githubRepoApiPath, selectLatestRuns, verifyAnnotatedTag, verifyFinalReadme } from "../../packaging/check-release-gates.mjs";
+import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, ghApiArgv, githubRepoApiPath, selectLatestRuns, verifyAnnotatedTag, verifyFinalReadme, verifyFinalReadmeAtCommit } from "../../packaging/check-release-gates.mjs";
 
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -81,6 +81,21 @@ function finalReadmeFixture(): string {
   );
   for (const file of screenshotFiles) writeFileSync(join(directory, file), "png-fixture");
   return directory;
+}
+
+function finalReadmeGitFixture(): { directory: string; commit: string; git: (...args: string[]) => string } {
+  const directory = finalReadmeFixture();
+  const git = (...args: string[]) => execFileSync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  git("init", "-q");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  git("add", ".");
+  git("commit", "-qm", "final readme fixture");
+  return { directory, commit: git("rev-parse", "HEAD"), git };
 }
 
 function run(path: string, overrides: Record<string, unknown> = {}) {
@@ -224,6 +239,27 @@ describe("release gate", () => {
     expect(() => verifyFinalReadme(directory)).toThrow(/ENOENT|cli\.md/);
   });
 
+  it("verifies final README files and screenshots from the exact commit tree", () => {
+    const { directory, commit } = finalReadmeGitFixture();
+    expect(verifyFinalReadmeAtCommit(directory, commit)).toEqual({ ok: true, version, commit });
+  });
+
+  it("rejects final README verification when HEAD does not match the target commit", () => {
+    const { directory, commit, git } = finalReadmeGitFixture();
+    writeFileSync(join(directory, "README.md"), `${readFileSync(join(directory, "README.md"), "utf8")}\nnewer worktree commit\n`);
+    git("add", "README.md");
+    git("commit", "-qm", "newer commit");
+    expect(() => verifyFinalReadmeAtCommit(directory, commit)).toThrow(/readme_head_commit_mismatch/);
+  });
+
+  it("rejects a final README commit tree that is missing a screenshot", () => {
+    const { directory, git } = finalReadmeGitFixture();
+    git("rm", "-q", screenshotFiles[1]!);
+    git("commit", "-qm", "remove screenshot");
+    const commit = git("rev-parse", "HEAD");
+    expect(() => verifyFinalReadmeAtCommit(directory, commit)).toThrow(/screenshot file is missing/);
+  });
+
   it("runs the selected README mode after exact-SHA checkout and before workflow polling", () => {
     const candidate = readFileSync(new URL("../../.github/workflows/release-candidate.yml", import.meta.url), "utf8");
     const checkout = candidate.indexOf("ref: ${{ steps.resolve.outputs.sha }}");
@@ -231,6 +267,10 @@ describe("release gate", () => {
     const workflowGate = candidate.indexOf("name: Require only the five exact-SHA main-push workflows");
     expect(candidate).toContain("default: interim");
     expect(candidate).toContain("README_MODE: ${{ inputs.readme_mode }}");
+    expect(candidate).toContain("readme_mode: ${{ steps.readme.outputs.readme_mode }}");
+    expect(candidate).toContain('--readme-mode "$README_MODE"');
+    const gateSource = readFileSync(new URL("../../packaging/check-release-gates.mjs", import.meta.url), "utf8");
+    expect(gateSource).toContain("verifyFinalReadmeAtCommit(REPO_ROOT, sha)");
     expect(checkout).toBeGreaterThanOrEqual(0);
     expect(readmeGate).toBeGreaterThan(checkout);
     expect(workflowGate).toBeGreaterThan(readmeGate);

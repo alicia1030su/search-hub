@@ -141,8 +141,10 @@ export function verifyReleaseAssets(directory, { version, sourceSha, manifest })
   return { ok: true, assets: expectedNames, sha256sumsSha256: manifest.sha256sumsSha256 };
 }
 
-export function verifyCandidateManifest(manifest, { version, sourceSha, runId, attempt }) {
+export function verifyCandidateManifest(manifest, { version, sourceSha, runId, attempt }, options = {}) {
   requireCondition(manifest?.schemaVersion === 1, "unsupported_candidate_manifest");
+  requireCondition(["interim", "final"].includes(manifest.readme_mode), "candidate_readme_mode_invalid");
+  if (options.requireFinal) requireCondition(manifest.readme_mode === "final", "candidate_readme_mode_not_final");
   requireCondition(manifest.version === version, "candidate_version_mismatch");
   requireCondition(manifest.sourceSha === sourceSha, "candidate_source_sha_mismatch");
   requireCondition(manifest.runId === runId && manifest.attempt === attempt, "candidate_run_mismatch");
@@ -255,7 +257,8 @@ export function verifyCandidateAttestationFiles(manifest, attestationDirectory, 
   return { ok: true, count: manifest.assets.length + 2 };
 }
 
-export function createCandidateManifest({ directory, output, version, sourceSha, runId, attempt, ciRunId, image, imageInspection, candidateGate, repo, disasterRecoveryDir }) {
+export function createCandidateManifest({ directory, output, version, sourceSha, runId, attempt, ciRunId, image, imageInspection, candidateGate, repo, disasterRecoveryDir, readmeMode }) {
+  requireCondition(["interim", "final"].includes(readmeMode), "candidate_readme_mode_invalid");
   const inspected = verifyGhcrInspection(imageInspection, image.digest);
   verifyGhcrImage(image);
   requireCondition(typeof repo === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo), "candidate_repository_invalid");
@@ -278,6 +281,7 @@ export function createCandidateManifest({ directory, output, version, sourceSha,
   const gate = readJson(candidateGate);
   requireCondition(gate.candidateRunId === runId && gate.sha === sourceSha, "candidate_gate_binding_mismatch");
   requireCondition(gate.ciRunId === ciRunId, "candidate_ci_run_binding_mismatch");
+  requireCondition(gate.readme_mode === readmeMode, "candidate_gate_readme_mode_mismatch");
   verifyMainPushRuns(gate.runs, sourceSha);
   const manifest = {
     schemaVersion: 1,
@@ -288,6 +292,7 @@ export function createCandidateManifest({ directory, output, version, sourceSha,
     ciRunId,
     workflowPath: `.github/workflows/${CANDIDATE_WORKFLOW}`,
     event: "workflow_dispatch",
+    readme_mode: readmeMode,
     packageArtifacts: [...PACKAGE_ARTIFACTS],
     evidenceArtifact: CANDIDATE_EVIDENCE_ARTIFACT,
     ciEvidenceArtifact: CI_RELEASE_EVIDENCE_ARTIFACT,
@@ -392,6 +397,7 @@ async function main() {
       candidateGate: path.resolve(arg("candidate-gate")),
       repo: arg("repo", process.env.GITHUB_REPOSITORY),
       disasterRecoveryDir: path.resolve(arg("dr-dir", arg("disaster-recovery-dir"))),
+      readmeMode: arg("readme-mode"),
     });
     console.log(JSON.stringify({ ok: true, assets: manifest.assets.length }, null, 2));
     return;

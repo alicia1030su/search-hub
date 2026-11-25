@@ -44,6 +44,7 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       version: ${{ steps.resolve.outputs.version }}
       versionSlug: ${{ steps.resolve.outputs.versionSlug }}
+      readme_mode: ${{ steps.readme.outputs.readme_mode }}
       ciRunId: ${{ steps.gates.outputs.ciRunId }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -80,9 +81,12 @@ jobs:
           fetch-depth: 0
 
       - name: Require README screenshots and links for the selected mode
+        id: readme
         env:
           README_MODE: ${{ inputs.readme_mode }}
-        run: node scripts/check-readme-consistency.mjs --mode "$README_MODE"
+        run: |
+          node scripts/check-readme-consistency.mjs --mode "$README_MODE"
+          echo "readme_mode=$README_MODE" >> "$GITHUB_OUTPUT"
 
       - name: Require only the five exact-SHA main-push workflows
         id: gates
@@ -90,7 +94,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.resolve.outputs.sha }}
           VERSION: ${{ steps.resolve.outputs.version }}
-        run: node packaging/check-release-gates.mjs --phase candidate --sha "$SOURCE_SHA" --version "$VERSION" --max-attempts 210 --poll-seconds 60 --report "artifacts/v${VERSION}/candidate-gate.json"
+          README_MODE: ${{ steps.readme.outputs.readme_mode }}
+        run: node packaging/check-release-gates.mjs --phase candidate --sha "$SOURCE_SHA" --version "$VERSION" --readme-mode "$README_MODE" --max-attempts 210 --poll-seconds 60 --report "artifacts/v${VERSION}/candidate-gate.json"
 
       - uses: actions/upload-artifact@v7.0.2
         with:
@@ -690,6 +695,7 @@ jobs:
           SOURCE_SHA: ${{ needs.gate.outputs.sha }}
           VERSION: ${{ needs.gate.outputs.version }}
           CI_RUN_ID: ${{ needs.gate.outputs.ciRunId }}
+          README_MODE: ${{ needs.gate.outputs.readme_mode }}
         run: |
           set -euo pipefail
           node packaging/release-evidence.mjs sums --dir release-assets --version "$VERSION"
@@ -705,7 +711,8 @@ jobs:
             --image-inspection candidate/candidate-image-v${{ needs.gate.outputs.version }}/image-inspection.json \
             --candidate-gate candidate/candidate-gate-v${{ needs.gate.outputs.version }}/candidate-gate.json \
             --repo "$GITHUB_REPOSITORY" \
-            --dr-dir final-dr
+            --dr-dir final-dr \
+            --readme-mode "$README_MODE"
           mkdir -p candidate-evidence
           cp release-assets/SHA256SUMS candidate-evidence/SHA256SUMS
           cp candidate-manifest.json candidate-evidence/candidate-manifest.json

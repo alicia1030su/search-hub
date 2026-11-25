@@ -72,7 +72,14 @@ function headingAnchors(text) {
 }
 
 /** Validate relative Markdown links/images and same-document anchors. */
-export function checkReadmeLinks({ text, label, file, root = REPO_ROOT }) {
+export function checkReadmeLinks({
+  text,
+  label,
+  file,
+  root = REPO_ROOT,
+  fileExists = existsSync,
+  readText = (target) => readFileSync(target, "utf8"),
+}) {
   const problems = [];
   const sourceFile = resolve(root, file);
   for (const link of extractMarkdownLinks(text)) {
@@ -92,12 +99,12 @@ export function checkReadmeLinks({ text, label, file, root = REPO_ROOT }) {
       problems.push(`${label}:${link.line} relative link escapes the repository root: ${target}`);
       continue;
     }
-    if (!existsSync(targetFile)) {
+    if (!fileExists(targetFile)) {
       problems.push(`${label}:${link.line} links to missing file: ${target}`);
       continue;
     }
-    if (hash && existsSync(targetFile)) {
-      const targetText = readFileSync(targetFile, "utf8");
+    if (hash) {
+      const targetText = readText(targetFile);
       if (!headingAnchors(targetText).has(decodeURIComponent(hash))) {
         problems.push(`${label}:${link.line} links to missing anchor: ${target}`);
       }
@@ -192,7 +199,7 @@ function checkFactGroups(zh, en, problems) {
 }
 
 /** Validate both README files against the release version and screenshot mode. */
-export function checkReadmeConsistency({ zh, en, version, mode = "interim", root = REPO_ROOT }) {
+export function checkReadmeConsistency({ zh, en, version, mode = "interim", root = REPO_ROOT, fileExists = existsSync }) {
   const problems = [];
   if (!["interim", "final"].includes(mode)) problems.push(`unsupported README screenshot mode: ${mode}`);
   const documents = [["README.md", zh], ["README_EN.md", en]];
@@ -234,7 +241,7 @@ export function checkReadmeConsistency({ zh, en, version, mode = "interim", root
         problems.push(`${label} final screenshot links must be exactly ${SCREENSHOT_FILES.join(", ")}`);
       }
       for (const screenshot of unique) {
-        if (!existsSync(join(root, screenshot))) problems.push(`${label} screenshot file is missing: ${screenshot}`);
+        if (!fileExists(join(root, screenshot))) problems.push(`${label} screenshot file is missing: ${screenshot}`);
       }
     }
   }
