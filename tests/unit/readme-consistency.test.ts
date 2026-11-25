@@ -76,7 +76,7 @@ describe("README consistency gate", () => {
   it("rejects a stale Node engine or missing portable CLI contract", () => {
     const { pkg, zh, en, cliDoc, deploymentDoc } = actualReadmes();
     expect(checkNodeContract({ engine: ">=22.11.0", zh, en, cliDoc, deploymentDoc, version: pkg.version }).join("\n")).toContain(">=22.12.0");
-    expect(checkNodeContract({ engine: ">=22.12.0", zh: zh.replace("Node.js >=22.12.0", "Node.js 22+"), en, cliDoc, deploymentDoc, version: pkg.version }).join("\n"))
+    expect(checkNodeContract({ engine: ">=22.12.0", zh: zh.replaceAll("Node.js >=22.12.0", "Node.js 22+"), en, cliDoc, deploymentDoc, version: pkg.version }).join("\n"))
       .toContain("README.md must state Node.js >=22.12.0");
     expect(checkNodeContract({ engine: ">=22.12.0", zh, en, cliDoc: cliDoc.replace("Node.js >=22.12.0", "Node.js 22+"), deploymentDoc, version: pkg.version }).join("\n"))
       .toContain("docs/cli.md install block must state Node.js >=22.12.0");
@@ -125,7 +125,7 @@ describe("README consistency gate", () => {
     expect(checkReadmeConsistency({ zh: finalZh, en: finalEn, version: pkg.version, mode: "final", root })).toEqual([]);
     expect(checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("0 CAPTURE_REQUIRED");
-    rmSync(join(screenshotDir, "dashboard.png"));
+    rmSync(join(root, "docs", "screenshots", "v0116", "dashboard.png"));
     expect(checkReadmeConsistency({ zh: finalZh, en: finalEn, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("screenshot file is missing");
   });
@@ -170,7 +170,7 @@ describe("README consistency gate", () => {
       "(./docs/screenshots/v0116/../v0116/%64ashboard.png?cache=1#preview)",
     );
     expect(checkReadmeConsistency({ zh: normalized, en: finalEn, version: pkg.version, mode: "final", root })).toEqual([]);
-    const withOrdinaryAsset = `${finalZh}\n![ordinary asset](./assets/logo.png)\n`;
+    const withOrdinaryAsset = finalZh.replace("\n\n", "\n![ordinary asset](./assets/logo.png)\n");
     expect(checkReadmeConsistency({ zh: withOrdinaryAsset, en: finalEn, version: pkg.version, mode: "final", root })).toEqual([]);
   });
 
