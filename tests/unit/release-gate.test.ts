@@ -85,6 +85,22 @@ describe("release gate", () => {
     expect(promoter.match(/normalize-inspection/g)).toHaveLength(3);
   });
 
+  it("promotes the exact manifest and safely dispatches the existing draft", () => {
+    const promoter = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
+    expect(promoter).toContain('docker buildx imagetools create --tag "$ref" --prefer-index=false "${base}@${EXPECTED_DIGEST}"');
+    expect(promoter).toContain("workflow_dispatch:");
+    expect(promoter).toContain("required: true");
+    expect(promoter).toContain('default: "v0.1.15"');
+    expect(promoter).toContain("ref: ${{ inputs.tag || github.ref_name }}");
+    expect(promoter).toContain("TAG: ${{ inputs.tag || github.ref_name }}");
+    expect(promoter).toContain('if [[ "$EVENT_NAME" == "push" ]]; then');
+    expect(promoter).toContain('args+=(--event-sha "$GITHUB_SHA")');
+    expect(promoter).toContain(".isDraft == true and .isPrerelease == false and (.assets | length) == 0");
+    expect(promoter).toContain('.isDraft == true and .isPrerelease == false and (.assets | length) == 9 and (.assets | all(.state == "uploaded"))');
+    expect(promoter).toMatch(/name: Create or update only an empty draft\n\s+if: github\.event_name == 'push'/);
+    expect(promoter).toContain('gh release edit "$TAG" --draft=false --latest');
+  });
+
   it("requires an annotated tag on main with a matching stable version", () => {
     const directory = mkdtempSync(join(tmpdir(), "search-hub-tag-test-"));
     temporary.push(directory);
