@@ -63,7 +63,7 @@ The service runs with `cap_drop: [ALL]`, `no-new-privileges`, `init: true`,
 a 30 s stop grace period and json-file log rotation (10 MB × 3). It does not need
 any Linux capability: it binds an unprivileged port and writes only to the volume.
 
-When `SEARCH_HUB_SETUP_TOKEN` is empty, the server generates a one-time token at `/app/data/setup-token` (0600) and prints it to the log. Read it with `docker compose logs search-hub | grep "setup token"` or `docker compose exec search-hub cat /app/data/setup-token`. The file disappears after initialization.
+When `SEARCH_HUB_SETUP_TOKEN` is empty, the server generates a one-time token at `/app/data/setup-token` (0600). The token value is never printed to the log; read it only from the 0600 file with `docker compose exec search-hub cat /app/data/setup-token`. Deletion after initialization is best-effort, and any residual token is invalid.
 
 Container-level acceptance (image build, compose stack, restart, persistence,
 resource footprint, crash recovery, vulnerability scan) is covered by
