@@ -22,6 +22,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkNodeContract, checkReadmeConsistency, checkReadmeLinks } from "./check-readme-consistency.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -111,6 +112,18 @@ export async function main() {
   const readme = read("README.md");
   const readmeEn = read("README_EN.md");
   const pkg = JSON.parse(read("package.json"));
+
+  problems.push(...checkNodeContract({
+    engine: pkg.engines?.node,
+    zh: readme,
+    en: readmeEn,
+    cliDoc: read("docs/cli.md"),
+    deploymentDoc: read("docs/deployment.md"),
+    version: pkg.version,
+  }));
+  problems.push(...checkReadmeConsistency({ zh: readme, en: readmeEn, version: pkg.version, mode: "interim", root: REPO }));
+  problems.push(...checkReadmeLinks({ text: readme, label: "README.md", file: "README.md", root: REPO }));
+  problems.push(...checkReadmeLinks({ text: readmeEn, label: "README_EN.md", file: "README_EN.md", root: REPO }));
 
   // 1) no "not implemented" claim for a provider that has an adapter
   for (const [label, text] of [

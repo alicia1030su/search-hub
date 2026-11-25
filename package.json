@@ -7,7 +7,7 @@
   "license": "MIT",
   "packageManager": "pnpm@12.18.0",
   "engines": {
-    "node": ">=22.11.0",
+    "node": ">=22.12.0",
     "pnpm": ">=10"
   },
   "scripts": {
@@ -39,6 +39,7 @@
     "test:launcher": "node packaging/launcher/lifecycle-test.mjs",
     "verify:package": "node packaging/verify-package.mjs",
     "check:docs": "node --import tsx scripts/check-doc-consistency.mjs",
+    "check:docs:final": "node scripts/check-readme-consistency.mjs --mode final",
     "check:matrix": "node --import tsx scripts/generate-provider-matrix.mjs --check",
     "quality:eval": "node --import tsx scripts/quality-eval.mjs",
     "generate:matrix": "node --import tsx scripts/generate-provider-matrix.mjs",
