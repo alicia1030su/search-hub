@@ -17,21 +17,26 @@ function actualReadmes() {
     pkg,
     zh: readFileSync(join(ROOT, "README.md"), "utf8"),
     en: readFileSync(join(ROOT, "README_EN.md"), "utf8"),
+    cliDoc: readFileSync(join(ROOT, "docs", "cli.md"), "utf8"),
+    deploymentDoc: readFileSync(join(ROOT, "docs", "deployment.md"), "utf8"),
   };
 }
 
-function replaceCaptureMarkers(text: string) {
-  return text.replace(
-    /<!-- CAPTURE_REQUIRED: replace with the real v0\.1\.16 (docs\/screenshots\/v0116\/[^ ]+) after capture\. -->/g,
-    (_match, file: string) => `![Search Hub screenshot](./${file})`,
-  );
+function captureComment(file: string, version: string) {
+  return `<!-- CAPTURE_REQUIRED: replace with the real v${version} docs/screenshots/v0116/${file} after capture. -->`;
+}
+
+function replaceCaptureMarkers(text: string, version: string) {
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<!-- CAPTURE_REQUIRED: replace with the real v${escapedVersion} (docs/screenshots/v0116/[^ ]+) after capture\\. -->`, "g");
+  return text.replace(pattern, (_match, file: string) => `![Search Hub screenshot](./${file})`);
 }
 
 describe("README consistency gate", () => {
   it("accepts the real bilingual READMEs in interim mode", () => {
-    const { pkg, zh, en } = actualReadmes();
+    const { pkg, zh, en, cliDoc, deploymentDoc } = actualReadmes();
     expect(checkReadmeConsistency({ zh, en, version: pkg.version, mode: "interim", root: ROOT })).toEqual([]);
-    expect(checkNodeContract({ engine: pkg.engines.node, zh, en })).toEqual([]);
+    expect(checkNodeContract({ engine: pkg.engines.node, zh, en, cliDoc, deploymentDoc, version: pkg.version })).toEqual([]);
     expect(countPhysicalLines(zh)).toBeGreaterThanOrEqual(100);
     expect(countPhysicalLines(zh)).toBeLessThanOrEqual(150);
     expect(countPhysicalLines(en)).toBeGreaterThanOrEqual(100);
@@ -39,10 +44,14 @@ describe("README consistency gate", () => {
   });
 
   it("rejects a stale Node engine or missing portable CLI contract", () => {
-    const { zh, en } = actualReadmes();
-    expect(checkNodeContract({ engine: ">=22.11.0", zh, en }).join("\n")).toContain(">=22.12.0");
-    expect(checkNodeContract({ engine: ">=22.12.0", zh: zh.replace("Node.js >=22.12.0", "Node.js 22+"), en }).join("\n"))
+    const { pkg, zh, en, cliDoc, deploymentDoc } = actualReadmes();
+    expect(checkNodeContract({ engine: ">=22.11.0", zh, en, cliDoc, deploymentDoc, version: pkg.version }).join("\n")).toContain(">=22.12.0");
+    expect(checkNodeContract({ engine: ">=22.12.0", zh: zh.replace("Node.js >=22.12.0", "Node.js 22+"), en, cliDoc, deploymentDoc, version: pkg.version }).join("\n"))
       .toContain("README.md must state Node.js >=22.12.0");
+    expect(checkNodeContract({ engine: ">=22.12.0", zh, en, cliDoc: cliDoc.replace("Node.js >=22.12.0", "Node.js 22+"), deploymentDoc, version: pkg.version }).join("\n"))
+      .toContain("docs/cli.md install block must state Node.js >=22.12.0");
+    expect(checkNodeContract({ engine: ">=22.12.0", zh, en, cliDoc, deploymentDoc: deploymentDoc.replace(`shub-v${pkg.version}-node22.tar.gz`, "shub-v0.0.0-node22.tar.gz"), version: pkg.version }).join("\n"))
+      .toContain("docs/deployment.md release asset block must reference");
   });
 
   it("rejects line-count and anchor drift", () => {
@@ -67,11 +76,11 @@ describe("README consistency gate", () => {
 
   it("requires exactly three interim placeholders and no screenshot links", () => {
     const { pkg, zh, en } = actualReadmes();
-    const missingOne = zh.replace("<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/search-lab.png after capture. -->", "");
+    const missingOne = zh.replace(captureComment("search-lab.png", pkg.version), "");
     expect(checkReadmeConsistency({ zh: missingOne, en, version: pkg.version, mode: "interim" }).join("\n"))
       .toContain("exactly 3 CAPTURE_REQUIRED");
     const linked = zh.replace(
-      "<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/dashboard.png after capture. -->",
+      captureComment("dashboard.png", pkg.version),
       "![dashboard](./docs/screenshots/v0116/dashboard.png)",
     );
     expect(checkReadmeConsistency({ zh: linked, en, version: pkg.version, mode: "interim" }).join("\n"))
@@ -87,8 +96,8 @@ describe("README consistency gate", () => {
     for (const name of ["dashboard.png", "search-lab.png", "provider-health.png"]) {
       writeFileSync(join(screenshotDir, name), "fixture");
     }
-    const finalZh = replaceCaptureMarkers(zh);
-    const finalEn = replaceCaptureMarkers(en);
+    const finalZh = replaceCaptureMarkers(zh, pkg.version);
+    const finalEn = replaceCaptureMarkers(en, pkg.version);
     expect(checkReadmeConsistency({ zh: finalZh, en: finalEn, version: pkg.version, mode: "final", root })).toEqual([]);
     expect(checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("0 CAPTURE_REQUIRED");

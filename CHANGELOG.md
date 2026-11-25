@@ -4,7 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.15 (Unreleased) — Disaster recovery
+## v0.1.16 — Stable
+
+### Security
+
+- Hardened SSRF classification with canonical IPv6 handling and fail-closed rejection of disallowed zones, including allowlisted-network edge cases.
+- Enforced search-task ownership so unrelated actors cannot read or cancel tasks without an owner.
+
+### Fixed
+
+- Corrected Deep Search physical HTTP request accounting across pagination, retries and redirects.
+- Bound cache identity to credential identity without storing plaintext credentials, preventing cross-credential cache reuse.
+- Aligned MCP protocol-version reporting and handshake behavior with the measured SDK contract.
+- Corrected setup-token documentation: the value is never logged, is read from the 0600 file, and any residual token is invalid after best-effort deletion.
+
+### Changed
+
+- Consolidated release version handling and expanded release/upgrade documentation gates.
+- Reworked both READMEs into concise bilingual product entry points with a 100–150 line contract, nine stable anchors and interim/final screenshot gates.
+- Standardized the Node.js runtime contract at `>=22.12.0` for development and the portable CLI; standalone server packages still bundle their runtime.
+
+## v0.1.15 (2026-11-25) — Stable
 
 ### Added
 

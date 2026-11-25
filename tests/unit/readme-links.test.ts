@@ -39,6 +39,19 @@ describe("README relative-link gate", () => {
     expect(problems.join("\n")).toContain("links to missing file");
   });
 
+  it("rejects relative paths that escape the repository root after decoding", () => {
+    const root = fixtureRoot();
+    for (const target of ["../../outside.md", "%2e%2e/%2e%2e/outside.md"]) {
+      const problems = checkReadmeLinks({
+        text: `[escape](${target})`,
+        label: "README.md",
+        file: "README.md",
+        root,
+      });
+      expect(problems.join("\n")).toContain("escapes the repository root");
+    }
+  });
+
   it("checks explicit and generated anchors in the target document", () => {
     const root = fixtureRoot();
     expect(checkReadmeLinks({

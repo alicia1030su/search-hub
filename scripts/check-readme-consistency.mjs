@@ -8,7 +8,7 @@
  * files, so a release can never ship with capture markers or broken images.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectedReleaseAssets } from "../packaging/release-evidence.mjs";
 
@@ -87,6 +87,11 @@ export function checkReadmeLinks({ text, label, file, root = REPO_ROOT }) {
     const pathPart = hashIndex >= 0 ? target.slice(0, hashIndex) : target;
     const hash = hashIndex >= 0 ? target.slice(hashIndex + 1) : "";
     const targetFile = pathPart ? resolve(dirname(sourceFile), decodeURIComponent(pathPart)) : sourceFile;
+    const relativeTarget = relative(root, targetFile);
+    if (relativeTarget === ".." || relativeTarget.startsWith(`..${sep}`) || isAbsolute(relativeTarget)) {
+      problems.push(`${label}:${link.line} relative link escapes the repository root: ${target}`);
+      continue;
+    }
     if (!existsSync(targetFile)) {
       problems.push(`${label}:${link.line} links to missing file: ${target}`);
       continue;
@@ -101,7 +106,7 @@ export function checkReadmeLinks({ text, label, file, root = REPO_ROOT }) {
   return problems;
 }
 
-export function checkNodeContract({ engine, zh, en }) {
+export function checkNodeContract({ engine, zh, en, cliDoc, deploymentDoc, version }) {
   const problems = [];
   if (engine !== NODE_CONTRACT) {
     problems.push(`package.json engines.node must be ${NODE_CONTRACT}, received ${engine ?? "missing"}`);
@@ -109,6 +114,40 @@ export function checkNodeContract({ engine, zh, en }) {
   for (const [label, text] of [["README.md", zh], ["README_EN.md", en]]) {
     if (!text.includes(`Node.js ${NODE_CONTRACT}`)) {
       problems.push(`${label} must state Node.js ${NODE_CONTRACT} for the portable CLI`);
+    }
+  }
+
+  if (cliDoc !== undefined) {
+    const installBlock = cliDoc.split("## Configuration")[0];
+    if (!version || !installBlock.includes(`shub-v${version}-node22.tar.gz`)) {
+      problems.push(`docs/cli.md install block must reference the v${version ?? "current"} Node CLI asset`);
+    }
+    if (!installBlock.includes(`Node.js ${NODE_CONTRACT}`)) {
+      problems.push(`docs/cli.md install block must state Node.js ${NODE_CONTRACT}`);
+    }
+    if (installBlock.includes("Node.js 22+")) problems.push("docs/cli.md install block still uses the ambiguous Node.js 22+ contract");
+    if (version) {
+      for (const match of installBlock.matchAll(/v\d+\.\d+\.\d+/g)) {
+        if (match[0] !== `v${version}`) problems.push(`docs/cli.md install block still references ${match[0]}`);
+      }
+    }
+  }
+
+  if (deploymentDoc !== undefined) {
+    const start = deploymentDoc.indexOf("## Release");
+    const end = deploymentDoc.indexOf("## Backup and restore");
+    const assetBlock = start >= 0 ? deploymentDoc.slice(start, end >= 0 ? end : undefined) : "";
+    if (!version || !assetBlock.includes(`shub-v${version}-node22.tar.gz`)) {
+      problems.push(`docs/deployment.md release asset block must reference the v${version ?? "current"} Node CLI asset`);
+    }
+    if (!assetBlock.includes(`Node.js ${NODE_CONTRACT}`)) {
+      problems.push(`docs/deployment.md release asset block must state Node.js ${NODE_CONTRACT}`);
+    }
+    if (assetBlock.includes("Node.js 22+")) problems.push("docs/deployment.md release asset block still uses the ambiguous Node.js 22+ contract");
+    if (version) {
+      for (const match of assetBlock.matchAll(/v\d+\.\d+\.\d+/g)) {
+        if (match[0] !== `v${version}`) problems.push(`docs/deployment.md release asset block still references ${match[0]}`);
+      }
     }
   }
   return problems;
@@ -216,8 +255,10 @@ export async function main({ mode = "interim", root = REPO_ROOT } = {}) {
   const pkg = JSON.parse(read(root, "package.json"));
   const zh = read(root, "README.md");
   const en = read(root, "README_EN.md");
+  const cliDoc = read(root, "docs/cli.md");
+  const deploymentDoc = read(root, "docs/deployment.md");
   const problems = [
-    ...checkNodeContract({ engine: pkg.engines?.node, zh, en }),
+    ...checkNodeContract({ engine: pkg.engines?.node, zh, en, cliDoc, deploymentDoc, version: pkg.version }),
     ...checkReadmeConsistency({ zh, en, version: pkg.version, mode, root }),
     ...checkReadmeLinks({ text: zh, label: "README.md", file: "README.md", root }),
     ...checkReadmeLinks({ text: en, label: "README_EN.md", file: "README_EN.md", root }),

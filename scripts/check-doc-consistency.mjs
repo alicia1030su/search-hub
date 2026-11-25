@@ -113,7 +113,14 @@ export async function main() {
   const readmeEn = read("README_EN.md");
   const pkg = JSON.parse(read("package.json"));
 
-  problems.push(...checkNodeContract({ engine: pkg.engines?.node, zh: readme, en: readmeEn }));
+  problems.push(...checkNodeContract({
+    engine: pkg.engines?.node,
+    zh: readme,
+    en: readmeEn,
+    cliDoc: read("docs/cli.md"),
+    deploymentDoc: read("docs/deployment.md"),
+    version: pkg.version,
+  }));
   problems.push(...checkReadmeConsistency({ zh: readme, en: readmeEn, version: pkg.version, mode: "interim", root: REPO }));
   problems.push(...checkReadmeLinks({ text: readme, label: "README.md", file: "README.md", root: REPO }));
   problems.push(...checkReadmeLinks({ text: readmeEn, label: "README_EN.md", file: "README_EN.md", root: REPO }));
