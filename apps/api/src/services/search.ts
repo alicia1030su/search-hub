@@ -809,6 +809,23 @@ export class SearchService {
         };
       });
 
+    const providerStats = new Map<string, SearchResponse["stats"]["providers"][number]>();
+    for (const outcome of outcomes) {
+      if (outcome.response === null) continue;
+      for (const stat of outcome.response.stats.providers) {
+        const existing = providerStats.get(stat.providerId);
+        if (!existing) {
+          providerStats.set(stat.providerId, { ...stat, httpRequests: stat.httpRequests ?? 0 });
+        } else {
+          existing.resultCount += stat.resultCount;
+          existing.attempts += stat.attempts;
+          existing.httpRequests = (existing.httpRequests ?? 0) + (stat.httpRequests ?? 0);
+          existing.latencyMs = Math.max(existing.latencyMs, stat.latencyMs);
+          existing.ok = existing.ok || stat.ok;
+        }
+      }
+    }
+
     if (succeeded.length === 0) {
       // Return a *failed* response instead of throwing: the caller then gets the
       // per-query failure list, REST answers 503, and the task row records
@@ -826,7 +843,7 @@ export class SearchService {
           rawCount: 0,
           dedupedCount: 0,
           fusedCount: 0,
-          providers: [],
+          providers: [...providerStats.values()],
           rerankApplied: false,
           embeddingApplied: false,
           summaryApplied: false,
@@ -870,20 +887,6 @@ export class SearchService {
     for (const result of results) result.score = Number((result.score / maxScore).toFixed(6));
 
     const base = valid[0]!;
-    const providerStats = new Map<string, SearchResponse["stats"]["providers"][number]>();
-    for (const response of valid) {
-      for (const stat of response.stats.providers) {
-        const existing = providerStats.get(stat.providerId);
-        if (!existing) {
-          providerStats.set(stat.providerId, { ...stat });
-        } else {
-          existing.resultCount += stat.resultCount;
-          existing.attempts += stat.attempts;
-          existing.latencyMs = Math.max(existing.latencyMs, stat.latencyMs);
-          existing.ok = existing.ok || stat.ok;
-        }
-      }
-    }
 
     // Errors from every rewrite, plus one entry per rewrite that failed
     // outright. Without the second group a deep search over 3 queries where 1
