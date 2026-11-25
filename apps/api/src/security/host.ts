@@ -38,17 +38,16 @@ export function isAllowedHost(hostHeader: string | undefined, allowedHosts: stri
  * When present it must be same-origin with the request or explicitly allowed.
  */
 export function isAllowedOrigin(
-  origin: string | null | undefined,
+  origin: string | string[] | null | undefined,
   requestOrigin: string,
   extraOrigins: string[],
-  allowedHosts: string[],
 ): boolean {
-  if (!origin) return true;
-  if (origin === requestOrigin) return true;
-  if (extraOrigins.includes(origin)) return true;
+  if (origin === undefined || origin === null) return true;
+  if (typeof origin !== "string" || origin.length === 0 || origin === "null") return false;
   try {
     const parsed = new URL(origin);
-    return allowedHosts.includes(parsed.hostname.toLowerCase());
+    if (extraOrigins.includes(origin)) return true;
+    return parsed.origin === new URL(requestOrigin).origin;
   } catch {
     return false;
   }

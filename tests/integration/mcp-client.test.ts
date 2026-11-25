@@ -349,7 +349,10 @@ describe("MCP official client (AC-07)", () => {
 
     expect((await request(baseUrl)).status).toBe(200);
     expect((await request("https://console.example.test")).status).toBe(200);
-    expect(await rawRequest("http://127.0.0.1", `localhost:${new URL(baseUrl).port}`)).toBe(200);
+    expect(
+      await rawRequest("http://127.0.0.1", `localhost:${new URL(baseUrl).port}`),
+      "a different hostname must not inherit the Host allowlist",
+    ).toBe(403);
 
     const url = new URL(baseUrl);
     const differentScheme = new URL(url);

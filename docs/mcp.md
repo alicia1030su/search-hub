@@ -89,7 +89,7 @@ docker compose exec -i \
   search-hub node packages/mcp/dist/stdio.mjs
 ```
 
-The bundle is plain JavaScript; no `tsx`, TypeScript, or network install is required. `SEARCH_HUB_TOKEN` needs `mcp:use`, `search`, and (for `get_search_sources`) `sources:read`.
+The bundle is plain JavaScript; no `tsx`, TypeScript, or network install is required. `SEARCH_HUB_TOKEN` needs `mcp:use`, `search`, and (for `get_search_sources` and `get_search_status`) `sources:read`.
 
 ## Verifying with curl
 
@@ -120,7 +120,7 @@ curl -sS http://localhost:8787/mcp \
 
 - Bearer token required for every request; tokens are revocable and scoped.
 - **Host validation happens before authentication.** Accepted: IP literals, `localhost`, the hostname of `SEARCH_HUB_PUBLIC_URL`, and entries in `SEARCH_HUB_ALLOWED_HOSTS`. Anything else gets `403`, which blocks DNS rebinding before a token can be probed.
-- `Origin` is checked when present; cross-origin browser calls are rejected unless the origin is in `SEARCH_HUB_CORS_ORIGINS` or matches the request host.
+- `Origin` is checked when present; browser calls must be same-origin (scheme, host, and effective port) or exactly match an entry in `SEARCH_HUB_CORS_ORIGINS`.
 - Behind a reverse proxy, terminate TLS there and set `SEARCH_HUB_PUBLIC_URL` plus `SEARCH_HUB_TRUST_PROXY=true` (loopback-only) or an explicit proxy CIDR.
 - The endpoint requires a Bearer token; the admin session cookie is not accepted. Keep the token secret and never embed it in client-side code.
 - Tool output never contains provider API keys.

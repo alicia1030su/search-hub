@@ -1,10 +1,11 @@
 import {
+  SearchHubError,
   type SearchRequest,
   type SearchResponse,
   type ProviderRuntimeSnapshot,
   type ProviderInstance,
 } from "@search-hub/shared";
-import type { McpServer } from "@modelcontextprotocol/server";
+import type { McpServer, ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 export interface McpSearchService {
@@ -56,6 +57,17 @@ export interface McpHealthSnapshot {
 
 const freshness = z.enum(["day", "week", "month", "year", "all"]).optional();
 
+type McpToolScope = "search" | "sources:read";
+
+/** Enforce fine-grained scopes for HTTP; stdio remains authorized by REST proxy. */
+function assertHttpToolScope(context: ServerContext, required: McpToolScope): void {
+  if (context.http === undefined) return;
+  const scopes = context.http.authInfo?.scopes ?? [];
+  if (!scopes.includes("*") && !scopes.includes(required)) {
+    throw new SearchHubError("forbidden", `Token is missing "${required}" scope`);
+  }
+}
+
 function jsonResult(payload: unknown, isError = false) {
   return {
     ...(isError ? { isError: true } : {}),
@@ -92,8 +104,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         providers: z.array(z.string()).max(20).optional().describe("Provider instance ids"),
       }),
     },
-    async (args) => {
+    async (args, context) => {
       try {
+        assertHttpToolScope(context, "search");
         const response = await deps.search.execute({
           query: args.query,
           limit: args.limit,
@@ -137,8 +150,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         language: z.string().max(24).optional(),
       }),
     },
-    async (args) => {
+    async (args, context) => {
       try {
+        assertHttpToolScope(context, "search");
         const responses = await Promise.all(
           args.queries.map((query) =>
             deps.search.execute({
@@ -178,8 +192,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         language: z.string().max(24).optional(),
       }),
     },
-    async (args) => {
+    async (args, context) => {
       try {
+        assertHttpToolScope(context, "search");
         const response = await deps.search.execute({
           query: args.query,
           limit: args.limit,
@@ -210,8 +225,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         language: z.string().max(24).optional(),
       }),
     },
-    async (args) => {
+    async (args, context) => {
       try {
+        assertHttpToolScope(context, "search");
         const response = await deps.search.execute({
           query: args.query,
           limit: args.limit,
@@ -242,8 +258,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         language: z.string().max(24).optional(),
       }),
     },
-    async (args) => {
+    async (args, context) => {
       try {
+        assertHttpToolScope(context, "search");
         const response = await deps.search.execute({
           query: args.query,
           limit: args.limit,
@@ -282,8 +299,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         language: z.string().max(24).optional(),
       }),
     },
-    async (args) => {
+    async (args, context) => {
       try {
+        assertHttpToolScope(context, "search");
         const response = await deps.search.execute({
           query: args.query,
           limit: args.limit,
@@ -319,8 +337,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         chatModelId: z.string().optional(),
       }),
     },
-    async (args) => {
+    async (args, context) => {
       try {
+        assertHttpToolScope(context, "search");
         const response = await deps.search.execute({
           query: args.query,
           limit: args.limit,
@@ -347,8 +366,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       description: "List the configured provider instances and their health status.",
       inputSchema: z.object({}),
     },
-    async () => {
+    async (_args, context) => {
       try {
+        assertHttpToolScope(context, "sources:read");
         const [providers, status] = await Promise.all([
           deps.providers.list(),
           deps.providers.status(),
@@ -391,7 +411,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         limit: z.number().int().min(1).max(100).default(50),
       }),
     },
-    async (args) => {
+    async (args, _context) => {
       try {
         if (!deps.health) {
           return jsonResult({
@@ -432,8 +452,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         "Return provider health, key pool status and circuit-breaker state. Never includes API keys.",
       inputSchema: z.object({}),
     },
-    async () => {
+    async (_args, context) => {
       try {
+        assertHttpToolScope(context, "sources:read");
         const status = await deps.providers.status();
         return jsonResult({          version: deps.version,
           providers: status.map((provider) => ({

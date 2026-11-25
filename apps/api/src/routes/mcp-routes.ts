@@ -124,14 +124,7 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
 
       const requestOrigin = `${request.protocol}://${request.headers.host}`;
       const originHeader = request.headers.origin;
-      if (
-        !isAllowedOrigin(
-          typeof originHeader === "string" ? originHeader : null,
-          requestOrigin,
-          ctx.config.corsOrigins,
-          ctx.config.allowedHosts,
-        )
-      ) {
+      if (!isAllowedOrigin(originHeader, requestOrigin, ctx.config.corsOrigins)) {
         throw new SearchHubError("forbidden", "Origin is not allowed for this MCP endpoint");
       }
 
