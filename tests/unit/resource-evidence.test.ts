@@ -77,8 +77,8 @@ describe("resource evidence", () => {
     expect(candidate).toContain("node packaging/aggregate-disaster-recovery-evidence.mjs");
     expect(candidate).toContain("release-evidence.mjs combine");
     expect(candidate).toContain("verify-disaster-recovery-evidence.mjs");
-    expect(ci).toContain("name: release-evidence-${{ env.VERSION }}");
-    expect(ci).toContain("name: release-evidence-diagnostics-${{ env.VERSION }}");
+    expect(ci).toContain("name: release-evidence-v${{ env.VERSION }}");
+    expect(ci).toContain("name: release-evidence-diagnostics-v${{ env.VERSION }}");
     expect(ci).not.toContain("docs/evidence/v0.1.15");
     expect(ci).not.toContain("--output-dir docs/evidence/v0.1.14");
   });

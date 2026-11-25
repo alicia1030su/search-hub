@@ -287,7 +287,7 @@ jobs:
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
-          name: release-evidence-${{ env.VERSION }}
+          name: release-evidence-v${{ env.VERSION }}
           path: ${{ runner.temp }}/release-evidence-v${{ env.VERSION }}/
           if-no-files-found: error
           retention-days: 30
@@ -295,7 +295,7 @@ jobs:
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
-          name: release-evidence-diagnostics-${{ env.VERSION }}
+          name: release-evidence-diagnostics-v${{ env.VERSION }}
           path: |
             ${{ runner.temp }}/dr-evidence-v${{ env.VERSION }}/
             ${{ runner.temp }}/cache-evidence-v${{ env.VERSION }}/

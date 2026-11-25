@@ -137,7 +137,9 @@ describe("v0.1.16 release version single source", () => {
     const ci = read(".github/workflows/ci.yml");
     const candidate = read(".github/workflows/release-candidate.yml");
     const promoter = read(".github/workflows/release.yml");
-    expect(ci).toContain("name: release-evidence-${{ env.VERSION }}");
+    expect(ci).toContain("name: release-evidence-v${{ env.VERSION }}");
+    expect(ci).toContain("name: release-evidence-diagnostics-v${{ env.VERSION }}");
+    expect(CI_RELEASE_EVIDENCE_ARTIFACT).toBe(releaseEvidenceArtifact(version));
     expect(ci).toContain("resource-evidence-v$VERSION_SLUG.json");
     expect(candidate).toContain("name: candidate-gate-v${{ steps.resolve.outputs.version }}");
     expect(candidate).toContain("name: dr-core-v${{ needs.gate.outputs.version }}");
