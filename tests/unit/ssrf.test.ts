@@ -126,6 +126,15 @@ describe("validateOutboundUrl", () => {
     })).rejects.toMatchObject({ code: "blocked" });
   });
 
+  it("rejects a zone-scoped public IPv6 DNS answer even for an allowlisted hostname", async () => {
+    await expect(validateOutboundUrl("http://zoned.allowed.test/", {
+      ...POLICY,
+      allowPrivateHosts: ["zoned.allowed.test"],
+    }, {
+      resolveHost: async () => [{ address: "2606:4700:4700::1111%eth0", family: 6 }],
+    })).rejects.toMatchObject({ code: "blocked" });
+  });
+
   it("allows a public IPv4 address embedded in well-known NAT64", async () => {
     const target = await validateOutboundUrl("http://public-nat64.test/", POLICY, {
       resolveHost: async () => [{ address: "64:ff9b::0808:0808", family: 6 }],

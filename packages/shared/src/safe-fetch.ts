@@ -135,6 +135,11 @@ function parseIPv6(rawIp: string): number[] | null {
   return [...left, ...Array<number>(missing).fill(0), ...right];
 }
 
+function isValidIpLiteral(rawIp: string): boolean {
+  const version = isIP(rawIp);
+  return version === 4 || (version === 6 && !rawIp.includes("%") && parseIPv6(rawIp) !== null);
+}
+
 function isBlockedIpv4(ip: string): boolean {
   return BLOCKED_METADATA.has(ip) || BLOCKED_V4.some(([base, bits]) => inV4Cidr(ip, base, bits));
 }
@@ -283,7 +288,7 @@ export async function validateOutboundUrl(
   if (addresses.some((address) => isMetadataAddress(address))) {
     throw new SearchHubError("blocked", "Destination resolves to a cloud metadata address");
   }
-  if (addresses.some((address) => isIP(address) === 0)) {
+  if (addresses.some((address) => !isValidIpLiteral(address))) {
     throw new SearchHubError("blocked", "Destination resolved to an invalid IP address");
   }
 
@@ -325,7 +330,7 @@ export function createGuardedLookup(
     resolveHost(hostname)
       .then((addresses) => {
         const usable = addresses.filter((item) => {
-          if (isMetadataAddress(item.address) || isIP(item.address) === 0) return false;
+          if (!isValidIpLiteral(item.address) || isMetadataAddress(item.address)) return false;
           return allowlisted || !isBlockedAddress(item.address);
         });
         if (usable.length === 0) {

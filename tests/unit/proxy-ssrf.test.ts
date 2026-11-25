@@ -295,6 +295,17 @@ describe("DNS rebinding", () => {
     },
   );
 
+  it("rejects a zone-scoped public IPv6 answer even for an allowlisted hostname", async () => {
+    const lookup = createGuardedLookup(
+      { ...POLICY, allowPrivateHosts: ["zoned.allowed.test"] },
+      { resolveHost: async () => [{ address: "2606:4700:4700::1111%eth0", family: 6 }] },
+    );
+    const error = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
+      lookup("zoned.allowed.test", { family: 6 }, (cause) => resolve(cause));
+    });
+    expect(error?.code).toBe("ERR_SSRF_BLOCKED");
+  });
+
   it("connect-time lookup resolves a public answer normally", async () => {
     const lookup = createGuardedLookup(POLICY, {
       resolveHost: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
