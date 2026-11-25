@@ -96,10 +96,30 @@ describe("release gate", () => {
     expect(promoter).toContain("TAG: ${{ inputs.tag || github.ref_name }}");
     expect(promoter).toContain('if [[ "$EVENT_NAME" == "push" ]]; then');
     expect(promoter).toContain('args+=(--event-sha "$GITHUB_SHA")');
-    expect(promoter).toContain(".isDraft == true and .isPrerelease == false and (.assets | length) == 0");
-    expect(promoter).toContain('.isDraft == true and .isPrerelease == false and (.assets | length) == 9 and (.assets | all(.state == "uploaded"))');
+    expect(promoter).toContain('node packaging/check-release-draft.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --event "$EVENT_NAME"');
+    const draftChecker = readFileSync(new URL("../../packaging/check-release-draft.mjs", import.meta.url), "utf8");
+    expect(draftChecker).toContain("HTTP 404");
+    expect(draftChecker).toContain("assets.length !== 0");
+    expect(draftChecker).toContain("assets.length !== 9");
     expect(promoter).toMatch(/name: Create or update only an empty draft\n\s+if: github\.event_name == 'push'/);
-    expect(promoter).toContain('gh release edit "$TAG" --draft=false --latest');
+    const finalize = promoter.slice(promoter.indexOf("  finalize:"));
+    const publishIndex = finalize.indexOf('gh release edit "$TAG" --draft=false --latest');
+    expect(publishIndex).toBeGreaterThan(-1);
+    for (const marker of [
+      'gh release download "$TAG" --dir final-download',
+      "sha256sum -c SHA256SUMS",
+      "packaging/candidate-attestations.mjs verify",
+      "git/ref/tags/${TAG}",
+      "git/tags/${tag_object}",
+      'imagetools inspect "$ref" --raw',
+      "normalize-inspection",
+      "release-evidence.mjs image --inspection final-normalized.json",
+    ]) {
+      const index = finalize.indexOf(marker);
+      expect(index, marker).toBeGreaterThanOrEqual(0);
+      expect(index, marker).toBeLessThan(publishIndex);
+    }
+    expect(finalize.match(/gh release edit /g)).toHaveLength(1);
   });
 
   it("requires an annotated tag on main with a matching stable version", () => {

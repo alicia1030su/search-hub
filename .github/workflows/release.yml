@@ -213,24 +213,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
           EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets > existing-release.json 2>/dev/null; then
-            if [[ "$EVENT_NAME" == "push" ]]; then
-              jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 0' existing-release.json >/dev/null || {
-                echo "::error::Push recovery requires an empty private draft for $TAG."
-                exit 1
-              }
-            else
-              jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 9 and (.assets | all(.state == "uploaded"))' existing-release.json >/dev/null || {
-                echo "::error::Dispatch recovery requires the existing private nine-asset draft for $TAG."
-                exit 1
-              }
-            fi
-          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            echo "::error::Dispatch recovery requires an existing private draft for $TAG."
-            exit 1
-          fi
+        run: node packaging/check-release-draft.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --event "$EVENT_NAME"
       - name: Compose Stable release notes
         env:
           VERSION: ${{ needs.gate.outputs.version }}
@@ -375,7 +358,7 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the already verified Stable draft
+      - name: Verify draft assets, provenance, immutable tag and GHCR before publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
@@ -384,20 +367,16 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$TAG" --json isDraft,isPrerelease,assets > before-publish.json
-          jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 9' before-publish.json >/dev/null
-          gh release edit "$TAG" --draft=false --latest
-          gh release view "$TAG" --json isDraft,isPrerelease,tagName,assets > release-final.json
-          jq -e '.isDraft == false and .isPrerelease == false and (.assets | length) == 9' release-final.json >/dev/null
+          jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 9 and (.assets | all(.state == "uploaded"))' before-publish.json >/dev/null
           mkdir -p final-download
           gh release download "$TAG" --dir final-download
+          test "$(find final-download -maxdepth 1 -type f | wc -l)" -eq 9
           (cd final-download && sha256sum -c SHA256SUMS)
           node packaging/candidate-attestations.mjs verify \
             --manifest promotion/candidate-evidence/candidate-manifest.json \
             --dir final-download \
             --attestations promotion/candidate-evidence/attestations \
             --source-sha "$SOURCE_SHA"
-          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')
-          test "$latest" = "$TAG"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > final-tag-ref.json
           tag_object=$(jq -er '.object.sha' final-tag-ref.json)
           test "$(jq -r '.object.type' final-tag-ref.json)" = "tag"
@@ -418,6 +397,26 @@ jobs:
               --output final-normalized.json
             node packaging/release-evidence.mjs image --inspection final-normalized.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json > final-image-verification.json
           done
+      - name: Publish the already verified Stable draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json isDraft,isPrerelease,assets > before-publish.json
+          jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 9 and (.assets | all(.state == "uploaded"))' before-publish.json >/dev/null
+          gh release edit "$TAG" --draft=false --latest
+      - name: Confirm published Stable metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          EXPECTED_DIGEST: ${{ needs.container.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json isDraft,isPrerelease,tagName,assets > release-final.json
+          jq -e '.isDraft == false and .isPrerelease == false and (.assets | length) == 9' release-final.json >/dev/null
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')
+          test "$latest" = "$TAG"
           mkdir -p artifacts/v0.1.15
           cp release-final.json artifacts/v0.1.15/release-final.json
           node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("release-final.json"));const image=JSON.parse(fs.readFileSync("final-image-verification.json"));const ref=JSON.parse(fs.readFileSync("final-tag-ref.json"));const tag=JSON.parse(fs.readFileSync("final-tag-object.json"));x.ghcrDigest=process.argv[1];x.ghcrMediaType=image.mediaType;x.ghcrConfigDigest=image.configDigest;x.ghcrPlatform=image.platform;x.candidateRunId=Number(process.argv[2]);x.tag={name:x.tagName,tagObject:ref.object.sha,commit:tag.object.sha,type:tag.type};fs.writeFileSync("artifacts/v0.1.15/release-final.json",JSON.stringify(x,null,2)+"\n")' "$EXPECTED_DIGEST" "${{ needs.gate.outputs.candidateRunId }}"
