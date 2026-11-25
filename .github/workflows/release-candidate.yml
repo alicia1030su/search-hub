@@ -9,6 +9,14 @@ on:
         description: "Exact 40-character main commit SHA to build (no tag or moving branch)"
         required: true
         type: string
+      readme_mode:
+        description: "README screenshot mode; use final only for the SHA B release candidate"
+        required: true
+        type: choice
+        default: interim
+        options:
+          - interim
+          - final
 
 concurrency:
   group: release-candidate-${{ inputs.sha }}
@@ -71,8 +79,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Require final README screenshots and links
-        run: node scripts/check-readme-consistency.mjs --mode final
+      - name: Require README screenshots and links for the selected mode
+        env:
+          README_MODE: ${{ inputs.readme_mode }}
+        run: node scripts/check-readme-consistency.mjs --mode "$README_MODE"
 
       - name: Require only the five exact-SHA main-push workflows
         id: gates

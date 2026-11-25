@@ -97,15 +97,15 @@ export function verifyFinalReadme(repoRoot = REPO_ROOT) {
   const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
   const zh = readFileSync(path.join(repoRoot, "README.md"), "utf8");
   const en = readFileSync(path.join(repoRoot, "README_EN.md"), "utf8");
-  const cliPath = path.join(repoRoot, "docs", "cli.md");
-  const deploymentPath = path.join(repoRoot, "docs", "deployment.md");
+  const cliDoc = readFileSync(path.join(repoRoot, "docs", "cli.md"), "utf8");
+  const deploymentDoc = readFileSync(path.join(repoRoot, "docs", "deployment.md"), "utf8");
   const problems = [
     ...checkNodeContract({
       engine: pkg.engines?.node,
       zh,
       en,
-      cliDoc: existsSync(cliPath) ? readFileSync(cliPath, "utf8") : undefined,
-      deploymentDoc: existsSync(deploymentPath) ? readFileSync(deploymentPath, "utf8") : undefined,
+      cliDoc,
+      deploymentDoc,
       version: pkg.version,
     }),
     ...checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root: repoRoot }),

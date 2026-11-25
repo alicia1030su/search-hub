@@ -71,6 +71,14 @@ function finalReadmeFixture(): string {
   writeFileSync(join(directory, "README.md"), finalReadme(false));
   writeFileSync(join(directory, "README_EN.md"), finalReadme(true));
   mkdirSync(join(directory, "docs", "screenshots", "v0116"), { recursive: true });
+  writeFileSync(
+    join(directory, "docs", "cli.md"),
+    `# CLI\n\nshub-v${version}-node22.tar.gz\nNode.js >=22.12.0\n\n## Configuration\n`,
+  );
+  writeFileSync(
+    join(directory, "docs", "deployment.md"),
+    `# Deployment\n\n## Release\n\nshub-v${version}-node22.tar.gz\nNode.js >=22.12.0\n\n## Backup and restore\n`,
+  );
   for (const file of screenshotFiles) writeFileSync(join(directory, file), "png-fixture");
   return directory;
 }
@@ -210,11 +218,19 @@ describe("release gate", () => {
     expect(() => verifyFinalReadme(directory)).toThrow(/screenshot file is missing/);
   });
 
-  it("runs the final README gate after exact-SHA checkout and before workflow polling", () => {
+  it("rejects a final README fixture missing required Node contract docs", () => {
+    const directory = finalReadmeFixture();
+    rmSync(join(directory, "docs", "cli.md"));
+    expect(() => verifyFinalReadme(directory)).toThrow(/ENOENT|cli\.md/);
+  });
+
+  it("runs the selected README mode after exact-SHA checkout and before workflow polling", () => {
     const candidate = readFileSync(new URL("../../.github/workflows/release-candidate.yml", import.meta.url), "utf8");
     const checkout = candidate.indexOf("ref: ${{ steps.resolve.outputs.sha }}");
-    const readmeGate = candidate.indexOf("node scripts/check-readme-consistency.mjs --mode final");
+    const readmeGate = candidate.indexOf('node scripts/check-readme-consistency.mjs --mode "$README_MODE"');
     const workflowGate = candidate.indexOf("name: Require only the five exact-SHA main-push workflows");
+    expect(candidate).toContain("default: interim");
+    expect(candidate).toContain("README_MODE: ${{ inputs.readme_mode }}");
     expect(checkout).toBeGreaterThanOrEqual(0);
     expect(readmeGate).toBeGreaterThan(checkout);
     expect(workflowGate).toBeGreaterThan(readmeGate);
