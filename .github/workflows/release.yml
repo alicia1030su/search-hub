@@ -30,6 +30,7 @@ permissions:
 jobs:
   gate:
     name: Gate - immutable v0.1.15 tag and exact-SHA candidate
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     outputs:

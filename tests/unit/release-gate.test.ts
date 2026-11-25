@@ -89,6 +89,7 @@ describe("release gate", () => {
     const promoter = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
     expect(promoter).toContain('docker buildx imagetools create --tag "$ref" --prefer-index=false "${base}@${EXPECTED_DIGEST}"');
     expect(promoter).toContain("workflow_dispatch:");
+    expect(promoter).toContain("if: github.event_name == 'push' || github.ref == 'refs/heads/main'");
     expect(promoter).toContain("required: true");
     expect(promoter).toContain('default: "v0.1.15"');
     expect(promoter).toContain("ref: ${{ inputs.tag || github.ref_name }}");
