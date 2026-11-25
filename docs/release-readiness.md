@@ -43,6 +43,44 @@
 
 CI artifact 的 `disaster-recovery/gate.json` 必须绑定 exact release commit/code fingerprint，`verdict=PASS`，`requirements` 恰好包含 R01–R38 与 A01–A12 且每项均为 `PASS`，每项至少引用一个证据文件；同目录 `SHA256SUMS` 必须覆盖 gate 与全部证据文件。gate 只能由 aggregator 从独立 R/A 报告生成：每份报告都校验 exact SHA、releaseCodeFingerprint、clean source、相对路径和覆盖它的 SHA256SUMS。performance manifest 只是子证据，不能单独作为 DR gate；R20 来自真实 128MiB offline verify，R33 来自 legacy 与环境/端口/配置隔离矩阵，R34 必须同时具有 10/64/256 create/verify/restore 多轮性能子证据与同进程多轮内存/临时盘/句柄证据。A04/A11 即使性能子集 PASS 也保持 `BLOCKED`，直到 legacy/M04/fault/full regression/platform 独立证据齐备。未执行统一 `NOT TESTED`，缺实现为 `NOT IMPLEMENTED`，受环境或证据不齐阻挡为 `BLOCKED`；这些状态、缺失证据、dirty source 或哈希不一致都会阻止 preflight/tag promoter，不得伪造 PASS。平台独立报告由 candidate 自身的 core-acceptance 与 Windows/Linux/Docker/systemd job 在候选包构建后生成；assemble 才将它们与 CI 子证据汇总为最终 gate。若平台报告缺失或任何项非 PASS，candidate 组装失败，不会以部分证据启动发布。systemd drill 要求 PID 1 为 systemd 且具备 root；不满足的 runner 必须保持 BLOCKED/失败，不能跳过或伪造 PASS。
 
+## v0.1.15 Stable（2026-11-25）
+
+> 本节只记录已经执行并取得的最终事实。状态词使用 `PASS`、`FAIL`、`BLOCKED`、`NOT TESTED`、`NOT IMPLEMENTED`；未公开的过程失败单独保留，不计入 Stable PASS。
+
+| 项 | 状态 |
+|---|---|
+| 发布源与不可变 tag | PASS：`main` commit `79693881177518a1e16ff12736cfe3d56558bc2f`；annotated tag `v0.1.15` → tag object `da638a1af825bd05e058415602f537c89875aca1` → 该 commit，未移动 |
+| 无 tag 候选与六门禁 preflight | PASS：candidate run `45522211890` attempt 1；六门禁 preflight PASS，`tagCreationAllowed=true` |
+| 最终 DR gate | PASS：R01–R38/A01–A12 共 50 项全 PASS，485 份证据 |
+| 性能与内存 | PASS：10/64/128/256 MiB，每规模 5 repeated + 5 fresh-process；10/64/256 memory-loop 均 PASS |
+| 初始 promoter | FAIL：tag gate、候选字节/Provenance、9 资产 draft PASS；GHCR 提升因 Buildx v0.38 不接受位置参数 tag 而失败，Release 未公开、tag 未移动 |
+| 恢复硬化 | PASS：PR #64 与 #65；最终恢复 run `45537594420` PASS |
+| GitHub Release | PASS：`draft=false`、`prerelease=false`，`/releases/latest=v0.1.15` |
+| 资产与本机复核 | PASS：9 个 `uploaded` 资产；完整下载后 `sha256sum -c` 8 条全 OK，GitHub Release API digest/大小逐项一致 |
+| Provenance | PASS：9 资产 + `candidate-manifest.json` + GHCR image 全部 `gh attestation verify` PASS |
+| GHCR | PASS：`0.1.15`/`v0.1.15`/`latest` 同 digest、mediaType、config、`linux/amd64`；三个 raw manifest SHA256 均等于该 digest |
+| 独立发布后核验 | PASS：Release metadata/Latest/tag object、资产 API 摘要、Provenance、GHCR formatted+raw normalize/image verifier 全 PASS |
+| 发布边界 | PASS：没有额外 Beta/RC，没有重建发布包/CLI/镜像，没有重新 attestation，没有移动正式 tag |
+
+### 最终发布事实
+
+- 发布源：`main` 提交 `79693881177518a1e16ff12736cfe3d56558bc2f`。
+- annotated tag：`v0.1.15` → tag 对象 `da638a1af825bd05e058415602f537c89875aca1` → `79693881177518a1e16ff12736cfe3d56558bc2f`；发布前后未移动。
+- 无 tag 候选：[45522211890](https://github.com/alicia1030su/search-hub/actions/runs/45522211890) attempt 1 PASS。六门禁 preflight PASS，报告 `tagCreationAllowed=true`。
+- 最终 DR gate：R01–R38/A01–A12 共 50 项全 PASS，485 份证据；gate SHA256 `8874c7524d58dcc82f5f837268ce414d4db9ecbc510746ae4078c504af64149c`，`SHA256SUMS` SHA256 `274c8c9e7aa03fb38d3e34bb0390ca80cee3cdb42c5110715830c799b72d22bf`，code fingerprint `10aac0625d8835c846a3b39fa35d2b22a1e3b145f5a0fc7ed4a594b785055ea7`。
+- 性能调度：10/64/128/256 MiB，每规模 5 repeated + 5 fresh-process；10/64/256 memory-loop 均 PASS。
+- Release：<https://github.com/alicia1030su/search-hub/releases/tag/v0.1.15>，`publishedAt=2026-11-25T03:12:03Z`，`draft=false`、`prerelease=false`，`/releases/latest` 返回 `v0.1.15`。
+- 资产：9 个且全部 `uploaded`；`SHA256SUMS` SHA256 `c4f7f90550f204af9fb0dddbf83fc2d2ae0995dcd0d03acb54c9bd8f597d1cef`，`resource-evidence.json` SHA256 `5cb1489dd0814580b79f3a0bf068c13f79883b784ea7e8acbe149c474292d397`。本机完整下载后 `sha256sum -c` 的 8 条摘要全 OK，并与 GitHub Release API 的 digest/大小逐项一致。
+- Provenance：9 资产、`candidate-manifest.json` 与 GHCR image 全部 `gh attestation verify` PASS；签名身份 `release-candidate.yml@refs/heads/main`，source/build digest `7969388…`，invocation `45522211890/attempts/1`。
+- GHCR：`ghcr.io/alicia1030su/search-hub` 的 `0.1.15`、`v0.1.15`、`latest` 均指向 `sha256:8a54cefa34eb61c28f71d47bdb33a79980e05901837e466dbb28a635835e2bcc`；mediaType `application/vnd.oci.image.manifest.v1+json`；config `sha256:0639ad43c0022b2e0ebfea81dd901e6c4ed31da1e466899ff3214d4a8a3129d8`；平台 `linux/amd64`。三个 raw manifest SHA256 均等于该 digest。
+- 独立发布后核验：Release metadata/Latest/tag object、资产 API 摘要、Provenance、GHCR formatted+raw normalize/image verifier 全 PASS。
+
+### 未公开过程记录（FAIL，不计入 Stable PASS）
+
+- 初始 promoter [45524095467](https://github.com/alicia1030su/search-hub/actions/runs/45524095467)：tag gate、候选字节与 Provenance、9 资产 private draft 均 PASS；GHCR 提升 FAIL，根因是 Buildx v0.38 的 `imagetools create` 必须使用 `--tag`，且默认 `prefer-index=true` 会把单架构 manifest 包成 OCI index、改变 digest。此次失败未公开 Release、未移动 tag。
+- 恢复硬化 PR #64 与 #65：改为 `--tag` + `--prefer-index=false`；增加 main-only `workflow_dispatch`；严格校验 release 列表、assets 与 private draft；把资产、Provenance、tag object 与 GHCR 三 tag 的完整复验移到公开前，并在同一 run 中只发布一次；dispatch 从 `main` 加载恢复 helper。
+- 最终恢复 [45537594420](https://github.com/alicia1030su/search-hub/actions/runs/45537594420)：PASS。发布过程没有额外 Beta/RC，没有重建发布包、CLI 或镜像，没有重新 attestation，也没有移动正式 tag。
+
 ## v0.1.14 Stable（2026-11-23）
 
 | 项 | 状态 |
