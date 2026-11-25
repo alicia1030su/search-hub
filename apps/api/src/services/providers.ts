@@ -635,10 +635,9 @@ export class ProviderService {
   /**
    * Version stamp for a provider's credentials, safe to put in a cache key.
    *
-   * Only identity is hashed — key ids, their enabled flag and the encryption
-   * version — never the ciphertext, the plaintext or the hint. Adding, removing,
-   * disabling or re-encrypting a key changes this stamp, which invalidates
-   * cached responses that were produced with the previous credential set.
+   * Only stable identity and encrypted material are hashed — never plaintext,
+   * hints, labels or runtime statistics. Weight participates because changing a
+   * weighted key's selection probability must not reuse a cached response.
    */
   credentialVersion(providerId: string): string {
     const rows = this.db
@@ -646,14 +645,22 @@ export class ProviderService {
         id: apiKeys.id,
         enabled: apiKeys.enabled,
         version: apiKeys.keyVersion,
-        updatedAt: apiKeys.updatedAt,
+        weight: apiKeys.weight,
+        keyCiphertext: apiKeys.keyCiphertext,
+        keyIv: apiKeys.keyIv,
+        keyTag: apiKeys.keyTag,
       })
       .from(apiKeys)
       .where(eq(apiKeys.providerId, providerId))
       .all();
     if (rows.length === 0) return "none";
     const material = rows
-      .map((row) => `${row.id}:${row.enabled ? 1 : 0}:${row.version}:${row.updatedAt}`)
+      .map((row) => {
+        const encrypted = createHash("sha256")
+          .update(JSON.stringify([row.keyCiphertext, row.keyIv, row.keyTag]))
+          .digest("hex");
+        return `${row.id}:${row.enabled ? 1 : 0}:${row.version}:${row.weight}:${encrypted}`;
+      })
       .sort()
       .join("|");
     return createHash("sha256").update(material).digest("hex").slice(0, 16);
