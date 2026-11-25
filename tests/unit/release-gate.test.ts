@@ -100,6 +100,8 @@ describe("release gate", () => {
     const draftChecker = readFileSync(new URL("../../packaging/check-release-draft.mjs", import.meta.url), "utf8");
     expect(draftChecker).not.toContain("HTTP 404");
     expect(draftChecker).toContain("release_tag_ambiguous");
+    expect(draftChecker).toContain("pages.length === 0");
+    expect(draftChecker).toContain("Array.isArray(release?.assets)");
     expect(draftChecker).toContain("assets.length !== 0");
     expect(draftChecker).toContain("assets.length !== 9");
     expect(promoter).toMatch(/name: Create or update only an empty draft\n\s+if: github\.event_name == 'push'/);
@@ -112,6 +114,7 @@ describe("release gate", () => {
       "packaging/candidate-attestations.mjs verify",
       "git/ref/tags/${TAG}",
       "git/tags/${tag_object}",
+      'expected_tag_object=$(git rev-parse "refs/tags/$TAG")',
       'imagetools inspect "$ref" --raw',
       "normalize-inspection",
       "release-evidence.mjs image --inspection final-normalized.json",
@@ -120,6 +123,7 @@ describe("release gate", () => {
       expect(index, marker).toBeGreaterThanOrEqual(0);
       expect(index, marker).toBeLessThan(publishIndex);
     }
+    expect(finalize).not.toContain("name: Publish the already verified Stable draft");
     expect(finalize.match(/gh release edit /g)).toHaveLength(1);
   });
 

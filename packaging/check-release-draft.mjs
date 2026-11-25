@@ -17,9 +17,8 @@ export function releaseReleasesApiPath(repo) {
 export function classifyReleaseLookup({ exitCode = 0, stdout = "", stderr = "", tag } = {}) {
   if (exitCode === 0) {
     try {
-      const payload = JSON.parse(stdout);
-      const pages = Array.isArray(payload) && payload.every((page) => Array.isArray(page)) ? payload : [Array.isArray(payload) ? payload : [payload]];
-      if (!pages.every((page) => Array.isArray(page) && page.every((release) => release && typeof release === "object"))) {
+      const pages = JSON.parse(stdout);
+      if (!Array.isArray(pages) || pages.length === 0 || !pages.every((page) => Array.isArray(page) && page.every((release) => release && typeof release === "object"))) {
         return { kind: "error", message: "gh api returned an invalid release list" };
       }
       const matches = pages.flat().filter((entry) => entry.tag_name === tag);
@@ -41,8 +40,9 @@ export function resolveReleaseDraft(lookup, event) {
   }
   if (lookup?.kind !== "success") throw new Error("release_lookup_invalid");
   const release = lookup.release;
-  const assets = Array.isArray(release?.assets) ? release.assets : [];
-  if (release?.draft !== true || release?.prerelease !== false) throw new Error(`release_draft_invalid:${event}`);
+  if (!Array.isArray(release?.assets)) throw new Error(`release_draft_invalid:${event}`);
+  const assets = release.assets;
+  if (release.draft !== true || release.prerelease !== false) throw new Error(`release_draft_invalid:${event}`);
   if (event === "push") {
     if (assets.length !== 0) throw new Error("release_push_draft_not_empty");
     return { action: "create", assets: 0 };

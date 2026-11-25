@@ -358,7 +358,7 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Verify draft assets, provenance, immutable tag and GHCR before publish
+      - name: Verify and publish the Stable draft
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
@@ -379,6 +379,8 @@ jobs:
             --source-sha "$SOURCE_SHA"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > final-tag-ref.json
           tag_object=$(jq -er '.object.sha' final-tag-ref.json)
+          expected_tag_object=$(git rev-parse "refs/tags/$TAG")
+          test "$tag_object" = "$expected_tag_object"
           test "$(jq -r '.object.type' final-tag-ref.json)" = "tag"
           gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" > final-tag-object.json
           test "$(jq -r '.object.sha' final-tag-object.json)" = "$SOURCE_SHA"
@@ -397,12 +399,6 @@ jobs:
               --output final-normalized.json
             node packaging/release-evidence.mjs image --inspection final-normalized.json --digest "$EXPECTED_DIGEST" --image promotion/candidate-evidence/image.json > final-image-verification.json
           done
-      - name: Publish the already verified Stable draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
           gh release view "$TAG" --json isDraft,isPrerelease,assets > before-publish.json
           jq -e '.isDraft == true and .isPrerelease == false and (.assets | length) == 9 and (.assets | all(.state == "uploaded"))' before-publish.json >/dev/null
           gh release edit "$TAG" --draft=false --latest
