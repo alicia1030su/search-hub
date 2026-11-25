@@ -23,7 +23,7 @@ describe("release draft lookup", () => {
   });
 
   it("accepts only the non-empty slurped page-array shape", () => {
-    for (const payload of [release(), [release()], []]) {
+    for (const payload of [release(), [release()], [], [[[]]], [[release([], { tag_name: 123 })]]]) {
       expect(classifyReleaseLookup({ exitCode: 0, stdout: JSON.stringify(payload), tag: "v0.1.15" })).toEqual({ kind: "error", message: "gh api returned an invalid release list" });
     }
   });

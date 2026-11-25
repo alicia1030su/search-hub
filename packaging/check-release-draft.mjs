@@ -18,7 +18,7 @@ export function classifyReleaseLookup({ exitCode = 0, stdout = "", stderr = "", 
   if (exitCode === 0) {
     try {
       const pages = JSON.parse(stdout);
-      if (!Array.isArray(pages) || pages.length === 0 || !pages.every((page) => Array.isArray(page) && page.every((release) => release && typeof release === "object"))) {
+      if (!Array.isArray(pages) || pages.length === 0 || !pages.every((page) => Array.isArray(page) && page.every((release) => release && typeof release === "object" && !Array.isArray(release) && typeof release.tag_name === "string"))) {
         return { kind: "error", message: "gh api returned an invalid release list" };
       }
       const matches = pages.flat().filter((entry) => entry.tag_name === tag);
