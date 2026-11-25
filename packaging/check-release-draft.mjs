@@ -22,13 +22,13 @@ export function classifyReleaseLookup({ exitCode = 0, stdout = "", stderr = "", 
       if (!pages.every((page) => Array.isArray(page) && page.every((release) => release && typeof release === "object"))) {
         return { kind: "error", message: "gh api returned an invalid release list" };
       }
-      const release = pages.flat().find((entry) => entry.tag_name === tag);
-      return release ? { kind: "success", release } : { kind: "not-found" };
+      const matches = pages.flat().filter((entry) => entry.tag_name === tag);
+      if (matches.length > 1) return { kind: "error", message: "release_tag_ambiguous" };
+      return matches.length === 1 ? { kind: "success", release: matches[0] } : { kind: "not-found" };
     } catch {
       return { kind: "error", message: "gh api returned invalid release JSON" };
     }
   }
-  if (/\bHTTP 404\b/i.test(stderr)) return { kind: "not-found" };
   return { kind: "error", message: stderr.trim() || `gh api exited with status ${exitCode}` };
 }
 

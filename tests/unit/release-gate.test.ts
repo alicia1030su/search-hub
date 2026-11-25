@@ -98,7 +98,8 @@ describe("release gate", () => {
     expect(promoter).toContain('args+=(--event-sha "$GITHUB_SHA")');
     expect(promoter).toContain('node packaging/check-release-draft.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --event "$EVENT_NAME"');
     const draftChecker = readFileSync(new URL("../../packaging/check-release-draft.mjs", import.meta.url), "utf8");
-    expect(draftChecker).toContain("HTTP 404");
+    expect(draftChecker).not.toContain("HTTP 404");
+    expect(draftChecker).toContain("release_tag_ambiguous");
     expect(draftChecker).toContain("assets.length !== 0");
     expect(draftChecker).toContain("assets.length !== 9");
     expect(promoter).toMatch(/name: Create or update only an empty draft\n\s+if: github\.event_name == 'push'/);
