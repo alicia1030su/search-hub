@@ -8,7 +8,7 @@
  * files, so a release can never ship with capture markers or broken images.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectedReleaseAssets } from "../packaging/release-evidence.mjs";
 
@@ -198,18 +198,31 @@ function checkFactGroups(zh, en, problems) {
   }
 }
 
-function localImageLinkTargets(text) {
+function screenshotLinkTargets(text) {
   return extractMarkdownLinks(text)
     .filter((link) => link.image)
     .map((link) => {
-      const target = link.target.replace(/^\.\//, "");
+      const withoutQueryOrHash = link.target.split(/[?#]/, 1)[0] ?? "";
+      let decoded = withoutQueryOrHash;
       try {
-        return decodeURIComponent(target);
+        decoded = decodeURIComponent(withoutQueryOrHash);
       } catch {
-        return target;
+        // Keep the undecoded target: link validation will report the bad path.
       }
+      return posix.normalize(decoded.replace(/^\.\//, ""));
     })
-    .filter((target) => !/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith("//"));
+    .filter((target) => !/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith("//"))
+    .filter((target) => target.startsWith("docs/screenshots/"));
+}
+
+/** Resolve auto/interim/final without allowing a captured SHA B to fall back. */
+export function resolveReadmeMode({ root = REPO_ROOT, requested = "auto", fileExists = existsSync } = {}) {
+  if (!["auto", "interim", "final"].includes(requested)) {
+    throw new Error(`unsupported_readme_mode:${requested}`);
+  }
+  const screenshotsPresent = SCREENSHOT_FILES.every((file) => fileExists(join(root, file)));
+  if (screenshotsPresent) return "final";
+  return requested === "final" ? "final" : "interim";
 }
 
 /** Validate both README files against the release version and screenshot mode. */
@@ -242,10 +255,8 @@ export function checkReadmeConsistency({ zh, en, version, mode = "interim", root
     }
 
     const placeholders = (text.match(/CAPTURE_REQUIRED/g) ?? []).length;
-    const screenshotLinks = localImageLinkTargets(text);
-    const unexpectedScreenshots = screenshotLinks.filter(
-      (target) => target.startsWith("docs/screenshots/") && !SCREENSHOT_FILES.includes(target),
-    );
+    const screenshotLinks = screenshotLinkTargets(text);
+    const unexpectedScreenshots = screenshotLinks.filter((target) => !SCREENSHOT_FILES.includes(target));
     if (unexpectedScreenshots.length > 0) {
       problems.push(`${label} links screenshots outside the expected set: ${[...new Set(unexpectedScreenshots)].join(", ")}`);
     }
@@ -276,7 +287,8 @@ function read(root, relative) {
   return readFileSync(join(root, relative), "utf8");
 }
 
-export async function main({ mode = "interim", root = REPO_ROOT } = {}) {
+export async function main({ mode = "auto", root = REPO_ROOT } = {}) {
+  const readmeMode = resolveReadmeMode({ root, requested: mode });
   const pkg = JSON.parse(read(root, "package.json"));
   const zh = read(root, "README.md");
   const en = read(root, "README_EN.md");
@@ -284,7 +296,7 @@ export async function main({ mode = "interim", root = REPO_ROOT } = {}) {
   const deploymentDoc = read(root, "docs/deployment.md");
   const problems = [
     ...checkNodeContract({ engine: pkg.engines?.node, zh, en, cliDoc, deploymentDoc, version: pkg.version }),
-    ...checkReadmeConsistency({ zh, en, version: pkg.version, mode, root }),
+    ...checkReadmeConsistency({ zh, en, version: pkg.version, mode: readmeMode, root }),
     ...checkReadmeLinks({ text: zh, label: "README.md", file: "README.md", root }),
     ...checkReadmeLinks({ text: en, label: "README_EN.md", file: "README_EN.md", root }),
   ];
@@ -294,7 +306,7 @@ export async function main({ mode = "interim", root = REPO_ROOT } = {}) {
 const invokedDirectly = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
 if (invokedDirectly) {
   const modeIndex = process.argv.indexOf("--mode");
-  const mode = modeIndex >= 0 ? process.argv[modeIndex + 1] : "interim";
+  const mode = modeIndex >= 0 ? process.argv[modeIndex + 1] : "auto";
   const problems = await main({ mode });
   if (problems.length === 0) {
     console.log(`PASS: README consistency (${mode})`);

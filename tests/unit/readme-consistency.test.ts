@@ -141,6 +141,13 @@ describe("README consistency gate", () => {
     );
     expect(checkReadmeConsistency({ zh: outsideTree, en: finalEn, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("final screenshot links must be exactly");
+    const normalized = finalZh.replace(
+      "(./docs/screenshots/v0116/dashboard.png)",
+      "(./docs/screenshots/v0116/../v0116/%64ashboard.png?cache=1#preview)",
+    );
+    expect(checkReadmeConsistency({ zh: normalized, en: finalEn, version: pkg.version, mode: "final", root })).toEqual([]);
+    const withOrdinaryAsset = `${finalZh}\n![ordinary asset](./assets/logo.png)\n`;
+    expect(checkReadmeConsistency({ zh: withOrdinaryAsset, en: finalEn, version: pkg.version, mode: "final", root })).toEqual([]);
   });
 
   it("rejects untranslated Chinese in the English README", () => {

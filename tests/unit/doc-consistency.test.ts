@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // The scripts are plain ESM without types; declare the helpers the tests use.
 // @ts-expect-error -- untyped .mjs script, signature declared below
-import { checkCountValue as rawCheckCountValue, resolveReadmeMode as rawResolveReadmeMode } from "../../scripts/check-doc-consistency.mjs";
+import { checkCountValue as rawCheckCountValue } from "../../scripts/check-doc-consistency.mjs";
 // @ts-expect-error -- untyped .mjs script, signature declared below
-import { SCREENSHOT_FILES as rawScreenshotFiles } from "../../scripts/check-readme-consistency.mjs";
+import { resolveReadmeMode as rawResolveReadmeMode, SCREENSHOT_FILES as rawScreenshotFiles } from "../../scripts/check-readme-consistency.mjs";
 
 const checkCountValue = rawCheckCountValue as (
   text: string,
@@ -16,7 +16,7 @@ const checkCountValue = rawCheckCountValue as (
   what: string,
 ) => string | null;
 const resolveReadmeMode = rawResolveReadmeMode as (options?: {
-  requestedMode?: "interim" | "final";
+  requested?: "auto" | "interim" | "final";
   root?: string;
   fileExists?: (file: string) => boolean;
 }) => "interim" | "final";
@@ -84,12 +84,14 @@ describe("catalog ↔ docs consistency", () => {
     const root = mkdtempSync(join(tmpdir(), "search-hub-doc-mode-"));
     try {
       expect(resolveReadmeMode({ root })).toBe("interim");
-      expect(resolveReadmeMode({ requestedMode: "final", root })).toBe("final");
+      expect(resolveReadmeMode({ requested: "auto", root })).toBe("interim");
+      expect(resolveReadmeMode({ requested: "final", root })).toBe("final");
       const screenshotDir = join(root, "docs", "screenshots", "v0116");
       mkdirSync(screenshotDir, { recursive: true });
       for (const file of SCREENSHOT_FILES) writeFileSync(join(root, file), "fixture");
-      expect(resolveReadmeMode({ requestedMode: "interim", root })).toBe("final");
-      expect(() => resolveReadmeMode({ requestedMode: "invalid" as "interim", root })).toThrow(/unsupported_readme_mode/);
+      expect(resolveReadmeMode({ root })).toBe("final");
+      expect(resolveReadmeMode({ requested: "interim", root })).toBe("final");
+      expect(() => resolveReadmeMode({ requested: "invalid" as "auto", root })).toThrow(/unsupported_readme_mode/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

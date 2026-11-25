@@ -22,20 +22,9 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkNodeContract, checkReadmeConsistency, checkReadmeLinks, SCREENSHOT_FILES } from "./check-readme-consistency.mjs";
+import { checkNodeContract, checkReadmeConsistency, checkReadmeLinks, resolveReadmeMode } from "./check-readme-consistency.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/**
- * Resolve the effective README mode. A complete screenshot set always promotes
- * the gate to final so a captured SHA B cannot silently fall back to interim.
- * An explicit final request still fails when the screenshots are incomplete.
- */
-export function resolveReadmeMode({ requestedMode = "interim", root = REPO, fileExists = existsSync } = {}) {
-  if (!["interim", "final"].includes(requestedMode)) throw new Error(`unsupported_readme_mode:${requestedMode}`);
-  const screenshotsPresent = SCREENSHOT_FILES.every((file) => fileExists(join(root, file)));
-  return screenshotsPresent ? "final" : requestedMode;
-}
 
 const problems = [];
 const notes = [];
@@ -61,8 +50,8 @@ let byType = new Map();
  * Exported so a test can call it without spawning a process, and so importing
  * the module never terminates the host.
  */
-export async function main({ mode = "interim" } = {}) {
-  const readmeMode = resolveReadmeMode({ requestedMode: mode, root: REPO });
+export async function main({ mode = "auto" } = {}) {
+  const readmeMode = resolveReadmeMode({ root: REPO, requested: mode });
   const catalog = await loadCatalog();
   const adapters = await loadAdapters();
 
@@ -288,7 +277,7 @@ const invokedDirectly =
   process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
 if (invokedDirectly) {
   const modeIndex = process.argv.indexOf("--mode");
-  const mode = modeIndex >= 0 ? process.argv[modeIndex + 1] : "interim";
+  const mode = modeIndex >= 0 ? process.argv[modeIndex + 1] : "auto";
   const found = await main({ mode });
   if (found.length === 0) {
     console.log("PASS: documentation matches the catalog");
