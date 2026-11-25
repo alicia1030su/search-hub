@@ -276,6 +276,25 @@ describe("DNS rebinding", () => {
     expect(error.code).toBe("ERR_SSRF_BLOCKED");
   });
 
+  it.each([
+    "169.254.169.254",
+    "fd00:ec2::254",
+    "0:0:0:0:0:ffff:a9fe:a9fe",
+    "64:ff9b::a9fe:a9fe",
+  ])(
+    "BUG-0116-08 never allows metadata %s at connect time even for an allowlisted hostname",
+    async (address) => {
+      const lookup = createGuardedLookup(
+        { ...POLICY, allowPrivateHosts: ["metadata.allowed.test"] },
+        { resolveHost: async () => [{ address, family: address.includes(":") ? 6 : 4 }] },
+      );
+      const error = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
+        lookup("metadata.allowed.test", { family: 0 }, (cause) => resolve(cause));
+      });
+      expect(error?.code).toBe("ERR_SSRF_BLOCKED");
+    },
+  );
+
   it("connect-time lookup resolves a public answer normally", async () => {
     const lookup = createGuardedLookup(POLICY, {
       resolveHost: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
@@ -500,6 +519,7 @@ describe("proxy mode", () => {
         "rebind.public.test": ["127.0.0.1"],
         "rfc1918.public.test": ["10.0.0.7"],
         "metadata.public.test": ["169.254.169.254"],
+        "expanded-mapped.public.test": ["0:0:0:0:0:ffff:127.0.0.1"],
       }),
       proxy: { proxy: `http://127.0.0.1:${proxy.port}` },
     });
@@ -508,6 +528,7 @@ describe("proxy mode", () => {
       "rebind.public.test",
       "rfc1918.public.test",
       "metadata.public.test",
+      "expanded-mapped.public.test",
     ]) {
       await expect(safeFetch(`http://${host}/`)).rejects.toMatchObject({ code: "blocked" });
     }

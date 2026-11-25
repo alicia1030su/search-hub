@@ -26,6 +26,17 @@ describe("SSRF address classification", () => {
     "fd12::3",
     "fe80::1",
     "::ffff:127.0.0.1",
+    "::ffff:7f00:1",
+    "0:0:0:0:0:ffff:127.0.0.1",
+    "0:0:0:0:0:ffff:7f00:1",
+    "::127.0.0.1",
+    "::7f00:1",
+    "64:ff9b::7f00:1",
+    "64:ff9b::a9fe:a9fe",
+    "64:ff9b:1::7f00:1",
+    "2002:7f00:1::1",
+    "2001:0000:4136:e378:8000:63bf:80fe:fffe",
+    "fe80::1%eth0",
   ];
   for (const address of blocked) {
     it(`blocks ${address}`, () => {
@@ -33,7 +44,18 @@ describe("SSRF address classification", () => {
     });
   }
 
-  const allowed = ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"];
+  const allowed = [
+    "8.8.8.8",
+    "1.1.1.1",
+    "93.184.216.34",
+    "2606:4700:4700::1111",
+    "::ffff:8.8.8.8",
+    "0:0:0:0:0:ffff:8.8.8.8",
+    "::ffff:0808:0808",
+    "64:ff9b::0808:0808",
+    "2002:0808:0808::1",
+    "2001:0000:4136:e378:8000:63bf:f7f7:f7f7",
+  ];
   for (const address of allowed) {
     it(`allows public address ${address}`, () => {
       expect(isBlockedAddress(address)).toBe(false);
@@ -92,6 +114,25 @@ describe("validateOutboundUrl", () => {
     expect(allowed.allowlisted).toBe(true);
   });
 
+  it.each([
+    "0:0:0:0:0:ffff:a9fe:a9fe",
+    "64:ff9b::a9fe:a9fe",
+  ])("never allows embedded metadata %s through a hostname allowlist", async (address) => {
+    await expect(validateOutboundUrl("http://metadata.test/", {
+      ...POLICY,
+      allowPrivateHosts: ["metadata.test"],
+    }, {
+      resolveHost: async () => [{ address, family: 6 }],
+    })).rejects.toMatchObject({ code: "blocked" });
+  });
+
+  it("allows a public IPv4 address embedded in well-known NAT64", async () => {
+    const target = await validateOutboundUrl("http://public-nat64.test/", POLICY, {
+      resolveHost: async () => [{ address: "64:ff9b::0808:0808", family: 6 }],
+    });
+    expect(target.addresses).toEqual(["64:ff9b::0808:0808"]);
+  });
+
   it("blocks plain HTTP when the policy forbids it", async () => {
     await expect(
       validateOutboundUrl("http://example.com/", { ...POLICY, allowHttp: false }),
@@ -109,6 +150,34 @@ async function startTestServer(
 }
 
 describe("safeFetch runtime behaviour", () => {
+  it("BUG-0116-01 blocks an expanded mapped loopback before socket or budget charge", async () => {
+    let hits = 0;
+    let charged = 0;
+    const { server, port } = await startTestServer((_req, res) => {
+      hits += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"ok":true}');
+    });
+    try {
+      const safeFetch = createSafeFetch({
+        policy: POLICY,
+        timeoutMs: 2_000,
+        resolveHost: async () => [{ address: "0:0:0:0:0:ffff:127.0.0.1", family: 6 }],
+      });
+      const error = await safeFetch(`http://expanded-mapped.test:${port}/`, {
+        onRequest: () => {
+          charged += 1;
+        },
+      }).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as { code?: string }).code).toMatch(/blocked|ERR_SSRF_BLOCKED/);
+      expect(hits).toBe(0);
+      expect(charged).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("blocks a loopback request before opening a socket", async () => {
     const { server, port } = await startTestServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });

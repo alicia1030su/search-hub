@@ -86,46 +86,121 @@ function inV4Cidr(ip: string, base: string, bits: number): boolean {
   return (ipInt & mask) === (baseInt & mask);
 }
 
-/**
- * Normalizes IPv4-mapped IPv6 to plain IPv4 so one blocklist covers both.
- *
- * The WHATWG URL parser rewrites `::ffff:127.0.0.1` to the compressed hex form
- * `::ffff:7f00:1`, so both spellings must be handled — otherwise a URL literal
- * would slip past the CIDR list while the same address written as IPv4 is
- * rejected.
- */
-function normalizeIp(ip: string): string {
-  const lower = ip.toLowerCase();
-  if (lower.startsWith("::ffff:") && lower.includes(".")) return lower.slice(7);
-  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower);
-  if (mapped) {
-    const high = Number.parseInt(mapped[1]!, 16);
-    const low = Number.parseInt(mapped[2]!, 16);
-    return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+const IPV6_SEGMENTS = 8;
+
+function ipv4FromSegments(high: number, low: number): string {
+  return `${(high >>> 8) & 0xff}.${high & 0xff}.${(low >>> 8) & 0xff}.${low & 0xff}`;
+}
+
+function parseIPv6Side(side: string, allowDottedTail: boolean): number[] | null {
+  if (side === "") return [];
+  const parts = side.split(":");
+  const segments: number[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]!;
+    if (part.includes(".")) {
+      if (!allowDottedTail || index !== parts.length - 1) return null;
+      const value = ipv4ToInt(part);
+      if (value === null) return null;
+      segments.push(value >>> 16, value & 0xffff);
+      continue;
+    }
+    if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+    segments.push(Number.parseInt(part, 16));
   }
-  return lower;
+  return segments;
+}
+
+/**
+ * Parse a raw IPv6 address into eight 16-bit segments.
+ *
+ * DNS resolvers can return expanded, dotted-tail or hexadecimal spellings that
+ * the WHATWG URL parser never sees. Zone identifiers and malformed addresses
+ * fail closed rather than being treated as public literals.
+ */
+function parseIPv6(rawIp: string): number[] | null {
+  if (isIP(rawIp) !== 6 || rawIp.includes("%")) return null;
+  const lower = rawIp.toLowerCase();
+  const compression = lower.indexOf("::");
+  if (compression === -1) {
+    const segments = parseIPv6Side(lower, true);
+    return segments?.length === IPV6_SEGMENTS ? segments : null;
+  }
+  if (lower.indexOf("::", compression + 2) !== -1) return null;
+  const left = parseIPv6Side(lower.slice(0, compression), false);
+  const right = parseIPv6Side(lower.slice(compression + 2), true);
+  if (left === null || right === null) return null;
+  const missing = IPV6_SEGMENTS - left.length - right.length;
+  if (missing < 1) return null;
+  return [...left, ...Array<number>(missing).fill(0), ...right];
+}
+
+function isBlockedIpv4(ip: string): boolean {
+  return BLOCKED_METADATA.has(ip) || BLOCKED_V4.some(([base, bits]) => inV4Cidr(ip, base, bits));
+}
+
+function embeddedIpv4Addresses(segments: readonly number[]): string[] {
+  const embedded: string[] = [];
+  const append = (high: number, low: number): void => {
+    embedded.push(ipv4FromSegments(high, low));
+  };
+  const firstSixZero = segments.slice(0, 6).every((segment) => segment === 0);
+  if (firstSixZero && segments[6] !== undefined && segments[7] !== undefined) {
+    append(segments[6], segments[7]); // IPv4-compatible ::/96.
+  }
+  if (segments.slice(0, 5).every((segment) => segment === 0) && segments[5] === 0xffff) {
+    append(segments[6]!, segments[7]!); // IPv4-mapped ::ffff:0:0/96.
+  }
+  if (segments[0] === 0x64 && segments[1] === 0xff9b && segments.slice(2, 6).every((segment) => segment === 0)) {
+    append(segments[6]!, segments[7]!); // Well-known NAT64 64:ff9b::/96.
+  }
+  if (segments[0] === 0x64 && segments[1] === 0xff9b && segments[2] === 1) {
+    append(segments[6]!, segments[7]!); // Local-use NAT64 64:ff9b:1::/48.
+  }
+  if (segments[0] === 0x2002) {
+    append(segments[1]!, segments[2]!); // 6to4 embeds its public IPv4 prefix.
+  }
+  if (segments[0] === 0x2001 && segments[1] === 0) {
+    append(segments[2]!, segments[3]!); // Teredo server.
+    append((~segments[6]!) & 0xffff, (~segments[7]!) & 0xffff); // Teredo client is inverted on wire.
+  }
+  return embedded;
+}
+
+function isMetadataIpv6(segments: readonly number[]): boolean {
+  return segments[0] === 0xfd00 && segments[1] === 0x0ec2 &&
+    segments.slice(2, 7).every((segment) => segment === 0) && segments[7] === 0x254;
+}
+
+function isMetadataAddress(rawIp: string): boolean {
+  const version = isIP(rawIp);
+  if (version === 4) return BLOCKED_METADATA.has(rawIp);
+  if (version !== 6) return false;
+  const segments = parseIPv6(rawIp);
+  if (segments === null) return false;
+  return isMetadataIpv6(segments) || embeddedIpv4Addresses(segments).some((ip) => BLOCKED_METADATA.has(ip));
 }
 
 export function isBlockedAddress(rawIp: string): boolean {
-  const ip = normalizeIp(rawIp);
-  if (BLOCKED_METADATA.has(ip)) return true;
+  const version = isIP(rawIp);
+  if (version === 4) return isBlockedIpv4(rawIp);
+  if (version !== 6) return true;
+  const segments = parseIPv6(rawIp);
+  if (segments === null || isMetadataIpv6(segments)) return true;
 
-  const version = isIP(ip);
-  if (version === 4) {
-    return BLOCKED_V4.some(([base, bits]) => inV4Cidr(ip, base, bits));
-  }
-  if (version === 6) {
-    if (ip === "::" || ip === "::1") return true;
-    if (ip.startsWith("fc") || ip.startsWith("fd")) return true; // fc00::/7
-    if (ip.startsWith("fe8") || ip.startsWith("fe9") || ip.startsWith("fea") || ip.startsWith("feb")) {
-      return true; // fe80::/10
-    }
-    if (ip.startsWith("ff")) return true; // multicast
-    if (ip.startsWith("2001:db8:")) return true; // documentation
-    if (ip.startsWith("64:ff9b:")) return true; // NAT64 translation of private v4
-    return false;
-  }
-  return true;
+  // IPv4-compatible and local-use NAT64 addresses are never public destinations.
+  if (segments.slice(0, 6).every((segment) => segment === 0)) return true;
+  if (segments[0] === 0x64 && segments[1] === 0xff9b && segments[2] === 1) return true;
+
+  // Mapped, NAT64, 6to4 and Teredo all inherit the IPv4 policy for every embedded
+  // address. A public embedded address remains public.
+  if (embeddedIpv4Addresses(segments).some((ip) => isBlockedIpv4(ip))) return true;
+
+  if ((segments[0]! & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA.
+  if ((segments[0]! & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local.
+  if ((segments[0]! & 0xff00) === 0xff00) return true; // ff00::/8 multicast.
+  if (segments[0] === 0x2001 && segments[1] === 0x0db8) return true; // documentation.
+  return false;
 }
 
 export function hostIsAllowlisted(hostname: string, allowlist: string[]): boolean {
@@ -205,8 +280,11 @@ export async function validateOutboundUrl(
   }
 
   // Cloud metadata endpoints are never allowed, even with an allowlist entry.
-  if (addresses.some((address) => BLOCKED_METADATA.has(normalizeIp(address)))) {
+  if (addresses.some((address) => isMetadataAddress(address))) {
     throw new SearchHubError("blocked", "Destination resolves to a cloud metadata address");
+  }
+  if (addresses.some((address) => isIP(address) === 0)) {
+    throw new SearchHubError("blocked", "Destination resolved to an invalid IP address");
   }
 
   if (!allowlisted) {
@@ -246,9 +324,10 @@ export function createGuardedLookup(
     const allowlisted = hostIsAllowlisted(hostname, policy.allowPrivateHosts);
     resolveHost(hostname)
       .then((addresses) => {
-        const usable = allowlisted
-          ? addresses
-          : addresses.filter((item) => !isBlockedAddress(item.address));
+        const usable = addresses.filter((item) => {
+          if (isMetadataAddress(item.address) || isIP(item.address) === 0) return false;
+          return allowlisted || !isBlockedAddress(item.address);
+        });
         if (usable.length === 0) {
           const error: NodeJS.ErrnoException = new Error(
             `SSRF guard blocked connection to ${hostname}`,
