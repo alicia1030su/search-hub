@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM packaging module
-import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, selectLatestRuns, verifyAnnotatedTag } from "../../packaging/check-release-gates.mjs";
+import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, ghApiArgv, githubRepoApiPath, selectLatestRuns, verifyAnnotatedTag } from "../../packaging/check-release-gates.mjs";
 
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -61,6 +61,17 @@ describe("release gate", () => {
     expect(evaluateRuns([...mainPush, { ...candidate, head_sha: "b".repeat(40) }], sha, { includeCandidate: true }).allGreen).toBe(false);
     expect(evaluateRuns([...mainPush, run("other/release-candidate.yml", { event: "workflow_dispatch" })], sha, { includeCandidate: true }).allGreen).toBe(false);
     expect(Object.keys(PREFLIGHT_WORKFLOWS)).toHaveLength(6);
+  });
+
+  it("passes GitHub API endpoints to gh as one safely encoded argument", () => {
+    const tagPath = githubRepoApiPath("alicia1030su/search-hub", "git", "ref", "tags", "v0.1.15");
+    expect(tagPath).toBe("repos/alicia1030su/search-hub/git/ref/tags/v0.1.15");
+    expect(ghApiArgv(tagPath)).toEqual(["api", tagPath]);
+    expect(githubRepoApiPath("owner/repo", "git", "ref", "tags", "release/候选 #1")).toBe("repos/owner/repo/git/ref/tags/release%2F%E5%80%99%E9%80%89%20%231");
+    expect(`${githubRepoApiPath("owner/repo", "actions", "runs", "123", "artifacts")}?per_page=100`).toBe("repos/owner/repo/actions/runs/123/artifacts?per_page=100");
+    expect(() => ghApiArgv(["repos", "owner/repo"])).toThrow(/github_api_endpoint_invalid/);
+    const source = readFileSync(new URL("../../packaging/check-release-gates.mjs", import.meta.url), "utf8");
+    expect(source).not.toContain("ghJson([");
   });
 
   it("verifies single-arch GHCR images through the image config", () => {
