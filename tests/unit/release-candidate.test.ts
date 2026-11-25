@@ -278,7 +278,9 @@ describe("release candidate evidence", () => {
     expect(promoter).not.toContain("docker/build-push-action");
     expect(promoter).not.toContain("attest-build-provenance");
     expect(promoter).toContain('tags: ["v0.1.15"]');
-    expect(promoter).not.toContain("workflow_dispatch:");
+    expect(promoter).toContain("workflow_dispatch:");
+    expect(promoter).toContain('default: "v0.1.15"');
+    expect(promoter).toContain("ref: ${{ inputs.tag || github.ref_name }}");
     expect(candidate).toContain("workflow_dispatch:");
     expect(candidate).toContain('test "$SOURCE_SHA" = "$EVENT_SHA"');
     expect(candidate).toContain('test "$REF_TYPE" = "branch"');

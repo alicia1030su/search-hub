@@ -85,6 +85,48 @@ describe("release gate", () => {
     expect(promoter.match(/normalize-inspection/g)).toHaveLength(3);
   });
 
+  it("promotes the exact manifest and safely dispatches the existing draft", () => {
+    const promoter = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
+    expect(promoter).toContain('docker buildx imagetools create --tag "$ref" --prefer-index=false "${base}@${EXPECTED_DIGEST}"');
+    expect(promoter).toContain("workflow_dispatch:");
+    expect(promoter).toContain("if: github.event_name == 'push' || github.ref == 'refs/heads/main'");
+    expect(promoter).toContain("required: true");
+    expect(promoter).toContain('default: "v0.1.15"');
+    expect(promoter).toContain("ref: ${{ inputs.tag || github.ref_name }}");
+    expect(promoter).toContain("TAG: ${{ inputs.tag || github.ref_name }}");
+    expect(promoter).toContain('if [[ "$EVENT_NAME" == "push" ]]; then');
+    expect(promoter).toContain('args+=(--event-sha "$GITHUB_SHA")');
+    expect(promoter).toContain('node packaging/check-release-draft.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --event "$EVENT_NAME"');
+    const draftChecker = readFileSync(new URL("../../packaging/check-release-draft.mjs", import.meta.url), "utf8");
+    expect(draftChecker).not.toContain("HTTP 404");
+    expect(draftChecker).toContain("release_tag_ambiguous");
+    expect(draftChecker).toContain("pages.length === 0");
+    expect(draftChecker).toContain("Array.isArray(release?.assets)");
+    expect(draftChecker).toContain("assets.length !== 0");
+    expect(draftChecker).toContain("assets.length !== 9");
+    expect(promoter).toMatch(/name: Create or update only an empty draft\n\s+if: github\.event_name == 'push'/);
+    const finalize = promoter.slice(promoter.indexOf("  finalize:"));
+    const publishIndex = finalize.indexOf('gh release edit "$TAG" --draft=false --latest');
+    expect(publishIndex).toBeGreaterThan(-1);
+    for (const marker of [
+      'gh release download "$TAG" --dir final-download',
+      "sha256sum -c SHA256SUMS",
+      "packaging/candidate-attestations.mjs verify",
+      "git/ref/tags/${TAG}",
+      "git/tags/${tag_object}",
+      'expected_tag_object=$(git rev-parse "refs/tags/$TAG")',
+      'imagetools inspect "$ref" --raw',
+      "normalize-inspection",
+      "release-evidence.mjs image --inspection final-normalized.json",
+    ]) {
+      const index = finalize.indexOf(marker);
+      expect(index, marker).toBeGreaterThanOrEqual(0);
+      expect(index, marker).toBeLessThan(publishIndex);
+    }
+    expect(finalize).not.toContain("name: Publish the already verified Stable draft");
+    expect(finalize.match(/gh release edit /g)).toHaveLength(1);
+  });
+
   it("requires an annotated tag on main with a matching stable version", () => {
     const directory = mkdtempSync(join(tmpdir(), "search-hub-tag-test-"));
     temporary.push(directory);
