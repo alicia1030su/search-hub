@@ -12,22 +12,8 @@ name: Docker
 on:
   push:
     branches: [main, master]
-    paths:
-      - "Dockerfile"
-      - ".dockerignore"
-      - "compose.yaml"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "apps/**"
-      - "packages/**"
-      - "scripts/**"
-      - "tests/**"
-      - ".github/workflows/docker.yml"
-  # No path filter on pull requests on purpose: `main` requires the container
-  # check, and a path-filtered PR would leave that required context permanently
-  # missing. A docs-only PR pays ~3 minutes of runner time in exchange for a
-  # gate that is always evaluable. Push-to-main keeps its filter below.
+  # No path filter on pushes or pull requests: every main SHA, including a
+  # docs/evidence-only commit, must produce an actual Docker acceptance run.
   pull_request:
   workflow_dispatch:
 

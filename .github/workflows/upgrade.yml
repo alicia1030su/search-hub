@@ -69,13 +69,19 @@ jobs:
 
       # The "current" side of every path is built here, so a PR is tested before
       # it is released. The "old" side comes from the published releases.
+      - name: Resolve the current release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid stable version: $VERSION"; exit 1; }
+          node -e 'const current=process.argv[1].split(".").map(Number); for (const old of ["0.1.14","0.1.15"]) { const prior=old.split(".").map(Number); const newer=current[0]>prior[0] || (current[0]===prior[0] && (current[1]>prior[1] || (current[1]===prior[1] && current[2]>prior[2]))); if (!newer) process.exit(1); }' "$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Build the current package
         shell: bash
         env:
           PACKAGE_TARGET: ${{ matrix.os == 'windows-latest' && 'windows-x64' || 'linux-x64' }}
-          # Stamp the current candidate ahead of the published releases so the
-          # updater performs a real forward move and the asset name matches.
-          SEARCH_HUB_VERSION: 0.1.14-ci
+          SEARCH_HUB_VERSION: ${{ env.VERSION }}
         run: node packaging/build-package.mjs
 
       - name: Upgrade v0.1.4-beta.6 → current
@@ -164,6 +170,26 @@ jobs:
           test -n "$TARGET" || { echo "no package was built"; exit 1; }
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.13 --to "$TARGET" --port 8932
+
+      - name: Upgrade v0.1.14 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.14 --to "$TARGET" --port 8933
+
+      - name: Upgrade v0.1.15 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.15 --to "$TARGET" --port 8934
 
       # beta -> stable of the same minor version: the path an operator on the
       # beta channel actually takes, and the one where the updater must accept

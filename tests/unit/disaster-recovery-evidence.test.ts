@@ -10,6 +10,7 @@ import { verifyDisasterRecoveryEvidence } from "../../packaging/verify-disaster-
 import { aggregateDisasterRecoveryEvidence } from "../../packaging/aggregate-disaster-recovery-evidence.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
+const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string;
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
@@ -27,7 +28,7 @@ function fixture() {
   writeFileSync(join(evidenceDir, "reports", "acceptance.json"), report);
   const gate = {
     schemaVersion: 1,
-    suite: "search-hub-disaster-recovery-v0.1.15",
+    suite: `search-hub-disaster-recovery-v${version}`,
     releaseCommit: commit,
     releaseCodeFingerprint: codeFingerprint(root, commit),
     verdict: "PASS",
@@ -41,7 +42,7 @@ function fixture() {
   return { evidenceDir, gate };
 }
 
-describe("v0.1.15 disaster recovery release gate", () => {
+describe(`v${version} disaster recovery release gate`, () => {
   it("accepts only exact-SHA evidence with R01-R38 and A01-A12 all PASS", () => {
     const { evidenceDir } = fixture();
     expect(verifyDisasterRecoveryEvidence({ repoRoot: root, commit, evidenceDir })).toMatchObject({ ok: true, verdict: "PASS", requirementCount: 50 });

@@ -13,8 +13,10 @@ import { verifyEvidence } from "../../packaging/verify-resource-evidence.mjs";
 import { stageResourceEvidence } from "../../scripts/stage-resource-evidence.mjs";
 import { aggregateDisasterRecoveryEvidence } from "../../packaging/aggregate-disaster-recovery-evidence.mjs";
 import { combineReleaseEvidence, verifyCombinedReleaseEvidence } from "../../packaging/release-evidence.mjs";
+import * as releaseEvidenceModule from "../../packaging/release-evidence.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
+const RESOURCE_RUNTIME_ARTIFACT = (releaseEvidenceModule as unknown as { RESOURCE_RUNTIME_ARTIFACT: string }).RESOURCE_RUNTIME_ARTIFACT;
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
@@ -75,7 +77,8 @@ describe("resource evidence", () => {
     expect(candidate).toContain("node packaging/aggregate-disaster-recovery-evidence.mjs");
     expect(candidate).toContain("release-evidence.mjs combine");
     expect(candidate).toContain("verify-disaster-recovery-evidence.mjs");
-    expect(ci).toContain("name: release-evidence-v0.1.15");
+    expect(ci).toContain("name: release-evidence-${{ env.VERSION }}");
+    expect(ci).toContain("name: release-evidence-diagnostics-${{ env.VERSION }}");
     expect(ci).not.toContain("docs/evidence/v0.1.15");
     expect(ci).not.toContain("--output-dir docs/evidence/v0.1.14");
   });
@@ -137,7 +140,7 @@ describe("resource evidence", () => {
     writeFileSync(disasterReport, '{"verdict":"PASS"}\n');
     const files = stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, disasterRecoveryDir, outputDir });
     expect(files).toHaveLength(13);
-    expect(readdirSync(outputDir).sort()).toEqual(["SHA256SUMS", "cache-benchmark-summary.json", "disaster-recovery", "raw", "resource-doctor.json", "resource-evidence-v0115.json"]);
+    expect(readdirSync(outputDir).sort()).toEqual(["SHA256SUMS", "cache-benchmark-summary.json", "disaster-recovery", "raw", "resource-doctor.json", RESOURCE_RUNTIME_ARTIFACT]);
     expect(readdirSync(join(outputDir, "raw"))).toHaveLength(8);
     expect(readFileSync(join(outputDir, "disaster-recovery", "reports", "core", "report.json"), "utf8")).toBe('{"verdict":"PASS"}\n');
     expect(() => stageResourceEvidence({ evidenceDir, runtimePath, doctorPath, disasterRecoveryDir, outputDir: directory })).toThrow(/stage_output_would_remove_source/);
@@ -147,7 +150,7 @@ describe("resource evidence", () => {
     const directory = mkdtempSync(join(tmpdir(), "search-hub-historical-runtime-"));
     temporary.push(directory);
     const evidenceDir = join(directory, "evidence");
-    const runtimePath = join(directory, "resource-evidence-v0115.json");
+    const runtimePath = join(directory, RESOURCE_RUNTIME_ARTIFACT);
     execFileSync(process.execPath, ["scripts/build-resource-evidence.mjs", "--runtime-only", "--release-ref", "HEAD", "--source-evidence-dir", "docs/evidence/v0.1.14", "--output-dir", evidenceDir, "--runtime-output", runtimePath], { cwd: root, encoding: "utf8" });
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
     expect(verifyEvidence({ repoRoot: root, commit, summaryPath: join(evidenceDir, "cache-benchmark-summary.json"), sumsPath: join(evidenceDir, "SHA256SUMS"), evidenceDir })).toMatchObject({ ok: true, rawFileCount: 8 });
@@ -168,7 +171,7 @@ describe("resource evidence", () => {
     const directory = mkdtempSync(join(tmpdir(), "search-hub-combined-evidence-"));
     temporary.push(directory);
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-    const runtimePath = join(directory, "resource-evidence-v0115.json");
+    const runtimePath = join(directory, RESOURCE_RUNTIME_ARTIFACT);
     execFileSync(process.execPath, ["scripts/build-resource-evidence.mjs", "--runtime-only", "--release-ref", commit, "--source-evidence-dir", "docs/evidence/v0.1.14", "--output-dir", directory, "--runtime-output", runtimePath], { cwd: root, encoding: "utf8" });
     const drDir = join(directory, "disaster-recovery");
     const reportDir = join(drDir, "reports", "full");

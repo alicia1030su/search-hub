@@ -9,6 +9,8 @@ import { PREFLIGHT_WORKFLOWS, REQUIRED_WORKFLOWS, evaluateRuns, ghApiArgv, githu
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 const sha = "a".repeat(40);
+const version = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
+const currentTag = `v${version}`;
 
 function run(path: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -53,7 +55,7 @@ describe("release gate", () => {
 
   it("requires candidate workflow_dispatch evidence only in the six-workflow preflight", () => {
     const mainPush = Object.keys(REQUIRED_WORKFLOWS).map((path) => run(path));
-    const candidate = run("release-candidate.yml", { event: "workflow_dispatch", head_branch: "feat/v0115-disaster-recovery" });
+    const candidate = run("release-candidate.yml", { event: "workflow_dispatch", head_branch: "feat/v0116-stable" });
     expect(evaluateRuns([...mainPush, candidate], sha).allGreen).toBe(true);
     expect(evaluateRuns(mainPush, sha).allGreen).toBe(true);
     expect(evaluateRuns(mainPush, sha, { includeCandidate: true }).allGreen).toBe(false);
@@ -64,8 +66,8 @@ describe("release gate", () => {
   });
 
   it("passes GitHub API endpoints to gh as one safely encoded argument", () => {
-    const tagPath = githubRepoApiPath("alicia1030su/search-hub", "git", "ref", "tags", "v0.1.15");
-    expect(tagPath).toBe("repos/alicia1030su/search-hub/git/ref/tags/v0.1.15");
+    const tagPath = githubRepoApiPath("alicia1030su/search-hub", "git", "ref", "tags", currentTag);
+    expect(tagPath).toBe(`repos/alicia1030su/search-hub/git/ref/tags/${currentTag}`);
     expect(ghApiArgv(tagPath)).toEqual(["api", tagPath]);
     expect(githubRepoApiPath("owner/repo", "git", "ref", "tags", "release/候选 #1")).toBe("repos/owner/repo/git/ref/tags/release%2F%E5%80%99%E9%80%89%20%231");
     expect(`${githubRepoApiPath("owner/repo", "actions", "runs", "123", "artifacts")}?per_page=100`).toBe("repos/owner/repo/actions/runs/123/artifacts?per_page=100");
@@ -91,7 +93,8 @@ describe("release gate", () => {
     expect(promoter).toContain("workflow_dispatch:");
     expect(promoter).toContain("if: github.event_name == 'push' || github.ref == 'refs/heads/main'");
     expect(promoter).toContain("required: true");
-    expect(promoter).toContain('default: "v0.1.15"');
+    expect(promoter).not.toContain('default: "v0.1.15"');
+    expect(promoter).toContain('test "$TAG" = "v${version}"');
     expect(promoter).toContain("ref: ${{ inputs.tag || github.ref_name }}");
     expect(promoter).toContain("ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.tag || github.ref_name }}");
     expect(promoter).toContain("TAG: ${{ inputs.tag || github.ref_name }}");
@@ -143,7 +146,7 @@ describe("release gate", () => {
     git("tag", "-a", "v0.1.14", "-m", "fixture");
     expect(verifyAnnotatedTag(directory, "v0.1.14", "0.1.14").commit).toBe(git("rev-parse", "HEAD"));
     expect(() => verifyAnnotatedTag(directory, "v0.1.14", "0.1.13")).toThrow(/tag_version_mismatch/);
-    git("tag", "v0.1.15");
-    expect(() => verifyAnnotatedTag(directory, "v0.1.15", "0.1.15")).toThrow(/tag_not_annotated/);
+    git("tag", currentTag);
+    expect(() => verifyAnnotatedTag(directory, currentTag, version)).toThrow(/tag_not_annotated/);
   });
 });

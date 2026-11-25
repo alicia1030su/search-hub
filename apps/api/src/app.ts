@@ -177,7 +177,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   registerModelRoutes(app, ctx);
   registerAdminRoutes(app, ctx);
   registerMcpRoutes(app, ctx);
-  registerOpenApiRoutes(app);
+  registerOpenApiRoutes(app, ctx.config.version);
 
   const staticDir = ctx.config.staticDir;
   if (staticDir && existsSync(staticDir)) {

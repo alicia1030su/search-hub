@@ -53,10 +53,18 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Resolve the release version from package.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid stable version: $VERSION"; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Build and verify standalone CLI
         shell: bash
         env:
           PACKAGE_TARGET: ${{ matrix.target }}
+          SEARCH_HUB_VERSION: ${{ env.VERSION }}
         run: |
           pnpm build:server
           pnpm --filter @search-hub/cli build

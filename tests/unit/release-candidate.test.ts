@@ -14,7 +14,9 @@ import {
 
 const temporary: string[] = [];
 afterEach(() => { for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true }); });
-const version = "0.1.15";
+const version = JSON.parse(readFileSync(resolve(import.meta.dirname, "../../package.json"), "utf8")).version as string;
+const versionTag = `v${version}`;
+const versionSlug = version.replaceAll(".", "");
 const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: resolve(import.meta.dirname, "../.."), encoding: "utf8" }).trim();
 const runId = 123456;
 const attempt = 1;
@@ -69,7 +71,7 @@ function fixture() {
   ];
   const drGate = {
     schemaVersion: 1,
-    suite: "search-hub-disaster-recovery-v0.1.15",
+    suite: `search-hub-disaster-recovery-${versionTag}`,
     releaseCommit: sourceSha,
     releaseCodeFingerprint: codeFingerprint(resolve(import.meta.dirname, "../.."), sourceSha),
     verdict: "PASS",
@@ -91,7 +93,7 @@ function fixture() {
     sumsSha256: "e".repeat(64),
     rawFileCount: 8,
   };
-  const runtimePath = join(root, "resource-evidence-v0115.json");
+  const runtimePath = join(root, `resource-evidence-v${versionSlug}.json`);
   writeFileSync(runtimePath, JSON.stringify(runtime));
   combineReleaseEvidence({ resourcePath: runtimePath, disasterRecoveryDir: drDir, output: join(directory, "resource-evidence.json"), commit: sourceSha });
   writeFileSync(join(directory, "SHA256SUMS"), `${expectedReleaseAssets(version).map((name) => `${hash(readFileSync(join(directory, name)))}  ${name}`).sort().join("\n")}\n`);
@@ -121,7 +123,7 @@ describe("release candidate evidence", () => {
   it("preserves the seven package names and resource evidence plus SHA256SUMS", () => {
     const { directory, manifest, manifestPath, attestations } = fixture();
     expect(expectedReleaseAssets(version)).toHaveLength(8);
-    expect(verifyReleaseAssets(directory, expected(manifest))).toMatchObject({ ok: true, assets: expect.arrayContaining(["SHA256SUMS", "shub-v0.1.15-node22.tar.gz"]) });
+    expect(verifyReleaseAssets(directory, expected(manifest))).toMatchObject({ ok: true, assets: expect.arrayContaining(["SHA256SUMS", `shub-v${version}-node22.tar.gz`]) });
     expect(verifyCandidateManifest(manifest, { version, sourceSha, runId, attempt })).toMatchObject({ ok: true });
     expect(verifyCandidateAttestationFiles(manifest, attestations, hash(readFileSync(manifestPath)))).toEqual({ ok: true, count: 11 });
   });
@@ -139,7 +141,7 @@ describe("release candidate evidence", () => {
 
   it("rejects a missing candidate package instead of weakening the asset set", () => {
     const { directory, manifest } = fixture();
-    unlinkSync(join(directory, "search-hub-v0.1.15-linux-arm64.tar.gz"));
+    unlinkSync(join(directory, `search-hub-v${version}-linux-arm64.tar.gz`));
     expect(() => verifyReleaseAssets(directory, expected(manifest))).toThrow(/release_asset_set_mismatch/);
   });
 
@@ -162,7 +164,7 @@ describe("release candidate evidence", () => {
 
   it("rejects changed bytes, a changed sums file and duplicate sums entries", () => {
     const { directory, manifest } = fixture();
-    writeFileSync(join(directory, "search-hub-v0.1.15-linux-x64.tar.gz"), "tampered");
+    writeFileSync(join(directory, `search-hub-v${version}-linux-x64.tar.gz`), "tampered");
     expect(() => verifyReleaseAssets(directory, expected(manifest))).toThrow(/asset_sha256_mismatch/);
     writeFileSync(join(directory, "SHA256SUMS"), `${readFileSync(join(directory, "SHA256SUMS"), "utf8")}${"e".repeat(64)}  ../SHA256SUMS\n`);
     expect(() => parseSha256Sums(readFileSync(join(directory, "SHA256SUMS"), "utf8"))).toThrow(/invalid_sha256_line/);
@@ -277,9 +279,10 @@ describe("release candidate evidence", () => {
     expect(promoter).not.toContain("build-cli-package.mjs");
     expect(promoter).not.toContain("docker/build-push-action");
     expect(promoter).not.toContain("attest-build-provenance");
-    expect(promoter).toContain('tags: ["v0.1.15"]');
+    expect(promoter).toContain(`tags: ["${versionTag}"]`);
     expect(promoter).toContain("workflow_dispatch:");
-    expect(promoter).toContain('default: "v0.1.15"');
+    expect(promoter).not.toContain('default: "v0.1.15"');
+    expect(promoter).toContain('test "$TAG" = "v${version}"');
     expect(promoter).toContain("ref: ${{ inputs.tag || github.ref_name }}");
     expect(candidate).toContain("workflow_dispatch:");
     expect(candidate).toContain('test "$SOURCE_SHA" = "$EVENT_SHA"');
@@ -299,18 +302,18 @@ describe("release candidate evidence", () => {
     expect(candidate).toContain("push-to-registry: true");
     const evidenceCli = readFileSync(new URL("../../packaging/release-evidence.mjs", import.meta.url), "utf8");
     expect(evidenceCli).toContain('arg("dr-dir", arg("disaster-recovery-dir"))');
-    expect(evidenceCli).toContain('RESOURCE_RUNTIME_ARTIFACT = "resource-evidence-v0115.json"');
+    expect(evidenceCli).toContain("resourceRuntimeArtifact(CURRENT_RELEASE_VERSION)");
     const attestations = readFileSync(new URL("../../packaging/candidate-attestations.mjs", import.meta.url), "utf8");
     expect(attestations).toContain("oci://${manifest.image.reference}");
-    expect(candidate).toContain("name: dr-core-v0.1.15");
-    expect(candidate).toContain("name: dr-cli-windows-x64-v0.1.15");
-    expect(candidate).toContain("name: dr-cli-linux-${{ matrix.arch }}-v0.1.15");
-    expect(candidate).toContain("name: dr-cli-node22-v0.1.15");
+    expect(candidate).toContain("name: dr-core-v${{ needs.gate.outputs.version }}");
+    expect(candidate).toContain("name: dr-cli-windows-x64-v${{ needs.gate.outputs.version }}");
+    expect(candidate).toContain("name: dr-cli-linux-${{ matrix.arch }}-v${{ needs.gate.outputs.version }}");
+    expect(candidate).toContain("name: dr-cli-node22-v${{ needs.gate.outputs.version }}");
     expect(candidate).toContain("search-hub-candidate-release");
-    expect(candidate).toContain("name: dr-platform-windows-v0.1.15");
-    expect(candidate).toContain("name: dr-platform-linux-${{ matrix.arch }}-v0.1.15");
-    expect(candidate).toContain("name: dr-platform-docker-v0.1.15");
-    expect(candidate).toContain("name: dr-platform-systemd-v0.1.15");
+    expect(candidate).toContain("name: dr-platform-windows-v${{ needs.gate.outputs.version }}");
+    expect(candidate).toContain("name: dr-platform-linux-${{ matrix.arch }}-v${{ needs.gate.outputs.version }}");
+    expect(candidate).toContain("name: dr-platform-docker-v${{ needs.gate.outputs.version }}");
+    expect(candidate).toContain("name: dr-platform-systemd-v${{ needs.gate.outputs.version }}");
     expect(candidate).toContain("--dr-dir final-dr");
     expect(candidate).toContain("derive-release-statuses.mjs");
     expect(candidate).toContain("--statuses-file \"$release_report/statuses.json\"");

@@ -6,15 +6,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { codeFingerprint } from "../scripts/lib/resource-evidence.mjs";
 import { verifyDisasterRecoveryEvidence } from "./verify-disaster-recovery-evidence.mjs";
 import { verifyEvidence } from "./verify-resource-evidence.mjs";
+import {
+  candidateEvidenceArtifact, readReleaseVersion, releaseEvidenceArtifact,
+  resourceRuntimeArtifact, versionTag,
+} from "../scripts/lib/release-version.mjs";
 
-export const RELEASE_EVIDENCE_VERSION = "v0.1.15";
-export const RESOURCE_EVIDENCE_VERSION = "v0.1.14";
-export const RESOURCE_RUNTIME_ARTIFACT = "resource-evidence-v0115.json";
-export const CI_RELEASE_EVIDENCE_ARTIFACT = "release-evidence-v0.1.15";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const CURRENT_RELEASE_VERSION = readReleaseVersion(REPO_ROOT);
+export const RELEASE_EVIDENCE_VERSION = versionTag(CURRENT_RELEASE_VERSION);
+// The cache benchmark is intentionally frozen to the reviewed v0.1.14 baseline.
+export const RESOURCE_EVIDENCE_VERSION = "v0.1.14";
+export const RESOURCE_RUNTIME_ARTIFACT = resourceRuntimeArtifact(CURRENT_RELEASE_VERSION);
+export const CI_RELEASE_EVIDENCE_ARTIFACT = releaseEvidenceArtifact(CURRENT_RELEASE_VERSION);
 
 export const CANDIDATE_WORKFLOW = "release-candidate.yml";
-export const CANDIDATE_EVIDENCE_ARTIFACT = "release-candidate-evidence-v0.1.15";
+export const CANDIDATE_EVIDENCE_ARTIFACT = candidateEvidenceArtifact(CURRENT_RELEASE_VERSION);
 export const MAIN_PUSH_WORKFLOWS = Object.freeze(["ci.yml", "cli.yml", "docker.yml", "systemd.yml", "upgrade.yml"]);
 export const PACKAGE_ARTIFACTS = Object.freeze([
   "windows-x64",

@@ -10,8 +10,10 @@ const root = resolve(import.meta.dirname, "../../..");
 
 describe("CLI core contracts", () => {
   it("C02 keeps the CLI version aligned with package.json", () => {
-    const pkg = JSON.parse(readFileSync(resolve(root, "packages/cli/package.json"), "utf8"));
+    const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+    const cliPkg = JSON.parse(readFileSync(resolve(root, "packages/cli/package.json"), "utf8"));
     expect(CLI_VERSION).toBe(pkg.version);
+    expect(cliPkg.version).toBe(pkg.version);
   });
 
   it("accepts loopback HTTP and normalizes a trailing slash", () => {
@@ -46,6 +48,7 @@ describe("CLI core contracts", () => {
     expect(isCompatibleServerVersion("0.1.14")).toBe(true);
     expect(isCompatibleServerVersion("0.1.14-ci")).toBe(true);
     expect(isCompatibleServerVersion("0.1.15")).toBe(true);
+    expect(isCompatibleServerVersion(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version)).toBe(true);
     expect(isCompatibleServerVersion("0.1.11")).toBe(false);
     expect(isCompatibleServerVersion("0.2.0")).toBe(false);
     expect(isCompatibleServerVersion("dev")).toBe(false);

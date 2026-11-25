@@ -473,6 +473,7 @@ describe("admin surface", () => {
     expect(response.statusCode).toBe(200);
     const spec = response.json();
     expect(spec.openapi).toBe("3.1.0");
+    expect(spec.info.version).toBe(harness.ctx.config.version);
     for (const path of ["/api/search", "/api/providers", "/api/admin/providers", "/mcp"]) {
       expect(spec.paths).toHaveProperty(path);
     }

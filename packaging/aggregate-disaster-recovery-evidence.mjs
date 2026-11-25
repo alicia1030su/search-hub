@@ -3,8 +3,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertPublicEvidence, codeFingerprint, sha256 } from "../scripts/lib/resource-evidence.mjs";
+import { disasterRecoverySuite, readReleaseVersion, versionTag } from "../scripts/lib/release-version.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const RELEASE_VERSION = readReleaseVersion(REPO_ROOT);
 const REQUIREMENTS = Object.freeze([
   ...Array.from({ length: 38 }, (_, index) => `R${String(index + 1).padStart(2, "0")}`),
   ...Array.from({ length: 12 }, (_, index) => `A${String(index + 1).padStart(2, "0")}`),
@@ -116,6 +118,7 @@ export function aggregateDisasterRecoveryEvidence({ repoRoot = REPO_ROOT, commit
   check(/^[0-9a-f]{40}$/.test(commit ?? ""), "dr_aggregate_commit_invalid");
   check(existsSync(evidenceDir), "dr_aggregate_evidence_dir_missing");
   const fingerprint = codeFingerprint(repoRoot, commit);
+  const suite = disasterRecoverySuite(readReleaseVersion(repoRoot));
   const reportsRoot = path.join(evidenceDir, "reports");
   const reportPaths = findReports(evidenceDir);
   const requirements = Object.fromEntries(REQUIREMENTS.map((id) => [id, "NOT TESTED"]));
@@ -189,7 +192,7 @@ export function aggregateDisasterRecoveryEvidence({ repoRoot = REPO_ROOT, commit
   const allPass = REQUIREMENTS.every((id) => requirements[id] === "PASS");
   const gate = {
     schemaVersion: 1,
-    suite: "search-hub-disaster-recovery-v0.1.15",
+    suite,
     releaseCommit: commit,
     releaseCodeFingerprint: fingerprint,
     source: { commit, dirty: false },
@@ -211,7 +214,7 @@ export function aggregateDisasterRecoveryEvidence({ repoRoot = REPO_ROOT, commit
 async function main() {
   const commit = arg("commit");
   if (!commit) throw new Error("--commit is required");
-  const evidenceDir = arg("evidence-dir", path.join(REPO_ROOT, "docs", "evidence", "v0.1.15", "disaster-recovery"));
+  const evidenceDir = arg("evidence-dir", path.join(REPO_ROOT, "docs", "evidence", versionTag(RELEASE_VERSION), "disaster-recovery"));
   const result = aggregateDisasterRecoveryEvidence({ commit, evidenceDir });
   console.log(JSON.stringify({ verdict: result.gate.verdict, acceptanceComplete: result.gate.acceptanceComplete, reportCount: result.reportCount, gatePath: result.gatePath }, null, 2));
   if (result.gate.verdict !== "PASS" && !process.argv.includes("--allow-incomplete")) process.exitCode = 75;

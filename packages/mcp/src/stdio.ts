@@ -3,6 +3,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { SearchHubError } from "@search-hub/shared";
 import { HttpHealthService, HttpProviderService, HttpSearchService } from "./http-client.js";
 import { createServerFactory } from "./server.js";
+import { MCP_VERSION } from "./version.js";
 
 /**
  * stdio MCP server. It proxies every tool call to the REST API so the stdio
@@ -26,7 +27,7 @@ export function main(): void {
     search: new HttpSearchService(baseUrl, token),
     providers: new HttpProviderService(baseUrl, token),
     health: () => new HttpHealthService(baseUrl, token).snapshot(),
-    version: "0.1.0",
+    version: MCP_VERSION,
   };
 
   serveStdio(createServerFactory(deps), {

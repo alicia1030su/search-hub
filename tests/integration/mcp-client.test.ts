@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ let baseUrl = "";
 let token = "";
 let cookie: string;
 let csrf: string;
+const releaseVersion = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
 
 function testConfig(dataDir: string): AppConfig {
   return {
@@ -116,6 +117,7 @@ describe("MCP official client (AC-07)", () => {
     });
     await client.connect(transport);
     try {
+      expect(client.getServerVersion()).toMatchObject({ name: "search-hub", version: releaseVersion });
       const payload = await exercise(client, "http");
       expect(payload.taskId).toBeTruthy();
     } finally {
@@ -134,6 +136,7 @@ describe("MCP official client (AC-07)", () => {
     });
     await client.connect(transport);
     try {
+      expect(client.getServerVersion()).toMatchObject({ name: "search-hub", version: releaseVersion });
       const payload = await exercise(client, "stdio");
       expect(payload.taskId).toBeTruthy();
     } finally {

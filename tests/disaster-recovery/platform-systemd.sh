@@ -3,13 +3,13 @@
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-PACKAGE_ROOT=${1:?usage: platform-systemd.sh <extracted-server-package> <packaged-shub> <candidate-v0.1.15-archive> [evidence-dir]}
+PACKAGE_ROOT=${1:?usage: platform-systemd.sh <extracted-server-package> <packaged-shub> <candidate-archive> [evidence-dir]}
 CLI=${2:?packaged shub path is required}
-CANDIDATE=${3:?v0.1.15 candidate archive is required}
+CANDIDATE=${3:?current candidate archive is required}
 EVIDENCE=${4:-"$ROOT/artifacts/disaster-recovery/platform-systemd-$(date -u +%Y%m%dT%H%M%SZ)-$$"}
 [[ "$(ps -p 1 -o comm=)" == "systemd" ]] || { echo "BLOCKED: PID 1 is not systemd" >&2; exit 75; }
 [[ "$(id -u)" == "0" ]] || { echo "BLOCKED: disposable systemd drill requires root" >&2; exit 75; }
-RUN="sh-v0115-$$"
+RUN="sh-v0116-$$"
 BASE="/opt/search-hub-$RUN"
 DATA="/var/lib/$RUN-source"
 RESTORED="/var/lib/$RUN-restored"

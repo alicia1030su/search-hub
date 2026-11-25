@@ -299,7 +299,7 @@ async function main() {
       }
     }
     if (phase === "tag") verifyRemoteTag(repoSlug, tagInfo, env);
-    const reportPath = arg("report", path.join(REPO_ROOT, "artifacts", "v0.1.15", phase === "candidate" ? "candidate-gate.json" : "release-gate.json"));
+    const reportPath = arg("report", path.join(REPO_ROOT, "artifacts", `v${version}`, phase === "candidate" ? "candidate-gate.json" : "release-gate.json"));
     const report = {
       schemaVersion: 2,
       phase,

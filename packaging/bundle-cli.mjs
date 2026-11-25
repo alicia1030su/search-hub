@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const pkg = JSON.parse(readFileSync(join(root, "packages", "cli", "package.json"), "utf8"));
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const cliPkg = JSON.parse(readFileSync(join(root, "packages", "cli", "package.json"), "utf8"));
+if (cliPkg.version !== pkg.version) throw new Error(`CLI workspace version mismatch: ${cliPkg.version}/${pkg.version}`);
 const out = join(root, "packages", "cli", "dist");
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });

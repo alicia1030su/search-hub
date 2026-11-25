@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CLI_ENTRY,
@@ -285,7 +286,7 @@ describe("CLI sources, status and batch output", () => {
     expect(result.status).toBe(0);
     const body = JSON.parse(result.stdout);
     expect(body.version).toBe("0.1.12");
-    expect(body.cliVersion).toBe("0.1.15");
+    expect(body.cliVersion).toBe(JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version);
     expect(body.compatible).toBe(true);
     expect(body.proxy).toBeUndefined();
   });

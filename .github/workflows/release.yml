@@ -5,17 +5,16 @@ name: Promote release candidate
 # annotated Stable tag's commit.
 on:
   push:
-    tags: ["v0.1.15"]
+    tags: ["v0.1.16"]
   workflow_dispatch:
     inputs:
       tag:
         description: "Existing immutable annotated Stable tag to recover"
         required: true
         type: string
-        default: "v0.1.15"
 
 concurrency:
-  group: release-v0.1.15
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -29,13 +28,14 @@ permissions:
 
 jobs:
   gate:
-    name: Gate - immutable v0.1.15 tag and exact-SHA candidate
+    name: Gate - immutable ${{ inputs.tag || github.ref_name }} tag and exact-SHA candidate
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     outputs:
       sha: ${{ steps.gates.outputs.sha }}
       version: ${{ steps.version.outputs.version }}
+      versionSlug: ${{ steps.version.outputs.versionSlug }}
       ciRunId: ${{ steps.gates.outputs.ciRunId }}
       candidateRunId: ${{ steps.gates.outputs.candidateRunId }}
       candidateAttempt: ${{ steps.gates.outputs.candidateAttempt }}
@@ -55,11 +55,12 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          test "$TAG" = "v0.1.15" || { echo "::error::only annotated v0.1.15 may be promoted"; exit 1; }
           test "$(git cat-file -t "refs/tags/$TAG")" = "tag"
           version=$(node -p "require('./package.json').version")
-          test "$version" = "0.1.15"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid stable version: $version"; exit 1; }
+          test "$TAG" = "v${version}" || { echo "::error::tag must match package version v${version}, got $TAG"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "versionSlug=${version//./}" >> "$GITHUB_OUTPUT"
 
       - name: Verify six exact-SHA workflows, candidate evidence and remote tag immutability
         id: gates
@@ -70,7 +71,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          args=(--phase tag --tag "$TAG" --version "$VERSION" --report artifacts/v0.1.15/release-gate.json)
+          args=(--phase tag --tag "$TAG" --version "$VERSION" --report "artifacts/v${VERSION}/release-gate.json")
           if [[ "$EVENT_NAME" == "push" ]]; then
             args+=(--event-sha "$GITHUB_SHA")
           fi
@@ -78,8 +79,8 @@ jobs:
 
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: release-gate-v0.1.15
-          path: artifacts/v0.1.15/release-gate.json
+          name: release-gate-v${{ steps.version.outputs.version }}
+          path: artifacts/v${{ steps.version.outputs.version }}/release-gate.json
           if-no-files-found: error
           retention-days: 30
 
@@ -110,10 +111,10 @@ jobs:
           CI_RUN_ID: ${{ needs.gate.outputs.ciRunId }}
         run: |
           set -euo pipefail
-          for name in windows-x64 linux-x64 linux-arm64 cli-windows-x64 cli-linux-x64 cli-linux-arm64 cli-node22 release-candidate-evidence-v0.1.15; do
+          for name in windows-x64 linux-x64 linux-arm64 cli-windows-x64 cli-linux-x64 cli-linux-arm64 cli-node22 release-candidate-evidence-v${{ needs.gate.outputs.version }}; do
             gh run download "$CANDIDATE_RUN_ID" -n "$name" -D "candidate/$name"
           done
-          gh run download "$CI_RUN_ID" -n release-evidence-v0.1.15 -D evidence-ci
+          gh run download "$CI_RUN_ID" -n release-evidence-v${{ needs.gate.outputs.version }} -D evidence-ci
       - name: Reverify resource evidence and candidate assets without rebuilding
         env:
           SOURCE_SHA: ${{ needs.gate.outputs.sha }}
@@ -129,18 +130,18 @@ jobs:
           mkdir -p verified-promotion/release-assets verified-promotion/candidate-evidence
           find candidate -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} verified-promotion/release-assets/ \;
           test "$(find verified-promotion/release-assets -maxdepth 1 -type f | wc -l)" -eq 7
-          cp candidate/release-candidate-evidence-v0.1.15/resource-evidence.json verified-promotion/release-assets/resource-evidence.json
-          cp -a candidate/release-candidate-evidence-v0.1.15/. verified-promotion/candidate-evidence/
+          cp candidate/release-candidate-evidence-v${{ needs.gate.outputs.version }}/resource-evidence.json verified-promotion/release-assets/resource-evidence.json
+          cp -a candidate/release-candidate-evidence-v${{ needs.gate.outputs.version }}/. verified-promotion/candidate-evidence/
           node packaging/verify-disaster-recovery-evidence.mjs --commit "$SOURCE_SHA" --evidence-dir verified-promotion/candidate-evidence/disaster-recovery > verified-dr.json
           node -e 'const fs=require("fs");const m=require("./verified-promotion/candidate-evidence/candidate-manifest.json");const d=JSON.parse(fs.readFileSync("verified-dr.json"));if(m.disasterRecovery.gateSha256!==d.gateSha256||m.disasterRecovery.sumsSha256!==d.sumsSha256||m.disasterRecovery.verdict!=="PASS"||m.disasterRecovery.requirementCount!==50)process.exit(1)'
           node scripts/stage-resource-evidence.mjs \
             --evidence-dir evidence-ci \
-            --runtime evidence-ci/resource-evidence-v0115.json \
+            --runtime evidence-ci/resource-evidence-v${{ needs.gate.outputs.versionSlug }}.json \
             --doctor evidence-ci/resource-doctor.json \
             --dr-dir verified-promotion/candidate-evidence/disaster-recovery \
             --output verified-combined
           node packaging/release-evidence.mjs combine \
-            --resource verified-combined/resource-evidence-v0115.json \
+            --resource verified-combined/resource-evidence-v${{ needs.gate.outputs.versionSlug }}.json \
             --dr-dir verified-combined/disaster-recovery \
             --output verified-combined/resource-evidence.json \
             --source-sha "$SOURCE_SHA"
@@ -177,7 +178,7 @@ jobs:
             --source-sha "$SOURCE_SHA"
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: release-promotion-v0.1.15
+          name: release-promotion-v${{ needs.gate.outputs.version }}
           path: verified-promotion/
           if-no-files-found: error
 
@@ -198,7 +199,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: release-promotion-v0.1.15
+          name: release-promotion-v${{ needs.gate.outputs.version }}
           path: promotion
       - uses: actions/setup-node@v7.1.0
         with:
@@ -289,7 +290,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: release-promotion-v0.1.15
+          name: release-promotion-v${{ needs.gate.outputs.version }}
           path: promotion
       - uses: docker/setup-buildx-action@v4.4.1
       - uses: docker/login-action@v4.8.0
@@ -351,7 +352,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: release-promotion-v0.1.15
+          name: release-promotion-v${{ needs.gate.outputs.version }}
           path: promotion
       - uses: docker/setup-buildx-action@v4.4.1
       - uses: docker/login-action@v4.8.0
@@ -388,7 +389,7 @@ jobs:
           test "$(jq -r '.object.type' final-tag-object.json)" = "commit"
           owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           base="${REGISTRY}/${owner}/search-hub"
-          for ref in "${base}:0.1.15" "${base}:v0.1.15" "${base}:latest"; do
+          for ref in "${base}:${{ needs.gate.outputs.version }}" "${base}:v${{ needs.gate.outputs.version }}" "${base}:latest"; do
             current=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '.')
             test "$current" = "$EXPECTED_DIGEST"
             docker buildx imagetools inspect "$ref" --format '{{json .}}' > final-image.json
@@ -414,14 +415,14 @@ jobs:
           jq -e '.isDraft == false and .isPrerelease == false and (.assets | length) == 9' release-final.json >/dev/null
           latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')
           test "$latest" = "$TAG"
-          mkdir -p artifacts/v0.1.15
-          cp release-final.json artifacts/v0.1.15/release-final.json
-          node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("release-final.json"));const image=JSON.parse(fs.readFileSync("final-image-verification.json"));const ref=JSON.parse(fs.readFileSync("final-tag-ref.json"));const tag=JSON.parse(fs.readFileSync("final-tag-object.json"));x.ghcrDigest=process.argv[1];x.ghcrMediaType=image.mediaType;x.ghcrConfigDigest=image.configDigest;x.ghcrPlatform=image.platform;x.candidateRunId=Number(process.argv[2]);x.tag={name:x.tagName,tagObject:ref.object.sha,commit:tag.object.sha,type:tag.type};fs.writeFileSync("artifacts/v0.1.15/release-final.json",JSON.stringify(x,null,2)+"\n")' "$EXPECTED_DIGEST" "${{ needs.gate.outputs.candidateRunId }}"
+          mkdir -p artifacts/v${{ needs.gate.outputs.version }}
+          cp release-final.json artifacts/v${{ needs.gate.outputs.version }}/release-final.json
+          node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("release-final.json"));const image=JSON.parse(fs.readFileSync("final-image-verification.json"));const ref=JSON.parse(fs.readFileSync("final-tag-ref.json"));const tag=JSON.parse(fs.readFileSync("final-tag-object.json"));x.ghcrDigest=process.argv[1];x.ghcrMediaType=image.mediaType;x.ghcrConfigDigest=image.configDigest;x.ghcrPlatform=image.platform;x.candidateRunId=Number(process.argv[2]);x.tag={name:x.tagName,tagObject:ref.object.sha,commit:tag.object.sha,type:tag.type};fs.writeFileSync("artifacts/v${{ needs.gate.outputs.version }}/release-final.json",JSON.stringify(x,null,2)+"\n")' "$EXPECTED_DIGEST" "${{ needs.gate.outputs.candidateRunId }}"
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: release-final-v0115
+          name: release-final-v${{ needs.gate.outputs.versionSlug }}
           path: |
-            artifacts/v0.1.15/release-final.json
+            artifacts/v${{ needs.gate.outputs.version }}/release-final.json
             final-tag-ref.json
             final-tag-object.json
           if-no-files-found: error

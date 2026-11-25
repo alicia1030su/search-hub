@@ -3,8 +3,10 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertPublicEvidence, codeFingerprint, sha256 } from "../scripts/lib/resource-evidence.mjs";
+import { disasterRecoverySuite, readReleaseVersion, versionTag } from "../scripts/lib/release-version.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const RELEASE_VERSION = readReleaseVersion(REPO_ROOT);
 const REQUIREMENTS = Object.freeze([
   ...Array.from({ length: 38 }, (_, index) => `R${String(index + 1).padStart(2, "0")}`),
   ...Array.from({ length: 12 }, (_, index) => `A${String(index + 1).padStart(2, "0")}`),
@@ -62,17 +64,20 @@ function evidenceReferences(value) {
   return value.map((entry) => typeof entry === "string" ? { path: entry } : entry);
 }
 
-export function verifyDisasterRecoveryEvidence({ repoRoot = REPO_ROOT, commit, evidenceDir = path.join(repoRoot, "docs", "evidence", "v0.1.15", "disaster-recovery"), requireAllPass = true }) {
+export function verifyDisasterRecoveryEvidence({ repoRoot = REPO_ROOT, commit, evidenceDir, requireAllPass = true }) {
   check(/^[0-9a-f]{40}$/.test(commit ?? ""), "dr_commit_invalid");
-  const gatePath = path.join(evidenceDir, "gate.json");
-  const sumsPath = path.join(evidenceDir, "SHA256SUMS");
+  const releaseVersion = readReleaseVersion(repoRoot);
+  const resolvedEvidenceDir = evidenceDir ?? path.join(repoRoot, "docs", "evidence", versionTag(releaseVersion), "disaster-recovery");
+  const suite = disasterRecoverySuite(releaseVersion);
+  const gatePath = path.join(resolvedEvidenceDir, "gate.json");
+  const sumsPath = path.join(resolvedEvidenceDir, "SHA256SUMS");
   check(existsSync(gatePath), "dr_gate_missing");
   check(existsSync(sumsPath), "dr_sums_missing");
   const gateBytes = readFileSync(gatePath);
   const gate = JSON.parse(gateBytes.toString("utf8"));
   assertPublicEvidence(gate);
   check(gate.schemaVersion === 1, "dr_gate_schema_unsupported");
-  check(gate.suite === "search-hub-disaster-recovery-v0.1.15", "dr_gate_suite_mismatch");
+  check(gate.suite === suite, "dr_gate_suite_mismatch");
   check(gate.releaseCommit === commit, "dr_gate_commit_mismatch");
   check(gate.releaseCodeFingerprint === codeFingerprint(repoRoot, commit), "dr_gate_code_fingerprint_mismatch");
   check(STATUSES.has(gate.verdict), "dr_gate_verdict_invalid");
@@ -91,10 +96,10 @@ export function verifyDisasterRecoveryEvidence({ repoRoot = REPO_ROOT, commit, e
   }
 
   const sums = parseSums(readFileSync(sumsPath, "utf8"));
-  const files = listFiles(evidenceDir);
+  const files = listFiles(resolvedEvidenceDir);
   check(JSON.stringify([...sums.keys()].sort()) === JSON.stringify(files), "dr_evidence_file_set_mismatch");
   for (const name of files) {
-    const filePath = path.join(evidenceDir, name);
+    const filePath = path.join(resolvedEvidenceDir, name);
     check(lstatSync(filePath).isFile() && !lstatSync(filePath).isSymbolicLink(), `dr_evidence_non_regular:${name}`);
     check(sha256(readFileSync(filePath)) === sums.get(name), `dr_evidence_sha256_mismatch:${name}`);
   }
@@ -123,7 +128,7 @@ export function verifyDisasterRecoveryEvidence({ repoRoot = REPO_ROOT, commit, e
 async function main() {
   const commit = arg("commit");
   if (!commit) throw new Error("--commit is required");
-  const evidenceDir = arg("evidence-dir", path.join(REPO_ROOT, "docs", "evidence", "v0.1.15", "disaster-recovery"));
+  const evidenceDir = arg("evidence-dir", path.join(REPO_ROOT, "docs", "evidence", versionTag(RELEASE_VERSION), "disaster-recovery"));
   const result = verifyDisasterRecoveryEvidence({ commit, evidenceDir });
   console.log(JSON.stringify(result, null, 2));
 }

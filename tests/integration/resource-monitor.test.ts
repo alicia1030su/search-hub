@@ -8,7 +8,7 @@ import { accessTokens, sessions } from "@search-hub/db";
 import { buildApp } from "../../apps/api/src/app.js";
 import { createContext, type AppContext } from "../../apps/api/src/context.js";
 import { loadConfig } from "../../apps/api/src/config.js";
-import { openApiDocument } from "../../apps/api/src/routes/openapi-routes.js";
+import { createOpenApiDocument } from "../../apps/api/src/routes/openapi-routes.js";
 
 let app: FastifyInstance | null = null;
 let ctx: AppContext | null = null;
@@ -70,7 +70,7 @@ describe("GET /api/admin/resources", () => {
     expect(response.body).not.toContain(dir!);
     expect(response.body).not.toContain(bearer);
     expect(response.body).not.toContain("resource-fixture");
-    expect(openApiDocument.paths["/api/admin/resources"]).toBeDefined();
+    expect(createOpenApiDocument("test").paths["/api/admin/resources"]).toBeDefined();
   });
 
   it("returns 401 for an expired session without deleting its row", async () => {

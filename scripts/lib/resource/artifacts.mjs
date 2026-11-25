@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readReleaseVersion, versionTag } from "../release-version.mjs";
 
-export const ARTIFACT_VERSION = "v0.1.14";
+const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+export const ARTIFACT_VERSION = versionTag(readReleaseVersion(REPO_ROOT));
 export const EXIT_CODES = Object.freeze({
   success: 0,
   usage: 2,
@@ -12,7 +14,7 @@ export const EXIT_CODES = Object.freeze({
   internal: 5,
 });
 
-const DEFAULT_REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+const DEFAULT_REPO_ROOT = REPO_ROOT;
 
 /**
  * Map a process/tool exit code to the stable v0.1.14 exit contract.

@@ -17,13 +17,16 @@
  * the repository layout.
  */
 import { build } from "esbuild";
-import { copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const root = dirname(fileURLToPath(new URL(".", import.meta.url)));
+const releasePackage = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const mcpPackage = JSON.parse(readFileSync(join(root, "packages", "mcp", "package.json"), "utf8"));
+if (mcpPackage.version !== releasePackage.version) throw new Error(`MCP workspace version mismatch: ${mcpPackage.version}/${releasePackage.version}`);
 
 const workspacePlugin = {
   name: "bundle-workspace-packages",
@@ -51,6 +54,7 @@ const common = {
   legalComments: "none",
   logLevel: "info",
   plugins: [workspacePlugin],
+  define: { __SHUB_VERSION__: JSON.stringify(releasePackage.version) },
   banner: {
     js: [
       "import { createRequire as __searchHubCreateRequire } from 'node:module';",

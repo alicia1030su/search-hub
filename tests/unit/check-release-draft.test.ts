@@ -1,13 +1,17 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error -- plain ESM packaging module
 import { classifyReleaseLookup, releaseReleasesApiPath, resolveReleaseDraft } from "../../packaging/check-release-draft.mjs";
 
-function success(pages: unknown[][], tag = "v0.1.15") {
+const version = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
+const currentTag = `v${version}`;
+
+function success(pages: unknown[][], tag = currentTag) {
   return classifyReleaseLookup({ exitCode: 0, stdout: JSON.stringify(pages), tag });
 }
 
 function release(assets: unknown = [], overrides: Record<string, unknown> = {}) {
-  return { tag_name: "v0.1.15", draft: true, prerelease: false, assets, ...overrides };
+  return { tag_name: currentTag, draft: true, prerelease: false, assets, ...overrides };
 }
 
 const uploadedAssets = Array.from({ length: 9 }, (_, index) => ({ name: `asset-${index}`, state: "uploaded" }));
@@ -24,7 +28,7 @@ describe("release draft lookup", () => {
 
   it("accepts only the non-empty slurped page-array shape", () => {
     for (const payload of [release(), [release()], [], [[[]]], [[release([], { tag_name: 123 })]]]) {
-      expect(classifyReleaseLookup({ exitCode: 0, stdout: JSON.stringify(payload), tag: "v0.1.15" })).toEqual({ kind: "error", message: "gh api returned an invalid release list" });
+      expect(classifyReleaseLookup({ exitCode: 0, stdout: JSON.stringify(payload), tag: currentTag })).toEqual({ kind: "error", message: "gh api returned an invalid release list" });
     }
   });
 

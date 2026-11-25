@@ -4,11 +4,11 @@ import type { FastifyInstance } from "fastify";
  * Hand-maintained OpenAPI 3.1 document for the endpoints that actually exist.
  * A test asserts that every documented path is registered on the app.
  */
-export const openApiDocument = {
+const OPENAPI_TEMPLATE = {
   openapi: "3.1.0",
   info: {
     title: "Search Hub API",
-    version: "0.1.15",
+    version: "",
     description:
       "Self-hosted multi-provider search infrastructure. Search endpoints accept either an admin session cookie + CSRF header or a Bearer access token.",
     license: { name: "MIT" },
@@ -538,14 +538,23 @@ export const openApiDocument = {
   },
 } as const;
 
-export function registerOpenApiRoutes(app: FastifyInstance): void {
+/** Build the public document with the installed instance version. */
+export function createOpenApiDocument(version: string) {
+  return {
+    ...OPENAPI_TEMPLATE,
+    info: { ...OPENAPI_TEMPLATE.info, version },
+  };
+}
+
+export function registerOpenApiRoutes(app: FastifyInstance, version: string): void {
+  const document = createOpenApiDocument(version);
   app.get("/api/openapi.json", async (_request, reply) => {
     reply.header("cache-control", "public, max-age=60");
-    return openApiDocument;
+    return document;
   });
 
   app.get("/api/docs", async (_request, reply) => {
-    const rows = Object.entries(openApiDocument.paths)
+    const rows = Object.entries(document.paths)
       .flatMap(([path, methods]) =>
         Object.entries(methods as Record<string, { summary?: string; tags?: readonly string[] }>).map(
           ([method, operation]) => ({
