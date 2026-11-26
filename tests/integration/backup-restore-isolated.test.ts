@@ -68,6 +68,7 @@ function rows(path: string, table: string): unknown[] {
 }
 
 describe("isolated complete-package restore", () => {
+  // This case creates and restores a complete package, including age(scrypt=18) work.
   it("R15/R16 preserves health/billing/budget and valid/expired cache state, metrics and totals", async () => {
     const root = mkdtempSync(join(tmpdir(), "search-hub-restore-isolated-"));
     directories.push(root);
@@ -162,5 +163,5 @@ describe("isolated complete-package restore", () => {
     const totals = stateAfter.find((row) => row.key === "cache:totals");
     expect(JSON.parse(String(totals?.value))).toMatchObject({ entries: 1 });
     expect(existsSync(join(targetDir, "master.key"))).toBe(true);
-  });
+  }, 120_000);
 });
