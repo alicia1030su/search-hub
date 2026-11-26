@@ -80,7 +80,7 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
   }
 
   async function stubLabBase(page: Page): Promise<void> {
-    await page.route("**/api/providers", async (route) => {
+    await page.route("**/api/admin/providers", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -109,8 +109,9 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
 
     await completeSetup(page);
     await page.getByRole("link", { name: "搜索实验室", exact: true }).click();
+    await expect(page.getByText("Local mock", { exact: true })).toBeVisible();
     await page.locator("#lab-query").fill("lab privacy");
-    await page.getByRole("button", { name: "运行", exact: true }).click();
+    await page.getByRole("button", { name: "运行搜索", exact: true }).click();
     await expect(page.getByText("Local safe result", { exact: true })).toBeVisible();
 
     expect.soft(searchRequest?.includeRaw, "Lab must default includeRaw to false").toBe(false);
@@ -153,9 +154,11 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
 
     await completeSetup(page);
     await page.getByRole("link", { name: "搜索实验室", exact: true }).click();
+    await expect(page.getByText("Local mock", { exact: true })).toBeVisible();
+    await page.getByText("高级参数", { exact: true }).click();
     await page.getByLabel(/includeRaw/).check();
     await page.locator("#lab-query").fill("lab privacy");
-    await page.getByRole("button", { name: "运行", exact: true }).click();
+    await page.getByRole("button", { name: "运行搜索", exact: true }).click();
     await expect(page.getByText("Local safe result", { exact: true })).toBeVisible();
 
     expect.soft(searchRequest?.includeRaw, "explicit opt-in must send includeRaw=true").toBe(true);
