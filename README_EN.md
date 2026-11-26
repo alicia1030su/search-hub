@@ -23,9 +23,9 @@
 <a id="screenshots"></a>
 ## Interface
 
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/dashboard.png after capture. -->
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/search-lab.png after capture. -->
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/provider-health.png after capture. -->
+![Search Hub dashboard](./docs/screenshots/v0116/dashboard.png)
+![Search Lab](./docs/screenshots/v0116/search-lab.png)
+![Provider health](./docs/screenshots/v0116/provider-health.png)
 
 <a id="quick-start"></a>
 ## Quick start

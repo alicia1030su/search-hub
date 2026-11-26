@@ -23,9 +23,9 @@
 <a id="screenshots"></a>
 ## 界面
 
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/dashboard.png after capture. -->
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/search-lab.png after capture. -->
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.16 docs/screenshots/v0116/provider-health.png after capture. -->
+![Search Hub 仪表盘](./docs/screenshots/v0116/dashboard.png)
+![搜索实验室](./docs/screenshots/v0116/search-lab.png)
+![搜索源健康](./docs/screenshots/v0116/provider-health.png)
 
 <a id="quick-start"></a>
 ## 快速开始

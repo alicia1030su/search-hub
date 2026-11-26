@@ -10,18 +10,26 @@ All notable changes to this project are documented here. The format follows
 
 - Hardened SSRF classification with canonical IPv6 handling and fail-closed rejection of disallowed zones, including allowlisted-network edge cases.
 - Enforced search-task ownership so unrelated actors cannot read or cancel tasks without an owner.
+- Redacted CLI token canaries from stdin, URL and error paths, and made malformed or unsafe URLs fail fast.
+- Stripped upstream raw payloads from Lab previews, copies and downloads, and made debug output opt-in.
+- Enforced MCP tool scopes and strict Origin validation consistently.
+- Hardened backup staging ownership and PID identity checks before cleanup or restore-related operations.
 
 ### Fixed
 
 - Corrected Deep Search physical HTTP request accounting across every query rewrite, including failed rewrites.
 - Prevented routine statistics flushes from invalidating identical-query cache entries while preserving credential rotation and weight invalidation.
 - Aligned MCP server version reporting across HTTP and stdio.
+- Rendered unmeasured Backup center values as `—` until real data arrives instead of showing `0`.
+- Extended cache identity invalidation to provider disable/re-enable transitions while preserving credential rotation and weight invalidation.
+- Fixed low-memory Windows verification startup by using the native pnpm executable and a shared invocation helper.
 - Corrected setup-token documentation: the value is never logged, is read from the 0600 file, and any residual token is invalid after best-effort deletion.
 
 ### Changed
 
 - Consolidated release version handling and expanded release/upgrade documentation gates.
 - Reworked both READMEs into concise bilingual product entry points with a 100–150 line contract, nine stable anchors and interim/final screenshot gates.
+- Extended the README consistency gate to validate same-document anchors without filesystem lookups.
 - Standardized the Node.js runtime contract at `>=22.12.0` for development and the portable CLI; standalone server packages still bundle their runtime.
 
 ## v0.1.15 (2026-11-25) — Stable

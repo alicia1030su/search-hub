@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "version": "0.1.16",
+  "capturedAt": "2026-11-26T17:44:39.687Z",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture.",
+  "screenshots": [
+    {
+      "file": "search-lab.png",
+      "route": "/lab",
+      "version": "0.1.16",
+      "capturedAt": "2026-11-26T17:44:38.798Z",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 138210,
+      "sha256": "3874aaadfbf1b5741cc352889be71b79b6e9af567679fb858828dafe0b2efb87",
+      "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture."
+    },
+    {
+      "file": "dashboard.png",
+      "route": "/",
+      "version": "0.1.16",
+      "capturedAt": "2026-11-26T17:44:39.219Z",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 104058,
+      "sha256": "59af9dc49834000635075d10c284b2df5a079aba8bd77182dbc38740a4b61aa8",
+      "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture."
+    },
+    {
+      "file": "provider-health.png",
+      "route": "/providers",
+      "version": "0.1.16",
+      "capturedAt": "2026-11-26T17:44:39.687Z",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 119269,
+      "sha256": "ec6b5ceb17062ad7af2789c29ea6d229c1dc37d4105b539046903ce575455cd7",
+      "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture."
+    }
+  ]
+}
