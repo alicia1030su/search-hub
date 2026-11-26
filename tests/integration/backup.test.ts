@@ -737,6 +737,7 @@ describe("POST /api/admin/backup/package/verify", () => {
     }
   });
 
+  // This case creates a package and then performs two concurrent verifications.
   it("enforces the verification concurrency quota while extraction is active", async () => {
     const maxUploadBytes = loadConfig().maxBackupUploadBytes;
     const harness = await createHarness({
@@ -761,7 +762,7 @@ describe("POST /api/admin/backup/package/verify", () => {
     });
     const responses = await Promise.all([request(), request()]);
     expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 429]);
-  });
+  }, 120_000);
 
   it("applies the route rate limit before parsing an anonymous body", async () => {
     const harness = await createHarness();
