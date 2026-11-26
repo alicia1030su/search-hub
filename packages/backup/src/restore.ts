@@ -5,6 +5,7 @@ import { sha256 } from "./hash.js";
 import { withBackupLock } from "./lock.js";
 import { assertDisjointRestoreTarget, originGuardMatches } from "./origin.js";
 import { resolveVerificationLimits, verifyBackupPackage } from "./package.js";
+import { isProcessAlive, readProcessStartTime } from "./process.js";
 import {
   assertNoReparseAncestors, assertSecureRegularFile, createPrivateDirectory, fsyncDirectory,
   requireDiskBytes, restrictWindowsAcl,
@@ -29,19 +30,32 @@ async function assertEmptyTarget(target: string): Promise<void> {
 }
 
 async function assertNoActiveLock(target: string): Promise<void> {
+  let raw: string;
   try {
-    const raw = await readFile(join(target, "launcher.lock"), "utf8");
-    const lock = JSON.parse(raw) as { pid?: unknown };
-    if (typeof lock.pid !== "number" || !Number.isSafeInteger(lock.pid) || lock.pid <= 0) throw new Error("Restore source or target has an invalid active lock");
-    try { process.kill(lock.pid, 0); throw new Error("Restore source or target has an active Search Hub lock"); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    }
+    raw = await readFile(join(target, "launcher.lock"), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    if (error instanceof SyntaxError) throw new Error("Restore source or target has an invalid active lock");
     throw error;
   }
+  let lock: { pid?: unknown; processStartedAt?: unknown };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("invalid lock shape");
+    }
+    lock = parsed as { pid?: unknown; processStartedAt?: unknown };
+  } catch {
+    throw new Error("Restore source or target has an invalid active lock");
+  }
+  if (typeof lock.pid !== "number" || !Number.isSafeInteger(lock.pid) || lock.pid <= 0) {
+    throw new Error("Restore source or target has an invalid active lock");
+  }
+  if (!isProcessAlive(lock.pid)) return;
+  if (typeof lock.processStartedAt === "string" && lock.processStartedAt.length > 0) {
+    const actual = await readProcessStartTime(lock.pid);
+    if (actual !== null && actual !== lock.processStartedAt) return;
+  }
+  throw new Error("Restore source or target has an active Search Hub lock");
 }
 
 async function nearestExistingParent(path: string): Promise<string> {

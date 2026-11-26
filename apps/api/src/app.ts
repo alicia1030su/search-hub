@@ -72,7 +72,7 @@ function readSdkVersion(): string {
 }
 
 const MCP_SDK_VERSION = readSdkVersion();
-import { pruneStaleUploads, registerBackupUploadParser } from "./services/backup.js";
+import { pruneStaleUploads, registerBackupUploadParser, uploadOwnerNamespace } from "./services/backup.js";
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -95,7 +95,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   // keeps the 64 MB snapshot out of memory and lets the handler enforce its own
   // limit before anything touches the (unpredictable) temp file.
   registerBackupUploadParser(app, ctx);
-  await pruneStaleUploads().catch(() => undefined);
+  await pruneStaleUploads(uploadOwnerNamespace(ctx.config.dataDir)).catch(() => undefined);
 
   // Host header validation for every route (DNS-rebinding hardening).
   // Health checks are exempt so container healthchecks can use any local address.
