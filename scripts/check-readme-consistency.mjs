@@ -93,18 +93,19 @@ export function checkReadmeLinks({
     const hashIndex = target.indexOf("#");
     const pathPart = hashIndex >= 0 ? target.slice(0, hashIndex) : target;
     const hash = hashIndex >= 0 ? target.slice(hashIndex + 1) : "";
-    const targetFile = pathPart ? resolve(dirname(sourceFile), decodeURIComponent(pathPart)) : sourceFile;
+    const sameDocument = pathPart.length === 0;
+    const targetFile = sameDocument ? sourceFile : resolve(dirname(sourceFile), decodeURIComponent(pathPart));
     const relativeTarget = relative(root, targetFile);
     if (relativeTarget === ".." || relativeTarget.startsWith(`..${sep}`) || isAbsolute(relativeTarget)) {
       problems.push(`${label}:${link.line} relative link escapes the repository root: ${target}`);
       continue;
     }
-    if (!fileExists(targetFile)) {
+    if (!sameDocument && !fileExists(targetFile)) {
       problems.push(`${label}:${link.line} links to missing file: ${target}`);
       continue;
     }
     if (hash) {
-      const targetText = readText(targetFile);
+      const targetText = sameDocument ? text : readText(targetFile);
       if (!headingAnchors(targetText).has(decodeURIComponent(hash))) {
         problems.push(`${label}:${link.line} links to missing anchor: ${target}`);
       }
