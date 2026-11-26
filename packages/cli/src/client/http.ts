@@ -1,3 +1,4 @@
+import { redactSecrets } from "@search-hub/shared";
 import { CLI_VERSION } from "../version.js";
 import { CliError, EXIT_CODES, redactUnknown, usageError } from "../errors/index.js";
 import { joinServerUrl, sameOrigin } from "../security/url.js";
@@ -167,8 +168,9 @@ export class HttpClient {
       if (timeoutController.signal.aborted) {
         throw new CliError("timeout", `Request timed out after ${timeoutMs} ms`, EXIT_CODES.timeout, { cause: error });
       }
-      const message = error instanceof Error ? error.message : String(error);
-      throw new CliError("network_error", `Cannot reach Search Hub: ${message}`, EXIT_CODES.network, { cause: error });
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const message = redactSecrets(rawMessage, secrets);
+      throw new CliError("network_error", `Cannot reach Search Hub: ${message}`, EXIT_CODES.network);
     } finally {
       clearTimeout(timer);
     }
