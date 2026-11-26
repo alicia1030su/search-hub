@@ -10,7 +10,7 @@ import { classifyPressure } from "./pressure.mjs";
 import { createLogSanitizer, sanitizeLog } from "./report.mjs";
 import { classifyOom } from "./oom.mjs";
 
-function pnpmInvocation(args) {
+export function pnpmInvocation(args) {
   const cli = process.env["npm_execpath"] ?? "";
   if (/\.(?:cjs|mjs|js)$/.test(cli)) return { command: process.execPath, args: [cli, ...args] };
   return { command: process.platform === "win32" ? "pnpm.cmd" : "pnpm", args };
