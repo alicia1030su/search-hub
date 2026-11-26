@@ -13,6 +13,7 @@ import { classifyOom } from "./oom.mjs";
 export function pnpmInvocation(args) {
   const cli = process.env["npm_execpath"] ?? "";
   if (/\.(?:cjs|mjs|js)$/.test(cli)) return { command: process.execPath, args: [cli, ...args] };
+  if (cli) return { command: cli, args };
   return { command: process.platform === "win32" ? "pnpm.cmd" : "pnpm", args };
 }
 
