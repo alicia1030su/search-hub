@@ -139,6 +139,7 @@ describe("backup package fault boundaries", () => {
     expect(readFileSync(work.sentinelPath, "utf8")).toBe("do not change");
   });
 
+  // Each stage creates a base package and then restores it, including age(scrypt=18) work.
   it.each(["restore-extract", "restore-publish"])("R25 SIGKILL at %s never partially publishes the target", async (stage) => {
     const work = await fixture();
     const packagePath = join(work.outputDir, "base.shbackup");
@@ -157,5 +158,5 @@ describe("backup package fault boundaries", () => {
       expect(existsSync(join(targetDir, "search-hub.db"))).toBe(false);
     }
     expect(readFileSync(work.sentinelPath, "utf8")).toBe("do not change");
-  });
+  }, 120_000);
 });
