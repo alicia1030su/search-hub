@@ -22,6 +22,7 @@ import {
   prettyJson,
 } from "../lib/format";
 import { useAsyncData, useCopy, useDocumentTitle, useElapsed } from "../lib/hooks";
+import { withoutRawPayloads } from "../lib/search-response";
 import {
   droppedReasonLabel,
   freshnessLabel,
@@ -103,7 +104,7 @@ export function LabPage() {
   const [rerankModelId, setRerankModelId] = useState("");
   const [chatModelId, setChatModelId] = useState("");
   const [embeddingModelId, setEmbeddingModelId] = useState("");
-  const [includeDebug, setIncludeDebug] = useState(true);
+  const [includeDebug, setIncludeDebug] = useState(false);
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [lastRequest, setLastRequest] = useState<SearchRequest | null>(null);
   const [runState, setRunState] = useState<RunState | null>(null);
@@ -682,7 +683,7 @@ function SearchResultPanel({
   const copy = useCopy();
 
   const copyJson = async () => {
-    const ok = await copy.copy(prettyJson(response));
+    const ok = await copy.copy(prettyJson(withoutRawPayloads(response)));
     if (ok) toast.success({ title: t("common.copied") });
     else toast.error({ title: t("common.copyFailed") });
   };
@@ -740,7 +741,7 @@ function SearchResultPanel({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => downloadJson(`search-${response.taskId}.json`, response)}
+              onClick={() => downloadJson(`search-${response.taskId}.json`, withoutRawPayloads(response))}
             >
               <Download aria-hidden />
               {t("lab.result.downloadJson")}
@@ -1134,7 +1135,7 @@ function SearchResultPanel({
                 <Braces className="size-3.5" aria-hidden />
                 {t("lab.result.request")}
               </p>
-              <JsonPreview value={request ?? response} />
+              <JsonPreview value={request ?? withoutRawPayloads(response)} />
             </div>
 
             {response.debug?.providerQueries && response.debug.providerQueries.length > 0 ? (

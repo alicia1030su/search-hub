@@ -94,13 +94,15 @@ export function BackupPage() {
     }
   };
 
-  const readiness = status.data?.restoreReadiness
-    ? "ready"
-    : !status.data?.latestBackup
-      ? "missing"
-      : status.data.keyReadiness === "mismatch"
-        ? "mismatch"
-        : "unverified";
+  const readiness = status.data === null
+    ? "unknown"
+    : status.data.restoreReadiness
+      ? "ready"
+      : !status.data.latestBackup
+        ? "missing"
+        : status.data.keyReadiness === "mismatch"
+          ? "mismatch"
+          : "unverified";
   return (
     <div className="space-y-5">
       <PageHeader title={t("backup.title")} description={t("backup.description")} />
@@ -110,10 +112,10 @@ export function BackupPage() {
       {status.error ? <Alert tone="error">{status.error.message}</Alert> : null}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Card><CardContent className="space-y-1 p-4"><p className="text-xs text-muted-foreground">{t("backup.database")}</p><p className="text-lg font-semibold">{formatBytes(status.data?.dbBytes ?? 0)}</p><p className="truncate font-mono text-[11px] text-muted-foreground">{status.data?.schema ?? t("common.unknown")}</p></CardContent></Card>
-        <Card><CardContent className="space-y-1 p-4"><p className="text-xs text-muted-foreground">{t("backup.wal")}</p><p className="text-lg font-semibold">{formatBytes(status.data?.walBytes ?? 0)}</p><p className="text-xs text-muted-foreground">{t("backup.consistentSnapshot")}</p></CardContent></Card>
+        <Card><CardContent className="space-y-1 p-4"><p className="text-xs text-muted-foreground">{t("backup.database")}</p><p className="text-lg font-semibold">{status.data === null ? "—" : formatBytes(status.data.dbBytes)}</p><p className="truncate font-mono text-[11px] text-muted-foreground">{status.data?.schema ?? t("common.unknown")}</p></CardContent></Card>
+        <Card><CardContent className="space-y-1 p-4"><p className="text-xs text-muted-foreground">{t("backup.wal")}</p><p className="text-lg font-semibold">{status.data === null ? "—" : formatBytes(status.data.walBytes)}</p><p className="text-xs text-muted-foreground">{t("backup.consistentSnapshot")}</p></CardContent></Card>
         <Card><CardContent className="space-y-1 p-4"><p className="text-xs text-muted-foreground">{t("backup.keySource")}</p><p className="text-lg font-semibold">{status.data?.keySource ?? "—"}</p><p className="text-xs text-muted-foreground">{t("backup.keyNeverShown")}</p></CardContent></Card>
-        <Card><CardContent className="space-y-1 p-4"><p className="text-xs text-muted-foreground">{t("backup.readiness")}</p><Badge tone={readiness === "ready" ? "success" : readiness === "missing" || readiness === "unverified" ? "warning" : "destructive"}>{readiness}</Badge><p className="text-xs text-muted-foreground">{status.data?.latestBackup ? formatDateTime(status.data.latestBackup.time) : t("backup.noBackup")}</p></CardContent></Card>
+        <Card><CardContent className="space-y-1 p-4"><p className="text-xs text-muted-foreground">{t("backup.readiness")}</p><Badge tone={readiness === "unknown" ? "muted" : readiness === "ready" ? "success" : readiness === "mismatch" ? "destructive" : "warning"}>{readiness === "unknown" ? (status.loading ? t("common.loading") : t("common.unknown")) : readiness}</Badge><p className="text-xs text-muted-foreground">{status.data === null ? (status.loading ? t("common.loading") : t("common.unknown")) : status.data.latestBackup ? formatDateTime(status.data.latestBackup.time) : t("backup.noBackup")}</p></CardContent></Card>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">

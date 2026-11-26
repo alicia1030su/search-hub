@@ -490,6 +490,7 @@ export interface SearchResult {
   fusionScore?: number;
   rerankScore?: number;
   language?: string;
+  metadata?: Record<string, unknown>;
   upstream?: UpstreamAttribution;
   upstreamRank?: number;
   sources: Array<{
