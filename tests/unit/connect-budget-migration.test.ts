@@ -76,13 +76,16 @@ describe("connect request budget migration 0010", () => {
     const result = runMigrations(upgraded.sqlite);
     expect(result.applied).toContain("0010_connect_request_budget.sql");
     expect(result.applied).toContain("0011_diagnostic_redaction_markers.sql");
+    expect(result.applied).toContain("0012_api_key_credential_revision.sql");
     expect(upgraded.sqlite.prepare("SELECT used FROM health_probe_budget WHERE day=? AND kind=?").get("2026-11-21", "connect")).toEqual({ used: 8 });
     expect(upgraded.sqlite.prepare("SELECT used FROM health_probe_budget_connect_legacy WHERE day=? AND kind=?").get("2026-11-21", "connect")).toEqual({ used: 2 });
     const keysAfter = upgraded.sqlite.prepare("SELECT * FROM api_keys ORDER BY id").all() as Array<Record<string, unknown>>;
     const historyAfter = upgraded.sqlite.prepare("SELECT * FROM provider_health_checks ORDER BY id").all() as Array<Record<string, unknown>>;
     for (const key of keysAfter) {
       expect(key.last_error_sanitized).toBe(0);
+      expect(key.credential_revision).toBe(0);
       delete key.last_error_sanitized;
+      delete key.credential_revision;
     }
     for (const check of historyAfter) {
       expect(check.diagnostics_sanitized).toBe(0);

@@ -615,9 +615,14 @@ export class ProviderService {
     this.runtimes.delete(id);
   }
 
-  findKeyById(keyId: string): { id: string; providerId: string } | null {
+  findKeyById(keyId: string): { id: string; providerId: string; enabled: boolean; credentialRevision: number } | null {
     const row = this.db
-      .select({ id: apiKeys.id, providerId: apiKeys.providerId })
+      .select({
+        id: apiKeys.id,
+        providerId: apiKeys.providerId,
+        enabled: apiKeys.enabled,
+        credentialRevision: apiKeys.credentialRevision,
+      })
       .from(apiKeys)
       .where(eq(apiKeys.id, keyId))
       .get();
@@ -635,9 +640,9 @@ export class ProviderService {
   /**
    * Version stamp for a provider's credentials, safe to put in a cache key.
    *
-   * Stable identity, encrypted material, enabled state, weight and the update
-   * stamp participate so toggling a key cannot revive an older cached response.
-   * Plaintext, labels and runtime statistics are never hashed.
+   * Stable identity, encrypted material, enabled state, weight and the dedicated
+   * credential revision participate so toggling a key cannot revive an older
+   * cached response. Plaintext, labels and runtime statistics are never hashed.
    */
   credentialVersion(providerId: string): string {
     const rows = this.db
@@ -646,7 +651,7 @@ export class ProviderService {
         enabled: apiKeys.enabled,
         version: apiKeys.keyVersion,
         weight: apiKeys.weight,
-        updatedAt: apiKeys.updatedAt,
+        credentialRevision: apiKeys.credentialRevision,
         keyCiphertext: apiKeys.keyCiphertext,
         keyIv: apiKeys.keyIv,
         keyTag: apiKeys.keyTag,
@@ -660,7 +665,7 @@ export class ProviderService {
         const encrypted = createHash("sha256")
           .update(JSON.stringify([row.keyCiphertext, row.keyIv, row.keyTag]))
           .digest("hex");
-        return `${row.id}:${row.enabled ? 1 : 0}:${row.version}:${row.weight}:${row.updatedAt}:${encrypted}`;
+        return `${row.id}:${row.enabled ? 1 : 0}:${row.version}:${row.weight}:${row.credentialRevision}:${encrypted}`;
       })
       .sort()
       .join("|");

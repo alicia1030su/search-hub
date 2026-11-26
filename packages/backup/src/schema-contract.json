@@ -55,6 +55,11 @@
       "name": "0011_diagnostic_redaction_markers.sql",
       "sql": "-- Mark diagnostics written after the v0.1.12 credential-redaction fix.\n-- Existing rows keep their original bytes for audit but default to false, so\n-- readers can withhold free-form text that may contain a rotated/deleted secret\n-- which can no longer be recovered from the current key row.\n\nALTER TABLE \"api_keys\"\n  ADD COLUMN \"last_error_sanitized\" integer NOT NULL DEFAULT 0;\n--> statement-breakpoint\nALTER TABLE \"provider_health_checks\"\n  ADD COLUMN \"diagnostics_sanitized\" integer NOT NULL DEFAULT 0;\n--> statement-breakpoint\nALTER TABLE \"search_tasks\"\n  ADD COLUMN \"diagnostics_sanitized\" integer NOT NULL DEFAULT 0;\n--> statement-breakpoint\nALTER TABLE \"search_events\"\n  ADD COLUMN \"diagnostics_sanitized\" integer NOT NULL DEFAULT 0;\n--> statement-breakpoint\nALTER TABLE \"provider_test_batches\"\n  ADD COLUMN \"diagnostics_sanitized\" integer NOT NULL DEFAULT 0;\n",
       "sha256": "1530ee1ab6b43a720856ef92a6980d1f8ca03bb82de24ee22ecd60a86beab0c1"
+    },
+    {
+      "name": "0012_api_key_credential_revision.sql",
+      "sql": "ALTER TABLE \"api_keys\" ADD COLUMN \"credential_revision\" INTEGER NOT NULL DEFAULT 0;\n",
+      "sha256": "4f0a33e665811c539f40e2f6c646b0955af8dbd2ff17ce0074e68c576d9c2572"
     }
   ]
 }

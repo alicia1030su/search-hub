@@ -81,6 +81,7 @@ export const apiKeys = sqliteTable(
     keyIv: text("key_iv").notNull(),
     keyTag: text("key_tag").notNull(),
     keyVersion: integer("key_version").notNull().default(1),
+    credentialRevision: integer("credential_revision").notNull().default(0),
     keyHint: text("key_hint").notNull(),
     weight: integer("weight").notNull().default(100),
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),

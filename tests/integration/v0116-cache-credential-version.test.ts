@@ -240,7 +240,7 @@ describe("BUG-0116-04 cache credential identity", () => {
     expect(harness.stubHits()).toBe(2);
   });
 
-  it("changes identity and bypasses cache on disable, re-enable, add, and remove", async () => {
+  it("changes identity on disable, re-enable, and add, then reuses the prior cache after remove", async () => {
     const harness = await createHarness();
     await search(harness);
     const auth = {
@@ -268,6 +268,7 @@ describe("BUG-0116-04 cache credential identity", () => {
     expect(enabled.statusCode).toBe(200);
     versions.push(harness.ctx.providers.credentialVersion(harness.providerId));
     expect((await search(harness)).json().stats.cached).not.toBe(true);
+    const enabledVersion = versions[2];
 
     const added = await harness.app.inject({
       method: "POST",
@@ -286,10 +287,10 @@ describe("BUG-0116-04 cache credential identity", () => {
       ...auth,
     });
     expect(removed.statusCode).toBe(200);
-    versions.push(harness.ctx.providers.credentialVersion(harness.providerId));
-    expect((await search(harness)).json().stats.cached).not.toBe(true);
+    expect(harness.ctx.providers.credentialVersion(harness.providerId)).toBe(enabledVersion);
+    expect((await search(harness)).json().stats.cached).toBe(true);
 
     expect(new Set(versions).size).toBe(versions.length);
-    expect(harness.stubHits()).toBe(4);
+    expect(harness.stubHits()).toBe(3);
   });
 });

@@ -36,7 +36,7 @@ test.describe("backup center", () => {
         contentType: "application/json",
         body: JSON.stringify({
           dbBytes: 1024,
-          schema: "0011_diagnostic_redaction_markers.sql",
+          schema: "0012_api_key_credential_revision.sql",
           keySource: "file",
           walBytes: 0,
           latestBackup: null,

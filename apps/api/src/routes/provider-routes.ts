@@ -543,7 +543,10 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: AppContext): v
       const patch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
       if (input.label !== undefined) patch["label"] = input.label;
       if (input.weight !== undefined) patch["weight"] = input.weight;
-      if (input.enabled !== undefined) patch["enabled"] = input.enabled;
+      if (input.enabled !== undefined) {
+        patch["enabled"] = input.enabled;
+        if (input.enabled !== found.enabled) patch["credentialRevision"] = found.credentialRevision + 1;
+      }
       if (input.key !== undefined) {
         const box = ctx.secrets.encrypt(input.key);
         patch["keyCiphertext"] = box.ciphertext;
