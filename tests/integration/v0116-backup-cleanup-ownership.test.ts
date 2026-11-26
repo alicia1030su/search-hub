@@ -233,7 +233,7 @@ describe("backup cleanup ownership", () => {
       targetDir: fixture.targetDir,
       sourceDataDir: fixture.sourceDataDir,
       sourceInstallDir: fixture.sourceInstallDir,
-      passphrase: "backup lock ownership passphrase 灾备",
+      passphrase: "backup cleanup ownership passphrase 灾备",
       appVersion: await currentAppVersion(),
       knownMigrations: migrations,
       openDatabase,
