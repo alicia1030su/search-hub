@@ -75,6 +75,7 @@ describe("isolated complete-package restore", () => {
     const sourceDataDir = join(root, "source-data");
     const installDir = join(root, "install");
     mkdirSync(sourceDataDir, { recursive: true });
+    if (process.platform === "win32") await restrictWindowsAcl(sourceDataDir, true);
     mkdirSync(installDir, { recursive: true });
     const sourceDbPath = join(sourceDataDir, "search-hub.db");
     const source = createDb({ file: sourceDbPath });
