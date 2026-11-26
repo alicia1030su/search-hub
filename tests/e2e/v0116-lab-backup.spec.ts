@@ -112,7 +112,7 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
     await expect(page.getByText("Local mock", { exact: true })).toBeVisible();
     await page.locator("#lab-query").fill("lab privacy");
     await page.getByRole("button", { name: "运行搜索", exact: true }).click();
-    await expect(page.getByText("Local safe result", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Local safe result", exact: true }).first()).toBeVisible();
 
     expect.soft(searchRequest?.includeRaw, "Lab must default includeRaw to false").toBe(false);
     await expect.soft(page.getByText(CANARY, { exact: false })).toHaveCount(0);
@@ -159,7 +159,7 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
     await page.getByLabel(/includeRaw/).check();
     await page.locator("#lab-query").fill("lab privacy");
     await page.getByRole("button", { name: "运行搜索", exact: true }).click();
-    await expect(page.getByText("Local safe result", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Local safe result", exact: true }).first()).toBeVisible();
 
     expect.soft(searchRequest?.includeRaw, "explicit opt-in must send includeRaw=true").toBe(true);
     await expect.soft(page.getByText(CANARY, { exact: false })).toHaveCount(0);
