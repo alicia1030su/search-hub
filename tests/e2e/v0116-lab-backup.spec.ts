@@ -32,8 +32,54 @@ async function downloadText(download: Download): Promise<string> {
 }
 
 test.describe("v0.1.16 Lab raw-data privacy", () => {
-  test("does not request or export upstream raw canaries by default", async ({ page }) => {
-    let searchRequest: { includeRaw?: boolean } | undefined;
+  function rawCanaryResult() {
+    return {
+      id: "result-local",
+      title: "Local safe result",
+      url: "https://example.test/result",
+      snippet: "local stub",
+      provider: "prv_mock",
+      providerType: "mock",
+      providerName: "Local mock",
+      sources: [],
+      retrievedAt: "2026-01-01T00:00:00.000Z",
+      score: 1,
+      metadata: { raw: CANARY },
+    };
+  }
+
+  function rawCanaryResponse(taskId: string) {
+    const result = rawCanaryResult();
+    return {
+      taskId,
+      query: "lab privacy",
+      mode: "rrf",
+      status: "completed",
+      results: [result],
+      errors: [],
+      stats: {
+        rawCount: 1,
+        dedupedCount: 1,
+        fusedCount: 1,
+        providers: [],
+        rerankApplied: false,
+        embeddingApplied: false,
+        summaryApplied: false,
+        partial: false,
+        degraded: false,
+        timing: { totalMs: 1, fanoutMs: 1, fusionMs: 0 },
+      },
+      debug: {
+        perProviderResults: [{
+          providerId: "prv_mock",
+          providerName: "Local mock",
+          results: [{ ...result, metadata: { raw: CANARY } }],
+        }],
+      },
+    };
+  }
+
+  async function stubLabBase(page: Page): Promise<void> {
     await page.route("**/api/providers", async (route) => {
       await route.fulfill({
         status: 200,
@@ -47,54 +93,17 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
     await page.route("**/api/admin/models", async (route) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
     });
+  }
+
+  test("does not request or export upstream raw canaries by default", async ({ page }) => {
+    let searchRequest: Record<string, unknown> | undefined;
+    await stubLabBase(page);
     await page.route("**/api/search", async (route) => {
-      const payload = route.request().postDataJSON() as { includeRaw?: unknown };
-      searchRequest = { includeRaw: payload.includeRaw === true };
-      const result = {
-        id: "result-local",
-        title: "Local safe result",
-        url: "https://example.test/result",
-        snippet: "local stub",
-        provider: "prv_mock",
-        providerType: "mock",
-        providerName: "Local mock",
-        sources: [],
-        retrievedAt: "2026-01-01T00:00:00.000Z",
-        score: 1,
-      };
-      const response = {
-        taskId: "task-lab-privacy",
-        query: "lab privacy",
-        mode: "rrf",
-        status: "completed",
-        results: [result],
-        errors: [],
-        stats: {
-          rawCount: 1,
-          dedupedCount: 1,
-          fusedCount: 1,
-          providers: [],
-          rerankApplied: false,
-          embeddingApplied: false,
-          summaryApplied: false,
-          partial: false,
-          degraded: false,
-          timing: { totalMs: 1, fanoutMs: 1, fusionMs: 0 },
-        },
-        debug: searchRequest.includeRaw === true
-          ? {
-              perProviderResults: [{
-                providerId: "prv_mock",
-                providerName: "Local mock",
-                results: [{ ...result, title: `${CANARY} raw title` }],
-              }],
-            }
-          : {},
-      };
+      searchRequest = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(response),
+        body: JSON.stringify(rawCanaryResponse("task-lab-privacy")),
       });
     });
 
@@ -104,8 +113,7 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
     await page.getByRole("button", { name: "运行", exact: true }).click();
     await expect(page.getByText("Local safe result", { exact: true })).toBeVisible();
 
-    expect(searchRequest, "Lab search route must be called").toBeDefined();
-    expect.soft(searchRequest!.includeRaw, "Lab must default includeRaw to false").toBe(false);
+    expect.soft(searchRequest?.includeRaw, "Lab must default includeRaw to false").toBe(false);
     await expect.soft(page.getByText(CANARY, { exact: false })).toHaveCount(0);
 
     await page.getByRole("button", { name: "复制 JSON", exact: true }).click();
@@ -118,6 +126,60 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
     await page.getByRole("button", { name: "下载 JSON", exact: true }).click();
     const exported = await downloadText(await downloadPromise);
     expect.soft(exported, "downloaded JSON must not contain the raw canary").not.toContain(CANARY);
+  });
+
+  test("strips raw canaries from UI and exports when includeRaw is explicitly enabled", async ({ page }) => {
+    let searchRequest: Record<string, unknown> | undefined;
+    await stubLabBase(page);
+    await page.route("**/api/search", async (route) => {
+      searchRequest = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(rawCanaryResponse("task-lab-explicit-raw")),
+      });
+    });
+    await page.route("**/api/search/tasks/task-lab-history", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "task-lab-history",
+          status: "completed",
+          response: rawCanaryResponse("task-lab-history"),
+        }),
+      });
+    });
+
+    await completeSetup(page);
+    await page.getByRole("link", { name: "搜索实验室", exact: true }).click();
+    await page.getByLabel(/includeRaw/).check();
+    await page.locator("#lab-query").fill("lab privacy");
+    await page.getByRole("button", { name: "运行", exact: true }).click();
+    await expect(page.getByText("Local safe result", { exact: true })).toBeVisible();
+
+    expect.soft(searchRequest?.includeRaw, "explicit opt-in must send includeRaw=true").toBe(true);
+    await expect.soft(page.getByText(CANARY, { exact: false })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "复制 JSON", exact: true }).click();
+    const clipboard = await page.evaluate(() =>
+      (navigator as Navigator & { clipboard: { readText(): Promise<string> } }).clipboard.readText(),
+    );
+    expect.soft(clipboard, "clipboard JSON must strip raw metadata even after opt-in").not.toContain(CANARY);
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "下载 JSON", exact: true }).click();
+    const exported = await downloadText(await downloadPromise);
+    expect.soft(exported, "downloaded JSON must strip raw metadata even after opt-in").not.toContain(CANARY);
+
+    await page.getByLabel("任务 ID").fill("task-lab-history");
+    await page.getByRole("button", { name: "查询任务", exact: true }).click();
+    await expect(page.getByText("task-lab-history", { exact: true }).first()).toBeVisible();
+    const previewTexts = await page.locator("details pre").allTextContents();
+    expect.soft(
+      previewTexts.join("\n"),
+      "loaded task JsonPreview must strip raw metadata",
+    ).not.toContain(CANARY);
   });
 });
 
