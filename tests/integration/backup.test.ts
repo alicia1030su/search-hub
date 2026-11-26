@@ -10,6 +10,9 @@ import { createContext, type AppContext } from "../../apps/api/src/context.js";
 import { loadConfig, type AppConfig } from "../../apps/api/src/config.js";
 import { checkIntegrity, createDatabaseSnapshot, pruneStaleUploads, schemaCompatibility, uploadOwnerNamespace } from "../../apps/api/src/services/backup.js";
 
+// Package create/verify includes age(scrypt=18) plus Windows ACL/fsync work, so runtime varies by host.
+const PACKAGE_TEST_TIMEOUT_MS = 120_000;
+
 interface Harness {
   app: FastifyInstance;
   ctx: AppContext;
@@ -486,7 +489,7 @@ describe("complete backup packages", () => {
     expect(status.json().latestBackup.verified).toBe(true);
     expect(status.json().restoreReadiness).toBe(true);
     expect(status.json().keyReadiness).toBe("verified");
-  });
+  }, PACKAGE_TEST_TIMEOUT_MS);
 
   it("returns the server checksum and leaves no temporary package artifacts", async () => {
     const harness = await createHarness();
@@ -503,7 +506,7 @@ describe("complete backup packages", () => {
     expect(files.some((name) => name.endsWith(".shbackup"))).toBe(true);
     expect(files.some((name) => name.startsWith(".shbackup-work-"))).toBe(false);
     expect(files.some((name) => name.endsWith(".shbak") || name.startsWith(".shbak-work-"))).toBe(false);
-  });
+  }, PACKAGE_TEST_TIMEOUT_MS);
 
   it("requires an admin session for status", async () => {
     const harness = await createHarness();
@@ -521,7 +524,7 @@ describe("complete backup packages", () => {
     });
     const responses = await Promise.all([request(), request()]);
     expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 429]);
-  });
+  }, PACKAGE_TEST_TIMEOUT_MS);
 
   it("authenticates before writing an anonymous upload to disk", async () => {
     const harness = await createHarness();
@@ -649,7 +652,7 @@ describe("POST /api/admin/backup/package/verify", () => {
       if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
       rmSync(temporary, { recursive: true, force: true });
     }
-  }, 120_000);
+  }, PACKAGE_TEST_TIMEOUT_MS);
 
   it("rejects missing CSRF, low scope and known oversize bodies before disk use", async () => {
     const harness = await createHarness();
@@ -762,7 +765,7 @@ describe("POST /api/admin/backup/package/verify", () => {
     });
     const responses = await Promise.all([request(), request()]);
     expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 429]);
-  }, 120_000);
+  }, PACKAGE_TEST_TIMEOUT_MS);
 
   it("applies the route rate limit before parsing an anonymous body", async () => {
     const harness = await createHarness();
