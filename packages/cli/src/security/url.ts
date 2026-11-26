@@ -19,7 +19,7 @@ export function normalizeServerUrl(raw: string): string {
   try {
     url = new URL(raw.trim());
   } catch {
-    throw usageError(`Invalid Search Hub URL: ${raw}`);
+    throw usageError("Invalid Search Hub URL");
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw usageError("Search Hub URL must use https:// (or http:// for a loopback host)");

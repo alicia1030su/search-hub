@@ -26,18 +26,27 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   const format = outputFormat(args.values);
   const command = args.positionals[0];
-  if (command === "config") return runConfig(args, format);
-  if (command === "backup") return runBackup(args, format);
-  if (command === "doctor" && args.values["local"] === true) return runLocalDoctor(args, format);
+  const localCommand = command === "config" || command === "backup" || (command === "doctor" && args.values["local"] === true);
+  if (localCommand) {
+    if (args.values["token-stdin"] === true) {
+      if (args.values["passphrase-stdin"] === true) {
+        throw usageError("--token-stdin cannot be combined with --passphrase-stdin");
+      }
+      throw usageError("--token-stdin is only supported for remote commands");
+    }
+    if (command === "config") return await runConfig(args, format);
+    if (command === "backup") return await runBackup(args, format);
+    return await runLocalDoctor(args, format);
+  }
 
   const url = resolveUrl(stringValue(args.values, "url"));
   const token = await resolveToken(args.values["token-stdin"] === true);
-  const timeoutMs = numberValue(args.values, "timeout", { min: 1000, max: 120_000 }) ?? 30_000;
-  const pollInterval = numberValue(args.values, "poll-interval", { min: 100, max: 60_000 }) ?? 1000;
   const controller = new AbortController();
   const onInterrupt = () => controller.abort();
   process.once("SIGINT", onInterrupt);
   try {
+    const timeoutMs = numberValue(args.values, "timeout", { min: 1000, max: 120_000 }) ?? 30_000;
+    const pollInterval = numberValue(args.values, "poll-interval", { min: 100, max: 60_000 }) ?? 1000;
     const client = new HttpClient(url, token, timeoutMs, controller.signal);
     switch (command) {
       case "search":
@@ -54,6 +63,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       default:
         throw usageError(`Unknown command: ${command}`);
     }
+  } catch (error) {
+    throw asCliError(error, token ? [token] : []);
   } finally {
     process.removeListener("SIGINT", onInterrupt);
   }
