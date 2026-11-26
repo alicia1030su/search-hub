@@ -642,7 +642,9 @@ export class ProviderService {
    *
    * Stable identity, encrypted material, enabled state, weight and the dedicated
    * credential revision participate so toggling a key cannot revive an older
-   * cached response. Plaintext, labels and runtime statistics are never hashed.
+   * cached response. Revision zero keeps the legacy hash shape so upgrades can
+   * reuse persistent cache rows. Plaintext, labels and runtime statistics are
+   * never hashed.
    */
   credentialVersion(providerId: string): string {
     const rows = this.db
@@ -665,7 +667,8 @@ export class ProviderService {
         const encrypted = createHash("sha256")
           .update(JSON.stringify([row.keyCiphertext, row.keyIv, row.keyTag]))
           .digest("hex");
-        return `${row.id}:${row.enabled ? 1 : 0}:${row.version}:${row.weight}:${row.credentialRevision}:${encrypted}`;
+        const revision = row.credentialRevision > 0 ? `:${row.credentialRevision}` : "";
+        return `${row.id}:${row.enabled ? 1 : 0}:${row.version}:${row.weight}:${encrypted}${revision}`;
       })
       .sort()
       .join("|");

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -238,6 +239,21 @@ describe("BUG-0116-04 cache credential identity", () => {
     expect(after).not.toBe(before);
     expect(second.json().stats.cached).not.toBe(true);
     expect(harness.stubHits()).toBe(2);
+  });
+
+  it("preserves the legacy hash shape at revision zero and changes it for later revisions", async () => {
+    const harness = await createHarness();
+    const row = harness.ctx.db.select().from(apiKeys).all().find((item) => item.id === harness.keyId)!;
+    expect(row.credentialRevision).toBe(0);
+    const encrypted = createHash("sha256")
+      .update(JSON.stringify([row.keyCiphertext, row.keyIv, row.keyTag]))
+      .digest("hex");
+    const legacyMaterial = `${row.id}:${row.enabled ? 1 : 0}:${row.keyVersion}:${row.weight}:${encrypted}`;
+    const legacyVersion = createHash("sha256").update(legacyMaterial).digest("hex").slice(0, 16);
+    expect(harness.ctx.providers.credentialVersion(harness.providerId)).toBe(legacyVersion);
+
+    harness.ctx.sqlite.prepare("UPDATE api_keys SET credential_revision = 1 WHERE id = ?").run(harness.keyId);
+    expect(harness.ctx.providers.credentialVersion(harness.providerId)).not.toBe(legacyVersion);
   });
 
   it("changes identity on disable, re-enable, and add, then reuses the prior cache after remove", async () => {
