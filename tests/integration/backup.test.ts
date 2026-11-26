@@ -560,6 +560,7 @@ describe("complete backup packages", () => {
 });
 
 describe("POST /api/admin/backup/package/verify", () => {
+  // This case runs both create and verify, each using age with scrypt=18.
   it("verifies a complete package with six boolean results and removes private staging", async () => {
     const harness = await createHarness();
     const passphrase = "package verification passphrase 灾备";
@@ -648,7 +649,7 @@ describe("POST /api/admin/backup/package/verify", () => {
       if (previous.TMPDIR === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous.TMPDIR;
       rmSync(temporary, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it("rejects missing CSRF, low scope and known oversize bodies before disk use", async () => {
     const harness = await createHarness();
