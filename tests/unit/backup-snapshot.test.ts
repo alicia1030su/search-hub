@@ -21,6 +21,7 @@ function openDatabase(path: string, readonly: boolean): SqliteHandle {
 async function workspace(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "search-hub-snapshot-test-"));
   directories.push(directory);
+  if (process.platform === "win32") await restrictWindowsAcl(directory, true);
   return directory;
 }
 async function secureFile(path: string): Promise<void> {

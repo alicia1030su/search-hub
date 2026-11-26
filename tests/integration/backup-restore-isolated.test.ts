@@ -71,6 +71,7 @@ describe("isolated complete-package restore", () => {
   it("R15/R16 preserves health/billing/budget and valid/expired cache state, metrics and totals", async () => {
     const root = mkdtempSync(join(tmpdir(), "search-hub-restore-isolated-"));
     directories.push(root);
+    if (process.platform === "win32") await restrictWindowsAcl(root, true);
     const sourceDataDir = join(root, "source-data");
     const installDir = join(root, "install");
     mkdirSync(sourceDataDir, { recursive: true });

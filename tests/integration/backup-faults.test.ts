@@ -32,6 +32,7 @@ interface Fixture {
 async function fixture(): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "search-hub-backup-faults-"));
   directories.push(root);
+  if (process.platform === "win32") await restrictWindowsAcl(root, true);
   const sourceDataDir = join(root, "source-data");
   const sourceInstallDir = join(root, "install");
   const temp = join(root, "temp");
