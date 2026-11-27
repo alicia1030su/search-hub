@@ -40,6 +40,16 @@ const IS_WINDOWS = process.platform === "win32";
 const OS_KEY = IS_WINDOWS ? "windows" : "linux";
 const ARCH_KEY = process.arch;
 
+if (hasFlag("--self-test-cache-fingerprint")) {
+  try {
+    selfTestCacheFingerprint();
+    process.exit(0);
+  } catch (error) {
+    console.error(`SELF-TEST FAIL: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
 const FROM = arg("from");
 /**
  * A local archive/directory to use as the "old" install.
@@ -331,11 +341,66 @@ function readCacheFingerprintInputs(dataDir, providerId) {
     const keys = db.prepare(
       "SELECT id, enabled, key_version, updated_at FROM api_keys WHERE provider_id = ? ORDER BY id",
     ).all(providerId);
-    return provider ? { provider, keys } : null;
+    const credentialIdentityVersion = db.prepare("PRAGMA table_info(api_keys)").all()
+      .some((column) => column.name === "credential_revision") ? 2 : 1;
+    return provider ? { provider, keys, credentialIdentityVersion } : null;
   } catch {
     return null;
   } finally {
     db?.close();
+  }
+}
+
+/** Self-check for the upgrade harness: schema v2 must not reuse a v1 fingerprint. */
+function selfTestCacheFingerprint() {
+  const root = mkdtempSync(join(tmpdir(), "shub-upgrade-fingerprint-self-test-"));
+  try {
+    const createFixture = (name, withCredentialRevision) => {
+      const directory = join(root, name);
+      mkdirSync(directory, { recursive: true });
+      const db = new DatabaseSync(join(directory, "search-hub.db"));
+      try {
+        db.exec(`
+          CREATE TABLE provider_instances (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            base_url TEXT,
+            results_per_page INTEGER NOT NULL,
+            language TEXT,
+            freshness TEXT,
+            config_json TEXT NOT NULL,
+            search_config_json TEXT NOT NULL
+          );
+          CREATE TABLE api_keys (
+            id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            key_version INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+            ${withCredentialRevision ? ", credential_revision INTEGER NOT NULL DEFAULT 0" : ""}
+          );
+        `);
+        db.prepare(
+          "INSERT INTO provider_instances (id, type, base_url, results_per_page, language, freshness, config_json, search_config_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run("prv_fingerprint", "brave", "http://127.0.0.1:1", 10, "zh", "all", "{}", "{}");
+        db.prepare(
+          "INSERT INTO api_keys (id, provider_id, enabled, key_version, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ).run("key_fingerprint", "prv_fingerprint", 1, 1, "2026-01-01T00:00:00.000Z");
+      } finally {
+        db.close();
+      }
+      return directory;
+    };
+    const legacy = readCacheFingerprintInputs(createFixture("legacy", false), "prv_fingerprint");
+    const current = readCacheFingerprintInputs(createFixture("current", true), "prv_fingerprint");
+    if (!legacy || !current) throw new Error("fingerprint inputs unavailable");
+    if (legacy.credentialIdentityVersion !== 1 || current.credentialIdentityVersion !== 2) {
+      throw new Error(`unexpected schema identity: legacy=${legacy.credentialIdentityVersion} current=${current.credentialIdentityVersion}`);
+    }
+    if (JSON.stringify(legacy) === JSON.stringify(current)) throw new Error("legacy and current fingerprints are identical");
+    console.log(`PASS cache fingerprint schema identity: credentialIdentityVersion=${legacy.credentialIdentityVersion}->${current.credentialIdentityVersion} fingerprint=changed`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
