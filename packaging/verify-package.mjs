@@ -67,7 +67,7 @@ if (first.healthy) {
   step("REST 搜索返回结果", results.search, results.searchDetail);
   step("MCP initialize", results.mcpInit);
   step("MCP tools/list", results.mcpList);
-  step("MCP tools/call", results.mcpCall);
+  step("MCP tools/call", results.mcpCall, results.mcpCallDetail);
   step("资源端点 session 200", results.resourcesSession, results.resourcesDetail);
   step("资源端点 Bearer 403", results.resourcesBearer);
   // The database file is `search-hub.db` (config.ts), not `search.db`.
@@ -164,7 +164,7 @@ async function launch(executable) {
 
 async function drive(port) {
   const base = `http://127.0.0.1:${port}`;
-  const out = { setup: false, setupDetail: "", search: false, searchDetail: "", mcpInit: false, mcpList: false, mcpCall: false, resourcesSession: false, resourcesBearer: false, resourcesDetail: "" };
+  const out = { setup: false, setupDetail: "", search: false, searchDetail: "", mcpInit: false, mcpList: false, mcpCall: false, mcpCallDetail: "", resourcesSession: false, resourcesBearer: false, resourcesDetail: "" };
 
   const tokenPath = join(dataDir, "setup-token");
   if (!existsSync(tokenPath)) {
@@ -245,7 +245,7 @@ async function drive(port) {
   const token = await fetch(`${base}/api/admin/tokens`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie, "x-csrf-token": csrfToken },
-    body: JSON.stringify({ name: "release-check", scopes: ["search:read", "mcp:use"], rateLimitPerMin: 600 }),
+    body: JSON.stringify({ name: "release-check", scopes: ["search", "mcp:use"], rateLimitPerMin: 600 }),
   });
   const tokenBody = await token.json();
   const bearer = tokenBody.token ?? tokenBody.plainToken ?? tokenBody.secret;
@@ -269,7 +269,7 @@ async function drive(port) {
     });
     const text = await response.text();
     const dataLine = text.split("\n").find((line) => line.startsWith("data:"));
-    return { ok: response.ok, text: dataLine ?? text };
+    return { ok: response.ok, status: response.status, text: dataLine ?? text };
   };
 
   const init = await mcp({
@@ -290,6 +290,7 @@ async function drive(port) {
     params: { name: "search_web", arguments: { query: "release check", limit: 3 } },
   });
   out.mcpCall = call.ok && (call.text.includes("results") || call.text.includes("task_"));
+  out.mcpCallDetail = out.mcpCall ? "" : `HTTP ${call.status ?? "?"}; ${call.text.slice(0, 800)}`;
 
   return out;
 }
