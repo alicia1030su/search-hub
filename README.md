@@ -5,7 +5,7 @@
 
 [English](./README_EN.md) · [部署](./docs/deployment.md) · [CLI](./docs/cli.md) · [API](./docs/api.md)
 
-> **v0.1.16 Stable。** 本版聚焦真实缺陷修复、发布可靠性与文档精简；具体变更见 [CHANGELOG](./CHANGELOG.md)。
+> **v0.1.17 Stable。** 本版聚焦真实缺陷修复、发布可靠性与文档精简；具体变更见 [CHANGELOG](./CHANGELOG.md)。
 >
 > Stable 是公开发布渠道，不等于所有第三方集成都通过生产认证；未联调与未实现能力见下文“限制”。
 <a id="highlights"></a>
@@ -23,9 +23,9 @@
 <a id="screenshots"></a>
 ## 界面
 
-![Search Hub 仪表盘](./docs/screenshots/v0116/dashboard.png)
-![搜索实验室](./docs/screenshots/v0116/search-lab.png)
-![搜索源健康](./docs/screenshots/v0116/provider-health.png)
+![Search Hub 仪表盘](./docs/screenshots/v0117/dashboard.png)
+![搜索实验室](./docs/screenshots/v0117/search-lab.png)
+![搜索源健康](./docs/screenshots/v0117/provider-health.png)
 
 <a id="quick-start"></a>
 ## 快速开始
@@ -60,7 +60,7 @@ docker compose exec search-hub cat /app/data/setup-token
 
 ### Windows x64
 
-1. 从下方 Release 下载 `search-hub-v0.1.16-windows-x64.zip` 并校验。
+1. 从下方 Release 下载 `search-hub-v0.1.17-windows-x64.zip` 并校验。
 2. 解压到可写目录，数据保存在 `%LOCALAPPDATA%\SearchHub`。
 3. 首次启动前读取 `%LOCALAPPDATA%\SearchHub\setup-token`（若尚未生成，先启动一次）。
 4. 双击 `SearchHub.exe`，在 `/setup` 输入 token 并创建管理员。
@@ -70,22 +70,22 @@ docker compose exec search-hub cat /app/data/setup-token
 ```bash
 # Linux x64
 mkdir search-hub
-tar -xzf search-hub-v0.1.16-linux-x64.tar.gz -C search-hub
+tar -xzf search-hub-v0.1.17-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub
 ```
 
-Linux arm64 使用 `search-hub-v0.1.16-linux-arm64.tar.gz`，其余步骤相同。默认监听 `127.0.0.1:8787`；长期运行可使用包内 `search-hub.service`。
+Linux arm64 使用 `search-hub-v0.1.17-linux-arm64.tar.gz`，其余步骤相同。默认监听 `127.0.0.1:8787`；长期运行可使用包内 `search-hub.service`。
 
 **下载与校验**
 
-从 [v0.1.16 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.16) 下载以下资产；独立服务端包已包含运行时。
+从 [v0.1.17 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.17) 下载以下资产；独立服务端包已包含运行时。
 
 | 平台 / 用途 | 服务端 | CLI `shub` | 额外前提 |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.16-windows-x64.zip` | `shub-v0.1.16-windows-x64.zip` | 无 |
-| Linux x64 | `search-hub-v0.1.16-linux-x64.tar.gz` | `shub-v0.1.16-linux-x64.tar.gz` | 无 |
-| Linux arm64 | `search-hub-v0.1.16-linux-arm64.tar.gz` | `shub-v0.1.16-linux-arm64.tar.gz` | 无 |
-| Node.js >=22.12.0 便携 CLI | — | `shub-v0.1.16-node22.tar.gz` | Node.js >=22.12.0 |
+| Windows x64 | `search-hub-v0.1.17-windows-x64.zip` | `shub-v0.1.17-windows-x64.zip` | 无 |
+| Linux x64 | `search-hub-v0.1.17-linux-x64.tar.gz` | `shub-v0.1.17-linux-x64.tar.gz` | 无 |
+| Linux arm64 | `search-hub-v0.1.17-linux-arm64.tar.gz` | `shub-v0.1.17-linux-arm64.tar.gz` | 无 |
+| Node.js >=22.12.0 便携 CLI | — | `shub-v0.1.17-node22.tar.gz` | Node.js >=22.12.0 |
 
 Release 同时提供 `SHA256SUMS` 与 `resource-evidence.json`，共 9 个资产；下载后执行：
 
@@ -127,7 +127,7 @@ shub sources --enabled --json
 <a id="providers"></a>
 ## Provider 分类
 
-目录共 58 项：50 个原生适配器（4 个 `live_tested`、45 个 `documented`、1 个 `mock_verified`）、7 个 generic 预设、1 个无官方 API 条目。已真实联调的是 Hacker News、Crossref、OpenAlex、PubMed；目录条目不等于已验证可用。逐源状态见 [Provider matrix](./docs/provider-matrix.md)。
+目录共 58 项：50 个原生适配器（7 个 `live_tested`、42 个 `documented`、1 个 `mock_verified`）、7 个 generic 预设、1 个无官方 API 条目。已真实联调的是 Hacker News、Crossref、OpenAlex、PubMed、Wikipedia、arXiv、GitHub；目录条目不等于已验证可用。逐源状态见 [Provider matrix](./docs/provider-matrix.md)。
 
 <a id="docs"></a>
 ## 文档

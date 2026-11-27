@@ -50,6 +50,78 @@ let byType = new Map();
  * Exported so a test can call it without spawning a process, and so importing
  * the module never terminates the host.
  */
+export function validateLiveEvidence(record, expectedProvider) {
+  const problems = [];
+  const requireString = (value, label) => typeof value === "string" && value.trim().length > 0;
+  const requireHttpsUrl = (value, label) => {
+    if (!requireString(value, label)) {
+      problems.push(`${label} must be a non-empty string`);
+      return;
+    }
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password) {
+        problems.push(`${label} must be an https URL without credentials`);
+      }
+    } catch {
+      problems.push(`${label} must be an absolute URL`);
+    }
+  };
+
+  if (record?.provider !== expectedProvider) problems.push(`provider must be "${expectedProvider}"`);
+  if (record?.status !== "live_tested") problems.push('status must be "live_tested"');
+  if (record?.schemaVersion !== 2) problems.push("schemaVersion must be 2");
+  if (!/^[0-9a-f]{40}$/.test(record?.sourceCommit ?? "")) problems.push("sourceCommit must be a full lowercase commit SHA");
+  if (!requireString(record?.adapterVersion, "adapterVersion")) problems.push("adapterVersion must be a non-empty string");
+
+  const success = record?.lastSuccess;
+  if (!success || typeof success !== "object") {
+    problems.push("lastSuccess is required");
+  } else {
+    if (!requireString(success.checkedAt, "lastSuccess.checkedAt") || Number.isNaN(Date.parse(success.checkedAt))) {
+      problems.push("lastSuccess.checkedAt must be an ISO timestamp");
+    }
+    requireHttpsUrl(success.requestUrl, "lastSuccess.requestUrl");
+    if (success.httpStatus !== 200) problems.push("lastSuccess.httpStatus must be 200");
+    if (!Number.isInteger(success.resultCount) || success.resultCount <= 0) problems.push("lastSuccess.resultCount must be a positive integer");
+    if (!Array.isArray(success.sampleUrls) || success.sampleUrls.length === 0) {
+      problems.push("lastSuccess.sampleUrls must contain at least one URL");
+    } else {
+      success.sampleUrls.forEach((url, index) => requireHttpsUrl(url, `lastSuccess.sampleUrls[${index}]`));
+    }
+    if (typeof success.latencyMs !== "number" || !Number.isFinite(success.latencyMs) || success.latencyMs < 0) {
+      problems.push("lastSuccess.latencyMs must be a non-negative number");
+    }
+    if (!requireString(success.recordedBy, "lastSuccess.recordedBy")) problems.push("lastSuccess.recordedBy is required");
+  }
+
+  const attempt = record?.lastAttempt;
+  if (!attempt || typeof attempt !== "object") {
+    problems.push("lastAttempt is required");
+  } else {
+    if (!requireString(attempt.checkedAt, "lastAttempt.checkedAt") || Number.isNaN(Date.parse(attempt.checkedAt))) {
+      problems.push("lastAttempt.checkedAt must be an ISO timestamp");
+    }
+    if (typeof attempt.httpStatus !== "number") problems.push("lastAttempt.httpStatus must be a number");
+    if (typeof attempt.ok !== "boolean") problems.push("lastAttempt.ok must be boolean");
+  }
+
+  if (Array.isArray(record?.attempts)) {
+    for (const [index, item] of record.attempts.entries()) {
+      if (!item || typeof item !== "object") {
+        problems.push(`attempts[${index}] must be an object`);
+        continue;
+      }
+      if (typeof item.ok !== "boolean") problems.push(`attempts[${index}].ok must be boolean`);
+      if (typeof item.httpStatus !== "number") problems.push(`attempts[${index}].httpStatus must be a number`);
+      if (!Number.isInteger(item.resultCount) || item.resultCount < 0) problems.push(`attempts[${index}].resultCount must be a non-negative integer`);
+      requireHttpsUrl(item.requestUrl, `attempts[${index}].requestUrl`);
+    }
+  }
+
+  return problems;
+}
+
 export async function main({ mode = "auto" } = {}) {
   const readmeMode = resolveReadmeMode({ root: REPO, requested: mode });
   const catalog = await loadCatalog();
@@ -103,8 +175,9 @@ export async function main({ mode = "auto" } = {}) {
       continue;
     }
     const record = JSON.parse(readFileSync(file, "utf8"));
-    if (!record.lastSuccess || record.lastSuccess.httpStatus !== 200 || !record.lastSuccess.resultCount) {
-      fail(`docs/live-evidence/${entry.type}.json has no successful recorded call`);
+    const evidenceProblems = validateLiveEvidence(record, entry.type);
+    for (const problem of evidenceProblems) {
+      fail(`docs/live-evidence/${entry.type}.json: ${problem}`);
     }
   }
 

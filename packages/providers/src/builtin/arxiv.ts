@@ -87,7 +87,11 @@ export const arxivAdapter: SearchProviderAdapter = {
     for (const match of xml.matchAll(ENTRY_PATTERN)) {
       const block = match[1] ?? "";
       const title = decodeXml(extract(block, "title"));
-      const url_ = decodeXml(extract(block, "id"));
+      const rawUrl = decodeXml(extract(block, "id"));
+      // arXiv's Atom feed still emits `http://` identifiers. The same article
+      // is available over HTTPS, and returning the insecure scheme would make
+      // every result fail downstream URL validation.
+      const url_ = rawUrl.replace(/^http:\/\/arxiv\.org\//i, "https://arxiv.org/");
       const snippet = decodeXml(extract(block, "summary"));
       const published = decodeXml(extract(block, "published"));
       if (!title || !url_ || !/^https?:\/\//i.test(url_)) continue;

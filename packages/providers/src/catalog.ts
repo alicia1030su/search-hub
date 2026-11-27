@@ -325,9 +325,9 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     defaultBaseUrl: "https://api.github.com",
     docsUrl: "https://docs.github.com/en/rest/search/search",
     description: "GitHub 官方搜索 API：仓库、Issue、代码。属于代码托管垂直索引，不覆盖全网。",
-    verification: "documented",
+    verification: "live_tested",
     notes:
-      "官方文档已核对（2026-11-15）：GET /search/{repositories|issues|code}，per_page ≤100，page 从 1 开始；Token 可选，未认证时限制 10 次/分钟。垂直索引，不代表通用网页搜索。无 Token，未联调。",
+      "官方文档已核对（2026-11-15）：GET /search/{repositories|issues|code}，per_page ≤100，page 从 1 开始；Token 可选，未认证时限制 10 次/分钟。垂直索引，不代表通用网页搜索。2026-11-27 使用匿名 repositories 搜索完成两次真实调用，均返回 5 条 HTTPS 结果；code 搜索无 Token 时在发请求前拒绝。",
     parameters: ["targetResults"],
     parameterLimits: { targetResults: { min: 1, max: 100, default: 10 } },
     pagination: { supported: false, mode: "none", maxResults: 100 },
@@ -356,9 +356,9 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     defaultBaseUrl: "https://export.arxiv.org",
     docsUrl: "https://info.arxiv.org/help/api/index.html",
     description: "arXiv 预印本检索（Atom API）：返回标题、摘要页 URL、摘要与发布时间。学术垂直索引。",
-    verification: "documented",
+    verification: "live_tested",
     notes:
-      "官方文档已核对（2026-11-15）：GET /api/query，search_query=all:…（可用 cat: 限定分类），max_results ≤100，无需鉴权；arXiv 要求请求间隔 ≥3 秒，本适配器每次搜索只发一次请求。响应为 Atom XML，适配器用严格字段提取而非通用解析。学术索引，不覆盖全网；无真实调用记录。",
+      "官方文档已核对（2026-11-15）：GET /api/query，search_query=all:…（可用 cat: 限定分类），max_results ≤100，无需鉴权；arXiv 要求请求间隔 ≥3 秒，适配器以进程内限速器落实跨搜索与探测的 3 秒间隔和单连接。响应为 Atom XML，严格校验 feed/error 并规范化 HTTPS 条目 URL。学术索引，不覆盖全网；2026-11-27 两次真实调用均返回 5 条结果。",
     parameters: ["targetResults"],
     parameterLimits: { targetResults: { min: 1, max: 100, default: 10 } },
     pagination: { supported: false, mode: "none", maxResults: 100 },
@@ -720,9 +720,9 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     docsUrl: "https://www.mediawiki.org/wiki/API:Search",
     description:
       "MediaWiki Action API 搜索：返回百科条目标题、摘要片段与页面 ID。",
-    verification: "documented",
+    verification: "live_tested",
     notes:
-      "官方文档：GET /w/api.php?action=query&list=search&format=json；无需鉴权，但 Wikimedia 要求带描述性 User-Agent。返回条目而非网页排名，界面会标注为垂直索引。本机 en.wikipedia.org 不可达，未联调。",
+      "官方文档：GET /w/api.php?action=query&list=search&format=json；无需鉴权，Wikimedia 要求带描述性 User-Agent。适配器默认 UA 含项目完整 URL，并实施 60 次/分钟、最多 2 并发的本地预算。返回百科条目而非网页排名；2026-11-27 中英文两次真实调用均返回 5 条 HTTPS 结果。",
     parameters: ["targetResults"],
     parameterLimits: {
       targetResults: { min: 1, max: 50, default: 10 },

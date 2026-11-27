@@ -14,8 +14,8 @@ never quietly disagree with the code again.
 |---|---|
 | Catalogue entries | 58 |
 | Native adapters (`builtin`) | 50 |
-| `live_tested` (real vendor call recorded) | 4 |
-| `documented` (implemented, never called the vendor) | 45 |
+| `live_tested` (real vendor call recorded) | 7 |
+| `documented` (implemented, never called the vendor) | 42 |
 | `mock_verified` (contract-tested against a local double only) | 1 |
 | Generic presets (`generic`) | 7 |
 | No official API (`unavailable`) | 1 |
@@ -59,8 +59,8 @@ be `runtime=healthy` because its code follows the docs and its last probe worked
 | `exa` | raw_search | general | api_key | https://api.exa.ai | `documented` | 官方文档已核对（2026-11-15）：POST /search，x-api-key 鉴权，numResults 1–100，type 支持 auto/lite/deep 等，includeDomains/excludeDomains 各上限 1200，startPublishedDate 控制时效。/search 无 offset，因此单次请求最多 100 条，超过部分在 UI 侧提示而不是偷偷截断。响应含 costDollars，适 |
 | `firecrawl` | raw_search | general | api_key | https://api.firecrawl.dev | `documented` | 官方文档已核对（2026-11-15）：POST /v2/search，Authorization: Bearer fc-…，响应 {success,data:{web[],news[],images[]}}，web 项含 url/title/description/position。无 offset/page 参数，单次最多 100 条；github 分类已下线（返回 400），改用 developer。无真实 Key，未联调。 |
 | `serper` | raw_search | general | api_key | https://google.serper.dev | `documented` | 官方文档与实时响应结构已核对（2026-11-15）：POST /search，X-API-KEY 鉴权，num ≤100，page 从 1 开始，gl/hl 控制地域语言，tbs 控制时效。适配器只把 organic[] 作为网页结果；answerBox/knowledgeGraph 是 SERP 特性，不会伪造成网页。配置 targetResults 超过 num 时按 page 自动翻页，受 maxRequestsPerSearc |
-| `github` | raw_search | vertical | api_key | https://api.github.com | `documented` | 官方文档已核对（2026-11-15）：GET /search/{repositories\|issues\|code}，per_page ≤100，page 从 1 开始；Token 可选，未认证时限制 10 次/分钟。垂直索引，不代表通用网页搜索。无 Token，未联调。 |
-| `arxiv` | raw_search | vertical | none | https://export.arxiv.org | `documented` | 官方文档已核对（2026-11-15）：GET /api/query，search_query=all:…（可用 cat: 限定分类），max_results ≤100，无需鉴权；arXiv 要求请求间隔 ≥3 秒，本适配器每次搜索只发一次请求。响应为 Atom XML，适配器用严格字段提取而非通用解析。学术索引，不覆盖全网；无真实调用记录。 |
+| `github` | raw_search | vertical | api_key | https://api.github.com | `live_tested` | 官方文档已核对（2026-11-15）：GET /search/{repositories\|issues\|code}，per_page ≤100，page 从 1 开始；Token 可选，未认证时限制 10 次/分钟。垂直索引，不代表通用网页搜索。2026-11-27 使用匿名 repositories 搜索完成两次真实调用，均返回 5 条 HTTPS 结果；code 搜索无 Token 时在发请求前拒绝。 |
+| `arxiv` | raw_search | vertical | none | https://export.arxiv.org | `live_tested` | 官方文档已核对（2026-11-15）：GET /api/query，search_query=all:…（可用 cat: 限定分类），max_results ≤100，无需鉴权；arXiv 要求请求间隔 ≥3 秒，适配器以进程内限速器落实跨搜索与探测的 3 秒间隔和单连接。响应为 Atom XML，严格校验 feed/error 并规范化 HTTPS 条目 URL。学术索引，不覆盖全网；2026-11-27 两次真实调用均返回 5 条 |
 | `perplexity-search` | raw_search | general | api_key | https://api.perplexity.ai | `documented` | 官方检索接口与 Sonar 对话产品是两套协议；本项只做 raw_search，AI 回答见 perplexity-sonar。max_results 上限 20。本机 api.perplexity.ai 不可达，无真实 Key，未联调。 |
 | `youcom` | raw_search | general | api_key | https://ydc-index.io | `documented` | 官方文档：GET /v1/search，X-API-Key 鉴权，results.web[] 与 results.news[] 分开；只把 web[] 作为网页结果。开发期该 host 返回 402（需付费账户），确认路径但未取得响应体；无真实 Key，未联调。 |
 | `jina-search` | raw_search | general | api_key | https://s.jina.ai | `documented` | 官方文档：GET /{query}，Accept: application/json 或 X-Respond-With: no-content 取 JSON；data[] 含 title/url/description/content。返回页面内容而非 SERP 排名，因此不写 upstreamRank。本机 s.jina.ai 不可达，未联调。 |
@@ -76,7 +76,7 @@ be `runtime=healthy` because its code follows the docs and its last probe worked
 | `naver` | raw_search | general | api_key | https://openapi.naver.com | `documented` | 官方文档：GET /v1/search/{webkr\|news\|blog\|kin}，需 X-Naver-Client-Id 与 X-Naver-Client-Secret 两个头；凭证填 client_id:client_secret。display ≤100、start ≤1000。返回 title 含 <b> 高亮，适配器已剥离标签。开发期返回 401，确认路径；无真实凭证，未联调。 |
 | `kakao` | raw_search | general | api_key | https://dapi.kakao.com | `documented` | 官方文档：GET /v2/search/{web\|blog\|cafe\|book}，Authorization: KakaoAK <key>，size ≤50、page 1 基，meta.is_end 表示是否到底。本机 dapi.kakao.com 不可达，无真实 Key，未联调。 |
 | `yandex` | raw_search | general | api_key | https://searchapi.api.cloud.yandex.net | `documented` | 官方文档：POST /v2/web/search，Authorization: Api-Key <secret>，query.search_web{query_text,page,docs_on_page}；响应 results[] 含 title/url/passages。未使用旧 XML 接口（已被 v2 取代）。本机该 host 不可达，无真实 Key，未联调。 |
-| `wikipedia` | raw_search | vertical | none | https://en.wikipedia.org | `documented` | 官方文档：GET /w/api.php?action=query&list=search&format=json；无需鉴权，但 Wikimedia 要求带描述性 User-Agent。返回条目而非网页排名，界面会标注为垂直索引。本机 en.wikipedia.org 不可达，未联调。 |
+| `wikipedia` | raw_search | vertical | none | https://en.wikipedia.org | `live_tested` | 官方文档：GET /w/api.php?action=query&list=search&format=json；无需鉴权，Wikimedia 要求带描述性 User-Agent。适配器默认 UA 含项目完整 URL，并实施 60 次/分钟、最多 2 并发的本地预算。返回百科条目而非网页排名；2026-11-27 中英文两次真实调用均返回 5 条 HTTPS 结果。 |
 | `crossref` | raw_search | vertical | none | https://api.crossref.org | `live_tested` | 官方文档：GET /works?query=…&rows=…；无需鉴权，建议带 mailto 进入 polite pool。message.items[] 含 title[]/URL/DOI/abstract/published；无 URL 时回退到 doi.org 解析地址。已用公开接口真实联调（2026-11-15，真实 HTTP 调用返回结果）。 |
 | `openalex` | raw_search | vertical | none | https://api.openalex.org | `live_tested` | 官方文档：GET /works?search=…&per-page=…；无需鉴权。abstract_inverted_index 是词到位置的映射，适配器重建为文本（直接返回映射会把 JSON 当摘要）。已用公开接口真实联调（2026-11-15，真实 HTTP 调用返回结果）。 |
 | `pubmed` | raw_search | vertical | none | https://eutils.ncbi.nlm.nih.gov | `live_tested` | 官方文档：esearch.fcgi 得到 idlist，esummary.fcgi 得到标题/期刊/作者/日期；无需鉴权，NCBI 要求每秒不超过 3 次并带 tool/email。已用公开接口真实联调（2026-11-15，真实 HTTP 调用返回结果）。 |

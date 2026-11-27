@@ -2,21 +2,21 @@
 
 Target: a 2-core / 2 GB Linux host can run basic search comfortably. No Redis, vector database, GPU, or external model is required.
 
-## Release assets (v0.1.16)
+## Release assets (v0.1.17)
 
-The v0.1.16 Stable release workflow produces:
+The v0.1.17 Stable release workflow produces:
 
 | Artefact | Asset |
 |---|---|
-| Windows x64 server | `search-hub-v0.1.16-windows-x64.zip` |
-| Linux x64 server | `search-hub-v0.1.16-linux-x64.tar.gz` |
-| Linux arm64 server | `search-hub-v0.1.16-linux-arm64.tar.gz` |
-| Windows x64 CLI | `shub-v0.1.16-windows-x64.zip` |
-| Linux x64 CLI | `shub-v0.1.16-linux-x64.tar.gz` |
-| Linux arm64 CLI | `shub-v0.1.16-linux-arm64.tar.gz` |
-| Node.js >=22.12.0 CLI | `shub-v0.1.16-node22.tar.gz` |
+| Windows x64 server | `search-hub-v0.1.17-windows-x64.zip` |
+| Linux x64 server | `search-hub-v0.1.17-linux-x64.tar.gz` |
+| Linux arm64 server | `search-hub-v0.1.17-linux-arm64.tar.gz` |
+| Windows x64 CLI | `shub-v0.1.17-windows-x64.zip` |
+| Linux x64 CLI | `shub-v0.1.17-linux-x64.tar.gz` |
+| Linux arm64 CLI | `shub-v0.1.17-linux-arm64.tar.gz` |
+| Node.js >=22.12.0 CLI | `shub-v0.1.17-node22.tar.gz` |
 | Resource evidence | `resource-evidence.json` |
-| Container | `ghcr.io/alicia1030su/search-hub:0.1.16` (also `v0.1.16`, `latest`) |
+| Container | `ghcr.io/alicia1030su/search-hub:0.1.16` (also `v0.1.17`, `latest`) |
 
 The CLI can be installed on a machine without a Search Hub server. Configure
 `SEARCH_HUB_URL` and `SEARCH_HUB_TOKEN`, then run `shub status`. See
@@ -30,7 +30,7 @@ Verify a download before running it:
 
 ```bash
 sha256sum -c SHA256SUMS
-gh attestation verify shub-v0.1.16-linux-x64.tar.gz --repo alicia1030su/search-hub
+gh attestation verify shub-v0.1.17-linux-x64.tar.gz --repo alicia1030su/search-hub
 ```
 
 The two checks are independent: SHA256 proves the bytes match what was published, the

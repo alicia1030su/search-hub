@@ -5,7 +5,7 @@
 
 [中文](./README.md) · [Deployment](./docs/deployment.md) · [CLI](./docs/cli.md) · [API](./docs/api.md)
 
-> **v0.1.16 Stable.** This release focuses on verified bug fixes, release reliability, and concise documentation; see the [CHANGELOG](./CHANGELOG.md) for details.
+> **v0.1.17 Stable.** This release focuses on verified bug fixes, release reliability, and concise documentation; see the [CHANGELOG](./CHANGELOG.md) for details.
 >
 > Stable is a public release channel, not a claim that every third-party integration is production-certified; see “Limits” below.
 <a id="highlights"></a>
@@ -23,9 +23,9 @@
 <a id="screenshots"></a>
 ## Interface
 
-![Search Hub dashboard](./docs/screenshots/v0116/dashboard.png)
-![Search Lab](./docs/screenshots/v0116/search-lab.png)
-![Provider health](./docs/screenshots/v0116/provider-health.png)
+![Search Hub dashboard](./docs/screenshots/v0117/dashboard.png)
+![Search Lab](./docs/screenshots/v0117/search-lab.png)
+![Provider health](./docs/screenshots/v0117/provider-health.png)
 
 <a id="quick-start"></a>
 ## Quick start
@@ -60,7 +60,7 @@ Use the command above only when `SEARCH_HUB_SETUP_TOKEN` is unset; the token val
 
 ### Windows x64
 
-1. Download `search-hub-v0.1.16-windows-x64.zip` from the Release below and verify it.
+1. Download `search-hub-v0.1.17-windows-x64.zip` from the Release below and verify it.
 2. Extract it to a writable directory; data lives in `%LOCALAPPDATA%\SearchHub`.
 3. Read `%LOCALAPPDATA%\SearchHub\setup-token` before first setup; start once if it has not been generated yet.
 4. Double-click `SearchHub.exe`, then enter the token at `/setup` and create the administrator.
@@ -70,22 +70,22 @@ Use the command above only when `SEARCH_HUB_SETUP_TOKEN` is unset; the token val
 ```bash
 # Linux x64
 mkdir search-hub
-tar -xzf search-hub-v0.1.16-linux-x64.tar.gz -C search-hub
+tar -xzf search-hub-v0.1.17-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub
 ```
 
-For Linux arm64, use `search-hub-v0.1.16-linux-arm64.tar.gz`; the remaining steps are identical. The default listener is `127.0.0.1:8787`; use the bundled `search-hub.service` for long-running deployments.
+For Linux arm64, use `search-hub-v0.1.17-linux-arm64.tar.gz`; the remaining steps are identical. The default listener is `127.0.0.1:8787`; use the bundled `search-hub.service` for long-running deployments.
 
 **Download and verify**
 
-Download the assets below from the [v0.1.16 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.16); standalone server packages already include a runtime.
+Download the assets below from the [v0.1.17 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.17); standalone server packages already include a runtime.
 
 | Platform / use | Server | CLI `shub` | Extra requirement |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.16-windows-x64.zip` | `shub-v0.1.16-windows-x64.zip` | None |
-| Linux x64 | `search-hub-v0.1.16-linux-x64.tar.gz` | `shub-v0.1.16-linux-x64.tar.gz` | None |
-| Linux arm64 | `search-hub-v0.1.16-linux-arm64.tar.gz` | `shub-v0.1.16-linux-arm64.tar.gz` | None |
-| Node.js >=22.12.0 portable CLI | — | `shub-v0.1.16-node22.tar.gz` | Node.js >=22.12.0 |
+| Windows x64 | `search-hub-v0.1.17-windows-x64.zip` | `shub-v0.1.17-windows-x64.zip` | None |
+| Linux x64 | `search-hub-v0.1.17-linux-x64.tar.gz` | `shub-v0.1.17-linux-x64.tar.gz` | None |
+| Linux arm64 | `search-hub-v0.1.17-linux-arm64.tar.gz` | `shub-v0.1.17-linux-arm64.tar.gz` | None |
+| Node.js >=22.12.0 portable CLI | — | `shub-v0.1.17-node22.tar.gz` | Node.js >=22.12.0 |
 
 The Release also provides `SHA256SUMS` and `resource-evidence.json`, for nine assets in total; verify after downloading:
 
@@ -127,7 +127,7 @@ shub sources --enabled --json
 <a id="providers"></a>
 ## Provider categories
 
-The catalogue contains 58 entries: 50 native adapters (4 `live_tested`, 45 `documented`, 1 `mock_verified`), 7 generic presets, and 1 entry with no official API. Hacker News, Crossref, OpenAlex, and PubMed are live-tested; a catalogue entry does not mean a verified working service. See the [Provider matrix](./docs/provider-matrix.md) for per-provider status.
+The catalogue contains 58 entries: 50 native adapters (7 `live_tested`, 42 `documented`, 1 `mock_verified`), 7 generic presets, and 1 entry with no official API. Hacker News, Crossref, OpenAlex, PubMed, Wikipedia, arXiv, and GitHub are live-tested; a catalogue entry does not mean a verified working service. See the [Provider matrix](./docs/provider-matrix.md) for per-provider status.
 
 <a id="docs"></a>
 ## Documentation

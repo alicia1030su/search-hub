@@ -11,7 +11,7 @@ on:
         required: true
         default: auto
         type: choice
-        options: [auto, tavily, bocha, brave]
+        options: [auto, tavily, bocha, brave, wikipedia, arxiv, github]
 
 permissions:
   contents: read
@@ -84,7 +84,11 @@ jobs:
             if [ "$SELECTED" != "auto" ] && [ "$SELECTED" != "$name" ]; then
               return 0
             fi
-            if [ -z "$key" ]; then
+            case "$name" in
+              wikipedia|arxiv|github) keyless=1 ;;
+              *) keyless=0 ;;
+            esac
+            if [ "$keyless" -eq 0 ] && [ -z "$key" ]; then
               echo "SKIP: $name has no secret in the provider-live environment"
               return 0
             fi
@@ -93,7 +97,7 @@ jobs:
             # Run through tsx directly so the TypeScript adapters load without
             # the script's node->tsx re-exec child. Fewer processes holding the
             # credential means a smaller leak surface.
-            if pnpm exec tsx tests/scripts/provider-live.mjs --provider "$name" 2>&1 | tee -a "provider-$name.log"; then
+            if pnpm exec tsx tests/scripts/provider-live.mjs --provider "$name" --output "evidence-$name.json" 2>&1 | tee -a "provider-$name.log"; then
               echo "LIVE PASSED: $name"
             else
               echo "::error::$name live call failed"
@@ -104,35 +108,12 @@ jobs:
           run_provider tavily "${TAVILY_API_KEY:-}"
           run_provider bocha "${BOCHA_API_KEY:-}"
           run_provider brave "${BRAVE_API_KEY:-}"
+          run_provider wikipedia ""
+          run_provider arxiv ""
+          run_provider github ""
           echo "providers called: $ran, failures: $failures"
           if [ "$ran" -eq 0 ]; then
-            # This is NOT a deployment failure and NOT a product defect: no
-            # credential exists in the provider-live environment. The run must
-            # still be non-green, because "we could not verify anything" is not
-            # evidence that the adapters work. The message is what makes the red
-            # X readable instead of looking like a broken release.
-            {
-              echo "## Provider live verification: BLOCKED (no credential)"
-              echo ""
-              echo 'No secret was available in the `provider-live` environment, so **no real vendor call was made**.'
-              echo ""
-              echo "| Provider | Secret | State |"
-              echo "|---|---|---|"
-              echo "| tavily | `TAVILY_API_KEY` | $([ -n "${TAVILY_API_KEY:-}" ] && echo present || echo missing) |"
-              echo "| bocha | `BOCHA_API_KEY` | $([ -n "${BOCHA_API_KEY:-}" ] && echo present || echo missing) |"
-              echo "| brave | `BRAVE_API_KEY` | $([ -n "${BRAVE_API_KEY:-}" ] && echo present || echo missing) |"
-              echo ""
-              echo "What this run proves: **nothing about provider compatibility**."
-              echo "What it does not mean: the application, the image, or the release is broken."
-              echo ""
-              echo "To make this run meaningful, add a real key as an environment secret, then re-run:"
-              echo '```'
-              echo 'gh secret set TAVILY_API_KEY --env provider-live   # or BOCHA_API_KEY / BRAVE_API_KEY'
-              echo '```'
-              echo 'Providers without a key stay `documented` (implemented, never called the vendor).'
-              echo 'They are not silently promoted to `live_tested`.'
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error title=BLOCKED: no provider credential::No TAVILY/BOCHA/BRAVE key exists in the provider-live environment, so no real vendor call was made. This is an unverified state, not a product failure. See the job summary for how to supply a key."
+            echo "::error title=BLOCKED: no provider selected::No provider was selected and no credential was available."
             exit 1
           fi
           exit $((failures > 0 ? 1 : 0))
@@ -140,7 +121,7 @@ jobs:
       # Artifact file contents are NOT covered by GitHub's log masking. A vendor
       # could echo a credential into an error body or a result title, so scrub
       # the files in place (using the same helper as the script) before upload.
-      - name: Scrub provider logs before upload
+      - name: Scrub provider logs and evidence before upload
         id: scrub
         if: always()
         env:
@@ -150,12 +131,14 @@ jobs:
         run: |
           # Fail closed: if scrubbing fails for any reason, the artifact must
           # not be uploaded with raw content.
-          node tests/scripts/scrub-provider-logs.mjs provider-*.log
-      - name: Upload scrubbed provider logs (7 days)
+          node tests/scripts/scrub-provider-logs.mjs provider-*.log evidence-*.json
+      - name: Upload scrubbed provider logs and evidence (7 days)
         if: always() && steps.scrub.outcome == 'success'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: provider-live-logs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: provider-*.log
+          path: |
+            provider-*.log
+            evidence-*.json
           if-no-files-found: ignore
           retention-days: 7

@@ -307,6 +307,18 @@ describe("public provider HTTP and response contracts", () => {
     expect(output.warnings ?? []).toHaveLength(0);
   });
 
+  it("normalizes arXiv http identifiers to https", async () => {
+    const { baseUrl } = await startServer(() => ({
+      body: arxivXml(1).replace("https://arxiv.org/abs/1", "http://arxiv.org/abs/1"),
+      type: "application/atom+xml",
+    }));
+    const ctx = providerContext("arxiv", baseUrl);
+
+    const output = await arxivAdapter.search({ query: "x", limit: 1, signal: ctx.signal }, ctx);
+
+    expect(output.results[0]?.url).toBe("https://arxiv.org/abs/1");
+  });
+
   it("keeps non-paginated public providers on their documented first-page parameters", async () => {
     const wiki = await startServer(() => ({ body: JSON.stringify(wikipediaPayload()) }));
     const wikiCtx = providerContext("wikipedia", wiki.baseUrl);

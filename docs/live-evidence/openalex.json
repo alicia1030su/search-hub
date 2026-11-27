@@ -1,5 +1,8 @@
 {
   "provider": "openalex",
+  "schemaVersion": 2,
+  "sourceCommit": "cc59fd6eb37b083a69a2307b531fcd2546cd4868",
+  "adapterVersion": "0.1.5",
   "status": "live_tested",
   "lastSuccess": {
     "checkedAt": "2026-11-15T00:00:00Z",

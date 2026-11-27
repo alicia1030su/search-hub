@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.17 — Stable
+
+### Added
+
+- **Three-step first-run onboarding.** Choose public, keyed, or self-hosted sources; review configuration and probe status; then complete a real search with visible provider participation, failures, latency, and cache state. The flow is skippable and persists completion.
+- **Keyless live-provider verification.** Wikipedia, arXiv, and GitHub now have reproducible real-network evidence, bringing `live_tested` to seven sources.
+- **Structured live-evidence schema.** Records include source commit, adapter version, sanitized request URL, HTTP status, result count, sample URLs, latency, and per-query attempts.
+
+### Fixed
+
+- Enforced arXiv's three-second request spacing and single-connection limit across searches and health probes.
+- Added a compliant Wikipedia User-Agent with project contact URL and a conservative 60 requests/minute, two-in-flight local budget.
+- Added GitHub keyless 10 requests/minute and 60 requests/hour budgets; code search without a token is rejected before any request.
+- Rejected HTTP 200 business errors and incompatible response envelopes instead of treating them as empty search results.
+- Corrected HTTP 408/504 classification to `timeout`.
+- Fixed Brave pagination when a full raw page contains an unmappable row.
+- Grounded-answer providers no longer run as free connectivity probes, and citation-backed answers count as successful search probes.
+
+### Changed
+
+- Provider live workflow now supports keyless public sources and uploads redacted structured evidence.
+- Provider Matrix and live-evidence documentation are generated from the catalog and validated against the stronger evidence schema.
+
 ## v0.1.16 — Stable
 
 ### Security
