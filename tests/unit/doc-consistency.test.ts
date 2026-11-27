@@ -49,11 +49,16 @@ describe("live evidence schema", () => {
       recordedBy: "test",
     },
     lastAttempt: { checkedAt: "2026-11-27T00:00:00.000Z", httpStatus: 200, ok: true },
-    attempts: [{ ok: true, httpStatus: 200, resultCount: 5, requestUrl: "https://en.wikipedia.org/w/api.php?action=query" }],
+    attempts: [{ label: "en", query: "search engine", ok: true, httpStatus: 200, resultCount: 5, latencyMs: 100, requestUrl: "https://en.wikipedia.org/w/api.php?action=query" }],
   };
 
   it("accepts a complete v2 record", () => {
     expect(validateLiveEvidence(valid, "wikipedia")).toEqual([]);
+  });
+
+  it("requires a non-empty per-query attempts array", () => {
+    expect(validateLiveEvidence({ ...valid, attempts: undefined }, "wikipedia").join("\n")).toContain("attempts must contain at least one");
+    expect(validateLiveEvidence({ ...valid, attempts: [] }, "wikipedia").join("\n")).toContain("attempts must contain at least one");
   });
 
   it("rejects provider mismatch, missing provenance and insecure URLs", () => {

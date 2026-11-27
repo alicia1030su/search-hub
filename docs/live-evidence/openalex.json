@@ -23,5 +23,16 @@
     "vendorMessage": "Anonymous search is temporarily rate-limited while the search cluster is under elevated load.",
     "retryAfterSeconds": 34,
     "note": "Vendor-side anonymous rate limit, not an adapter defect. Recorded as-is; the adapter was not changed."
-  }
+  },
+  "attempts": [
+    {
+      "label": "historical-success",
+      "query": "information retrieval",
+      "ok": true,
+      "httpStatus": 200,
+      "resultCount": 3,
+      "latencyMs": 1391,
+      "requestUrl": "https://api.openalex.org/works?search=information+retrieval&per-page=3"
+    }
+  ]
 }

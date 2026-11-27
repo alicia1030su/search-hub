@@ -106,15 +106,22 @@ export function validateLiveEvidence(record, expectedProvider) {
     if (typeof attempt.ok !== "boolean") problems.push("lastAttempt.ok must be boolean");
   }
 
-  if (Array.isArray(record?.attempts)) {
+  if (!Array.isArray(record?.attempts) || record.attempts.length === 0) {
+    problems.push("attempts must contain at least one per-query attempt");
+  } else {
     for (const [index, item] of record.attempts.entries()) {
       if (!item || typeof item !== "object") {
         problems.push(`attempts[${index}] must be an object`);
         continue;
       }
+      if (!requireString(item.label, `attempts[${index}].label`)) problems.push(`attempts[${index}].label must be a non-empty string`);
+      if (!requireString(item.query, `attempts[${index}].query`)) problems.push(`attempts[${index}].query must be a non-empty string`);
       if (typeof item.ok !== "boolean") problems.push(`attempts[${index}].ok must be boolean`);
       if (typeof item.httpStatus !== "number") problems.push(`attempts[${index}].httpStatus must be a number`);
       if (!Number.isInteger(item.resultCount) || item.resultCount < 0) problems.push(`attempts[${index}].resultCount must be a non-negative integer`);
+      if (typeof item.latencyMs !== "number" || !Number.isFinite(item.latencyMs) || item.latencyMs < 0) {
+        problems.push(`attempts[${index}].latencyMs must be a non-negative number`);
+      }
       requireHttpsUrl(item.requestUrl, `attempts[${index}].requestUrl`);
     }
   }
