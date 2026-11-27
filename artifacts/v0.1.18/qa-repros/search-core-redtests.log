@@ -1,0 +1,176 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.1.0 [39m[90mC:/Users/TYMO001/WorkBuddy/search-hub-v0118[39m
+
+ [31m❯[39m tests/integration/search-service-quality.test.ts [2m([22m[2m3 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[32m 27[2mms[22m[39m
+   [31m❯[39m search service quality regressions [2m(3)[22m
+[31m     [31m×[31m reranks the full candidate set instead of only the pre-truncated request.limit[39m[32m 15[2mms[22m[39m
+[31m     [31m×[31m deep-merges tracking-parameter variants across subqueries and providers by normalized URL[39m[32m 7[2mms[22m[39m
+[31m     [31m×[31m does not let a weak single-source subquery outrank a strong multi-source consensus after score normalization[39m[32m 2[2mms[22m[39m
+ [31m❯[39m tests/unit/search-service-cancellation.test.ts [2m([22m[2m2 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 11[2mms[22m[39m
+   [31m❯[39m search model-stage cancellation [2m(2)[22m
+[31m     [31m×[31m does not invoke the embedding client after cancellation[39m[32m 8[2mms[22m[39m
+[31m     [31m×[31m does not invoke the rerank client after cancellation[39m[32m 1[2mms[22m[39m
+ [31m❯[39m tests/unit/search-engine-recall.test.ts [2m([22m[2m2 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 21[2mms[22m[39m
+   [31m❯[39m search engine recall regressions [2m(2)[22m
+[31m     [31m×[31m does not cap a single-provider limit=100 request to 50 candidates[39m[32m 17[2mms[22m[39m
+[31m     [31m×[31m does not collapse same-title pages with different URLs and bodies[39m[32m 2[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 7 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/integration/search-service-quality.test.ts[2m > [22msearch service quality regressions[2m > [22mreranks the full candidate set instead of only the pre-truncated request.limit
+[31m[1mAssertionError[22m: expected 'https://example.com/1' to be 'https://example.com/11' // Object.is equality[39m
+
+Expected: [32m"https://example.com/1[7m1[27m"[39m
+Received: [31m"https://example.com/1"[39m
+
+[36m [2m❯[22m tests/integration/search-service-quality.test.ts:[2m110:38[22m[39m
+    [90m108|[39m     )[33m;[39m
+    [90m109|[39m
+    [90m110|[39m     [34mexpect[39m(response[33m.[39mresults[[34m0[39m][33m?.[39murl)[33m.[39m[34mtoBe[39m([32m"https://example.com/11"[39m)[33m;[39m
+    [90m   |[39m                                      [31m^[39m
+    [90m111|[39m   })[33m;[39m
+    [90m112|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/integration/search-service-quality.test.ts[2m > [22msearch service quality regressions[2m > [22mdeep-merges tracking-parameter variants across subqueries and providers by normalized URL
+[31m[1mAssertionError[22m: expected [ { …(12) }, { …(12) } ] to have a length of 1 but got 2[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 1[39m
+[31m+ 2[39m
+
+[36m [2m❯[22m tests/integration/search-service-quality.test.ts:[2m129:30[22m[39m
+    [90m127|[39m     )[33m;[39m
+    [90m128|[39m
+    [90m129|[39m     [34mexpect[39m(response[33m.[39mresults)[33m.[39m[34mtoHaveLength[39m([34m1[39m)[33m;[39m
+    [90m   |[39m                              [31m^[39m
+    [90m130|[39m     [34mexpect[39m(response[33m.[39mresults[[34m0[39m][33m?.[39msources)[33m.[39m[34mtoHaveLength[39m([34m2[39m)[33m;[39m
+    [90m131|[39m   })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/integration/search-service-quality.test.ts[2m > [22msearch service quality regressions[2m > [22mdoes not let a weak single-source subquery outrank a strong multi-source consensus after score normalization
+[31m[1mAssertionError[22m: expected 'https://example.com/weak' to be 'https://example.com/strong' // Object.is equality[39m
+
+Expected: [32m"https://example.com/[7mstrong[27m"[39m
+Received: [31m"https://example.com/[7mweak[27m"[39m
+
+[36m [2m❯[22m tests/integration/search-service-quality.test.ts:[2m154:38[22m[39m
+    [90m152|[39m     )[33m;[39m
+    [90m153|[39m
+    [90m154|[39m     expect(response.results[0]?.url).toBe("https://example.com/strong"…
+    [90m   |[39m                                      [31m^[39m
+    [90m155|[39m   })[33m;[39m
+    [90m156|[39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/search-engine-recall.test.ts[2m > [22msearch engine recall regressions[2m > [22mdoes not cap a single-provider limit=100 request to 50 candidates
+[31m[1mAssertionError[22m: expected [ { …(12) }, { …(12) }, …(48) ] to have a length of 100 but got 50[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 100[39m
+[31m+ 50[39m
+
+[36m [2m❯[22m tests/unit/search-engine-recall.test.ts:[2m54:30[22m[39m
+    [90m 52|[39m     )[33m;[39m
+    [90m 53|[39m
+    [90m 54|[39m     [34mexpect[39m(response[33m.[39mresults)[33m.[39m[34mtoHaveLength[39m([34m100[39m)[33m;[39m
+    [90m   |[39m                              [31m^[39m
+    [90m 55|[39m     expect(response.results.at(-1)?.url).toBe("https://example.com/100…
+    [90m 56|[39m   })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/search-engine-recall.test.ts[2m > [22msearch engine recall regressions[2m > [22mdoes not collapse same-title pages with different URLs and bodies
+[31m[1mAssertionError[22m: expected [ { …(12) } ] to have a length of 2 but got 1[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 2[39m
+[31m+ 1[39m
+
+[36m [2m❯[22m tests/unit/search-engine-recall.test.ts:[2m72:30[22m[39m
+    [90m 70|[39m     )[33m;[39m
+    [90m 71|[39m
+    [90m 72|[39m     [34mexpect[39m(response[33m.[39mresults)[33m.[39m[34mtoHaveLength[39m([34m2[39m)[33m;[39m
+    [90m   |[39m                              [31m^[39m
+    [90m 73|[39m     [34mexpect[39m(response[33m.[39mstats[33m.[39mdedupedCount)[33m.[39m[34mtoBe[39m([34m2[39m)[33m;[39m
+    [90m 74|[39m   })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/search-service-cancellation.test.ts[2m > [22msearch model-stage cancellation[2m > [22mdoes not invoke the embedding client after cancellation
+[31m[1mAssertionError[22m: expected "vi.fn()" to not be called at all, but actually been called 1 times[90m
+
+Received:
+
+[1m  1st vi.fn() call:
+
+[22m    Array [
+      Array [
+        "cancel",
+        "One
+    snippet",
+      ],
+    ]
+[31m[90m
+
+Number of calls: [1m1[22m
+[31m[39m
+[36m [2m❯[22m tests/unit/search-service-cancellation.test.ts:[2m69:23[22m[39m
+    [90m 67|[39m     )[33m;[39m
+    [90m 68|[39m
+    [90m 69|[39m     [34mexpect[39m(embed)[33m.[39mnot[33m.[39m[34mtoHaveBeenCalled[39m()[33m;[39m
+    [90m   |[39m                       [31m^[39m
+    [90m 70|[39m   })[33m;[39m
+    [90m 71|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/search-service-cancellation.test.ts[2m > [22msearch model-stage cancellation[2m > [22mdoes not invoke the rerank client after cancellation
+[31m[1mAssertionError[22m: expected "vi.fn()" to not be called at all, but actually been called 1 times[90m
+
+Received:
+
+[1m  1st vi.fn() call:
+
+[22m    Array [
+      "cancel",
+      Array [
+        Object {
+          "id": "https://example.com/1",
+          "text": "One
+    snippet",
+        },
+      ],
+      5,
+    ]
+[31m[90m
+
+Number of calls: [1m1[22m
+[31m[39m
+[36m [2m❯[22m tests/unit/search-service-cancellation.test.ts:[2m87:24[22m[39m
+    [90m 85|[39m     )[33m;[39m
+    [90m 86|[39m
+    [90m 87|[39m     [34mexpect[39m(rerank)[33m.[39mnot[33m.[39m[34mtoHaveBeenCalled[39m()[33m;[39m
+    [90m   |[39m                        [31m^[39m
+    [90m 88|[39m   })[33m;[39m
+    [90m 89|[39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m3 failed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[31m7 failed[39m[22m[90m (7)[39m
+[2m   Start at [22m 23:38:02
+[2m   Duration [22m 4.48s[2m (import 70%, transform 27%, tests 2%)[22m
+
+[2m    Isolate [22m [33m3 workers spawned[39m[2m · ~193ms startup each (spawn + environment, per file)[22m
+[2m            [22m [2mat least ~387ms faster with [22m[33misolate: false[39m[2m — reuses workers across files instead of one per file[22m
