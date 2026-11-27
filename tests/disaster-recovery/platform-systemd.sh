@@ -57,6 +57,10 @@ next_patch_version() {
   fi
   printf '%s.%s.%d\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$((10#${BASH_REMATCH[3]} + 1))"
 }
+read_launcher_version() {
+  local manifest=${1:?launcher manifest path is required}
+  "$RUNTIME" -e 'const fs = require("node:fs"); const parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const version = parsed.version; if (typeof version !== "string" || version.trim() === "") throw new Error("launcher version must be a non-empty string"); process.stdout.write(version.trim());' "$manifest"
+}
 make_unit() {
   local unit=$1 data=$2 port=$3
   cat > "/etc/systemd/system/$unit.service" <<EOF
@@ -121,14 +125,15 @@ set -e
 [[ "$REPEAT_CODE" != "0" ]]
 [[ "$BEFORE" == "$(sha256sum "$RESTORED/search-hub.db" | awk '{print $1}')" ]]
 
-CURRENT_VERSION_FILE="$APP_ROOT/apps/api/dist/version.txt"
-[[ -f "$CURRENT_VERSION_FILE" ]] || { echo "BLOCKED: missing current version file: $CURRENT_VERSION_FILE" >&2; exit 1; }
-CURRENT_VERSION=$(tr -d '[:space:]' < "$CURRENT_VERSION_FILE")
+if ! CURRENT_VERSION=$(read_launcher_version "$BASE/launcher.json"); then
+  echo "BLOCKED: could not read a valid version from $BASE/launcher.json" >&2
+  exit 1
+fi
 BROKEN_VERSION=$(next_patch_version "$CURRENT_VERSION")
 BROKEN_ROOT="$WORK/broken"
 mkdir -p "$BROKEN_ROOT/app/apps/api/dist"
 printf 'import { createServer } from "node:http";\nsetTimeout(() => {}, 600000);\n' > "$BROKEN_ROOT/app/apps/api/dist/server.mjs"
-printf '%s\n' "$BROKEN_VERSION" > "$BROKEN_ROOT/app/apps/api/dist/version.txt"
+printf '{"name":"search-hub","version":"%s","type":"module"}\n' "$BROKEN_VERSION" > "$BROKEN_ROOT/app/package.json"
 BROKEN_PKG="$WORK/search-hub-v${BROKEN_VERSION}-linux-x64.tar.gz"
 tar -czf "$BROKEN_PKG" -C "$BROKEN_ROOT" app
 SHA=$(sha256sum "$BROKEN_PKG" | awk '{print $1}'); SIZE=$(stat -c%s "$BROKEN_PKG")
