@@ -265,20 +265,24 @@ render: z.boolean().optional()
 
 ### 6.3 旧 mode 等价与冲突
 
-同时传 `strategy` 与 `mode` 仅当满足下表才接受，否则 400 `validation_error`：
+`strategy` 只提供默认基础模式与可选阶段；两者并存时，显式 `mode` 的已请求阶段优先。基础模式不匹配返回 400 `validation_error`，不得存在两个静默竞争的开关。
 
-| strategy | 等价 mode |
+| strategy | 基础模式与可接受 mode |
 |---|---|
-| fast | basic |
-| balanced | rrf |
-| quality | rrf（rerank 为可选阶段，不是基础模式） |
-| deep | deep |
+| fast | 仅 basic |
+| balanced | 仅 rrf |
+| quality | rrf；额外接受 rerank，因为 rerank 是 Quality 的可选阶段 |
+| deep | 仅 deep |
+| auto | 不额外限制旧 mode，按显式 mode 执行 |
 
+- `quality+rerank` 接受：显式 rerank 阶段优先，缺 rerank 模型仍按旧显式 mode 契约 fail-fast 400。
+- `quality+basic` 接受：Quality 默认 RRF 加可选 rerank；若显式 rerank 可用则执行，否则保持 RRF。
+- 其余基础模式不匹配的组合（如 `fast+rrf`、`balanced+basic`、`deep+rrf`）返回 400。
 - 只传旧 mode：兼容路径，旧响应字段不删、类型不变；缺陷修复可改变错误结果。
 - 只传 strategy：新路径，返回 `strategy`、`route`、`appliedStages`、`degradations`。
 - 都不传：沿用 SettingsService 默认 mode（当前 basic），不改变旧客户端成本/行为。
 - `/api/search/deep` 强制 Deep；传入冲突 strategy 返回 400，不得被端点静默覆盖。
-- `strategy=quality` 单独使用且无 rerank 模型：执行 RRF 并返回 degradation，不得让基础搜索失败；旧 `mode=rerank` 是显式模型阶段请求，缺模型仍 fail-fast 400。strategy 只提供基础模式与可选阶段默认值，不重写旧 `SearchMode` 枚举，也不吞掉显式 mode 的模型阶段语义。
+- `strategy=quality` 单独使用且无 rerank 模型：执行 RRF 并返回 degradation，不得让基础搜索失败。strategy 不重写旧 `SearchMode` 枚举，也不吞掉显式 mode 的模型阶段语义。
 - MCP/CLI/Skills 复用同一 Zod schema 和 SearchService；OpenAPI、CLI help、Skill 文档同批更新。
 
 ### 6.4 测试落点
