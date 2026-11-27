@@ -260,23 +260,24 @@ render: z.boolean().optional()
 |---|---|---|---|---|
 | Fast | 单轮、basic、≤200 rankingInput | 不做 | 无 | 最低延迟 |
 | Balanced | 单轮、RRF、≤200 | 仅确定性规则满足阈值且模型可用时 | 可选 | 新策略推荐 |
-| Quality | 扩大有界池、RRF 后可选 Rerank | 可选 | Rerank 可选；无模型保持 RRF，不得让基础搜索失败 | 研究/比较 |
+| Quality | 扩大有界池；默认 RRF，显式 basic 时保留 basic；可选 Rerank | 可选 | Rerank 可选；无模型保持显式/默认基础排序，不得让基础搜索失败 | 研究/比较 |
 | Deep | 多轮、多查询、B3 融合 | 可选 | 扩展/摘要/Rerank 可选 | 复杂问题，非默认 |
 
 ### 6.3 旧 mode 等价与冲突
 
-`strategy` 只提供默认基础模式与可选阶段；两者并存时，显式 `mode` 的已请求阶段优先。基础模式不匹配返回 400 `validation_error`，不得存在两个静默竞争的开关。
+`strategy` 只提供默认基础模式与可选阶段；两者并存时，显式 `mode` 决定基础融合与已请求阶段，strategy 不得静默覆盖。除 Quality 可叠加在 basic/rrf/rerank 上外，基础模式不匹配返回 400 `validation_error`，不得存在两个静默竞争的开关。
 
 | strategy | 基础模式与可接受 mode |
 |---|---|
 | fast | 仅 basic |
 | balanced | 仅 rrf |
-| quality | rrf；额外接受 rerank，因为 rerank 是 Quality 的可选阶段 |
+| quality | 仅传 strategy 时默认 rrf；显式 basic 保留 basic；显式 rerank 使用 rrf + 必选 rerank |
 | deep | 仅 deep |
 | auto | 不额外限制旧 mode，按显式 mode 执行 |
 
+- 仅传 `strategy=quality`：默认 RRF + 可选 rerank；无 rerank 模型时保持 RRF。
+- `quality+basic` 接受：保留显式 basic 基础排序，只扩大有界候选池，并可在已配置时追加可选 rerank；不得静默改成 RRF。
 - `quality+rerank` 接受：显式 rerank 阶段优先，缺 rerank 模型仍按旧显式 mode 契约 fail-fast 400。
-- `quality+basic` 因基础模式冲突返回 400：Quality 的基础模式是 RRF，不能退化为 basic。
 - 其余基础模式不匹配的组合（如 `fast+rrf`、`balanced+basic`、`deep+rrf`）返回 400。
 - 只传旧 mode：兼容路径，旧响应字段不删、类型不变；缺陷修复可改变错误结果。
 - 只传 strategy：新路径，返回 `strategy`、`route`、`appliedStages`、`degradations`。
