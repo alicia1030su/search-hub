@@ -244,6 +244,10 @@ function upstreamHttpError(status: number, finalUrl: string, retryAfterMs?: numb
   });
 }
 
+function isSizeLimitError(error: unknown): error is SearchHubError {
+  return error instanceof SearchHubError && error.code === "blocked" && /^Response exceeded \d+ bytes$/.test(error.message);
+}
+
 function isDecodeFailure(error: unknown): boolean {
   let current = error instanceof SearchHubError ? error.cause ?? error : error;
   for (let depth = 0; current !== undefined && current !== null && depth < 6; depth += 1) {
@@ -280,10 +284,12 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
   } catch (error) {
     throwIfAborted(options.signal);
     const finalUrl = upstreamUrl(error, requestedUrl);
-    if (error instanceof SearchHubError && (error.code === "blocked" || error.code === "unsupported")) {
+    if (isSizeLimitError(error) || (error instanceof SearchHubError && error.code === "unsupported")) {
       return unavailableResult(requestedUrl, finalUrl, "unsupported");
     }
-    if (isDecodeFailure(error)) return unavailableResult(requestedUrl, finalUrl, "unsupported");
+    if (error instanceof SearchHubError && error.code === "network" && isDecodeFailure(error)) {
+      return unavailableResult(requestedUrl, finalUrl, "unsupported");
+    }
     const status = upstreamStatus(error);
     if (status === 503) return unavailableResult(requestedUrl, finalUrl, "maintenance");
     if (status === 404 || status === 410) return unavailableResult(requestedUrl, finalUrl, "not_found");

@@ -334,6 +334,17 @@ describe("fetchWebpage limits, cancellation and validation", () => {
     expect(JSON.stringify(result)).not.toContain("fragment-secret");
   });
 
+  it("preserves non-size SafeFetch blocked errors such as SSRF rejection", async () => {
+    const error = new SearchHubError("blocked", "URL resolves to a private address", { status: 403 });
+    await expect(fetchWebpage("https://example.com/start", { fetch: fakeFetch(error) })).rejects.toBe(error);
+  });
+
+  it.each(["cancelled", "timeout"] as const)("does not swallow %s errors with decoding causes", async (code) => {
+    const cause = Object.assign(new Error("gzip decoding failed"), { code: "Z_DATA_ERROR" });
+    const error = new SearchHubError(code, `${code} upstream request`, { cause });
+    await expect(fetchWebpage("https://example.com/start", { fetch: fakeFetch(error) })).rejects.toBe(error);
+  });
+
   it.each([
     { encoding: "gzip", code: "Z_DATA_ERROR", message: "incorrect header check" },
     { encoding: "deflate", code: "Z_DATA_ERROR", message: "invalid block type" },
