@@ -78,9 +78,12 @@ RUN groupadd --system --gid 1001 searchhub \
 #   * keeping a package manager in a production container gives an attacker a
 #     ready-made tool for fetching second-stage payloads.
 # The build stages keep them, so the image is still fully reproducible.
-RUN rm -rf /usr/local/lib/node_modules/npm \
-           /usr/local/lib/node_modules/corepack \
-           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm \
+              /usr/local/lib/node_modules/corepack \
+              /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
     && node --version
 
 # --chown on every COPY keeps the image small: a separate `chown -R` would copy
