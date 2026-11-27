@@ -72,6 +72,8 @@ export type SearchMode =
   | "embedding_rerank"
   | "rerank_summary"
   | "deep";
+export type SearchStrategy = "auto" | "fast" | "balanced" | "quality" | "deep";
+export type SearchStreamFormat = "sse" | "ndjson";
 export type SearchStatus = "completed" | "partial" | "failed" | "running" | "cancelled";
 export type ModelKind = "chat" | "embedding" | "rerank";
 export type ModelProviderType =
@@ -437,7 +439,13 @@ export interface SearchRequest {
   limit?: number;
   language?: string;
   freshness?: Freshness;
-  mode: SearchMode;
+  /** strategy and mode are mutually exclusive on the wire. */
+  mode?: SearchMode;
+  strategy?: SearchStrategy;
+  queryExpansion?: boolean;
+  maxSubqueries?: number;
+  maxRounds?: number;
+  stream?: boolean | SearchStreamFormat;
   rerank?: boolean;
   summarize?: boolean;
   timeoutMs?: number;
@@ -512,8 +520,10 @@ export interface SearchResult {
   rerankScore?: number;
   language?: string;
   metadata?: Record<string, unknown>;
+  raw?: unknown;
   upstream?: UpstreamAttribution;
   upstreamRank?: number;
+  queryOrigins?: QueryOrigin[];
   sources: Array<{
     providerId: string;
     providerName: string;
@@ -539,6 +549,7 @@ export interface ProviderAttemptStat {
   /** Non-fatal upstream degradation reported by a gateway provider. */
   warning?: string;
   attempts: number;
+  httpRequests?: number;
 }
 
 export interface SearchTiming {
@@ -550,10 +561,100 @@ export interface SearchTiming {
   summaryMs?: number;
 }
 
+export interface RouteExplanation {
+  selected?: SearchStrategy;
+  ruleId?: string;
+  matchedSignals?: string[];
+  considered?: SearchStrategy[];
+  reason?: string;
+  intent?: string;
+  matchedRules?: string[];
+  selectedProviderIds?: string[];
+  requestedProviderCount?: number;
+  selectedProviderCount?: number;
+  decisions?: Array<{ providerId: string; score: number; reasons: string[] }>;
+  truncatedProviderIds?: string[];
+}
+export interface Degradation { stage: string; reason: string; fallback?: string; }
+export interface FunnelStats {
+  raw?: number;
+  rawCount?: number;
+  invalidDropped?: number;
+  illegalDropped?: number;
+  exactDuplicates?: number;
+  exactDuplicateDropped?: number;
+  nearTitleDuplicates?: number;
+  nearDuplicateDropped?: number;
+  rawReceived?: number;
+  candidateTruncatedCount?: number;
+  returnedCount?: number;
+  duplicatesDropped?: number;
+  dedupedCount?: number;
+  truncated?: number;
+  rerankInput?: number;
+  rerankInputCount?: number;
+  final?: number;
+  finalCount?: number;
+}
+export interface QueryOrigin {
+  query?: string;
+  queryId?: string;
+  round?: number;
+  weight?: number;
+  language?: string;
+  original?: boolean;
+  kind?: "original" | "expanded" | "rewrite";
+  queryIndex?: number;
+  score?: number;
+  source?: string;
+  providerId?: string;
+  providerName?: string;
+  rank?: number;
+}
+export interface RerankComparison {
+  before: SearchResult[];
+  after: SearchResult[];
+  movements?: unknown[];
+}
+export interface DeepBudget {
+  subqueries?: number;
+  rounds?: number;
+  providerQueries?: number;
+  httpRequests?: number;
+  exhausted?: boolean;
+}
+export interface ProviderContribution {
+  providerId: string;
+  providerName?: string;
+  rawCount?: number;
+  duplicatesDropped?: number;
+  finalCount?: number;
+  topKCount?: number;
+  fusionScore?: number;
+  failed?: boolean;
+  skipped?: boolean;
+  reason?: string;
+}
+export interface StreamProviderState {
+  providerId: string;
+  providerName?: string;
+  state?: "pending" | "running" | "success" | "failed" | "skipped";
+  latencyMs?: number;
+  resultCount?: number;
+  reason?: string;
+}
+
 export interface SearchResponse {
   taskId: string;
   query: string;
-  mode: SearchMode;
+  mode?: SearchMode;
+  strategy?: SearchStrategy;
+  route?: RouteExplanation;
+  degradations?: Degradation[];
+  selectedProviderIds?: string[];
+  excludedProviders?: Array<{ providerId: string; providerName?: string; reason: string }>;
+  queryExpansion?: QueryOrigin[] | { language?: string; queries?: QueryOrigin[]; skippedReasons?: string[] };
+  deepBudget?: DeepBudget;
   status: Exclude<SearchStatus, "running">;
   results: SearchResult[];
   stats: {
@@ -568,6 +669,9 @@ export interface SearchResponse {
     partial: boolean;
     degraded?: boolean;
     cached?: boolean;
+    cacheState?: "bypass" | "hit" | "miss" | "unknown";
+    funnel?: FunnelStats;
+    contributions?: ProviderContribution[];
   };
   errors: Array<{ providerId: string; providerName: string; code: string; message: string }>;
   failedSources: Array<{ id: string; code: string }>;
@@ -587,8 +691,39 @@ export interface SearchResponse {
       providerName: string;
       results: SearchResult[];
     }>;
+    queryOrigins?: QueryOrigin[];
+    rerankComparison?: RerankComparison;
   };
 }
+
+export interface WebReadResponse {
+  url: string;
+  title?: string;
+  text?: string;
+  readStatus: string;
+  ok?: boolean;
+  truncated?: boolean;
+  extractor?: string;
+  fetchMs?: number;
+  latencyMs?: number;
+  cached?: boolean;
+  cacheState?: string;
+  code?: string;
+  message?: string;
+  suggestion?: string;
+}
+export interface WebReadRequest {
+  url: string;
+  render?: boolean;
+  timeoutMs?: number;
+  maxChars?: number;
+}
+export type SearchStreamEvent =
+  | { type: "meta"; data: { taskId?: string; selectedProviderIds?: string[]; route?: RouteExplanation; [key: string]: unknown } }
+  | { type: "status"; data: { status?: string; stage?: string; message?: string; completed?: number | null; total?: number | null; providers?: StreamProviderState[]; elapsedMs?: number; [key: string]: unknown } }
+  | { type: "results"; data: SearchResult[] | { results?: SearchResult[]; sequence?: number; [key: string]: unknown } }
+  | { type: "done"; data: SearchResponse }
+  | { type: "error"; data: { code?: string; message?: string; details?: unknown; [key: string]: unknown } };
 
 export interface SearchTaskRecord {
   id: string;

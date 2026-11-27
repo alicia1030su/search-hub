@@ -26,7 +26,11 @@ import type {
   SearchGroup,
   SearchRequest,
   SearchResponse,
+  SearchStreamEvent,
+  SearchStreamFormat,
   SearchTaskRecord,
+  WebReadRequest,
+  WebReadResponse,
   SetupInput,
   SetupStatus,
   SkillEntry,
@@ -238,6 +242,183 @@ function seg(value: string): string {
   return encodeURIComponent(value);
 }
 
+export class SearchStreamUnsupportedError extends ApiError {
+  constructor() {
+    super(404, "stream_unsupported", "Streaming search is not supported");
+  }
+}
+
+/** Pure incremental parser shared by SSE and NDJSON. Comments/heartbeats emit nothing. */
+export class SearchStreamParser {
+  private buffer = "";
+  private eventName = "";
+  private dataLines: string[] = [];
+
+  constructor(private readonly format: SearchStreamFormat) {}
+
+  push(chunk: string): SearchStreamEvent[] {
+    this.buffer += chunk;
+    const events: SearchStreamEvent[] = [];
+    if (this.format === "ndjson") {
+      let newline = this.buffer.indexOf("\n");
+      while (newline >= 0) {
+        const line = this.buffer.slice(0, newline).trim();
+        this.buffer = this.buffer.slice(newline + 1);
+        if (line) {
+          const event = this.parseEvent(line, "");
+          if (event) events.push(event);
+        }
+        newline = this.buffer.indexOf("\n");
+      }
+    } else {
+      let newline = this.buffer.indexOf("\n");
+      while (newline >= 0) {
+        const line = this.buffer.slice(0, newline).replace(/\r$/, "");
+        this.buffer = this.buffer.slice(newline + 1);
+        if (line === "") {
+          const event = this.dispatchSse();
+          if (event) events.push(event);
+        } else if (line.startsWith(":")) {
+          // SSE heartbeat/comment: no stage or progress change.
+        } else if (line.startsWith("event:")) {
+          this.eventName = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          this.dataLines.push(line.slice(5).replace(/^ /, ""));
+        }
+        newline = this.buffer.indexOf("\n");
+      }
+    }
+    return events;
+  }
+
+  flush(): SearchStreamEvent[] {
+    const events: SearchStreamEvent[] = [];
+    if (this.format === "sse") {
+      const event = this.dispatchSse();
+      if (event) events.push(event);
+    }
+    if (this.format === "ndjson" && this.buffer.trim()) {
+      const event = this.parseEvent(this.buffer.trim(), "");
+      if (event) events.push(event);
+    }
+    this.buffer = "";
+    return events;
+  }
+
+  private dispatchSse(): SearchStreamEvent | null {
+    const event = this.parseEvent(this.dataLines.join("\n"), this.eventName);
+    this.dataLines = [];
+    this.eventName = "";
+    return event;
+  }
+
+  private parseEvent(raw: string, eventName: string): SearchStreamEvent | null {
+    if (!raw || raw === "[DONE]") return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      throw new ApiError(0, "stream_parse_error", "Invalid search stream event");
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw new ApiError(0, "stream_parse_error", "Invalid search stream event");
+    }
+    const envelope = parsed as { type?: unknown; event?: unknown; data?: unknown };
+    const rawType = envelope.type ?? envelope.event ?? eventName;
+    if (rawType === "heartbeat" || rawType === "ping") return null;
+    const type = rawType === "results_updated" ? "results"
+      : rawType === "search_completed" ? "done"
+      : rawType === "search_failed" ? "error" : rawType;
+    if (type === "meta" || type === "status" || type === "results" || type === "done" || type === "error") {
+      return { type, data: (envelope.data ?? parsed) } as SearchStreamEvent;
+    }
+    // A JSON search response (some compatible servers omit the done envelope).
+    if ("results" in parsed && "taskId" in parsed) {
+      return { type: "done", data: parsed as SearchResponse };
+    }
+    throw new ApiError(0, "stream_parse_error", "Unknown search stream event");
+  }
+}
+
+export interface SearchStreamOptions {
+  format?: SearchStreamFormat;
+  signal?: AbortSignal;
+  onEvent?: (event: SearchStreamEvent) => void;
+}
+
+async function postSearchStream(
+  body: SearchRequest,
+  options: SearchStreamOptions,
+  csrfRetry = false,
+): Promise<SearchResponse> {
+  if (!csrfToken) await ensureCsrf();
+  const response = await fetch(`${API_PREFIX}/search/stream`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "text/event-stream, application/x-ndjson, application/json",
+      "Content-Type": "application/json",
+      ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    const data = await readJson(response);
+    const error = extractError(data, response.status);
+    if (response.status === 403 && /csrf/i.test(error.message) && !csrfRetry) {
+      csrfToken = null;
+      const refreshed = await ensureCsrf(true);
+      if (refreshed) return postSearchStream(body, options, true);
+    }
+    if (response.status === 404 || response.status === 405 || error.code === "stream_unsupported") {
+      throw new SearchStreamUnsupportedError();
+    }
+    if (response.status === 401) notifyUnauthorized();
+    throw error;
+  }
+  if (!response.body) throw new ApiError(0, "stream_unavailable", "Search stream body is unavailable");
+  const contentType = response.headers.get("content-type") ?? "";
+  const format: SearchStreamFormat = contentType.includes("ndjson")
+    ? "ndjson"
+    : contentType.includes("text/event-stream") ? "sse" : "ndjson";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SearchStreamParser(options.format ?? format);
+  let finalResponse: SearchResponse | null = null;
+  let streamError: ApiError | null = null;
+  let terminal = false;
+  const dispatch = (event: SearchStreamEvent) => {
+    options.onEvent?.(event);
+    if (event.type === "done") finalResponse = event.data;
+    if (event.type === "error") {
+      streamError = new ApiError(0, event.data.code ?? "stream_error", event.data.message ?? "Search stream failed", event.data.details);
+    }
+    if (event.type === "done" || event.type === "error") terminal = true;
+    if (event.type === "status" && event.data.status === "cancelled") {
+      streamError = new ApiError(0, "cancelled", "Search cancelled");
+      terminal = true;
+    }
+  };
+  try {
+    while (!terminal) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+        dispatch(event);
+        if (terminal) break;
+      }
+    }
+    if (!terminal) for (const event of parser.flush()) dispatch(event);
+  } finally {
+    if (terminal) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  if (streamError) throw streamError;
+  if (!finalResponse) throw new ApiError(0, "stream_incomplete", "Search stream ended without a final response");
+  return finalResponse;
+}
+
 export const api = {
   // ---- setup & auth ----
   setupStatus: (signal?: AbortSignal) =>
@@ -299,6 +480,11 @@ export const api = {
       body,
       signal,
     }),
+  searchStream: (body: SearchRequest, options: SearchStreamOptions = {}) => postSearchStream(body, options),
+  previewSearchRoute: (body: SearchRequest, signal?: AbortSignal) =>
+    request<{ route?: SearchResponse["route"]; selected?: SearchResponse["strategy"] }>("/search/route-preview", { method: "POST", body, signal }),
+  readWebpage: (body: WebReadRequest, signal?: AbortSignal) =>
+    request<WebReadResponse>("/web/read", { method: "POST", body, signal }),
   searchTask: (id: string, signal?: AbortSignal) =>
     request<SearchTaskRecord>(`/search/tasks/${seg(id)}`, { signal }),
   cancelSearchTask: (id: string) =>

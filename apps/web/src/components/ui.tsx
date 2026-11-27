@@ -1,10 +1,13 @@
+import { useEffect, useId, useRef } from "react";
+import { createPortal } from "react-dom";
+import { X } from "lucide-react";
 import type {
   ButtonHTMLAttributes,
+  ComponentPropsWithRef,
   HTMLAttributes,
   InputHTMLAttributes,
   ReactNode,
   SelectHTMLAttributes,
-  TextareaHTMLAttributes,
 } from "react";
 import {
   AlertTriangle,
@@ -87,7 +90,7 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return <input className={cn(controlBase, "h-9 px-3 py-1", className)} {...props} />;
 }
 
-export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export function Textarea({ className, ...props }: ComponentPropsWithRef<"textarea">) {
   return <textarea className={cn(controlBase, "min-h-20 px-3 py-2 leading-relaxed", className)} {...props} />;
 }
 
@@ -443,6 +446,84 @@ export function JsonPreview({ value, className }: { value: unknown; className?: 
 export function InlineCode({ children }: { children: ReactNode }) {
   return (
     <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px] text-foreground">{children}</code>
+  );
+}
+
+export function Progress({ value, label }: { value?: number | null; label: string }) {
+  return (
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value === undefined || value === null ? undefined : Math.max(0, Math.min(100, value))}
+      className="h-2 w-full overflow-hidden rounded-full bg-muted"
+    >
+      <div
+        className={cn("h-full rounded-full bg-primary transition-[width]", value === undefined || value === null ? "w-1/3 animate-pulse" : "")}
+        style={value === undefined || value === null ? undefined : { width: `${Math.max(0, Math.min(100, value))}%` }}
+      />
+    </div>
+  );
+}
+
+/** Modal overlay with focus containment, Escape dismissal and focus restoration. */
+export function Drawer({ open, onClose, title, closeLabel, children }: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  closeLabel: string;
+  children: ReactNode;
+}) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    panelRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+      }
+      if (event.key !== "Tab") return;
+      const nodes = panelRef.current?.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]');
+      if (!nodes?.length) return;
+      const first = nodes[0]!;
+      const last = nodes[nodes.length - 1]!;
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === panelRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = oldOverflow;
+      previous?.focus();
+    };
+  }, [open]);
+  if (!open || typeof document === "undefined") return null;
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+        className="flex h-full w-full flex-col bg-card shadow-xl outline-none sm:max-w-2xl">
+        <div className="flex min-h-14 items-center justify-between gap-3 border-b px-4">
+          <h2 id={titleId} className="min-w-0 truncate text-sm font-semibold">{title}</h2>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label={closeLabel} className="min-h-11 min-w-11">
+            <X aria-hidden />
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
+      </div>
+    </div>, document.body,
   );
 }
 
