@@ -23,10 +23,10 @@
 <a id="screenshots"></a>
 ## 界面
 
+![首次使用引导](./docs/screenshots/v0117/onboarding.png)
 ![Search Hub 仪表盘](./docs/screenshots/v0117/dashboard.png)
 ![搜索实验室](./docs/screenshots/v0117/search-lab.png)
 ![搜索源健康](./docs/screenshots/v0117/provider-health.png)
-
 <a id="quick-start"></a>
 ## 快速开始
 
@@ -96,7 +96,7 @@ sha256sum -c SHA256SUMS
 在已克隆的仓库中使用发布镜像（镜像仅构建 `linux/amd64`）：
 
 ```bash
-SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.16 docker compose up -d
+SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.17 docker compose up -d
 ```
 
 arm64 主机请使用 arm64 独立包；Docker arm64 模拟运行不在项目验证范围。

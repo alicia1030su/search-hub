@@ -2,9 +2,9 @@
 /**
  * README structure, fact-parity, screenshot-mode and relative-link gates.
  *
- * Interim mode is used while the real v0.1.16 screenshots are being captured:
- * each README must contain exactly three CAPTURE_REQUIRED comments and no
- * screenshot links. Final mode requires zero placeholders and three real image
+ * Interim mode is used while the real v0.1.17 screenshots are being captured:
+ * each README must contain exactly four CAPTURE_REQUIRED comments and no
+ * screenshot links. Final mode requires zero placeholders and four real image
  * files, so a release can never ship with capture markers or broken images.
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -25,6 +25,7 @@ export const README_ANCHORS = Object.freeze([
   "license",
 ]);
 export const SCREENSHOT_FILES = Object.freeze([
+  "docs/screenshots/v0117/onboarding.png",
   "docs/screenshots/v0117/dashboard.png",
   "docs/screenshots/v0117/search-lab.png",
   "docs/screenshots/v0117/provider-health.png",
@@ -170,8 +171,8 @@ function checkFactGroups(zh, en, problems) {
     },
     {
       name: "live-tested providers",
-      zh: ["Hacker News", "Crossref", "OpenAlex", "PubMed"],
-      en: ["Hacker News", "Crossref", "OpenAlex", "PubMed"],
+      zh: ["Hacker News", "Crossref", "OpenAlex", "PubMed", "Wikipedia", "arXiv", "GitHub"],
+      en: ["Hacker News", "Crossref", "OpenAlex", "PubMed", "Wikipedia", "arXiv", "GitHub"],
     },
     {
       name: "provider verification states",
@@ -262,7 +263,7 @@ export function checkReadmeConsistency({ zh, en, version, mode = "interim", root
       problems.push(`${label} links screenshots outside the expected set: ${[...new Set(unexpectedScreenshots)].join(", ")}`);
     }
     if (mode === "interim") {
-      if (placeholders !== 3) problems.push(`${label} must contain exactly 3 CAPTURE_REQUIRED placeholders in interim mode`);
+      if (placeholders !== 4) problems.push(`${label} must contain exactly 4 CAPTURE_REQUIRED placeholders in interim mode`);
       if (screenshotLinks.length !== 0) problems.push(`${label} must not link screenshots before capture in interim mode`);
     } else {
       if (placeholders !== 0) problems.push(`${label} must contain 0 CAPTURE_REQUIRED placeholders in final mode`);

@@ -23,12 +23,12 @@ function actualReadmes() {
 }
 
 function captureComment(file: string, version: string) {
-  return `<!-- CAPTURE_REQUIRED: replace with the real v${version} docs/screenshots/v0116/${file} after capture. -->`;
+  return `<!-- CAPTURE_REQUIRED: replace with the real v${version} docs/screenshots/v0117/${file} after capture. -->`;
 }
 
 function replaceScreenshotsWithCaptureMarkers(text: string, version: string) {
   return text.replace(
-    /!\[[^\]]*\]\(\.\/docs\/screenshots\/v0116\/([^)\s]+)\)/g,
+    /!\[[^\]]*\]\(\.\/docs\/screenshots\/v0117\/([^)\s]+)\)/g,
     (_match, file: string) => captureComment(file, version),
   );
 }
@@ -36,9 +36,9 @@ function replaceScreenshotsWithCaptureMarkers(text: string, version: string) {
 function finalScreenshotRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "search-hub-readme-final-"));
   temporary.push(root);
-  const screenshotDir = join(root, "docs", "screenshots", "v0116");
+  const screenshotDir = join(root, "docs", "screenshots", "v0117");
   mkdirSync(screenshotDir, { recursive: true });
-  for (const name of ["dashboard.png", "search-lab.png", "provider-health.png"]) {
+  for (const name of ["onboarding.png", "dashboard.png", "search-lab.png", "provider-health.png"]) {
     writeFileSync(join(screenshotDir, name), "fixture");
   }
   return root;
@@ -96,31 +96,31 @@ describe("README consistency gate", () => {
 
   it("rejects stale release versions and missing assets", () => {
     const { pkg, zh, en } = actualReadmes();
-    const stale = en.replaceAll("0.1.16", "0.1.15");
+    const stale = en.replaceAll(pkg.version, "0.1.16");
     const problems = checkReadmeConsistency({ zh, en: stale, version: pkg.version });
-    expect(problems.join("\n")).toContain("v0.1.16 Stable");
+    expect(problems.join("\n")).toContain(`v${pkg.version} Stable`);
     expect(problems.join("\n")).toContain("stale release asset");
     const missing = en.replace("`resource-evidence.json`", "`missing.json`");
     expect(checkReadmeConsistency({ zh, en: missing, version: pkg.version }).join("\n"))
       .toContain("missing release asset resource-evidence.json");
   });
 
-  it("requires exactly three interim placeholders and no screenshot links", () => {
+  it("requires exactly four interim placeholders and no screenshot links", () => {
     const { pkg, zh, en } = actualReadmes();
     const interimZh = replaceScreenshotsWithCaptureMarkers(zh, pkg.version);
     const interimEn = replaceScreenshotsWithCaptureMarkers(en, pkg.version);
     const missingOne = interimZh.replace(captureComment("search-lab.png", pkg.version), "");
     expect(checkReadmeConsistency({ zh: missingOne, en: interimEn, version: pkg.version, mode: "interim" }).join("\n"))
-      .toContain("exactly 3 CAPTURE_REQUIRED");
+      .toContain("exactly 4 CAPTURE_REQUIRED");
     const linked = interimZh.replace(
       captureComment("dashboard.png", pkg.version),
-      "![dashboard](./docs/screenshots/v0116/dashboard.png)",
+      "![dashboard](./docs/screenshots/v0117/dashboard.png)",
     );
     expect(checkReadmeConsistency({ zh: linked, en: interimEn, version: pkg.version, mode: "interim" }).join("\n"))
       .toContain("must not link screenshots before capture");
   });
 
-  it("requires zero placeholders and three real files in final mode", () => {
+  it("requires zero placeholders and four real files in final mode", () => {
     const { pkg, zh, en } = actualReadmes();
     const root = finalScreenshotRoot();
     expect(checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root })).toEqual([]);
@@ -128,7 +128,7 @@ describe("README consistency gate", () => {
     const interimEn = replaceScreenshotsWithCaptureMarkers(en, pkg.version);
     expect(checkReadmeConsistency({ zh: interimZh, en: interimEn, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("0 CAPTURE_REQUIRED");
-    rmSync(join(root, "docs", "screenshots", "v0116", "dashboard.png"));
+    rmSync(join(root, "docs", "screenshots", "v0117", "dashboard.png"));
     expect(checkReadmeConsistency({ zh, en, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("screenshot file is missing");
   });
@@ -137,38 +137,38 @@ describe("README consistency gate", () => {
     const { pkg, zh, en } = actualReadmes();
     const root = mkdtempSync(join(tmpdir(), "search-hub-readme-paths-"));
     temporary.push(root);
-    const screenshotDir = join(root, "docs", "screenshots", "v0116");
+    const screenshotDir = join(root, "docs", "screenshots", "v0117");
     mkdirSync(screenshotDir, { recursive: true });
-    for (const name of ["dashboard.png", "search-lab.png", "provider-health.png"]) {
+    for (const name of ["onboarding.png", "dashboard.png", "search-lab.png", "provider-health.png"]) {
       writeFileSync(join(screenshotDir, name), "fixture");
     }
     const oldVersion = zh.replace(
-      "(./docs/screenshots/v0116/dashboard.png)",
+      "(./docs/screenshots/v0117/dashboard.png)",
       "(./docs/screenshots/v0115/dashboard.png)",
     );
     expect(checkReadmeConsistency({ zh: oldVersion, en, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("outside the expected set");
     const duplicate = zh.replace(
-      "(./docs/screenshots/v0116/search-lab.png)",
-      "(./docs/screenshots/v0116/dashboard.png)",
+      "(./docs/screenshots/v0117/search-lab.png)",
+      "(./docs/screenshots/v0117/dashboard.png)",
     );
     expect(checkReadmeConsistency({ zh: duplicate, en, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("final screenshot links must be exactly");
     const outOfScope = zh.replace(
-      "(./docs/screenshots/v0116/provider-health.png)",
-      "(./docs/screenshots/v0116/../private.png)",
+      "(./docs/screenshots/v0117/provider-health.png)",
+      "(./docs/screenshots/v0117/../private.png)",
     );
     expect(checkReadmeConsistency({ zh: outOfScope, en, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("outside the expected set");
     const outsideTree = zh.replace(
-      "(./docs/screenshots/v0116/provider-health.png)",
+      "(./docs/screenshots/v0117/provider-health.png)",
       "(./assets/dashboard.png)",
     );
     expect(checkReadmeConsistency({ zh: outsideTree, en, version: pkg.version, mode: "final", root }).join("\n"))
       .toContain("final screenshot links must be exactly");
     const normalized = zh.replace(
-      "(./docs/screenshots/v0116/dashboard.png)",
-      "(./docs/screenshots/v0116/../v0116/%64ashboard.png?cache=1#preview)",
+      "(./docs/screenshots/v0117/dashboard.png)",
+      "(./docs/screenshots/v0117/../v0117/%64ashboard.png?cache=1#preview)",
     );
     expect(checkReadmeConsistency({ zh: normalized, en, version: pkg.version, mode: "final", root })).toEqual([]);
     const withOrdinaryAsset = zh.replace("\n\n", "\n![ordinary asset](./assets/logo.png)\n");

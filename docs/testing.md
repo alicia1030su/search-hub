@@ -153,6 +153,29 @@ v0.1.13 历史本地全量已通过 Vitest **1299 项 / 100 文件**、Playwrigh
 
 v0.1.14 增加资源端点、只读认证、队列生命周期、严格进程枚举、OOM 证据、资源证据 fingerprint 与 exact-SHA release gate 测试。M04 是 P0 实测门槛：100,000 行、100 warmup、1,000 次顺序 `GET /api/admin/resources`，P95 ≤ 10ms、稳态 RSS ≤ 2MiB、warmup/正式零写、三个 query plan 均走索引。`pnpm evidence:verify` 校验 8 份 gzip raw、summary、SHA256SUMS、代码/scope fingerprint 与公开证据脱敏；未满足条件的证据保持 BLOCKED。
 
+### v0.1.17 onboarding and provider reliability
+
+The v0.1.17 targeted suites separate browser/control-flow proof from real public-network evidence:
+
+| Area | Files | What it proves |
+|---|---|---|
+| First-run onboarding | `tests/integration/onboarding.test.ts` (6 cases), `tests/e2e/onboarding.spec.ts` (3 cases) | Fresh setup lands on the three-step guide; only recommended built-in keyless `live_tested` raw-search sources are suggested; mock readiness advances the provider step; a real search with results is required to complete; dismiss/complete persist; anonymous and non-admin callers are rejected; legacy settings remain readable. |
+| Public-provider rate limits | `tests/unit/provider-rate-limit.test.ts` (6 cases) | arXiv keeps a 3-second minimum interval and one in-flight request; Wikipedia sends a compliant User-Agent and enforces 60/minute with two in flight; GitHub keyless keeps 10/minute, 60/hour and one in flight; GitHub code search without a token fails before any request. |
+| Public-provider response contracts | `tests/unit/provider-public-contract.test.ts` (21 cases) | Legal empty results stay empty; HTTP 200 business errors and incompatible envelopes fail; 429 preserves `Retry-After`; 408/504 map to `timeout`; mapping/deduplication stays stable; Brave uses upstream raw row count for pagination; arXiv URLs are normalized to HTTPS. |
+| Grounded-answer probe safety | `tests/integration/health.test.ts` | A grounded provider rejects a free `connect` probe before invoking a paid model; a search probe with a verifiable citation counts as success. Runtime health still does not upgrade implementation verification. |
+| Live evidence schema | `tests/unit/doc-consistency.test.ts`, `scripts/check-doc-consistency.mjs` | Evidence must identify the provider, `schemaVersion: 2`, exact 40-character source commit, adapter version, successful request URL/status/result count/sample URLs/latency/recorder, latest attempt and attempt history. |
+
+Reproduce the deterministic suites without vendor credentials:
+
+```bash
+pnpm exec vitest run tests/integration/onboarding.test.ts \
+  tests/unit/provider-rate-limit.test.ts tests/unit/provider-public-contract.test.ts \
+  tests/integration/health.test.ts tests/unit/doc-consistency.test.ts
+pnpm build && pnpm exec playwright test tests/e2e/onboarding.spec.ts
+```
+
+Real keyless checks are a separate, budgeted network activity. On 2026-11-27 the live harness recorded two successful queries each for Wikipedia, arXiv and GitHub, with five HTTPS results per query and no paid API key. Together with the existing Hacker News, Crossref, OpenAlex and PubMed evidence, the catalogue has seven `live_tested` entries. The other entries remain `documented`, `mock_verified` or otherwise unverified; a local stub run never changes that status.
+
 ### v0.1.11 bulk provider test (T01–T46, H61–H66)
 
 Every one of the 45 acceptance cases maps to one file and one executable
@@ -305,8 +328,8 @@ returns 500.
 
 **Credential classes** — `tests/integration/credential-classes.test.ts` (6 cases)
 
-- The catalogue and every adapter agree on which sources take a key: the six
-  public ones declare `authType: none` and `requiresKey: false`, and `brave` /
+- The catalogue and every adapter agree on which sources take a key: public
+  entries declare `authType: none` and `requiresKey: false`, and `brave` /
   `tavily` declare the opposite.
 - A key-required source with no key is `unverified`, never healthy.
 - A keyless source is probed for real (a local stub serving the HN wire format),
@@ -521,7 +544,7 @@ still equals the counts derived from the JSON, so the two files cannot drift.
 | Soak / memory-leak testing | No soak harness yet | Planned |
 | Browser matrix | Chromium only | Firefox/WebKit not run |
 
-**Never** treat a green mock-backed suite as evidence that a real vendor integration works. Hacker News, Crossref, OpenAlex and PubMed have recorded live runs; the other adapters do not.
+**Never** treat a green mock-backed suite as evidence that a real vendor integration works. Hacker News, Crossref, OpenAlex, PubMed, Wikipedia, arXiv and GitHub have recorded live runs; the other adapters do not.
 
 ## Running the smoke script
 

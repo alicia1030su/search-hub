@@ -23,10 +23,10 @@
 <a id="screenshots"></a>
 ## Interface
 
+![First-run onboarding](./docs/screenshots/v0117/onboarding.png)
 ![Search Hub dashboard](./docs/screenshots/v0117/dashboard.png)
 ![Search Lab](./docs/screenshots/v0117/search-lab.png)
 ![Provider health](./docs/screenshots/v0117/provider-health.png)
-
 <a id="quick-start"></a>
 ## Quick start
 
@@ -96,7 +96,7 @@ sha256sum -c SHA256SUMS
 To use the published image from the cloned repository (the image is built for `linux/amd64` only):
 
 ```bash
-SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.16 docker compose up -d
+SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.17 docker compose up -d
 ```
 
 Use the arm64 standalone package on arm64 hosts; Docker arm64 emulation is outside the project's tested configurations.
