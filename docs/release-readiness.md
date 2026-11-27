@@ -1,5 +1,47 @@
 # 发布就绪报告
 
+## v0.1.17 Stable（2026-11-27）
+
+> 本节只记录已经执行并取得的最终事实。状态词使用 `PASS`、`FAIL`、`BLOCKED`、`NOT TESTED`、`NOT IMPLEMENTED`；未公开的过程失败单独保留，不计入 Stable PASS。
+
+| 项 | 状态 |
+|---|---|
+| 发布源与不可变 tag | PASS：`main` commit `a2850853cf5ddfc99b5135b8a2b314a7a4a1e7ec`；annotated tag `v0.1.17` → tag object `cc03ce524b3b74f172019083d1b2dceafe78c864` → 该 commit，类型为 `tag`，发布后未移动 |
+| 五条 main 门禁 | PASS：CI `45992227691`、CLI `45992227475`、Docker `45992227834`、systemd `45992227551`、Upgrade `45992227444` 均 success |
+| 最终候选与 preflight | PASS：最终 candidate run `45996142907` attempt 1，12/12 jobs success；preflight `tagCreationAllowed=true`，报告 `artifacts/v0.1.17/release-gate.json` |
+| 自动 promoter | PASS：tag push 触发 run `45997779337`，5/5 jobs success；只提升已校验候选字节，未重建发布包、CLI 或镜像 |
+| GitHub Release | PASS：<https://github.com/alicia1030su/search-hub/releases/tag/v0.1.17>，`publishedAt=2026-11-27T12:26:06Z`，`draft=false`、`prerelease=false`，`/releases/latest=v0.1.17` |
+| Release 资产元数据 | PASS：9 个资产全部 `uploaded`；名称、大小与 digest 见下表 |
+| 最终 DR gate | PASS：R01–R38/A01–A12 共 50 项全 PASS，485 份证据；gate SHA256 `68c42f42ed9b678921b1894c836a06887ecdc54feb0814ecd66ef1bc7c1c3ea4`，sums SHA256 `b7928257a9cd37210afde691cbf7b373f8a8497086e7e7ea8e180b8b01fa4b0d`，code fingerprint `58512b9031ff42a692121c6e264e0a5d8c82d80d1626b941bd6ee933a5032a6c` |
+| 资源证据与 M04 | PASS：`resource-evidence.json` 绑定 release SHA `a2850853…`、8 份 raw、summary SHA256 `c54757f89203d4402cf1e4588f322dace08b901105e33160156afac6ccb6eaac`、sums SHA256 `86f7579ffc1f04625f7de8ebc72c127138d86dd1dae8438381deee4623a80a21`；exact-SHA M04 run `46003141977` success，100,000 行 / 100 warmup / 1,000 请求，P95 `0.772933ms`、RSS delta `356352B`、warmup/正式零写、query plan 与 cleanup 全 PASS，artifact SHA256 `c080ba654620d6fa86dee4baf9eed8f10f4bf6f3dc5ba0df804b297b17f21df0` |
+| 升级与回滚 | PASS：main Upgrade 工作流 `45992227444` 在 Windows/Ubuntu 的 `Upgrade v0.1.16 → current` 步骤均 success；同工作流的 fault injection 与 updater install/rollback 亦 success。最终 DR gate 50 项全 PASS |
+| 候选 Provenance 与 promoter 校验 | PASS：SLSA predicate `https://slsa.dev/provenance/v1`；signer `release-candidate.yml@refs/heads/main`；source SHA `a2850853cf5ddfc99b5135b8a2b314a7a4a1e7ec`；invocation `45996142907/attempts/1`；promoter 的候选字节与 attestation 验证 job PASS |
+| 独立资产下载与摘要复验 | PASS：完整下载 9 个资产后 `sha256sum -c SHA256SUMS` 8/8 OK；Release API 的 8 个内容资产 digest 与 `SHA256SUMS` 逐项一致 |
+| 独立发布后 attestation 复验 | PASS：9 个 Release 资产逐个 `gh attestation verify --repo alicia1030su/search-hub` PASS；GHCR 镜像 `oci://ghcr.io/alicia1030su/search-hub:0.1.17` attestation 亦 PASS |
+| GHCR | PASS：`ghcr.io/alicia1030su/search-hub` 的 `0.1.17`、`v0.1.17`、`latest` 均指向 `sha256:b5e738281bbc22118bfbe30d4052f9fd78a42eabd456e27bf4c6ab21aa81e98a`；本机独立复核 formatted digest 与三 tag raw manifest SHA256 均为 `b5e73828…`；mediaType `application/vnd.oci.image.manifest.v1+json`；config `sha256:fe4802f3e308b5caef7564acaa667621c4d2472b98a1d2f5952664cffa5701cd`；平台 `linux/amd64` |
+| README 与发布文档 | PASS：tag 中 `README.md` / `README_EN.md` 均为 `v0.1.17 Stable`，包含真实 Release 链接与四张 v0.1.17 截图，无 `CAPTURE_REQUIRED` 占位 |
+| 发布边界 | PASS：没有额外 Beta/RC；annotated tag 未移动；promoter 未重复构建或重新 attestation |
+
+### Release 资产
+
+| 资产 | 大小（bytes） | SHA256 |
+|---|---:|---|
+| `search-hub-v0.1.17-windows-x64.zip` | 75406498 | `sha256:dfa1061199f429b30bf85ddfa91c8d8fd19d58e553349573aa62b8a76f659def` |
+| `search-hub-v0.1.17-linux-x64.tar.gz` | 50937727 | `sha256:460545c5b186439dd698e4a48759ffa8ea29055adaa337dcde35fee3a006fef2` |
+| `search-hub-v0.1.17-linux-arm64.tar.gz` | 50743916 | `sha256:ad221f1331a627cbadb7425f63c553d744b4437b084f987322636a2f22c49319` |
+| `shub-v0.1.17-windows-x64.zip` | 34780316 | `sha256:a60c52d3b669c7f66d3b37c1a7f9cdb452a4f31c1141df49367fd0f20ec24227` |
+| `shub-v0.1.17-linux-x64.tar.gz` | 42334482 | `sha256:5a582c06a6be8510c1d711f09dedc737b31f74a7f759388024cec15e38b2d3b0` |
+| `shub-v0.1.17-linux-arm64.tar.gz` | 42252475 | `sha256:fb990d79d220e86da2d904bc3c65bd958c416f91b7a1abeb67aa2cdf605843fb` |
+| `shub-v0.1.17-node22.tar.gz` | 576521 | `sha256:529c76764dbc2fe46a5e04fedaaec9d383b52a01009375b6cb709fb002820a39` |
+| `resource-evidence.json` | 1300 | `sha256:e51df2c94f3272e313890e1f368decbc43b0e6125b9deb7d080e896abaeaf93d` |
+| `SHA256SUMS` | 778 | `sha256:a784145a4a8397476083a7cfe86e76f45745ef874224a4e706a885fdd19cb75e` |
+
+### 未公开过程记录（不计入 Stable PASS）
+
+- main CI `45988560913` 的 Windows cache job 在 T15 断言通过后清理临时目录时遇到 `EBUSY`；PR #69 为 `rmSync` 增加有界重试，Windows 本地 27/27 与最终 main 门禁均通过。
+- 首个 candidate `45994384870` 的 Windows 包健康检查超时，未产生 Release；同一 exact SHA 重跑 `45996142907` 后 12/12 jobs 全 PASS。
+- 本机首次 M04 预检因可用物理内存不足返回 `resource_blocked`，未开始基准；随后在 GitHub Runner 对同一 exact SHA 运行 `46003141977` 并取得上述 PASS 证据。
+
 ## v0.1.16 Stable（2026-11-27）
 
 > 本节只记录已经执行并取得的最终事实。状态词使用 `PASS`、`FAIL`、`BLOCKED`、`NOT TESTED`、`NOT IMPLEMENTED`；未公开的过程失败单独保留，不计入 Stable PASS。
