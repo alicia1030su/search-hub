@@ -1,5 +1,46 @@
 # 发布就绪报告
 
+## v0.1.16 Stable（2026-11-27）
+
+> 本节只记录已经执行并取得的最终事实。状态词使用 `PASS`、`FAIL`、`BLOCKED`、`NOT TESTED`、`NOT IMPLEMENTED`；未公开的过程失败单独保留，不计入 Stable PASS。
+
+| 项 | 状态 |
+|---|---|
+| 发布源与不可变 tag | PASS：`main` commit `4225dfb97dc4f4377e30d0c5050a6b838d04a85e`；annotated tag `v0.1.16` → tag object `9b9e002d52af3d089353db1439e29e8fb2c393dc` → 该 commit，类型为 `tag`，未移动 |
+| 五条 main 门禁 | PASS：CI `45927401098`、CLI `45927400968`、Docker `45927401038`、systemd `45927400965`、Upgrade `45927401001` 均 success |
+| 最终候选与 preflight | PASS：candidate run `45928720894` attempt 1，12/12 jobs success；preflight `tagCreationAllowed=true`，报告 `artifacts/v0.1.16/release-gate.json` |
+| 自动 promoter | PASS：tag push 触发 run `45929933504`，5/5 jobs success；只提升已校验候选字节，未重建发布包、CLI 或镜像 |
+| GitHub Release | PASS：<https://github.com/alicia1030su/search-hub/releases/tag/v0.1.16>，`publishedAt=2026-11-27T02:48:57Z`，`draft=false`、`prerelease=false`，`/releases/latest=v0.1.16` |
+| Release 资产元数据 | PASS：9 个资产全部 `uploaded`；名称、大小与 digest 见下表 |
+| 最终 DR gate | PASS：R01–R38/A01–A12 共 50 项全 PASS，485 份证据；gate SHA256 `4df1d4cfcd5ee65276807e8d63a2d862b46a37ad64bf0f622747f981b09e496f`，sums SHA256 `def6ea696729c8cb41e8dfa5cb20df17f1e1daf54c6b138c6f984703ba0234fb`，code fingerprint `9d9af5fa0e52f24c2bf1924eeb47c25ea25b18d2d80b6b22866f86e10c277b7f` |
+| 候选 Provenance 与 promoter 校验 | PASS：SLSA predicate `https://slsa.dev/provenance/v1`；signer `release-candidate.yml@refs/heads/main`；source SHA `4225dfb97dc4f4377e30d0c5050a6b838d04a85e`；invocation `45928720894/attempts/1`；promoter 的候选字节与 attestation 验证 job PASS |
+| 独立发布后 attestation 复验 | NOT TESTED：独立 `gh attestation verify` 仍在下载资产后执行，完成前不声明 PASS |
+| GHCR | PASS：`ghcr.io/alicia1030su/search-hub` 的 `0.1.16`、`v0.1.16`、`latest` 均指向 `sha256:bbd9efdfdfc2c6354d152a8db46eaf4ac0a56cd42eaf01ca38d007434be78066`；mediaType `application/vnd.oci.image.manifest.v1+json`；config `sha256:d5b0c445611215dc77fefa7a87413a59f33c009c9762443824b9b12b32f196eb`；平台 `linux/amd64` |
+| README 与发布文档 | PASS：tag 中 `README.md` / `README_EN.md` 均为 `v0.1.16 Stable`，包含真实 Release 链接，无 `CAPTURE_REQUIRED` 占位 |
+| 发布边界 | PASS：没有额外 Beta/RC；annotated tag 未移动；手动 tag-ref dispatch 被 main-only 条件跳过，无副作用，不计入发布失败 |
+
+### Release 资产
+
+| 资产 | 大小（bytes） | SHA256 |
+|---|---:|---|
+| `search-hub-v0.1.16-windows-x64.zip` | 75395651 | `sha256:a526019f735693dbd92c5f48754b58273ef747d7bd606ac0ac0804282e3b701f` |
+| `search-hub-v0.1.16-linux-x64.tar.gz` | 50937803 | `sha256:58ae54d0d1caa623d0df91b10ab5f2b48cd6b33f4c774361dd24bba5d488200d` |
+| `search-hub-v0.1.16-linux-arm64.tar.gz` | 50723430 | `sha256:18a46233c4bb998cc4edae592445d147a49f27da2c7527cd9f7306ee7562c985` |
+| `shub-v0.1.16-windows-x64.zip` | 34780268 | `sha256:143661606b2f713cfde7ebce075060950a07c5c78c3586736c2cc72ffab44a02` |
+| `shub-v0.1.16-linux-x64.tar.gz` | 42334494 | `sha256:a0b9495e9746c2ff5a84ef6dfa0e48a37b8ab5738709d052ebd6024d4616c0bc` |
+| `shub-v0.1.16-linux-arm64.tar.gz` | 42253663 | `sha256:6895dc1ce1a88da52106d433fe5a4f878b4af97142e03e851ad1ba5c9e6fa28a` |
+| `shub-v0.1.16-node22.tar.gz` | 576412 | `sha256:31e04a733dfa62d961cdb6ff82a099c474a4ad37707768aebd5ca46f0621518c` |
+| `resource-evidence.json` | 1300 | `sha256:3e84b3d052526470787b567644fe58bdaddb85660d7d00d9eae49342fd3e093c` |
+| `SHA256SUMS` | 778 | `sha256:212b58765c5c43004686d3df5ae687b0b61279eb0b4d87d01c8c902a5318b215` |
+
+### 未公开过程记录（不计入 Stable PASS）
+
+- 旧候选 `45916434477`：包验收 Token scope 问题，未发布。
+- 旧候选 `45922029812`：systemd 同版本阻止回滚，未发布。
+- 旧候选 `45924635975`：systemd 版本文件路径假设问题，未发布。
+- Docker gate `efdb181`：`libpam` CVE-2025-6020，未发布；最终 `4225dfb` 已通过。
+- 手动 run `45929960089`：从 tag ref dispatch 被工作流 main-only 条件跳过，无副作用，不记为发布失败。
+
 ## v0.1.15 发布流程（候选 → 提升，不重复构建）
 
 > 本节只定义流程与门禁，不记录尚未发生的候选运行、tag、Release 或 GHCR 发布事实。真实结果只能在对应命令或工作流成功后追加。
