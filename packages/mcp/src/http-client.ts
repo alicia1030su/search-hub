@@ -1,6 +1,6 @@
 import type { ProviderInstance, ProviderRuntimeSnapshot, SearchRequest, SearchResponse } from "@search-hub/shared";
 import { SearchHubError } from "@search-hub/shared";
-import type { McpHealthSnapshot, McpProviderService, McpSearchService } from "./tools.js";
+import type { McpHealthSnapshot, McpProviderService, McpSearchService, McpWebpageService } from "./tools.js";
 
 /**
  * stdio mode is a thin proxy over the REST API.
@@ -31,6 +31,29 @@ export class HttpSearchService implements McpSearchService {
       throw new SearchHubError("server_error", message);
     }
     return body as SearchResponse;
+  }
+}
+
+export class HttpWebpageService implements McpWebpageService {
+  constructor(
+    private readonly baseUrl: string,
+    private readonly token: string,
+  ) {}
+
+  async read(url: string, options: { maxContentChars?: number } = {}): Promise<unknown> {
+    const response = await fetch(`${this.baseUrl.replace(/\/+$/, "")}/api/web/read`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.token}`,
+      },
+      body: JSON.stringify({ url, ...options }),
+    });
+    const body = (await response.json().catch(() => null)) as unknown;
+    // 422 is a successful fetch with a classified, unusable page. Preserve its
+    // structured result so the MCP tool can report readStatus/reasonCode.
+    if (response.ok || response.status === 422) return body;
+    throw new SearchHubError("server_error", "Webpage reading is unavailable on this Search Hub server");
   }
 }
 

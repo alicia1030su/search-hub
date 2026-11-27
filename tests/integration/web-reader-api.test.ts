@@ -75,6 +75,54 @@ async function createHarness(fetchResult: SafeFetchResponse<string> | Error = re
   return harness;
 }
 
+async function mcpWebpageCall(harness: Harness, url: string) {
+  const response = await harness.app.inject({
+    method: "POST",
+    url: "/mcp",
+    headers: {
+      authorization: `Bearer ${harness.token}`,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    payload: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "fetch_webpage", arguments: { url, maxContentChars: 500 } },
+    },
+  });
+  expect(response.statusCode).toBe(200);
+  const body = response.body.trim();
+  const dataLines = body.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim());
+  const rpc = JSON.parse(body.startsWith("{") ? body : dataLines[dataLines.length - 1]!) as { result: { isError?: boolean; content: Array<{ text: string }> } };
+  return { isError: rpc.result.isError === true, payload: JSON.parse(rpc.result.content[0]!.text) as Record<string, unknown> };
+}
+
+describe("MCP fetch_webpage integration", () => {
+  it("reads a page through the injected API service", async () => {
+    const harness = await createHarness();
+    const result = await mcpWebpageCall(harness, "https://example.com/");
+    expect(result.isError).toBe(false);
+    expect(result.payload).toMatchObject({ readStatus: "ok", reasonCode: "ok", title: "Readable page" });
+    expect(result.payload["content"]).toContain("# Readable page");
+  });
+
+  it("preserves classified 422 results as MCP tool results", async () => {
+    const harness = await createHarness(response("<html><head><title>Login</title></head><body><form action='/login'><input type='password'></form></body></html>"));
+    const result = await mcpWebpageCall(harness, "https://example.com/private");
+    expect(result.isError).toBe(true);
+    expect(result.payload).toMatchObject({ readStatus: "login_required", reasonCode: "login_required", content: null });
+  });
+
+  it("does not leak network error details through MCP", async () => {
+    const harness = await createHarness(new SearchHubError("network", "failed?token=secret"));
+    const result = await mcpWebpageCall(harness, "https://example.com/?token=secret");
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.payload)).toContain("Webpage request failed");
+    expect(JSON.stringify(result.payload)).not.toContain("secret");
+  });
+});
+
 describe("POST /api/web/read", () => {
   it("requires authentication before fetching", async () => {
     const harness = await createHarness();

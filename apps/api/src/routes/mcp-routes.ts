@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createMcpHttpHandler } from "@search-hub/mcp";
+import { fetchWebpage } from "@search-hub/core";
 import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
 import { authenticate } from "../auth.js";
@@ -10,6 +11,9 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
   const handler = createMcpHttpHandler({
     search: {
       execute: (request, options) => ctx.search.execute(request, options),
+    },
+    webpage: {
+      read: (url, options) => fetchWebpage(url, { fetch: ctx.fetch, maxContentChars: options?.maxContentChars }),
     },
     providers: {
       list: async () =>
