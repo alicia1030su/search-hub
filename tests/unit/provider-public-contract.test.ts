@@ -10,7 +10,18 @@ import {
   type SafeFetch,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { arxivAdapter, githubAdapter, wikipediaAdapter } from "@search-hub/providers";
+import {
+  arxivAdapter,
+  braveAdapter,
+  callJson,
+  crossrefAdapter,
+  europepmcAdapter,
+  githubAdapter,
+  openalexAdapter,
+  pubmedAdapter,
+  semanticscholarAdapter,
+  wikipediaAdapter,
+} from "@search-hub/providers";
 import { executeSearch, type ProviderRuntime } from "@search-hub/core";
 
 const servers: Server[] = [];
@@ -171,12 +182,18 @@ async function throughSearchEngine(
 
 describe("public provider HTTP and response contracts", () => {
   it.each([
-    { name: "Wikipedia", type: "wikipedia", adapter: wikipediaAdapter, body: wikipediaPayload([]), typeHeader: "application/json" },
+    { name: "Brave", type: "brave", adapter: braveAdapter, body: { web: { results: [] } }, typeHeader: "application/json" },
+    { name: "OpenAlex", type: "openalex", adapter: openalexAdapter, body: { results: [] }, typeHeader: "application/json" },
+    { name: "Crossref", type: "crossref", adapter: crossrefAdapter, body: { message: { items: [] } }, typeHeader: "application/json" },
+    { name: "Semantic Scholar", type: "semanticscholar", adapter: semanticscholarAdapter, body: { data: [] }, typeHeader: "application/json" },
+    { name: "Europe PMC", type: "europepmc", adapter: europepmcAdapter, body: { resultList: { result: [] } }, typeHeader: "application/json" },
+    { name: "PubMed", type: "pubmed", adapter: pubmedAdapter, body: { esearchresult: { idlist: [] } }, typeHeader: "application/json" },
     { name: "arXiv", type: "arxiv", adapter: arxivAdapter, body: arxivXml(0), typeHeader: "application/atom+xml" },
+    { name: "Wikipedia", type: "wikipedia", adapter: wikipediaAdapter, body: wikipediaPayload([]), typeHeader: "application/json" },
     { name: "GitHub", type: "github", adapter: githubAdapter, body: githubPayload([]), typeHeader: "application/json" },
   ])("$name accepts a valid empty result", async ({ type, adapter, body, typeHeader }) => {
     const { baseUrl } = await startServer(() => ({ body: serializeBody(body), type: typeHeader }));
-    const ctx = providerContext(type, baseUrl);
+    const ctx = providerContext(type, baseUrl, type === "brave" ? { apiKey: "stub" } : {});
 
     const output = await adapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx);
 
@@ -216,6 +233,55 @@ describe("public provider HTTP and response contracts", () => {
 
   it.each([
     {
+      name: "Brave",
+      type: "brave",
+      adapter: braveAdapter,
+      body: JSON.stringify({ unexpected: [] }),
+      typeHeader: "application/json",
+    },
+    {
+      name: "OpenAlex",
+      type: "openalex",
+      adapter: openalexAdapter,
+      body: JSON.stringify({ results: "not-an-array" }),
+      typeHeader: "application/json",
+    },
+    {
+      name: "Crossref",
+      type: "crossref",
+      adapter: crossrefAdapter,
+      body: JSON.stringify({ message: { items: "not-an-array" } }),
+      typeHeader: "application/json",
+    },
+    {
+      name: "Semantic Scholar",
+      type: "semanticscholar",
+      adapter: semanticscholarAdapter,
+      body: JSON.stringify({ data: "not-an-array" }),
+      typeHeader: "application/json",
+    },
+    {
+      name: "Europe PMC",
+      type: "europepmc",
+      adapter: europepmcAdapter,
+      body: JSON.stringify({ resultList: { result: "not-an-array" } }),
+      typeHeader: "application/json",
+    },
+    {
+      name: "PubMed",
+      type: "pubmed",
+      adapter: pubmedAdapter,
+      body: JSON.stringify({ esearchresult: { idlist: "not-an-array" } }),
+      typeHeader: "application/json",
+    },
+    {
+      name: "arXiv",
+      type: "arxiv",
+      adapter: arxivAdapter,
+      body: "<html><body>not an Atom feed</body></html>",
+      typeHeader: "application/html",
+    },
+    {
       name: "Wikipedia",
       type: "wikipedia",
       adapter: wikipediaAdapter,
@@ -229,16 +295,9 @@ describe("public provider HTTP and response contracts", () => {
       body: JSON.stringify({ items: "not-an-array" }),
       typeHeader: "application/json",
     },
-    {
-      name: "arXiv",
-      type: "arxiv",
-      adapter: arxivAdapter,
-      body: "<html><body>not an Atom feed</body></html>",
-      typeHeader: "application/html",
-    },
   ])("$name rejects a structurally incompatible HTTP 200 response", async ({ type, adapter, body, typeHeader }) => {
     const { baseUrl } = await startServer(() => ({ body, type: typeHeader }));
-    const ctx = providerContext(type, baseUrl);
+    const ctx = providerContext(type, baseUrl, type === "brave" ? { apiKey: "stub" } : {});
 
     await expect(
       adapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx),
@@ -261,6 +320,43 @@ describe("public provider HTTP and response contracts", () => {
     await expect(
       adapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx),
     ).rejects.toMatchObject({ code: "rate_limited", retryAfterMs: 7_000 });
+  });
+
+  it.each([
+    { status: 408, code: "timeout" },
+    { status: 504, code: "timeout" },
+    { status: 500, code: "server_error" },
+    { status: 502, code: "server_error" },
+    { status: 503, code: "server_error" },
+  ])("maps HTTP $status to $code in callJson", async ({ status, code }) => {
+    const fetch: SafeFetch = async () => {
+      throw new SearchHubError("bad_request", `upstream ${status}`, {
+        status,
+        details: { upstreamStatus: status },
+        retryable: true,
+      });
+    };
+    const ctx = providerContext("brave", "https://stub.invalid", { fetch });
+
+    await expect(
+      callJson(ctx, { url: "https://stub.invalid", method: "GET" }),
+    ).rejects.toMatchObject({ code, statusCode: status, retryable: true });
+  });
+
+  it("preserves Retry-After when callJson maps HTTP 429", async () => {
+    const fetch: SafeFetch = async () => {
+      throw new SearchHubError("bad_request", "rate limited", {
+        status: 429,
+        details: { upstreamStatus: 429 },
+        retryable: true,
+        retryAfterMs: 7_000,
+      });
+    };
+    const ctx = providerContext("brave", "https://stub.invalid", { fetch });
+
+    await expect(
+      callJson(ctx, { url: "https://stub.invalid", method: "GET" }),
+    ).rejects.toMatchObject({ code: "rate_limited", statusCode: 429, retryAfterMs: 7_000 });
   });
 
   it.each([
@@ -309,6 +405,32 @@ describe("public provider HTTP and response contracts", () => {
     const githubUrl = new URL(github.requests[0]!.url, github.baseUrl);
     expect(githubUrl.searchParams.get("page")).toBe("1");
     expect(githubUrl.searchParams.get("per_page")).toBe("5");
+  });
+
+  it("continues Brave pagination when a full page contains an invalid row", async () => {
+    const { baseUrl, requests } = await startServer((request) => {
+      const url = new URL(request.url, "http://stub.invalid");
+      const offset = Number(url.searchParams.get("offset") ?? "0");
+      const items = Array.from({ length: 20 }, (_, index) => ({
+        title: `Result ${offset}-${index}`,
+        url: offset === 0 && index === 0 ? "" : `https://example.com/${offset}/${index}`,
+        description: "snippet",
+      }));
+      return { body: JSON.stringify({ web: { results: items } }) };
+    });
+    const ctx = providerContext("brave", baseUrl, { apiKey: "stub" });
+    ctx.config.search = {
+      targetResults: 40,
+      maxPages: 2,
+      maxRequestsPerSearch: 2,
+      pageSize: 20,
+    };
+
+    const output = await braveAdapter.search({ query: "x", limit: 40, signal: ctx.signal }, ctx);
+
+    expect(requests).toHaveLength(2);
+    expect(output.results).toHaveLength(39);
+    expect(output.warnings?.join(" ")).not.toContain("in 1 request");
   });
 
   it.each([
