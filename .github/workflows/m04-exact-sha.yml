@@ -1,0 +1,39 @@
+name: M04 exact SHA verification
+
+on:
+  push:
+    branches:
+      - verify/v0117-m04
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Run M04 on exact release SHA
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: a2850853cf5ddfc99b5135b8a2b314a7a4a1e7ec
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          version: 12.18.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.22.2
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run exact-SHA M04 benchmark
+        run: node --import tsx scripts/bench-resources.mjs --rows 100000 --warmup 100 --requests 1000
+      - name: Upload M04 evidence
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: m04-v0.1.17-a2850853cf5ddfc99b5135b8a2b314a7a4a1e7ec
+          path: artifacts/v0.1.17/*/resources-benchmark.json
+          if-no-files-found: error
+          retention-days: 30
