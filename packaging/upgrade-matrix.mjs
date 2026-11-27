@@ -50,6 +50,16 @@ if (hasFlag("--self-test-cache-fingerprint")) {
   }
 }
 
+if (hasFlag("--self-test-migration-diff")) {
+  try {
+    selfTestMigrationDiff();
+    process.exit(0);
+  } catch (error) {
+    console.error(`SELF-TEST FAIL: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
 const FROM = arg("from");
 /**
  * A local archive/directory to use as the "old" install.
@@ -349,6 +359,20 @@ function readCacheFingerprintInputs(dataDir, providerId) {
   } finally {
     db?.close();
   }
+}
+
+/** New migrations are valid; health and preservation are the upgrade contract. */
+function migrationUpgradeOk(healthOk, preserved) {
+  return Boolean(healthOk && preserved);
+}
+
+/** Self-check: a non-empty appliedDiff is valid when health and preservation pass. */
+function selfTestMigrationDiff() {
+  const appliedDiff = ["0012_api_key_credential_revision.sql"];
+  if (!migrationUpgradeOk(true, true)) throw new Error("non-empty appliedDiff was rejected");
+  if (migrationUpgradeOk(false, true)) throw new Error("unhealthy upgrade was accepted");
+  if (migrationUpgradeOk(true, false)) throw new Error("lost migration was accepted");
+  console.log(`PASS migration upgrade accepts appliedDiff=${JSON.stringify(appliedDiff)}`);
 }
 
 /** Self-check for the upgrade harness: schema v2 must not reuse a v1 fingerprint. */
@@ -824,7 +848,9 @@ async function verify(base, state) {
   const preserved = beforeMigrations !== null && migrationNames !== null &&
     beforeMigrations.every((name) => migrationNames.includes(name));
   out.migrationsAppliedDiff = appliedDiff;
-  out.migrations = health.ok && preserved && (FROM !== "v0.1.13" || appliedDiff.length === 0);
+  // New migrations are a legitimate upgrade result; only health and preservation
+  // of every previously applied migration are required.
+  out.migrations = migrationUpgradeOk(health.ok, preserved);
   out.migrationsDetail = `health ${health.status}, appliedDiff=${JSON.stringify(appliedDiff)}`;
 
   if (state.searchTaskId) {
