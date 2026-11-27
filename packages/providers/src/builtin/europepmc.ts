@@ -6,7 +6,7 @@ import {
   type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson } from "../http.js";
+import { callJson, expectArray, expectObject } from "../http.js";
 
 const DEFAULT_BASE_URL = "https://www.ebi.ac.uk";
 
@@ -61,9 +61,9 @@ export const europepmcAdapter: SearchProviderAdapter = {
       headers: { accept: "application/json" },
     });
 
-    const payload = response.data as Record<string, unknown>;
-    const resultList = (payload["resultList"] ?? {}) as Record<string, unknown>;
-    const items = Array.isArray(resultList["result"]) ? (resultList["result"] as EuropePmcRecord[]) : [];
+    const payload = expectObject(ctx, response.data, "Europe PMC response");
+    const resultList = expectObject(ctx, payload["resultList"], "Europe PMC resultList");
+    const items = expectArray(ctx, resultList["result"], "Europe PMC result") as EuropePmcRecord[];
 
     const results: RawSearchResult[] = [];
     for (const item of items) {

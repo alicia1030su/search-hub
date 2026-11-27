@@ -5,7 +5,7 @@ import type {
   SafeFetch,
   SafeFetchResponse,
 } from "@search-hub/shared";
-import { arxivAdapter, githubAdapter, wikipediaAdapter } from "@search-hub/providers";
+import { arxivAdapter, githubAdapter, wikipediaAdapter, resetProviderRateLimitsForTests } from "@search-hub/providers";
 
 const REPOSITORY_URL = "https://github.com/alicia1030su/search-hub";
 
@@ -79,6 +79,7 @@ function githubEmpty(): unknown {
 }
 
 beforeEach(() => {
+  resetProviderRateLimitsForTests();
   vi.useFakeTimers();
   vi.setSystemTime(0);
 });
@@ -92,14 +93,14 @@ describe("public provider rate limits", () => {
     const starts: number[] = [];
     let inFlight = 0;
     let maxInFlight = 0;
-    const fetch: SafeFetch = async () => {
+    const fetch = (async () => {
       starts.push(Date.now());
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
       await Promise.resolve();
       inFlight -= 1;
       return response(arxivXml(), 200, { "content-type": "application/atom+xml" });
-    };
+    }) as SafeFetch;
     const ctx = providerContext("arxiv", fetch);
 
     const first = arxivAdapter.search({ query: "first", limit: 1, signal: ctx.signal }, ctx);
@@ -114,10 +115,10 @@ describe("public provider rate limits", () => {
 
   it("sends the full repository URL in Wikipedia's default User-Agent", async () => {
     let userAgent = "";
-    const fetch: SafeFetch = async (_url, init) => {
+    const fetch = (async (_url: string, init?: Parameters<SafeFetch>[1]) => {
       userAgent = new Headers(init?.headers).get("user-agent") ?? "";
       return response(wikipediaEmpty());
-    };
+    }) as SafeFetch;
     const ctx = providerContext("wikipedia", fetch);
 
     await wikipediaAdapter.search({ query: "x", limit: 1, signal: ctx.signal }, ctx);
@@ -129,14 +130,14 @@ describe("public provider rate limits", () => {
     const starts: number[] = [];
     let inFlight = 0;
     let maxInFlight = 0;
-    const fetch: SafeFetch = async () => {
+    const fetch = (async () => {
       starts.push(Date.now());
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
       await Promise.resolve();
       inFlight -= 1;
       return response(wikipediaEmpty());
-    };
+    }) as SafeFetch;
     const ctx = providerContext("wikipedia", fetch);
 
     const pending = Array.from({ length: 65 }, () =>
@@ -151,10 +152,10 @@ describe("public provider rate limits", () => {
 
   it("keeps keyless GitHub at or below 10 requests per minute", async () => {
     const starts: number[] = [];
-    const fetch: SafeFetch = async () => {
+    const fetch = (async () => {
       starts.push(Date.now());
       return response(githubEmpty());
-    };
+    }) as SafeFetch;
     const ctx = providerContext("github", fetch);
 
     const pending = Array.from({ length: 12 }, () =>
@@ -168,10 +169,10 @@ describe("public provider rate limits", () => {
 
   it("keeps keyless GitHub at or below 60 requests per hour", async () => {
     const starts: number[] = [];
-    const fetch: SafeFetch = async () => {
+    const fetch = (async () => {
       starts.push(Date.now());
       return response(githubEmpty());
-    };
+    }) as SafeFetch;
     const ctx = providerContext("github", fetch);
     const pending: Array<ReturnType<typeof githubAdapter.search>> = [];
 
@@ -187,10 +188,10 @@ describe("public provider rate limits", () => {
 
   it("rejects keyless GitHub code search before sending a request", async () => {
     let requests = 0;
-    const fetch: SafeFetch = async () => {
+    const fetch = (async () => {
       requests += 1;
       return response(githubEmpty());
-    };
+    }) as SafeFetch;
     const ctx = providerContext("github", fetch, { config: { kind: "code" } });
 
     await expect(

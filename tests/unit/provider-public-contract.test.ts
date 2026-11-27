@@ -10,7 +10,7 @@ import {
   type SafeFetch,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { arxivAdapter, githubAdapter, wikipediaAdapter } from "@search-hub/providers";
+import { arxivAdapter, braveAdapter, githubAdapter, wikipediaAdapter } from "@search-hub/providers";
 import { executeSearch, type ProviderRuntime } from "@search-hub/core";
 
 const servers: Server[] = [];
@@ -286,6 +286,25 @@ describe("public provider HTTP and response contracts", () => {
     setTimeout(() => controller.abort(), 10);
     await vi.advanceTimersByTimeAsync(10);
     await assertion;
+  });
+
+  it("continues Brave pagination when a full raw page contains an unmappable row", async () => {
+    const { baseUrl, requests } = await startServer((_request, index) => {
+      const rows = Array.from({ length: 20 }, (_, row) => ({
+        title: `Page ${index + 1} row ${row + 1}`,
+        url: index === 0 && row === 0 ? "" : `https://example.org/brave-${index + 1}-${row + 1}`,
+        description: "stub",
+      }));
+      return { body: JSON.stringify({ web: { results: rows } }) };
+    });
+    const ctx = providerContext("brave", baseUrl, { apiKey: "sk-BRAVE-CONTRACT-0000000000" });
+    ctx.config.search = { targetResults: 40, maxPages: 2, maxRequestsPerSearch: 2, pageSize: 20 };
+
+    const output = await braveAdapter.search({ query: "x", limit: 40, signal: ctx.signal }, ctx);
+
+    expect(requests).toHaveLength(2);
+    expect(output.results).toHaveLength(39);
+    expect(output.warnings ?? []).toHaveLength(0);
   });
 
   it("keeps non-paginated public providers on their documented first-page parameters", async () => {

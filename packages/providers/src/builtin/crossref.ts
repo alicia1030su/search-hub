@@ -6,7 +6,7 @@ import {
   type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson } from "../http.js";
+import { callJson, expectArray, expectObject } from "../http.js";
 
 const DEFAULT_BASE_URL = "https://api.crossref.org";
 
@@ -65,9 +65,9 @@ export const crossrefAdapter: SearchProviderAdapter = {
       headers: { accept: "application/json" },
     });
 
-    const payload = response.data as Record<string, unknown>;
-    const message = (payload["message"] ?? {}) as Record<string, unknown>;
-    const items = Array.isArray(message["items"]) ? (message["items"] as CrossrefWork[]) : [];
+    const payload = expectObject(ctx, response.data, "Crossref response");
+    const message = expectObject(ctx, payload["message"], "Crossref message");
+    const items = expectArray(ctx, message["items"], "Crossref items") as CrossrefWork[];
 
     const results: RawSearchResult[] = [];
     for (const item of items) {

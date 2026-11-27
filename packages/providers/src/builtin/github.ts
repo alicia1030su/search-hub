@@ -1,11 +1,13 @@
 import {
+  ProviderError,
   type ProviderContext,
   type ProviderSearchInput,
   type ProviderSearchOutput,
   type ProviderTestResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson, mapItem } from "../http.js";
+import { callJson, expectArray, expectObject, mapItem } from "../http.js";
+import { providerRateLimitKey, withProviderRateLimit } from "../rate-limit.js";
 
 const DEFAULT_BASE_URL = "https://api.github.com";
 
@@ -47,6 +49,14 @@ export const githubAdapter: SearchProviderAdapter = {
     const target = Math.max(1, Math.min(100, search?.targetResults ?? input.limit));
     const kindRaw = ctx.config.config["kind"];
     const kind = kindRaw === "code" || kindRaw === "issues" ? kindRaw : "repositories";
+    if (kind === "code" && !ctx.apiKey) {
+      throw new ProviderError(
+        ctx.config.id,
+        "github",
+        "auth_invalid",
+        "GitHub code search requires an access token; repository search remains available without one.",
+      );
+    }
 
     const url = new URL(`${baseUrl}/search/${kind}`);
     url.searchParams.set("q", input.query);
@@ -58,9 +68,26 @@ export const githubAdapter: SearchProviderAdapter = {
     const headers: Record<string, string> = { accept: "application/vnd.github+json" };
     if (ctx.apiKey) headers["authorization"] = `Bearer ${ctx.apiKey}`;
 
-    const response = await callJson(ctx, { url: url.toString(), method: "GET", headers });
-    const payload = response.data as Record<string, unknown>;
-    const items = Array.isArray(payload["items"]) ? (payload["items"] as GithubRepo[]) : [];
+    const mode = ctx.apiKey ? "authenticated" : "keyless";
+    const policy = kind === "code"
+      ? { maxPerMinute: 10, maxInFlight: 1 }
+      : ctx.apiKey
+        ? { maxPerMinute: 30, maxInFlight: 2 }
+        : { maxPerMinute: 10, maxPerHour: 60, maxInFlight: 1 };
+    const response = await withProviderRateLimit(
+      providerRateLimitKey("github", baseUrl, `${mode}:${kind}`),
+      policy,
+      () => callJson(ctx, { url: url.toString(), method: "GET", headers }),
+    );
+    const payload = expectObject(ctx, response.data, "GitHub response");
+    if (typeof payload["message"] === "string" && payload["items"] === undefined) {
+      const message = payload["message"];
+      if (/rate limit/i.test(message)) {
+        throw new ProviderError(ctx.config.id, "github", "rate_limited", message, { retryable: true });
+      }
+      throw new ProviderError(ctx.config.id, "github", "bad_request", `GitHub returned a business error: ${message.slice(0, 200)}`);
+    }
+    const items = expectArray(ctx, payload["items"], "GitHub items") as GithubRepo[];
 
     const results = items
       .map((item) => {
@@ -79,6 +106,9 @@ export const githubAdapter: SearchProviderAdapter = {
       .slice(0, input.limit);
 
     const warnings: string[] = ["GitHub search covers repositories/issues/code only, not the general web."];
+    if (payload["incomplete_results"] === true) {
+      warnings.push("GitHub reported incomplete_results; the result set may be partial.");
+    }
     if (!ctx.apiKey) {
       warnings.push("Unauthenticated GitHub search is limited to 10 requests/minute; add a token for a higher limit.");
     }

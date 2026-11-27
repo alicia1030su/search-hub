@@ -8,7 +8,7 @@ import {
   type SearchProviderAdapter,
 } from "@search-hub/shared";
 import { callJson, mapItem } from "../http.js";
-import { paginate } from "../pagination.js";
+import { paginate, type PaginatedPage } from "../pagination.js";
 
 const DEFAULT_BASE_URL = "https://google.serper.dev";
 
@@ -43,7 +43,7 @@ export const serperAdapter: SearchProviderAdapter = {
     const region = search?.region ?? (ctx.config.config["gl"] as string | undefined);
     const language = input.language ?? ctx.config.language ?? undefined;
 
-    const fetchPage = async (index: number, pageSize: number): Promise<RawSearchResult[]> => {
+    const fetchPage = async (index: number, pageSize: number): Promise<PaginatedPage> => {
       const body: Record<string, unknown> = {
         q: input.query,
         num: Math.max(1, Math.min(MAX_NUM, Math.trunc(pageSize || input.limit))),
@@ -62,7 +62,7 @@ export const serperAdapter: SearchProviderAdapter = {
       });
       const payload = response.data as Record<string, unknown>;
       const organic = Array.isArray(payload["organic"]) ? payload["organic"] : [];
-      return organic
+      const mapped = organic
         .map((item) => {
           const mapped = mapItem(item, {
             titlePaths: ["title"],
@@ -75,11 +75,12 @@ export const serperAdapter: SearchProviderAdapter = {
           return typeof position === "number" ? { ...mapped, upstreamRank: position } : mapped;
         })
         .filter((item): item is RawSearchResult => item !== null);
+      return { items: mapped, rawCount: organic.length };
     };
 
     if (!search) {
       const single = await fetchPage(0, input.limit);
-      return { results: single.slice(0, input.limit), requestUrl: `${baseUrl}/search` };
+      return { results: single.items.slice(0, input.limit), requestUrl: `${baseUrl}/search` };
     }
 
     const paged = await paginate({ search, fetchPage, signal: input.signal });

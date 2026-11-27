@@ -6,7 +6,7 @@ import {
   type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson } from "../http.js";
+import { callJson, expectArray, expectObject } from "../http.js";
 
 const DEFAULT_BASE_URL = "https://api.semanticscholar.org";
 
@@ -55,8 +55,8 @@ export const semanticscholarAdapter: SearchProviderAdapter = {
     if (ctx.apiKey) headers["x-api-key"] = ctx.apiKey;
 
     const response = await callJson(ctx, { url: url.toString(), method: "GET", headers });
-    const payload = response.data as Record<string, unknown>;
-    const items = Array.isArray(payload["data"]) ? (payload["data"] as S2Paper[]) : [];
+    const payload = expectObject(ctx, response.data, "Semantic Scholar response");
+    const items = expectArray(ctx, payload["data"], "Semantic Scholar data") as S2Paper[];
 
     const results: RawSearchResult[] = [];
     for (const item of items) {

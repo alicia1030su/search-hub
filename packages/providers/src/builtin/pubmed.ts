@@ -6,7 +6,7 @@ import {
   type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson } from "../http.js";
+import { callJson, expectArray, expectObject } from "../http.js";
 
 const DEFAULT_BASE_URL = "https://eutils.ncbi.nlm.nih.gov";
 
@@ -61,10 +61,10 @@ export const pubmedAdapter: SearchProviderAdapter = {
     if (email) esearch.searchParams.set("email", email);
 
     const searchResponse = await callJson(ctx, { url: esearch.toString(), method: "GET" });
-    const payload = searchResponse.data as ESearchPayload;
-    const idlist = Array.isArray(payload?.esearchresult?.idlist)
-      ? (payload.esearchresult!.idlist as unknown[]).filter((id): id is string => typeof id === "string")
-      : [];
+    const payload = expectObject(ctx, searchResponse.data, "PubMed esearch response");
+    const searchResult = expectObject(ctx, payload["esearchresult"], "PubMed esearchresult");
+    const idlist = expectArray(ctx, searchResult["idlist"], "PubMed idlist")
+      .filter((id): id is string => typeof id === "string");
     if (idlist.length === 0) {
       return { results: [], requestUrl: esearch.toString() };
     }
@@ -77,11 +77,10 @@ export const pubmedAdapter: SearchProviderAdapter = {
     if (email) esummary.searchParams.set("email", email);
 
     const summaryResponse = await callJson(ctx, { url: esummary.toString(), method: "GET" });
-    const summary = summaryResponse.data as Record<string, unknown>;
-    const resultBlock = (summary["result"] ?? {}) as Record<string, unknown>;
-    const uids = Array.isArray(resultBlock["uids"])
-      ? (resultBlock["uids"] as unknown[]).filter((id): id is string => typeof id === "string")
-      : idlist;
+    const summary = expectObject(ctx, summaryResponse.data, "PubMed esummary response");
+    const resultBlock = expectObject(ctx, summary["result"], "PubMed result");
+    const uids = expectArray(ctx, resultBlock["uids"], "PubMed uids")
+      .filter((id): id is string => typeof id === "string");
 
     const results: RawSearchResult[] = [];
     for (const pmid of uids) {

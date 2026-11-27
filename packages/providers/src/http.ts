@@ -166,11 +166,20 @@ export async function callJson(
           cause: error,
         });
       }
-      if (error.status >= 500 || error.status === 408) {
+      if (error.status === 408 || error.status === 504) {
         throw new ProviderError(
           ctx.config.id,
           ctx.config.type,
-          error.status === 408 ? "timeout" : "server_error",
+          "timeout",
+          error.message,
+          { retryable: true, statusCode: error.status, details: error.details, cause: error },
+        );
+      }
+      if (error.status >= 500) {
+        throw new ProviderError(
+          ctx.config.id,
+          ctx.config.type,
+          "server_error",
           error.message,
           { retryable: true, statusCode: error.status, details: error.details, cause: error },
         );

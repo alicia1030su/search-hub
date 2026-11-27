@@ -24,6 +24,7 @@ import {
   closeStubs,
   createProvider,
   startBraveStub,
+  startGroundedStub,
 } from "../helpers/vendor-stubs.js";
 
 /**
@@ -343,6 +344,43 @@ describe("health probes", () => {
     expect(run.statusCode, run.body).toBe(200);
     expect(run.json().results[0].status).toBe("unhealthy");
     expect(run.json().results[0].errorCode).toBe("auth_invalid");
+  });
+
+  it("refuses a grounded connectivity probe before any paid request", async () => {
+    const harness = await createHarness();
+    await allowLocalhost(harness.app, adminHeaders(harness));
+    const stub = await startGroundedStub();
+    const providerId = await createProvider(
+      harness.app,
+      adminHeaders(harness),
+      { name: "grounded", type: "openai-websearch", baseUrl: stub.base },
+    );
+    await addKey(harness.app, adminHeaders(harness), providerId, "sk-GROUNDED-HEALTH-0000000000");
+
+    await expect(harness.ctx.health.checkOne(providerId, { kind: "connect" })).rejects.toThrow(/search probe/i);
+    expect(stub.hits()).toBe(0);
+  });
+
+  it("counts grounded citations as a successful search probe", async () => {
+    const harness = await createHarness();
+    await allowLocalhost(harness.app, adminHeaders(harness));
+    const stub = await startGroundedStub();
+    const providerId = await createProvider(
+      harness.app,
+      adminHeaders(harness),
+      { name: "grounded", type: "openai-websearch", baseUrl: stub.base },
+    );
+    await addKey(harness.app, adminHeaders(harness), providerId, "sk-GROUNDED-HEALTH-0000000000");
+    await harness.app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      ...adminHeaders(harness),
+      payload: { health: { paidProbesEnabled: true, maxRequestsPerRun: 3, maxRequestsPerDay: 10 } },
+    });
+
+    const result = await harness.ctx.health.checkOne(providerId, { kind: "search" });
+    expect(result).toMatchObject({ status: "healthy", cause: "ok", resultCount: 1 });
+    expect(stub.hits()).toBe(1);
   });
 
   it("refuses a paid probe while paid probes are disabled", async () => {

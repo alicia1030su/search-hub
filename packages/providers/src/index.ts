@@ -5,6 +5,7 @@ export * from "./registry.js";
 export * from "./tc3.js";
 export * from "./manifest.js";
 export * from "./pagination.js";
+export * from "./rate-limit.js";
 export * from "./grounded.js";
 export * from "./mcp-client.js";
 export * from "./http.js";
