@@ -139,6 +139,9 @@ Search options:
 Fetch options:
   --max-chars <1..500000>      Maximum Markdown characters to return
 
+Exit codes:
+  9 = page fetched but unavailable (see readStatus/reasonCode)
+
 Provider test options:
   --kind <connect|search> --include-keyless --confirm-cost --key-id <id>
 

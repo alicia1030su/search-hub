@@ -28,6 +28,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("shub fetch", () => {
   it("registers the command and --max-chars option", () => {
     expect(helpText()).toContain("shub fetch <URL> [--max-chars N] [--json]");
+    expect(helpText()).toContain("9 = page fetched but unavailable");
     expect(parseCliArgs(["fetch", "https://example.com", "--max-chars", "100"]).values["max-chars"]).toBe("100");
   });
 
@@ -52,7 +53,7 @@ describe("shub fetch", () => {
     const unavailable = { ...result, content: null, contentLength: 0, readStatus: "captcha", reasonCode: "captcha_detected" };
     const request = vi.fn(async () => { throw new HttpResponseError(422, "unprocessable", "unavailable", unavailable); });
     const code = await runFetch(parseCliArgs(["fetch", "https://example.com"]), clientWith(request), "table");
-    expect(code).toBe(2);
+    expect(code).toBe(9);
     expect(JSON.parse(String(stdout.mock.calls[0]![0]))).toMatchObject({ readStatus: "captcha", reasonCode: "captcha_detected", content: null });
   });
 

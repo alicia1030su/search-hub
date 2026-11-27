@@ -341,7 +341,7 @@ interface RouteDecision {
 - `apps/api/src/services/web-read.ts`：`WebReadService.read(input, {signal, actor})`。
 - `packages/core/src/web/{fetch,extract,classify}.ts`：HTTP 读取、正文提取、B5 分类。
 - `packages/runners/src/{worker,normalize}.ts`：CPU 规范化 worker。
-- `POST /api/web/read`；MCP `read_webpage`；CLI `shub read <url>`；Skill 均调用同一服务。
+- `POST /api/web/read`；MCP `fetch_webpage`；CLI `shub fetch <url>`；Skill 均调用同一服务。
 
 请求 `{url, render?, maxBytes?, timeoutMs?}`；缺省最多 2 MiB、10 秒、5 次重定向。继续复用 SSRF/重定向校验，仅 http(s)，拒绝非文本类型；原始 HTML 不默认返回。普通 HTTP 路径 Chromium 启动次数必须为 0；`render=true` 仅管理员启用时可用。
 

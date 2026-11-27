@@ -1,6 +1,6 @@
 import { numberValue, type ParsedCliArgs } from "../args.js";
 import { ensureCompatible, HttpResponseError, type HttpClient } from "../client/http.js";
-import { usageError } from "../errors/index.js";
+import { EXIT_CODES, usageError } from "../errors/index.js";
 import { diag, writeJson, writeText, type OutputFormat } from "../output/index.js";
 
 interface WebpageReadResponse {
@@ -69,7 +69,7 @@ export async function runFetch(args: ParsedCliArgs, client: HttpClient, format: 
 
   if (failure) {
     diag(`Webpage unavailable: ${response.readStatus} (${response.reasonCode})`);
-    return failure.exitCode;
+    return failure.status === 422 ? EXIT_CODES.content_unavailable : failure.exitCode;
   }
   if (response.truncated) diag("Webpage content was truncated at the requested character limit.");
   return 0;

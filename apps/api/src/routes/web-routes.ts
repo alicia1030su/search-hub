@@ -29,10 +29,17 @@ export function registerWebRoutes(app: FastifyInstance, ctx: AppContext): void {
         { scope: "search" },
       );
       const input = parseInput(webReadSchema, request.body);
+      const controller = new AbortController();
+      const onDisconnect = () => {
+        if (!reply.raw.writableEnded) controller.abort(new Error("client disconnected"));
+      };
+      request.raw.once("aborted", onDisconnect);
+      reply.raw.once("close", onDisconnect);
       let result: WebpageReadResult;
       try {
         result = await fetchWebpage(input.url, {
           fetch: ctx.fetch,
+          signal: controller.signal,
           maxContentChars: input.maxContentChars,
           timeoutMs: input.timeoutMs,
         });
@@ -42,6 +49,9 @@ export function registerWebRoutes(app: FastifyInstance, ctx: AppContext): void {
           throw new SearchHubError(error.code === "timeout" ? "timeout" : "network", message, { status: error.status });
         }
         throw error;
+      } finally {
+        request.raw.removeListener("aborted", onDisconnect);
+        reply.raw.removeListener("close", onDisconnect);
       }
       if (result.readStatus !== "ok") reply.status(422);
       return result;

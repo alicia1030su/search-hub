@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { SearchHubError, type SafeFetch, type SafeFetchResponse } from "@search-hub/shared";
+import { SearchHubError, type SafeFetch, type SafeFetchInit, type SafeFetchResponse } from "@search-hub/shared";
 import { buildApp } from "../../apps/api/src/app.js";
 import { createContext, type AppContext } from "../../apps/api/src/context.js";
 import { loadConfig, type AppConfig } from "../../apps/api/src/config.js";
@@ -75,12 +77,12 @@ async function createHarness(fetchResult: SafeFetchResponse<string> | Error = re
   return harness;
 }
 
-async function mcpWebpageCall(harness: Harness, url: string) {
+async function mcpWebpageCall(harness: Harness, url: string, token = harness.token) {
   const response = await harness.app.inject({
     method: "POST",
     url: "/mcp",
     headers: {
-      authorization: `Bearer ${harness.token}`,
+      authorization: `Bearer ${token}`,
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
     },
@@ -118,8 +120,24 @@ describe("MCP fetch_webpage integration", () => {
     const harness = await createHarness(new SearchHubError("network", "failed?token=secret"));
     const result = await mcpWebpageCall(harness, "https://example.com/?token=secret");
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.payload)).toContain("Webpage request failed");
+    expect(JSON.stringify(result.payload)).toContain("webpage_network_error");
     expect(JSON.stringify(result.payload)).not.toContain("secret");
+  });
+
+  it("returns a stable forbidden error when the token lacks search scope", async () => {
+    const harness = await createHarness();
+    const created = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/tokens",
+      cookies: { sh_session: harness.cookie },
+      headers: { "x-csrf-token": harness.csrf },
+      payload: { name: "sources-only", scopes: ["mcp:use", "sources:read"], rateLimitPerMin: 100 },
+    });
+    expect(created.statusCode).toBe(200);
+    const result = await mcpWebpageCall(harness, "https://example.com/", created.json().token as string);
+    expect(result.isError).toBe(true);
+    expect(result.payload).toMatchObject({ error: { code: "webpage_forbidden" } });
+    expect(harness.ctx.fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -156,6 +174,43 @@ describe("POST /api/web/read", () => {
     });
     expect(result.statusCode).toBe(422);
     expect(result.json()).toMatchObject({ readStatus: "login_required", reasonCode: "login_required", content: null });
+  });
+
+  it("cancels the upstream read when the REST client disconnects", async () => {
+    const harness = await createHarness();
+    let markStarted!: () => void;
+    let markAborted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
+    let upstreamSignal: AbortSignal | null | undefined;
+    harness.ctx.fetch = vi.fn((_url: string, init?: SafeFetchInit) => new Promise<SafeFetchResponse<string>>((_resolve, reject) => {
+      upstreamSignal = init?.signal;
+      init?.signal?.addEventListener("abort", () => {
+        markAborted();
+        reject(init.signal?.reason);
+      }, { once: true });
+      markStarted();
+    })) as unknown as SafeFetch;
+    await harness.app.listen({ host: "127.0.0.1", port: 0 });
+    const address = harness.app.server.address() as AddressInfo;
+    const payload = JSON.stringify({ url: "https://example.com/" });
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: address.port,
+      path: "/api/web/read",
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+        cookie: `sh_session=${harness.cookie}`,
+      },
+    });
+    request.on("error", () => undefined);
+    request.write(payload);
+    await started;
+    request.destroy();
+    await aborted;
+    expect(upstreamSignal?.aborted).toBe(true);
   });
 
   it("maps network errors to 502 without leaking upstream details", async () => {

@@ -9,6 +9,7 @@ export const EXIT_CODES = {
   server: 6,
   timeout: 7,
   incompatible: 8,
+  content_unavailable: 9,
   interrupted: 130,
 } as const;
 

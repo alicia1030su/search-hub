@@ -18,7 +18,7 @@ export interface McpProviderService {
 }
 
 export interface McpWebpageService {
-  read(url: string, options?: { maxContentChars?: number }): Promise<unknown>;
+  read(url: string, options?: { maxContentChars?: number; signal?: AbortSignal }): Promise<unknown>;
 }
 
 export interface McpDeps {
@@ -239,8 +239,18 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         const result = await deps.webpage.read(args.url, { maxContentChars: args.maxContentChars });
         const unavailable = result !== null && typeof result === "object" && "readStatus" in result && result.readStatus !== "ok";
         return jsonResult(result, unavailable);
-      } catch {
-        return jsonResult({ error: { code: "webpage_read_failed", message: "Webpage request failed" } }, true);
+      } catch (error) {
+        const code = error instanceof SearchHubError ? error.code : "unknown";
+        const toolErrorCode = code === "forbidden" ? "webpage_forbidden"
+          : code === "unauthorized" ? "webpage_auth_required"
+            : code === "timeout" ? "webpage_timeout"
+              : code === "network" ? "webpage_network_error"
+                : code === "rate_limited" ? "webpage_rate_limited"
+                  : code === "not_found" ? "webpage_endpoint_not_found"
+                    : code === "cancelled" ? "webpage_cancelled"
+                      : code === "server_error" ? "webpage_upstream_error"
+                        : "webpage_read_failed";
+        return jsonResult({ error: { code: toolErrorCode, message: "Webpage request failed" } }, true);
       }
     },
   );
