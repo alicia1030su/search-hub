@@ -1,11 +1,13 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { PROVIDER_CATALOG } from "@search-hub/providers";
+import { SearchHubError } from "@search-hub/shared";
 import { z } from "zod";
 import type { AppContext } from "../context.js";
 import { actorLabel, authenticate, requireAdmin, type Actor } from "../auth.js";
 import { audit, jsonFor, parseInput } from "../http.js";
 
 const onboardingActionSchema = z.object({}).optional();
+const onboardingCompleteSchema = z.object({ taskId: z.string().min(1).max(128) });
 const RECOMMENDED_PROVIDER_ORDER = ["hackernews", "crossref", "openalex", "pubmed"] as const;
 
 function actorOf(request: FastifyRequest, ctx: AppContext, mutation = false): Actor {
@@ -41,9 +43,13 @@ function recommendedProviders() {
 
 function onboardingStatus(ctx: AppContext) {
   const onboarding = ctx.settings.get().onboarding;
-  const readyProviderIds = ctx.providers.providerSummaries()
-    .filter((provider) => provider.enabled && provider.ready)
-    .map((provider) => provider.id);
+  const readyProviders = ctx.providers.providerSummaries()
+    .filter((provider) => provider.enabled && provider.ready);
+  const readyProviderIds = readyProviders.map((provider) => provider.id);
+  const generalWebReady = readyProviders.some((provider) => {
+    const entry = PROVIDER_CATALOG.find((candidate) => candidate.type === provider.type);
+    return entry?.implementation === "builtin" && entry.category === "general";
+  });
   const completed = onboarding.completedAt !== null;
   const dismissed = onboarding.dismissedAt !== null;
   return {
@@ -55,8 +61,16 @@ function onboardingStatus(ctx: AppContext) {
       provider: { complete: readyProviderIds.length > 0, readyProviderIds },
       search: { complete: completed },
     },
+    coverage: { generalWebReady },
     recommendedProviders: recommendedProviders(),
   };
+}
+
+function searchEvidenceCount(response: NonNullable<ReturnType<AppContext["search"]["getTask"]>>["response"]): number {
+  if (!response) return 0;
+  const answerCitations = response.answers?.reduce((total, answer) => total + answer.citations.length, 0) ?? 0;
+  const summaryCitations = response.summary?.citations.length ?? 0;
+  return response.results.length + answerCitations + summaryCitations;
 }
 
 export function registerOnboardingRoutes(app: FastifyInstance, ctx: AppContext): void {
@@ -72,7 +86,14 @@ export function registerOnboardingRoutes(app: FastifyInstance, ctx: AppContext):
     "/api/admin/onboarding/complete",
     jsonFor(app, async (request) => {
       const actor = requireAdmin(actorOf(request, ctx, true));
-      parseInput(onboardingActionSchema, request.body ?? {});
+      const input = parseInput(onboardingCompleteSchema, request.body ?? {});
+      const task = ctx.search.getTask(input.taskId);
+      if (!task || task.actor !== actorLabel(actor)) {
+        throw new SearchHubError("not_found", `Search task ${input.taskId} not found`);
+      }
+      if ((task.status !== "completed" && task.status !== "partial") || searchEvidenceCount(task.response) === 0) {
+        throw new SearchHubError("validation_error", "Onboarding requires a completed search with at least one result or verifiable citation.");
+      }
       const now = new Date().toISOString();
       ctx.settings.update({
         onboarding: { completedAt: now, dismissedAt: null, lastSeenVersion: ctx.config.version },
@@ -89,7 +110,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, ctx: AppContext):
       parseInput(onboardingActionSchema, request.body ?? {});
       const now = new Date().toISOString();
       ctx.settings.update({
-        onboarding: { dismissedAt: now, lastSeenVersion: ctx.config.version },
+        onboarding: { completedAt: null, dismissedAt: now, lastSeenVersion: ctx.config.version },
       });
       audit(ctx, actorLabel(actor), "onboarding.dismiss", null, { version: ctx.config.version }, request.ip);
       return onboardingStatus(ctx);

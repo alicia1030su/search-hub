@@ -81,7 +81,7 @@ function auth(harness: Harness) {
   };
 }
 
-async function addMockProvider(harness: Harness): Promise<string> {
+async function addMockProvider(harness: Harness, resultCount = 1): Promise<string> {
   const response = await harness.app.inject({
     method: "POST",
     url: "/api/admin/providers",
@@ -90,11 +90,22 @@ async function addMockProvider(harness: Harness): Promise<string> {
       name: "onboarding-mock",
       type: "mock",
       enabled: true,
-      config: { resultCount: 1, latencyMs: 1, namespace: "onboarding" },
+      config: { resultCount, latencyMs: 1, namespace: "onboarding" },
     },
   });
   expect(response.statusCode, response.body).toBe(200);
   return response.json().provider.id as string;
+}
+
+async function runMockSearch(harness: Harness, providerId: string) {
+  const response = await harness.app.inject({
+    method: "POST",
+    url: "/api/search",
+    ...auth(harness),
+    payload: { query: "onboarding evidence", mode: "basic", limit: 5, providers: [providerId], skipCache: true },
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  return response.json();
 }
 
 afterEach(async () => {
@@ -123,6 +134,7 @@ describe("admin onboarding", () => {
         provider: { complete: false, readyProviderIds: [] },
         search: { complete: false },
       },
+      coverage: { generalWebReady: false },
     });
     expect(status.recommendedProviders.map((provider: { type: string }) => provider.type)).toEqual([
       "hackernews",
@@ -135,7 +147,7 @@ describe("admin onboarding", () => {
     }
   });
 
-  it("marks the provider step complete when an enabled mock is ready without recommending mock", async () => {
+  it("advances with a ready vertical/test source while explicitly reporting no general-web coverage", async () => {
     const harness = await createHarness();
     const providerId = await addMockProvider(harness);
     const response = await harness.app.inject({
@@ -147,16 +159,29 @@ describe("admin onboarding", () => {
     const status = response.json();
     expect(status.step).toBe(3);
     expect(status.steps.provider).toEqual({ complete: true, readyProviderIds: [providerId] });
+    expect(status.coverage).toEqual({ generalWebReady: false });
     expect(status.recommendedProviders.map((provider: { type: string }) => provider.type)).not.toContain("mock");
   });
 
-  it("persists completion and returns a completed status on refresh", async () => {
+  it("requires successful search evidence before persisting completion", async () => {
     const harness = await createHarness();
-    const completed = await harness.app.inject({
+    const missingEvidence = await harness.app.inject({
       method: "POST",
       url: "/api/admin/onboarding/complete",
       ...auth(harness),
       payload: {},
+    });
+    expect(missingEvidence.statusCode).toBe(400);
+
+    const providerId = await addMockProvider(harness);
+    const search = await runMockSearch(harness, providerId);
+    expect(search.results).toHaveLength(1);
+
+    const completed = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/onboarding/complete",
+      ...auth(harness),
+      payload: { taskId: search.taskId },
     });
     expect(completed.statusCode, completed.body).toBe(200);
     expect(completed.json()).toMatchObject({ completed: true, dismissed: false, step: 3, steps: { search: { complete: true } } });
@@ -172,6 +197,21 @@ describe("admin onboarding", () => {
     expect(settings.json().onboarding.completedAt).toEqual(expect.any(String));
     expect(settings.json().onboarding.dismissedAt).toBeNull();
     expect(settings.json().onboarding.lastSeenVersion).toBe(harness.ctx.config.version);
+  });
+
+  it("rejects completion evidence with no results or citations", async () => {
+    const harness = await createHarness();
+    const providerId = await addMockProvider(harness, 0);
+    const search = await runMockSearch(harness, providerId);
+    expect(search.results).toHaveLength(0);
+    const completed = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/onboarding/complete",
+      ...auth(harness),
+      payload: { taskId: search.taskId },
+    });
+    expect(completed.statusCode).toBe(400);
+    expect(completed.json().error.message).toContain("at least one result or verifiable citation");
   });
 
   it("persists dismissal without marking completion", async () => {
@@ -196,6 +236,31 @@ describe("admin onboarding", () => {
     expect(settings.json().onboarding.completedAt).toBeNull();
     expect(settings.json().onboarding.dismissedAt).toEqual(expect.any(String));
     expect(settings.json().onboarding.lastSeenVersion).toBe(harness.ctx.config.version);
+  });
+
+  it("clears completion when a completed onboarding is later dismissed", async () => {
+    const harness = await createHarness();
+    const providerId = await addMockProvider(harness);
+    const search = await runMockSearch(harness, providerId);
+    const completed = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/onboarding/complete",
+      ...auth(harness),
+      payload: { taskId: search.taskId },
+    });
+    expect(completed.statusCode, completed.body).toBe(200);
+
+    const dismissed = await harness.app.inject({
+      method: "POST",
+      url: "/api/admin/onboarding/dismiss",
+      ...auth(harness),
+      payload: {},
+    });
+    expect(dismissed.statusCode, dismissed.body).toBe(200);
+    expect(dismissed.json()).toMatchObject({ completed: false, dismissed: true });
+    const settings = await harness.app.inject({ method: "GET", url: "/api/admin/settings", ...auth(harness) });
+    expect(settings.json().onboarding.completedAt).toBeNull();
+    expect(settings.json().onboarding.dismissedAt).toEqual(expect.any(String));
   });
 
   it("rejects unauthenticated and non-admin callers", async () => {

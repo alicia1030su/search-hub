@@ -475,8 +475,8 @@ export const api = {
     request<AppSettings>("/admin/settings", { method: "PUT", body: patch }),
   onboardingStatus: (signal?: AbortSignal) =>
     request<OnboardingStatus>("/admin/onboarding/status", { signal }),
-  completeOnboarding: () =>
-    request<OnboardingStatus>("/admin/onboarding/complete", { method: "POST", body: {} }),
+  completeOnboarding: (taskId: string) =>
+    request<OnboardingStatus>("/admin/onboarding/complete", { method: "POST", body: { taskId } }),
   dismissOnboarding: () =>
     request<OnboardingStatus>("/admin/onboarding/dismiss", { method: "POST", body: {} }),
 

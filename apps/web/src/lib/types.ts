@@ -104,6 +104,7 @@ export interface OnboardingStatus {
     provider: { complete: boolean; readyProviderIds: string[] };
     search: { complete: boolean };
   };
+  coverage: { generalWebReady: boolean };
   recommendedProviders: Array<{
     type: string;
     name: string;

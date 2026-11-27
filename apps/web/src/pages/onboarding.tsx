@@ -34,6 +34,12 @@ import {
 type Step = 1 | 2 | 3;
 type ProbeState = { result?: HealthCheckResult; skipped?: string };
 
+function searchEvidenceCount(response: SearchResponse): number {
+  const answerCitations = response.answers?.reduce((total, answer) => total + answer.citations.length, 0) ?? 0;
+  const summaryCitations = response.summary?.citations.length ?? 0;
+  return response.results.length + answerCitations + summaryCitations;
+}
+
 function runtimeLabel(runtime: RuntimeHealthValue): string {
   const labels: Record<RuntimeHealthValue, string> = {
     unknown: t("providers.health.runtime.unknown"),
@@ -140,13 +146,7 @@ export function OnboardingPage() {
     for (const row of health.data?.providers ?? []) rows.set(row.providerId, row);
     return rows;
   }, [health.data?.providers]);
-  const hasGeneralWeb = useMemo(
-    () => readyProviders.some((provider) => {
-      const entry = catalog.find((candidate) => candidate.type === provider.type);
-      return entry?.category === "general" && !["mock", "hackernews", "duckduckgo"].includes(entry.type);
-    }),
-    [catalog, readyProviders],
-  );
+  const hasGeneralWeb = status.data?.coverage.generalWebReady === true;
 
   if (status.loading && !status.data) {
     return (
@@ -266,11 +266,11 @@ export function OnboardingPage() {
   };
 
   const complete = async () => {
-    if (!searchResponse || searchResponse.results.length === 0) return;
+    if (!searchResponse || searchEvidenceCount(searchResponse) === 0) return;
     setCompleting(true);
     setError(null);
     try {
-      await api.completeOnboarding();
+      await api.completeOnboarding(searchResponse.taskId);
       navigate("/");
     } catch (caught) {
       setError(toApiError(caught).message);
@@ -500,6 +500,7 @@ export function OnboardingPage() {
               <div className="space-y-3 rounded-lg border bg-muted/20 p-3" data-testid="onboarding-search-result">
                 <div className="grid gap-2 text-xs sm:grid-cols-3">
                   <p><span className="text-muted-foreground">{t("onboarding.results")}:</span> {formatNumber(searchResponse.results.length)}</p>
+                  <p><span className="text-muted-foreground">{t("onboarding.citations")}:</span> {formatNumber((searchResponse.answers?.reduce((total, answer) => total + answer.citations.length, 0) ?? 0) + (searchResponse.summary?.citations.length ?? 0))}</p>
                   <p><span className="text-muted-foreground">{t("onboarding.duration")}:</span> {formatMs(searchResponse.stats.timing.totalMs)}</p>
                   <p><span className="text-muted-foreground">{searchResponse.stats.cached ? t("onboarding.cached") : t("onboarding.notCached")}</span></p>
                 </div>
@@ -519,10 +520,10 @@ export function OnboardingPage() {
                     <p>{searchResponse.errors.map((source) => `${source.providerName}:${source.code}`).join(" · ")}</p>
                   </Alert>
                 ) : null}
-                <Button onClick={() => void complete()} loading={completing} disabled={searchResponse.results.length === 0}>
+                <Button onClick={() => void complete()} loading={completing} disabled={searchEvidenceCount(searchResponse) === 0}>
                   {t("onboarding.complete")}
                 </Button>
-                {searchResponse.results.length === 0 ? <p className="text-xs text-muted-foreground">{t("onboarding.searchFirst")}</p> : null}
+                {searchEvidenceCount(searchResponse) === 0 ? <p className="text-xs text-muted-foreground">{t("onboarding.searchFirst")}</p> : null}
               </div>
             ) : null}
           </CardContent>
