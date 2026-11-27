@@ -1,24 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-
-const PASSWORD = "E2E-Local-Only-Password-1";
-
-async function completeSetup(page: Page): Promise<void> {
-  await page.goto("/");
-  await page.waitForURL(/\/(?:login|setup)$/);
-  if (new URL(page.url()).pathname === "/login") {
-    await page.locator("#login-email").fill("admin@example.com");
-    await page.locator("#login-password").fill(PASSWORD);
-    await page.getByRole("button", { name: "登录", exact: true }).click();
-  } else {
-    await page.locator("#setup-token").fill("e2e-setup-token");
-    await page.locator("#setup-email").fill("admin@example.com");
-    await page.locator("#setup-name").fill("管理员");
-    await page.locator("#setup-password").fill(PASSWORD);
-    await page.locator("#setup-confirm").fill(PASSWORD);
-    await page.getByRole("button", { name: "创建管理员并进入" }).click();
-  }
-  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
-}
+import { expect, test } from "@playwright/test";
+import { ensureSignedIn } from "./support";
 
 test.describe("backup center", () => {
   test("requires authentication", async ({ browser }) => {
@@ -46,7 +27,7 @@ test.describe("backup center", () => {
         }),
       });
     });
-    await completeSetup(page);
+    await ensureSignedIn(page);
     await page.getByRole("link", { name: "备份中心", exact: true }).click();
     await expect(page).toHaveURL(/\/backup$/);
     await expect(page.getByRole("heading", { name: "备份与灾备" })).toBeVisible();

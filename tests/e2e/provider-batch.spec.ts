@@ -1,9 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { deleteProvidersByNamePrefix, pinBatchScope } from "./support";
-
-const EMAIL = "admin@example.com";
-/** Test-only password for the throwaway database created by `e2e-server.mjs`. */
-const PASSWORD = "E2E-Local-Only-Password-1";
+import { deleteProvidersByNamePrefix, ensureSignedIn, pinBatchScope } from "./support";
 
 /**
  * Bulk provider test — T25–T30.
@@ -18,47 +14,6 @@ const PASSWORD = "E2E-Local-Only-Password-1";
  * the failures include the throttled one" — because each of those is a place
  * where a plausible-looking implementation tells a lie.
  */
-
-/**
- * Signs in, running first-time setup when this file is the first to run.
- *
- * `admin.spec.ts` normally creates the administrator, but a targeted run
- * (`pnpm test:e2e -- provider-batch`) starts from an empty database, so this
- * helper has to handle both states instead of assuming an order between files.
- */
-async function ensureSignedIn(page: Page): Promise<void> {
-  await page.goto("/");
-  // The SPA decides client-side whether to render the login form, the setup form
-  // or the dashboard. Waiting for one of the forms first removes the race
-  // between the URL check below and the first paint — a fresh browser context
-  // has no session yet, so `/` legitimately renders as `/login` a moment later.
-  await page
-    .locator("#login-email, #setup-token")
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 })
-    .catch(() => undefined);
-  if (page.url().includes("/setup") || (await page.locator("#setup-token").isVisible().catch(() => false))) {
-    await page.locator("#setup-token").fill("e2e-setup-token");
-    await page.locator("#setup-email").fill(EMAIL);
-    await page.locator("#setup-name").fill("管理员");
-    await page.locator("#setup-password").fill(PASSWORD);
-    await page.locator("#setup-confirm").fill(PASSWORD);
-    await page.getByRole("button", { name: "创建管理员并进入" }).click();
-    await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
-    return;
-  }
-
-  if (page.url().endsWith("/login") || (await page.locator("#login-email").isVisible().catch(() => false))) {
-    await page.locator("#login-email").fill(EMAIL);
-    await page.locator("#login-password").fill(PASSWORD);
-    await page.getByRole("button", { name: "登录", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
-    return;
-  }
-
-  // Already authenticated (setup ran earlier in this worker).
-  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
-}
 
 /** Calls an admin API from inside the page, carrying the session and CSRF token. */
 async function callAdminApi(

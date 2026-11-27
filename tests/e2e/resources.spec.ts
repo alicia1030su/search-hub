@@ -1,24 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const PASSWORD = "E2E-Local-Only-Password-1";
-
-async function completeSetup(page: Page): Promise<void> {
-  await page.goto("/");
-  await page.waitForURL(/\/(?:login|setup)$/);
-  if (new URL(page.url()).pathname === "/login") {
-    await page.locator("#login-email").fill("admin@example.com");
-    await page.locator("#login-password").fill(PASSWORD);
-    await page.getByRole("button", { name: "登录", exact: true }).click();
-  } else {
-    await page.locator("#setup-token").fill("e2e-setup-token");
-    await page.locator("#setup-email").fill("admin@example.com");
-    await page.locator("#setup-name").fill("管理员");
-    await page.locator("#setup-password").fill(PASSWORD);
-    await page.locator("#setup-confirm").fill(PASSWORD);
-    await page.getByRole("button", { name: "创建管理员并进入" }).click();
-  }
-  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
-}
+import { ensureSignedIn } from "./support";
 
 function fixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -56,7 +37,7 @@ test.describe("runtime resource panel", () => {
 
   test("renders zero values in Chinese and English without polling", async ({ page }) => {
     const calls = await mockResources(page, fixture());
-    await completeSetup(page);
+    await ensureSignedIn(page);
     const panel = page.locator('[aria-labelledby="resources-title"]');
     await expect(panel.getByText("运行时资源", { exact: true })).toBeVisible();
     await expect(panel.getByText("0 B", { exact: true }).first()).toBeVisible();
@@ -85,7 +66,7 @@ test.describe("runtime resource panel", () => {
         { field: "cache.walFileBytes", source: "fs.stat", reason: "not_found" },
       ],
     }));
-    await completeSetup(page);
+    await ensureSignedIn(page);
     const panel = page.locator('[aria-labelledby="resources-title"]');
     await expect(panel.getByText("totals_missing", { exact: true }).first()).toBeVisible();
     await expect(panel.getByText("not_found", { exact: true }).first()).toBeVisible();
@@ -102,7 +83,7 @@ test.describe("runtime resource panel", () => {
       if (calls === 1) await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture()) });
       else await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal_error", message: "refresh failed" } }) });
     });
-    await completeSetup(page);
+    await ensureSignedIn(page);
     const panel = page.locator('[aria-labelledby="resources-title"]');
     await expect(panel.getByText("0 B", { exact: true }).first()).toBeVisible();
     await panel.getByRole("button", { name: "刷新运行时资源" }).click();
@@ -118,7 +99,7 @@ test.describe("runtime resource panel", () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture()) }).catch(() => undefined);
     });
-    await completeSetup(page);
+    await ensureSignedIn(page);
     await page.goto("/providers");
     await expect(page.getByRole("heading", { name: "搜索源", exact: true })).toBeVisible();
     expect(errors).toEqual([]);

@@ -1,27 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const EMAIL = "admin@example.com";
-/**
- * Fixed, test-only password for the throwaway database created by
- * `tests/scripts/e2e-server.mjs`. It must be stable across the whole run:
- * Playwright restarts the worker after a failure, which re-evaluates the module,
- * and a freshly randomised password would then no longer match the admin that
- * the first test created. This credential only exists in `.data/e2e`, which is
- * deleted at the start of every run.
- */
-const PASSWORD = "E2E-Local-Only-Password-1";
-
-async function completeSetup(page: Page): Promise<void> {
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "初始化 Search Hub" })).toBeVisible();
-  await page.locator("#setup-token").fill("e2e-setup-token");
-  await page.locator("#setup-email").fill(EMAIL);
-  await page.locator("#setup-name").fill("管理员");
-  await page.locator("#setup-password").fill(PASSWORD);
-  await page.locator("#setup-confirm").fill(PASSWORD);
-  await page.getByRole("button", { name: "创建管理员并进入" }).click();
-  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
-}
+import { EMAIL, PASSWORD, ensureSignedIn } from "./support";
 
 /**
  * The suite logs in once per test. The default login throttle is 10/min and
@@ -88,7 +66,7 @@ async function addMockProvider(page: Page, name: string, namespace: string): Pro
 
 test.describe("Search Hub 管理后台端到端", () => {
   test("首次安装 → 添加搜索源 → 搜索实验室 → 设置 → 保留", async ({ page }) => {
-    await completeSetup(page);
+    await ensureSignedIn(page);
     await raiseLoginThrottle(page);
 
     // 1. Dashboard shows real metrics (zero state, not fake numbers).
