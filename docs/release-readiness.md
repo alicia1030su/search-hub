@@ -14,8 +14,9 @@
 | Release 资产元数据 | PASS：9 个资产全部 `uploaded`；名称、大小与 digest 见下表 |
 | 最终 DR gate | PASS：R01–R38/A01–A12 共 50 项全 PASS，485 份证据；gate SHA256 `4df1d4cfcd5ee65276807e8d63a2d862b46a37ad64bf0f622747f981b09e496f`，sums SHA256 `def6ea696729c8cb41e8dfa5cb20df17f1e1daf54c6b138c6f984703ba0234fb`，code fingerprint `9d9af5fa0e52f24c2bf1924eeb47c25ea25b18d2d80b6b22866f86e10c277b7f` |
 | 候选 Provenance 与 promoter 校验 | PASS：SLSA predicate `https://slsa.dev/provenance/v1`；signer `release-candidate.yml@refs/heads/main`；source SHA `4225dfb97dc4f4377e30d0c5050a6b838d04a85e`；invocation `45928720894/attempts/1`；promoter 的候选字节与 attestation 验证 job PASS |
-| 独立发布后 attestation 复验 | NOT TESTED：独立 `gh attestation verify` 仍在下载资产后执行，完成前不声明 PASS |
-| GHCR | PASS：`ghcr.io/alicia1030su/search-hub` 的 `0.1.16`、`v0.1.16`、`latest` 均指向 `sha256:bbd9efdfdfc2c6354d152a8db46eaf4ac0a56cd42eaf01ca38d007434be78066`；mediaType `application/vnd.oci.image.manifest.v1+json`；config `sha256:d5b0c445611215dc77fefa7a87413a59f33c009c9762443824b9b12b32f196eb`；平台 `linux/amd64` |
+| 独立资产下载与摘要复验 | PASS：完整下载 9 个资产后 `sha256sum -c SHA256SUMS` 8/8 OK；Release API 的 8 个内容资产 digest 与 `SHA256SUMS` 逐项一致 |
+| 独立发布后 attestation 复验 | PASS：7 个包与 `resource-evidence.json` 共 8 个内容资产逐个 `gh attestation verify --repo alicia1030su/search-hub` PASS；`SHA256SUMS` 自身 attestation 亦 PASS |
+| GHCR | PASS：`ghcr.io/alicia1030su/search-hub` 的 `0.1.16`、`v0.1.16`、`latest` 均指向 `sha256:bbd9efdfdfc2c6354d152a8db46eaf4ac0a56cd42eaf01ca38d007434be78066`；本机独立复核 formatted digest 与 raw manifest SHA256 均为 `bbd9efdf…`；mediaType `application/vnd.oci.image.manifest.v1+json`；config `sha256:d5b0c445611215dc77fefa7a87413a59f33c009c9762443824b9b12b32f196eb`；平台 `linux/amd64`；镜像 attestation 由 promoter 的候选验证 job 验证并 PASS |
 | README 与发布文档 | PASS：tag 中 `README.md` / `README_EN.md` 均为 `v0.1.16 Stable`，包含真实 Release 链接，无 `CAPTURE_REQUIRED` 占位 |
 | 发布边界 | PASS：没有额外 Beta/RC；annotated tag 未移动；手动 tag-ref dispatch 被 main-only 条件跳过，无副作用，不计入发布失败 |
 
