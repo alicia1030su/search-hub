@@ -157,7 +157,8 @@ describe("search cache fingerprint", () => {
 describe("canReadV1 B6 compatibility matrix", () => {
   it.each(["basic", "rrf", "web", "grounded", "research"] as const)("allows unchanged %s with equivalent resolved identity", (mode) => {
     const capability = mode === "web" ? "raw_search" : mode === "grounded" ? "grounded_answer" : null;
-    const old = legacy({ mode, capability });
+    const expectedMode = mode === "basic" ? "basic" : "rrf";
+    const old = legacy({ mode: expectedMode, capability });
     expect(canReadV1({ ...old, mode }, buildSearchFingerprintV1(old))).toBe(true);
   });
 
@@ -197,15 +198,20 @@ describe("canReadV1 B6 compatibility matrix", () => {
   });
 
   it("rejects preset capability mismatches", () => {
-    expect(canReadV1(legacy({ mode: "web", capability: "grounded_answer" }), buildSearchFingerprintV1(legacy({ mode: "web", capability: "raw_search" })))).toBe(false);
-    expect(canReadV1(legacy({ mode: "grounded", capability: "raw_search" }), buildSearchFingerprintV1(legacy({ mode: "grounded", capability: "grounded_answer" })))).toBe(false);
-    expect(canReadV1(legacy({ mode: "research", capability: "raw_search" }), buildSearchFingerprintV1(legacy({ mode: "research", capability: null })))).toBe(false);
+    expect(canReadV1(legacy({ mode: "web", capability: "grounded_answer" }), buildSearchFingerprintV1(legacy({ mode: "rrf", capability: "raw_search" })))).toBe(false);
+    expect(canReadV1(legacy({ mode: "grounded", capability: "raw_search" }), buildSearchFingerprintV1(legacy({ mode: "rrf", capability: "grounded_answer" })))).toBe(false);
+    expect(canReadV1(legacy({ mode: "research", capability: "raw_search" }), buildSearchFingerprintV1(legacy({ mode: "rrf", capability: null })))).toBe(false);
   });
 
-  it("does not cross-reuse preset and base-mode rows", () => {
-    const preset = buildSearchFingerprintV1(legacy({ mode: "web", capability: "raw_search" }));
+  it("does not cross-reuse preset and basic rows", () => {
+    const preset = buildSearchFingerprintV1(legacy({ mode: "rrf", capability: "raw_search" }));
     expect(canReadV1(legacy({ mode: "web", capability: "raw_search" }), preset)).toBe(true);
     expect(canReadV1(legacy({ mode: "basic", capability: "raw_search" }), preset)).toBe(false);
-    expect(canReadV1(legacy({ mode: "rrf", capability: "raw_search" }), preset)).toBe(false);
+  });
+
+  it("rejects both quality basic conflict and quality rerank from v1", () => {
+    const old = legacy();
+    expect(canReadV1({ ...old, mode: "basic", strategy: "quality" }, buildSearchFingerprintV1(old))).toBe(false);
+    expect(canReadV1({ ...old, mode: "rerank", strategy: "quality" }, buildSearchFingerprintV1(old))).toBe(false);
   });
 });

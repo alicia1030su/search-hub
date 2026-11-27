@@ -211,9 +211,9 @@ export function canReadV1(
   const legacyMode = legacyFingerprint.mode;
   const expectedCapability = mode === "web" ? "raw_search" : mode === "grounded" ? "grounded_answer" : request.capability ?? null;
   const legacyCapability = legacyFingerprint.capability ?? null;
-  // Presets use RRF internally, but their persisted v1 mode remains the preset
-  // name. Reuse only the same mode so a cached response never changes mode.
-  const expectedMode = mode;
+  // Frozen v0.1.17 behavior: every non-basic mode uses RRF. Presets are
+  // compatible only when they reduce to that unchanged stage plus capability.
+  const expectedMode: SearchCacheMode = mode === "basic" ? "basic" : "rrf";
   if (legacyMode !== expectedMode || legacyCapability !== expectedCapability) return false;
   if (legacyFingerprint.rerank !== false || legacyFingerprint.embedding !== false || legacyFingerprint.summarize !== false) return false;
   const legacyModels = legacyFingerprint.models as SearchCacheV1Input["models"] | undefined;
