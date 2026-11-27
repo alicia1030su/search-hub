@@ -86,6 +86,7 @@ export function DashboardPage() {
   // Source health is its own resource: it changes on the probe schedule, not on
   // the dashboard range, so reloading the range must not refetch it.
   const health = useAsyncData((signal) => api.healthOverview(signal), []);
+  const onboarding = useAsyncData((signal) => api.onboardingStatus(signal), []);
 
   const hasSearches = (data?.totals.searches ?? 0) > 0;
   const keySegments = data ? dashboardKeySegments(data.keys, keyStatusLabel) : [];
@@ -116,6 +117,20 @@ export function DashboardPage() {
           </>
         }
       />
+
+      {onboarding.data && !onboarding.data.completed && !onboarding.data.dismissed ? (
+        <Alert
+          tone="info"
+          title={t("dashboard.onboarding.title")}
+          action={
+            <Button size="sm" variant="outline" onClick={() => navigate("/onboarding")}>
+              {t("dashboard.onboarding.continue")}
+            </Button>
+          }
+        >
+          <p>{t("dashboard.onboarding.desc")}</p>
+        </Alert>
+      ) : null}
 
       {error ? (
         <Alert

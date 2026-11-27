@@ -565,8 +565,11 @@ export interface SearchResponse {
     embeddingApplied: boolean;
     summaryApplied: boolean;
     partial: boolean;
+    degraded?: boolean;
+    cached?: boolean;
   };
   errors: Array<{ providerId: string; providerName: string; code: string; message: string }>;
+  failedSources: Array<{ id: string; code: string }>;
   answers?: GroundedAnswer[];
   summary?: {
     text: string;
