@@ -5,4 +5,6 @@ export * from "./engine/search-engine.js";
 export * from "./fusion/fuse.js";
 export * from "./errors/classify.js";
 export * from "./evaluation/index.js";
+export * from "./routing/route.js";
+export * from "./streaming/events.js";
 export * from "./web/web-reader.js";
