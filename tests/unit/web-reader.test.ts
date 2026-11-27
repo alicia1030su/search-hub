@@ -194,18 +194,78 @@ describe("fetchWebpage B5 classification", () => {
     expect(result.content).toBeNull();
   });
 
-  it("keeps captcha precedence over HTTP 503", async () => {
+  it.each([404, 410, 503])("classifies HTTP %i before parsing error-page markers", async (status) => {
+    const expected = status === 503 ? "maintenance" : "not_found";
     const result = await fetchWebpage("https://example.com/", {
-      fetch: fakeFetch(response(page("Maintenance", "<div class='cf-chl'></div>"), { status: 503 })),
+      fetch: fakeFetch(response(page("Private upstream error", "<div class='cf-chl'></div><form action='/login'><input type='password'></form>"), { status })),
     });
-    expect(result.readStatus).toBe("captcha");
+    expect(result).toMatchObject({ readStatus: expected, reasonCode: expected, content: null, contentLength: 0, title: null });
+    expect(JSON.stringify(result)).not.toContain("Private upstream error");
   });
 
-  it("keeps login precedence over HTTP 503", async () => {
-    const result = await fetchWebpage("https://example.com/", {
-      fetch: fakeFetch(response(page("Login", "<form action='/login'><input type='password'></form>"), { status: 503 })),
+  it.each([404, 410, 503])("classifies SafeFetch HTTP %i errors without parsing the body", async (status) => {
+    const expected = status === 503 ? "maintenance" : "not_found";
+    const error = new SearchHubError("bad_request", `Upstream returned HTTP ${status}: <html>secret details</html>`, {
+      status,
+      details: { upstreamStatus: status, url: "https://example.com/final" },
     });
-    expect(result.readStatus).toBe("login_required");
+    const result = await fetchWebpage("https://example.com/start", { fetch: fakeFetch(error) });
+    expect(result).toMatchObject({ finalUrl: "https://example.com/final", readStatus: expected, content: null });
+    expect(JSON.stringify(result)).not.toContain("secret details");
+  });
+
+  it.each([
+    { status: 429, code: "network" },
+    { status: 500, code: "server_error" },
+    { status: 502, code: "server_error" },
+    { status: 504, code: "timeout" },
+  ] as const)("maps non-throwing HTTP $status to a stable $code error", async ({ status, code }) => {
+    const error = await fetchWebpage("https://example.com/start", {
+      fetch: fakeFetch(response(page("Secret upstream failure", ARTICLE), {
+        status,
+        url: "https://user:pass@example.com/final?token=final-secret#access_token=fragment-secret",
+        headers: new Headers({ "content-type": "text/html", "retry-after": "120" }),
+      })),
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(SearchHubError);
+    expect(error).toMatchObject({
+      code,
+      status,
+      retryable: true,
+      retryAfterMs: 120_000,
+      message: `Webpage request failed with HTTP ${status}`,
+      details: { upstreamStatus: status, url: "https://example.com/final?token=%5Bredacted%5D" },
+    });
+    expect(String(error)).not.toContain("Secret upstream failure");
+    expect(JSON.stringify(error)).not.toContain("final-secret");
+    expect(JSON.stringify(error)).not.toContain("fragment-secret");
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    { status: 429, code: "network" },
+    { status: 500, code: "server_error" },
+    { status: 502, code: "server_error" },
+    { status: 504, code: "timeout" },
+  ] as const)("normalizes SafeFetch HTTP $status errors to a stable $code error", async ({ status, code }) => {
+    const upstream = new SearchHubError("bad_request", "Upstream returned a body that must not escape", {
+      status,
+      retryAfterMs: 250,
+      details: { upstreamStatus: status, url: "https://user:pass@example.com/final?token=final-secret#access_token=fragment-secret" },
+    });
+    const error = await fetchWebpage("https://example.com/start", { fetch: fakeFetch(upstream) }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(SearchHubError);
+    expect(error).toMatchObject({
+      code,
+      status,
+      retryable: true,
+      retryAfterMs: 250,
+      message: `Webpage request failed with HTTP ${status}`,
+      details: { upstreamStatus: status, url: "https://example.com/final?token=%5Bredacted%5D" },
+    });
+    expect(error).not.toBe(upstream);
+    expect(String(error)).not.toContain("body that must not escape");
+    expect((error as Error).cause).toBeUndefined();
   });
 
   it("handles real 404 responses from fake transports that do not throw", async () => {
@@ -248,6 +308,50 @@ describe("fetchWebpage limits, cancellation and validation", () => {
     expect(result.content).toBeNull();
   });
 
+  it("measures the HTML cap in UTF-8 bytes rather than string characters", async () => {
+    const html = article("中文正文", `<article><h1>中文正文</h1><p>${ARTICLE}</p></article>`);
+    const result = await fetchWebpage("https://example.com/", {
+      fetch: fakeFetch(response(html)),
+      maxHtmlBytes: Buffer.byteLength(html, "utf8") - 1,
+    });
+    expect(result).toMatchObject({ readStatus: "unsupported", content: null });
+    expect(JSON.stringify(result)).not.toContain("中文正文");
+  });
+
+  it("returns unsupported when SafeFetch blocks an oversized response", async () => {
+    const error = new SearchHubError("blocked", "Response exceeded 10 bytes", {
+      details: { url: "https://user:pass@example.com/final?token=final-secret#access_token=fragment-secret" },
+    });
+    const result = await fetchWebpage("https://example.com/start", { fetch: fakeFetch(error) });
+    expect(result).toMatchObject({
+      requestedUrl: "https://example.com/start",
+      finalUrl: "https://example.com/final?token=%5Bredacted%5D",
+      readStatus: "unsupported",
+      reasonCode: "unsupported_content",
+      content: null,
+    });
+    expect(JSON.stringify(result)).not.toContain("final-secret");
+    expect(JSON.stringify(result)).not.toContain("fragment-secret");
+  });
+
+  it.each([
+    { encoding: "gzip", code: "Z_DATA_ERROR", message: "incorrect header check" },
+    { encoding: "deflate", code: "Z_DATA_ERROR", message: "invalid block type" },
+    { encoding: "br", code: "ERR_BROTLI_DECODING_FAILED", message: "Brotli decompression failed" },
+  ])("returns unsupported when remote $encoding decoding fails", async ({ code, message }) => {
+    const cause = Object.assign(new Error(message), { code });
+    const error = new SearchHubError("network", "Network error requesting https://example.com/", { cause });
+    const result = await fetchWebpage("https://example.com/start", { fetch: fakeFetch(error) });
+    expect(result).toMatchObject({
+      requestedUrl: "https://example.com/start",
+      finalUrl: "https://example.com/start",
+      readStatus: "unsupported",
+      reasonCode: "unsupported_content",
+      content: null,
+    });
+    expect(JSON.stringify(result)).not.toContain(message);
+  });
+
   it("does not send a request for a pre-cancelled signal", async () => {
     const controller = new AbortController();
     controller.abort(new Error("stop now"));
@@ -278,12 +382,16 @@ describe("fetchWebpage limits, cancellation and validation", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("redacts credential query values from result URLs", async () => {
-    const result = await fetchWebpage("https://example.com/?token=secret&q=article", {
-      fetch: fakeFetch(response(article())),
+  it("removes URL credentials and fragments while redacting credential query values", async () => {
+    const result = await fetchWebpage("https://example.com/start?token=requested-secret&q=article#access_token=fragment-secret", {
+      fetch: fakeFetch(response(article(), { url: "https://user:final-password@example.com/final?api_key=final-secret&q=article#token=fragment-secret" })),
     });
-    expect(result.requestedUrl).toBe("https://example.com/?token=%5Bredacted%5D&q=article");
-    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(result.requestedUrl).toBe("https://example.com/start?token=%5Bredacted%5D&q=article");
+    expect(result.finalUrl).toBe("https://example.com/final?api_key=%5Bredacted%5D&q=article");
+    expect(JSON.stringify(result)).not.toContain("requested-secret");
+    expect(JSON.stringify(result)).not.toContain("final-secret");
+    expect(JSON.stringify(result)).not.toContain("final-password");
+    expect(JSON.stringify(result)).not.toContain("fragment-secret");
   });
 
   it("rethrows network errors for REST 502 mapping", async () => {

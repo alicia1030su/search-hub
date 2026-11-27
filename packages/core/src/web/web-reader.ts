@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import { sanitizeUrl, SearchHubError, type SafeFetch, type SafeFetchInit } from "@search-hub/shared";
+import { parseRetryAfter, sanitizeUrl, SearchHubError, type SafeFetch, type SafeFetchInit } from "@search-hub/shared";
 
 export type WebpageReadStatus =
   | "ok"
@@ -216,16 +216,54 @@ function upstreamStatus(error: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
+function diagnosticUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    return sanitizeUrl(url.toString());
+  } catch {
+    return sanitizeUrl(rawUrl.split("#", 1)[0] ?? "");
+  }
+}
+
 function upstreamUrl(error: unknown, fallback: string): string {
   if (!(error instanceof SearchHubError) || !error.details || typeof error.details !== "object") return fallback;
   const url = (error.details as { url?: unknown }).url;
-  return typeof url === "string" ? sanitizeUrl(url) : fallback;
+  return typeof url === "string" ? diagnosticUrl(url) : fallback;
+}
+
+function upstreamHttpError(status: number, finalUrl: string, retryAfterMs?: number): SearchHubError {
+  const code = status === 504 ? "timeout" : status === 429 ? "network" : "server_error";
+  return new SearchHubError(code, `Webpage request failed with HTTP ${status}`, {
+    status,
+    retryable: true,
+    retryAfterMs,
+    details: { upstreamStatus: status, url: finalUrl },
+  });
+}
+
+function isDecodeFailure(error: unknown): boolean {
+  let current = error instanceof SearchHubError ? error.cause ?? error : error;
+  for (let depth = 0; current !== undefined && current !== null && depth < 6; depth += 1) {
+    if (typeof current !== "object") return false;
+    const record = current as { cause?: unknown; code?: unknown; message?: unknown; name?: unknown };
+    const markers = [record.code, record.message, record.name]
+      .filter((value): value is string => typeof value === "string")
+      .join(" ");
+    if (/(?:zlib|z_(?:data|buf|need_dict)_error|brotli|gzip|deflate|inflate|gunzip|content-encoding|incorrect header check|invalid (?:distance|block type|code lengths?)|unexpected end of file|end of stream)/i.test(markers)) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
 }
 
 /** Read a public HTTP page into bounded Markdown without launching a browser. */
 export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions): Promise<WebpageReadResult> {
   const requested = parseRequestedUrl(rawUrl);
-  const requestedUrl = sanitizeUrl(rawUrl);
+  const requestedUrl = diagnosticUrl(requested.toString());
   throwIfAborted(options.signal);
   const timeoutMs = positiveInteger(options.timeoutMs, DEFAULT_WEB_READ_TIMEOUT_MS);
   const maxContentChars = positiveInteger(options.maxContentChars, DEFAULT_WEB_MAX_CONTENT_CHARS);
@@ -241,26 +279,36 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
     } satisfies SafeFetchInit);
   } catch (error) {
     throwIfAborted(options.signal);
+    const finalUrl = upstreamUrl(error, requestedUrl);
+    if (error instanceof SearchHubError && (error.code === "blocked" || error.code === "unsupported")) {
+      return unavailableResult(requestedUrl, finalUrl, "unsupported");
+    }
+    if (isDecodeFailure(error)) return unavailableResult(requestedUrl, finalUrl, "unsupported");
     const status = upstreamStatus(error);
-    if (status === 503) return unavailableResult(requestedUrl, upstreamUrl(error, requestedUrl), "maintenance");
-    if (status === 404 || status === 410) return unavailableResult(requestedUrl, upstreamUrl(error, requestedUrl), "not_found");
+    if (status === 503) return unavailableResult(requestedUrl, finalUrl, "maintenance");
+    if (status === 404 || status === 410) return unavailableResult(requestedUrl, finalUrl, "not_found");
+    if (status === 429 || (status !== null && status >= 500)) {
+      throw upstreamHttpError(status, finalUrl, error instanceof SearchHubError ? error.retryAfterMs : undefined);
+    }
     throw error;
   }
   throwIfAborted(options.signal);
 
-  const finalUrl = sanitizeUrl(response.url || requested.toString());
-  const httpUnavailableStatus: WebpageReadStatus | null = response.status === 503
-    ? "maintenance"
-    : response.status === 404 || response.status === 410 ? "not_found" : null;
+  const finalUrl = diagnosticUrl(response.url || requested.toString());
+  if (response.status === 503) return unavailableResult(requestedUrl, finalUrl, "maintenance");
+  if (response.status === 404 || response.status === 410) return unavailableResult(requestedUrl, finalUrl, "not_found");
+  if (response.status === 429 || response.status >= 500) {
+    throw upstreamHttpError(response.status, finalUrl, parseRetryAfter(response.headers.get("retry-after")));
+  }
 
   const contentType = response.headers.get("content-type") ?? "";
   if (typeof response.data !== "string" || !HTML_CONTENT_TYPE.test(contentType)) {
-    return unavailableResult(requestedUrl, finalUrl, httpUnavailableStatus ?? "unsupported");
+    return unavailableResult(requestedUrl, finalUrl, "unsupported");
   }
   const htmlBytes = Buffer.byteLength(response.data, "utf8");
   if (htmlBytes > maxHtmlBytes) return unavailableResult(requestedUrl, finalUrl, "unsupported");
   if (response.data.length === 0) {
-    return unavailableResult(requestedUrl, finalUrl, httpUnavailableStatus ?? "unsupported");
+    return unavailableResult(requestedUrl, finalUrl, "unsupported");
   }
 
   let $: cheerio.CheerioAPI;
@@ -297,9 +345,6 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
     return unavailableResult(requestedUrl, finalUrl, "login_required", { title, author, publishedAt });
   }
 
-  if (response.status === 404 || response.status === 410) {
-    return unavailableResult(requestedUrl, finalUrl, "not_found", { title, author, publishedAt });
-  }
   const exactNotFound = (title ?? "").split(/\s+[|-]\s+/).some((part) => NOT_FOUND_TITLE.test(normalize(part)))
     || NOT_FOUND_TITLE.test(normalize($("h1").first().text()));
   if (exactNotFound && NOT_FOUND_BODY.test(textForClassification)) {
@@ -307,9 +352,6 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
   }
 
   const maintenanceTitle = (title ?? "").split(/\s+[|-]\s+/).some((part) => MAINTENANCE_TITLE.test(normalize(part)));
-  if (response.status === 503) {
-    return unavailableResult(requestedUrl, finalUrl, "maintenance", { title, author, publishedAt });
-  }
   if (response.headers.has("retry-after") && maintenanceTitle && words < 200) {
     return unavailableResult(requestedUrl, finalUrl, "maintenance", { title, author, publishedAt });
   }
