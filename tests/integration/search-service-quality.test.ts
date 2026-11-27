@@ -128,6 +128,8 @@ describe("search service quality regressions", () => {
 
     expect(response.results).toHaveLength(1);
     expect(response.results[0]?.sources).toHaveLength(2);
+    expect(response.results[0]?.queryOrigins?.map((origin) => origin.queryId)).toEqual(["q1", "q2"]);
+    expect(response.results[0]?.queryOrigins?.every((origin) => origin.score > 0)).toBe(true);
   });
 
   it("does not let a weak single-source subquery outrank a strong multi-source consensus after score normalization", async () => {
@@ -135,7 +137,7 @@ describe("search service quality regressions", () => {
       if (input.query === "weak") {
         return id === "p1"
           ? { results: [{ title: "Weak winner", url: "https://example.com/weak", snippet: "single source" }] }
-          : { results: [] };
+          : { results: [{ title: "Strong consensus", url: "https://example.com/strong", snippet: "three sources" }] };
       }
       return strong
         ? { results: [{ title: "Strong consensus", url: "https://example.com/strong", snippet: "three sources" }] }

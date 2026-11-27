@@ -1,6 +1,7 @@
 import { and, eq, lt } from "drizzle-orm";
 import {
   SearchHubError,
+  normalizeUrl,
   redactSecrets,
   type Freshness,
   type ProviderErrorCode,
@@ -8,10 +9,19 @@ import {
   type SearchRequest,
   type SearchResponse,
   type SearchResult,
+  type SearchFunnel,
+  type SearchQueryOrigin,
+  type SearchTruncationReason,
   type SafeFetch,
   type Logger,
 } from "@search-hub/shared";
-import { executeSearch, type ProviderRuntime } from "@search-hub/core";
+import {
+  dedupeResults,
+  executeSearch,
+  fuseLayeredRrf,
+  type CandidateResult,
+  type ProviderRuntime,
+} from "@search-hub/core";
 import { rerankWithEmbeddings, rewriteQuery, summarizeResults } from "@search-hub/models";
 import type { SearchHubDb } from "@search-hub/db";
 import { auditLogs, searchEvents, searchGroups, searchTasks } from "@search-hub/db";
@@ -39,6 +49,22 @@ export interface SearchServiceDeps {
 }
 
 const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
+
+function emptyFunnel(): SearchFunnel {
+  return {
+    rawReceived: 0,
+    invalidDropped: 0,
+    eligible: 0,
+    exactDuplicateDropped: 0,
+    nearDuplicateDropped: 0,
+    dedupedCount: 0,
+    candidateTruncatedCount: 0,
+    candidateSelectedCount: 0,
+    rankingInputCount: 0,
+    rerankInputCount: 0,
+    returnedCount: 0,
+  };
+}
 
 /**
  * Maps a user-facing preset onto the provider capability it implies.
@@ -150,6 +176,12 @@ export class SearchService {
 
     const providerIds = this.resolveProviderIds(request);
     let runtimes = this.deps.providers.runtimesFor(providerIds);
+    if (providerIds.length > 0) {
+      const byId = new Map(runtimes.map((runtime) => [runtime.config.id, runtime] as const));
+      runtimes = providerIds.map((id) => byId.get(id)).filter((runtime): runtime is ProviderRuntime => runtime !== undefined);
+    } else {
+      runtimes = [...runtimes].sort((left, right) => left.config.id.localeCompare(right.config.id));
+    }
 
     // Capability presets: "web" must never return an AI answer, "grounded" must
     // never return a web page list. Filtering here (not in the UI) keeps REST,
@@ -394,10 +426,12 @@ export class SearchService {
         }
         // A failed response has no results to summarize; calling the model would
         // add a second, misleading error on top of the real provider failure.
-        if ((wantsSummary || mode === "deep") && response.status !== "failed") {
+        if ((wantsSummary || mode === "deep") && response.status !== "failed" && !sharedSignal.aborted) {
           response = await this.applySummary(response, request, sharedSignal);
         }
 
+        response.results = response.results.slice(0, request.limit ?? 20);
+        if (response.stats.funnel) response.stats.funnel.returnedCount = response.results.length;
         response.stats.timing.totalMs = Date.now() - startedAt;
         response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
         const cancelled = sharedSignal.aborted;
@@ -665,6 +699,8 @@ export class SearchService {
         summaryApplied: false,
         partial: true,
         timing: { totalMs: 0, fanoutMs: 0, fusionMs: 0 },
+        funnel: emptyFunnel(),
+        truncationReasons: [],
       },
       errors: [...errors, { providerId: "engine", providerName: "Search Hub", code: "no_available_key", message: reason }],
       failedSources: errors.map((item) => ({ id: item.providerId, code: item.code })),
@@ -682,12 +718,14 @@ export class SearchService {
       if (!group) throw new SearchHubError("not_found", `Search group "${request.group}" not found`);
       try {
         const ids = JSON.parse(group.providerIdsJson) as unknown;
-        return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+        return Array.isArray(ids)
+          ? [...new Set(ids.filter((id): id is string => typeof id === "string"))].sort()
+          : [];
       } catch {
         return [];
       }
     }
-    return request.providers ?? [];
+    return [...new Set(request.providers ?? [])];
   }
 
   private engineDeps() {
@@ -740,7 +778,7 @@ export class SearchService {
     });
     this.applyHealthSkips(response, skippedByHealth);
     if (signal.aborted) {
-      response.status = "failed";
+      response.status = "cancelled";
       response.errors.push({
         providerId: "engine",
         providerName: "Search Hub",
@@ -765,7 +803,17 @@ export class SearchService {
   ): Promise<SearchResponse> {
     const chat = this.deps.models.chatModel(request.chatModelId);
     const rewritten = await rewriteQuery(chat, request.query, 3, signal);
-    const queries = rewritten.slice(0, 3);
+    const queries = rewritten.slice(0, 3).map((rawQuery, index) => {
+      const queryIndex = index + 1;
+      return {
+        query: rawQuery.trim(),
+        id: `q${queryIndex}`,
+        kind: queryIndex === 1 ? "original" as const : "rewrite" as const,
+        weight: queryIndex === 1 ? 1 : 0.8,
+        queryIndex,
+        round: 1,
+      };
+    });
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
 
@@ -774,16 +822,16 @@ export class SearchService {
     // that query failed. Treating it as valid is how a deep search used to
     // report `completed` with zero results.
     const outcomes = await Promise.all(
-      queries.map(async (query, index) => {
+      queries.map(async (queryInfo, index) => {
         try {
           const response = await executeSearch(
             deps,
-            { ...request, query, mode: "rrf", summarize: false, timeoutMs: request.timeoutMs },
+            { ...request, query: queryInfo.query, mode: "rrf", summarize: false, timeoutMs: request.timeoutMs },
             { signal, taskId, ...(beforeRequest === undefined ? {} : { beforeRequest }) },
           );
-          return { query, index, response };
+          return { query: queryInfo, index, response };
         } catch (error) {
-          return { query, index, response: null, error };
+          return { query: queryInfo, index, response: null, error };
         }
       }),
     );
@@ -791,7 +839,7 @@ export class SearchService {
     // Indexed rather than matched by query text: two rewrites can be identical,
     // and matching by string would then mark both as succeeded together.
     const succeeded = outcomes.filter(
-      (outcome): outcome is { query: string; index: number; response: SearchResponse } =>
+      (outcome): outcome is { query: (typeof queries)[number]; index: number; response: SearchResponse } =>
         outcome.response !== null && outcome.response.status !== "failed",
     );
     const succeededIndexes = new Set(succeeded.map((outcome) => outcome.index));
@@ -810,8 +858,8 @@ export class SearchService {
           providerId: outcome.response?.errors[0]?.providerId ?? "deep-query",
           providerName: "Deep search",
           code,
-          message: `Query "${outcome.query}" failed: ${detail}`,
-          query: outcome.query,
+          message: `Query "${outcome.query.query}" failed: ${detail}`,
+          query: outcome.query.query,
         };
       });
 
@@ -843,7 +891,7 @@ export class SearchService {
         taskId,
         query: request.query,
         mode: "deep",
-        status: "failed",
+        status: signal.aborted ? "cancelled" : "failed",
         results: [],
         stats: {
           rawCount: 0,
@@ -853,44 +901,125 @@ export class SearchService {
           rerankApplied: false,
           embeddingApplied: false,
           summaryApplied: false,
-          partial: true,
-          degraded: false,
-          timing: { totalMs: 0, fanoutMs: 0, fusionMs: 0 },
-          
-        },
+        partial: true,
+        degraded: false,
+        timing: { totalMs: 0, fanoutMs: 0, fusionMs: 0 },
+        funnel: emptyFunnel(),
+        truncationReasons: [],
+      },
         errors: failures,
         failedSources: failures.map((item) => ({ id: item.providerId, code: item.code })),
-        debug: { rewrittenQueries: queries },
+        debug: { rewrittenQueries: queries.map((query) => query.query) },
       };
     }
 
     const valid = succeeded.map((outcome) => outcome.response);
-
-    const merged = new Map<string, SearchResult>();
-    for (const response of valid) {
-      for (const result of response.results) {
-        const existing = merged.get(result.url);
-        if (!existing) {
-          merged.set(result.url, { ...result, sources: [...result.sources] });
-          continue;
-        }
-        const sources = [...existing.sources];
+    const deepCandidates: CandidateResult[] = [];
+    for (const outcome of succeeded) {
+      for (const result of outcome.response.results) {
+        const bestByProvider = new Map<string, (typeof result.sources)[number]>();
         for (const source of result.sources) {
-          if (!sources.some((item) => item.providerId === source.providerId && item.rank === source.rank)) {
-            sources.push(source);
-          }
+          const previous = bestByProvider.get(source.providerId);
+          if (!previous || source.rank < previous.rank) bestByProvider.set(source.providerId, source);
         }
-        merged.set(result.url, {
-          ...existing,
-          score: existing.score + result.score,
-          sources,
+        const bestSources = [...bestByProvider.values()];
+        const fallbackSource = result.sources[0] ?? {
+          providerId: result.provider,
+          providerName: result.providerName,
+          providerType: result.providerType,
+          rank: 1,
+          url: result.url,
+        };
+        const primary = bestSources[0] ?? fallbackSource;
+        const queryOrigins: SearchQueryOrigin[] = bestSources.map((source) => ({
+          queryId: outcome.query.id,
+          query: outcome.query.query,
+          queryIndex: outcome.query.queryIndex,
+          kind: outcome.query.kind,
+          round: outcome.query.round,
+          weight: outcome.query.weight,
+          providerId: source.providerId,
+          rank: source.rank,
+          score: 1 / (60 + Math.max(1, source.rank)),
+        }));
+        deepCandidates.push({
+          title: result.title,
+          url: result.url,
+          snippet: result.snippet,
+          ...(result.publishedAt === undefined ? {} : { publishedAt: result.publishedAt }),
+          ...(result.language === undefined ? {} : { language: result.language }),
+          ...(result.upstream === undefined ? {} : { upstream: result.upstream }),
+          ...(result.upstreamRank === undefined ? {} : { upstreamRank: result.upstreamRank }),
+          providerId: primary.providerId,
+          providerName: primary.providerName,
+          providerType: primary.providerType,
+          rank: primary.rank,
+          retrievedAt: result.retrievedAt,
+          sources: result.sources.map((source) => ({ ...source })),
+          queryOrigins,
         });
       }
     }
 
-    const results = [...merged.values()].sort((a, b) => b.score - a.score).slice(0, request.limit ?? 20);
-    const maxScore = Math.max(0.000001, ...results.map((item) => item.score));
-    for (const result of results) result.score = Number((result.score / maxScore).toFixed(6));
+    const candidatesByQueryProvider = new Map<string, CandidateResult[]>();
+    for (const candidate of deepCandidates) {
+      const origin = candidate.queryOrigins?.[0];
+      const key = `${origin?.queryId ?? "q1"}:${candidate.providerId}`;
+      const list = candidatesByQueryProvider.get(key) ?? [];
+      list.push(candidate);
+      candidatesByQueryProvider.set(key, list);
+    }
+    for (const list of candidatesByQueryProvider.values()) {
+      list.sort((left, right) => {
+        if (left.rank !== right.rank) return left.rank - right.rank;
+        const leftUrl = normalizeUrl(left.url) ?? left.url;
+        const rightUrl = normalizeUrl(right.url) ?? right.url;
+        return leftUrl < rightUrl ? -1 : leftUrl > rightUrl ? 1 : 0;
+      });
+    }
+    const rawPool: CandidateResult[] = [];
+    const candidateLists = [...candidatesByQueryProvider.values()];
+    for (let index = 0; rawPool.length < 400; index += 1) {
+      let appended = false;
+      for (const list of candidateLists) {
+        const candidate = list[index];
+        if (!candidate) continue;
+        rawPool.push(candidate);
+        appended = true;
+        if (rawPool.length === 400) break;
+      }
+      if (!appended) break;
+    }
+    const rawPoolTruncated = deepCandidates.length - rawPool.length;
+    const deduped = dedupeResults(rawPool);
+    const fused = fuseLayeredRrf(
+      deduped.results,
+      queries.map((query) => ({ id: query.id, weight: query.weight })),
+    );
+    const candidateSelected = fused.slice(0, 200);
+    const candidateTruncatedCount = deduped.results.length - candidateSelected.length;
+    const results: SearchResult[] = candidateSelected.slice(0, request.limit ?? 20).map((item) => ({
+      id: item.normalizedUrl,
+      title: item.title,
+      url: item.url,
+      snippet: item.snippet,
+      source: item.sources
+        .map((source) => source.providerName)
+        .filter((value, index, array) => array.indexOf(value) === index)
+        .join(" · "),
+      provider: item.providerId,
+      providerType: item.providerType,
+      providerName: item.providerName,
+      ...(item.publishedAt === undefined ? {} : { publishedAt: item.publishedAt }),
+      retrievedAt: item.retrievedAt,
+      score: Number(item.deepScore.toFixed(6)),
+      fusionScore: Number(item.deepScore.toFixed(6)),
+      ...(item.language === undefined ? {} : { language: item.language }),
+      ...(item.upstream === undefined ? {} : { upstream: item.upstream }),
+      ...(item.upstreamRank === undefined ? {} : { upstreamRank: item.upstreamRank }),
+      sources: item.sources,
+      queryOrigins: item.queryOrigins,
+    }));
 
     const base = valid[0]!;
 
@@ -913,27 +1042,64 @@ export class SearchService {
       failed.length > 0 ||
       skippedByHealth.length > 0 ||
       valid.some((response) => response.status === "partial");
+    const exactDuplicateDropped = deduped.dropped.filter((item) => item.reason === "exact_url").length;
+    const nearDuplicateDropped = deduped.dropped.filter((item) => item.reason === "near_title").length;
+    const funnel: SearchFunnel = {
+      rawReceived: rawPool.length,
+      invalidDropped: 0,
+      eligible: rawPool.length,
+      exactDuplicateDropped,
+      nearDuplicateDropped,
+      dedupedCount: deduped.results.length,
+      candidateTruncatedCount,
+      candidateSelectedCount: candidateSelected.length,
+      rankingInputCount: candidateSelected.length,
+      rerankInputCount: 0,
+      returnedCount: results.length,
+    };
+    const truncationReasons: SearchTruncationReason[] = [];
+    if (rawPoolTruncated > 0) truncationReasons.push({ reason: "raw_pool_limit", count: rawPoolTruncated });
+    if (candidateTruncatedCount > 0) truncationReasons.push({ reason: "candidate_pool_limit", count: candidateTruncatedCount });
+    const perProviderResults = new Map<string, { providerId: string; providerName: string; results: SearchResult[] }>();
+    for (const response of valid) {
+      for (const providerResults of response.debug?.perProviderResults ?? []) {
+        const target = perProviderResults.get(providerResults.providerId) ?? {
+          providerId: providerResults.providerId,
+          providerName: providerResults.providerName,
+          results: [],
+        };
+        const seen = new Set(target.results.map((result) => result.id));
+        for (const result of providerResults.results) {
+          if (seen.has(result.id)) continue;
+          seen.add(result.id);
+          target.results.push(result);
+        }
+        perProviderResults.set(providerResults.providerId, target);
+      }
+    }
     return {
       ...base,
       query: request.query,
       mode: "deep",
-      status: anyFailure ? "partial" : "completed",
+      status: signal.aborted ? "cancelled" : anyFailure ? "partial" : "completed",
       results,
       stats: {
         ...base.stats,
-        rawCount: valid.reduce((sum, response) => sum + response.stats.rawCount, 0),
-        dedupedCount: results.length,
-        fusedCount: results.length,
+        rawCount: funnel.rawReceived,
+        dedupedCount: funnel.dedupedCount,
+        fusedCount: candidateSelected.length,
         providers: [...providerStats.values()],
         partial: errors.length > 0,
         timing: { ...base.stats.timing, totalMs: 0 },
+        funnel,
+        truncationReasons,
       },
       failedSources: errors.map((item) => ({ id: item.providerId, code: item.code })),
       errors,
       debug: {
         ...base.debug,
-        rewrittenQueries: queries,
-        perProviderResults: base.debug?.perProviderResults,
+        rewrittenQueries: queries.map((query) => query.query),
+        perProviderResults: [...perProviderResults.values()],
       },
     };
   }
@@ -941,8 +1107,9 @@ export class SearchService {
   private async applyEmbedding(
     response: SearchResponse,
     request: SearchRequest,
-    _signal: AbortSignal,
+    signal: AbortSignal,
   ): Promise<SearchResponse> {
+    if (signal.aborted) return response;
     const started = Date.now();
     try {
       const embedding = this.deps.models.embeddingModel(request.embeddingModelId);
@@ -950,7 +1117,8 @@ export class SearchService {
         embedding,
         request.query,
         response.results,
-        request.limit ?? 20,
+        response.results.length,
+        signal,
       );
       return {
         ...response,
@@ -962,6 +1130,7 @@ export class SearchService {
         },
       };
     } catch (error) {
+      if (signal.aborted) throw error;
       return this.withWarning(response, "embedding", error, "embeddingMs", started);
     }
   }
@@ -969,8 +1138,9 @@ export class SearchService {
   private async applyRerank(
     response: SearchResponse,
     request: SearchRequest,
-    _signal: AbortSignal,
+    signal: AbortSignal,
   ): Promise<SearchResponse> {
+    if (signal.aborted) return response;
     const started = Date.now();
     try {
       const rerank = this.deps.models.rerankModel(request.rerankModelId);
@@ -981,7 +1151,7 @@ export class SearchService {
       if (documents.length === 0) {
         return { ...response, stats: { ...response.stats, rerankApplied: true } };
       }
-      const ranked = await rerank.rerank(request.query, documents, request.limit ?? 20);
+      const ranked = await rerank.rerank(request.query, documents, documents.length, signal);
       const index = new Map(response.results.map((result) => [result.url, result] as const));
       const reordered = ranked.results
         .map((item) => {
@@ -996,10 +1166,14 @@ export class SearchService {
         stats: {
           ...response.stats,
           rerankApplied: true,
+          funnel: response.stats.funnel
+            ? { ...response.stats.funnel, rerankInputCount: response.stats.funnel.candidateSelectedCount }
+            : undefined,
           timing: { ...response.stats.timing, rerankMs: Date.now() - started },
         },
       };
     } catch (error) {
+      if (signal.aborted) throw error;
       return this.withWarning(response, "rerank", error, "rerankMs", started);
     }
   }

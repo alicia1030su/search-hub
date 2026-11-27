@@ -7,7 +7,7 @@ function candidate(
   rank: number,
   url: string,
   title: string,
-  snippet = "snippet",
+  snippet = "a sufficiently long shared snippet for near duplicate detection",
 ): CandidateResult {
   return {
     title,
@@ -68,6 +68,22 @@ describe("de-duplication", () => {
     ]);
     expect(results).toHaveLength(1);
     expect(results[0]!.sources).toHaveLength(2);
+  });
+
+  it("does not merge similar titles when the bodies differ", () => {
+    const { results } = dedupeResults([
+      candidate("p1", 1, "https://example.com/docs/api", "OpenAI API Documentation Guide", "Endpoint reference and authentication"),
+      candidate("p2", 2, "https://example.com/guides/api", "OpenAI API Documentation Guide", "Step-by-step migration guide with examples"),
+    ]);
+    expect(results).toHaveLength(2);
+  });
+
+  it("does not merge on title alone when the body is too short", () => {
+    const { results } = dedupeResults([
+      candidate("p1", 1, "https://example.com/a", "TypeScript Monorepo Guide", "short"),
+      candidate("p2", 2, "https://example.com/b", "TypeScript Monorepo Guide", "short"),
+    ]);
+    expect(results).toHaveLength(2);
   });
 
   it("does not merge similar titles across different domains", () => {
@@ -143,6 +159,15 @@ describe("Reciprocal Rank Fusion", () => {
     ]).results;
     const fused = fuseWithRrf(deduped).results;
     expect(fused[0]!.url).toBe("https://a.com/y");
+  });
+
+  it("breaks complete ties by normalized URL", () => {
+    const deduped = dedupeResults([
+      candidate("p1", 1, "https://a.com/z?utm_source=x", "Z"),
+      candidate("p1", 1, "https://a.com/a", "A"),
+    ]).results;
+    const fused = fuseWithRrf(deduped).results;
+    expect(fused.map((item) => item.normalizedUrl)).toEqual(["https://a.com/a", "https://a.com/z"]);
   });
 });
 

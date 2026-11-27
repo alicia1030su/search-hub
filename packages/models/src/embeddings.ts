@@ -8,7 +8,13 @@ export interface EmbeddingDeps {
 
 export interface EmbeddingModel {
   config: ModelConfig;
-  embed(texts: string[]): Promise<EmbeddingResult>;
+  embed(texts: string[], signal?: AbortSignal): Promise<EmbeddingResult>;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Embedding request cancelled");
+  }
 }
 
 interface OpenAIEmbeddingResponse {
@@ -29,12 +35,13 @@ export function createEmbeddingModel(config: ModelConfig, deps: EmbeddingDeps): 
   const safeDeps: EmbeddingDeps = { ...deps, fetch: scrubbingFetch(deps.fetch, deps.apiKey) };
   return {
     config,
-    async embed(texts) {
+    async embed(texts, signal) {
       if (texts.length === 0) return { vectors: [], modelId: config.modelId, dimensions: config.dimensions ?? 0 };
+      throwIfAborted(signal);
       const vectors =
         config.providerType === "custom-http"
-          ? await embedCustom(config, safeDeps, texts)
-          : await embedOpenAICompatible(config, safeDeps, texts);
+          ? await embedCustom(config, safeDeps, texts, signal)
+          : await embedOpenAICompatible(config, safeDeps, texts, signal);
 
       const dimension = vectors[0]?.length ?? 0;
       if (dimension === 0) {
@@ -64,6 +71,7 @@ async function embedOpenAICompatible(
   config: ModelConfig,
   deps: EmbeddingDeps,
   texts: string[],
+  signal?: AbortSignal,
 ): Promise<number[][]> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (deps.apiKey) headers["authorization"] = `Bearer ${deps.apiKey}`;
@@ -71,6 +79,7 @@ async function embedOpenAICompatible(
   const batchSize = Math.max(1, Math.min(config.batchSize, 256));
   const output: number[][] = [];
   for (let offset = 0; offset < texts.length; offset += batchSize) {
+    throwIfAborted(signal);
     const batch = texts.slice(offset, offset + batchSize);
     const response = await deps.fetch<OpenAIEmbeddingResponse>(
       `${config.baseUrl.replace(/\/+$/, "")}/embeddings`,
@@ -79,6 +88,7 @@ async function embedOpenAICompatible(
         headers,
         body: JSON.stringify({ model: config.modelId, input: batch }),
         timeoutMs: config.timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
       },
     );
     const data = response.data?.data;
@@ -110,6 +120,7 @@ async function embedCustom(
   config: ModelConfig,
   deps: EmbeddingDeps,
   texts: string[],
+  signal?: AbortSignal,
 ): Promise<number[][]> {
   const cfg = config.params as CustomEmbeddingConfig;
   const path = cfg.path ?? "/embeddings";
@@ -125,9 +136,16 @@ async function embedCustom(
     [inputField]: texts,
   };
 
+  throwIfAborted(signal);
   const response = await deps.fetch<CustomEmbeddingResponse>(
     `${config.baseUrl.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`,
-    { method: "POST", headers, body: JSON.stringify(body), timeoutMs: config.timeoutMs },
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      timeoutMs: config.timeoutMs,
+      ...(signal === undefined ? {} : { signal }),
+    },
   );
 
   const resolved = resolvePath(response.data, itemsPath);

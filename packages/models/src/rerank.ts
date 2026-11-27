@@ -14,7 +14,13 @@ export interface RerankDeps {
 
 export interface RerankModel {
   config: ModelConfig;
-  rerank(query: string, documents: RerankDocument[], topK?: number): Promise<RerankResponse>;
+  rerank(query: string, documents: RerankDocument[], topK?: number, signal?: AbortSignal): Promise<RerankResponse>;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Rerank request cancelled");
+  }
 }
 
 interface CohereRerankResponse {
@@ -38,8 +44,9 @@ export function createRerankModel(config: ModelConfig, deps: RerankDeps): Rerank
   const safeDeps: RerankDeps = { ...deps, fetch: scrubbingFetch(deps.fetch, deps.apiKey) };
   return {
     config,
-    async rerank(query, documents, topK) {
+    async rerank(query, documents, topK, signal) {
       if (documents.length === 0) return { results: [], modelId: config.modelId };
+      throwIfAborted(signal);
       const maxChars =
         typeof (config.params as Record<string, unknown>)["maxDocChars"] === "number"
           ? Number((config.params as Record<string, unknown>)["maxDocChars"])
@@ -51,8 +58,8 @@ export function createRerankModel(config: ModelConfig, deps: RerankDeps): Rerank
 
       const ranked =
         config.providerType === "custom-http"
-          ? await rerankCustom(config, safeDeps, query, truncated, topK)
-          : await rerankCohereCompatible(config, safeDeps, query, truncated, topK);
+          ? await rerankCustom(config, safeDeps, query, truncated, topK, signal)
+          : await rerankCohereCompatible(config, safeDeps, query, truncated, topK, signal);
 
       const byId = new Map(documents.map((doc, index) => [doc.id, index] as const));
       const results = ranked
@@ -77,10 +84,12 @@ async function rerankCohereCompatible(
   query: string,
   documents: Array<{ id: string; text: string }>,
   topK?: number,
+  signal?: AbortSignal,
 ): Promise<Array<{ index?: number; score: number }>> {
   if (!deps.apiKey) {
     throw new SearchHubError("validation_error", `Rerank model ${config.name} requires an API key`);
   }
+  throwIfAborted(signal);
   const response = await deps.fetch<CohereRerankResponse>(
     `${config.baseUrl.replace(/\/+$/, "")}/v1/rerank`,
     {
@@ -97,6 +106,7 @@ async function rerankCohereCompatible(
         return_documents: false,
       }),
       timeoutMs: config.timeoutMs,
+      ...(signal === undefined ? {} : { signal }),
     },
   );
 
@@ -113,12 +123,14 @@ async function rerankCustom(
   query: string,
   documents: Array<{ id: string; text: string }>,
   topK?: number,
+  signal?: AbortSignal,
 ): Promise<Array<{ index?: number; score: number }>> {
   const cfg = config.params as CustomRerankConfig;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (deps.apiKey) headers["authorization"] = `Bearer ${deps.apiKey}`;
   const path = cfg.path ?? "/rerank";
 
+  throwIfAborted(signal);
   const response = await deps.fetch<Record<string, unknown>>(
     `${config.baseUrl.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`,
     {
@@ -131,6 +143,7 @@ async function rerankCustom(
         top_n: topK ?? documents.length,
       }),
       timeoutMs: config.timeoutMs,
+      ...(signal === undefined ? {} : { signal }),
     },
   );
 

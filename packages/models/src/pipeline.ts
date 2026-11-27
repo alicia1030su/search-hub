@@ -183,10 +183,11 @@ export async function rerankWithEmbeddings(
   query: string,
   results: SearchResult[],
   topK: number,
+  signal?: AbortSignal,
 ): Promise<SearchResult[]> {
   if (results.length === 0) return results;
   const texts = results.map((result) => `${result.title}\n${result.snippet}`);
-  const embedded = await embedding.embed([query, ...texts]);
+  const embedded = await embedding.embed([query, ...texts], signal);
   const queryVector = embedded.vectors[0];
   if (!queryVector) throw new SearchHubError("server_error", "Embedding model returned no query vector");
 

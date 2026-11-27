@@ -135,7 +135,21 @@ export interface SearchResult {
   upstream?: UpstreamAttribution;
   /** Vendor-assigned position, distinct from our own `score` and source rank. */
   upstreamRank?: number;
+  /** Deep-search provenance for every query/provider/rank contribution. */
+  queryOrigins?: SearchQueryOrigin[];
   raw?: unknown;
+}
+
+export interface SearchQueryOrigin {
+  queryId: string;
+  query: string;
+  queryIndex: number;
+  kind: "original" | "expanded" | "rewrite";
+  round: number;
+  weight: number;
+  providerId: string;
+  rank: number;
+  score: number;
 }
 
 export interface ProviderAttemptStat {
@@ -200,6 +214,25 @@ export interface SearchSummary {
   degraded?: boolean;
 }
 
+export interface SearchFunnel {
+  rawReceived: number;
+  invalidDropped: number;
+  eligible: number;
+  exactDuplicateDropped: number;
+  nearDuplicateDropped: number;
+  dedupedCount: number;
+  candidateTruncatedCount: number;
+  candidateSelectedCount: number;
+  rankingInputCount: number;
+  rerankInputCount: number;
+  returnedCount: number;
+}
+
+export interface SearchTruncationReason {
+  reason: "provider_limit" | "raw_pool_limit" | "candidate_pool_limit";
+  count: number;
+}
+
 export interface SearchResponse {
   taskId: string;
   query: string;
@@ -219,6 +252,10 @@ export interface SearchResponse {
     /** True when an optional stage (rerank / embedding / summary) failed and was skipped. */
     degraded?: boolean;
     cached?: boolean;
+    requestedProviderCount?: number;
+    selectedProviderCount?: number;
+    funnel?: SearchFunnel;
+    truncationReasons?: SearchTruncationReason[];
   };
   errors: SearchErrorSummary[];
   /** AI answers with citations; kept separate from `results` on purpose. */
@@ -234,6 +271,7 @@ export interface SearchDebugInfo {
   rewrittenQueries?: string[];
   droppedDuplicates?: Array<{ url: string; keptUrl: string; reason: "exact_url" | "near_title" }>;
   perProviderResults?: Array<{ providerId: string; providerName: string; results: SearchResult[] }>;
+  selectedProviderIds?: string[];
 }
 
 /** Provider runtime configuration after DB + credential resolution. */

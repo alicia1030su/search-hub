@@ -29,7 +29,7 @@ export const searchRequestSchema = z.object({
   group: z.string().min(1).max(100).optional(),
   capability: z.enum(["raw_search", "grounded_answer"]).optional(),
   limit: z.number().int().min(1).max(100).default(20),
-  perProviderLimit: z.number().int().min(1).max(50).optional(),
+  perProviderLimit: z.number().int().min(1).max(100).optional(),
   language: z.string().min(1).max(24).optional(),
   freshness: freshnessSchema.optional(),
   mode: searchModeSchema.default("basic"),

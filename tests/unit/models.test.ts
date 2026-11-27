@@ -1,7 +1,13 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createSafeFetch, type ModelConfig, type SafeFetch } from "@search-hub/shared";
+import {
+  createSafeFetch,
+  type ModelConfig,
+  type SafeFetch,
+  type SafeFetchInit,
+  type SafeFetchResponse,
+} from "@search-hub/shared";
 import {
   createChatModel,
   createEmbeddingModel,
@@ -176,6 +182,55 @@ describe("embedding adapter", () => {
     expect(calls).toBe(3);
   });
 
+  it("does not send a pre-cancelled embedding request", async () => {
+    const fetch = vi.fn(async () => {
+      throw new Error("fetch should not be called");
+    }) as unknown as SafeFetch;
+    const embedding = createEmbeddingModel(model({ kind: "embedding", dimensions: 2 }), { fetch });
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+
+    await expect(embedding.embed(["a"], controller.signal)).rejects.toThrow(/cancelled/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("stops before the next embedding batch after cancellation", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const fetch: SafeFetch = async <T>(): Promise<SafeFetchResponse<T>> => {
+      calls += 1;
+      controller.abort(new Error("cancelled between batches"));
+      return {
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        data: { data: [{ index: 0, embedding: [1, 0] }] } as T,
+        url: "https://stub.invalid/embeddings",
+      };
+    };
+    const embedding = createEmbeddingModel(model({ kind: "embedding", dimensions: 2, batchSize: 1 }), { fetch });
+
+    await expect(embedding.embed(["a", "b"], controller.signal)).rejects.toThrow(/cancelled/i);
+    expect(calls).toBe(1);
+  });
+
+  it("passes the AbortSignal to the embedding fetch init", async () => {
+    const controller = new AbortController();
+    let received: AbortSignal | null | undefined;
+    const fetch: SafeFetch = async <T>(_url: string, init?: SafeFetchInit): Promise<SafeFetchResponse<T>> => {
+      received = init?.signal;
+      return {
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        data: { data: [{ index: 0, embedding: [1, 0] }] } as T,
+        url: "https://stub.invalid/embeddings",
+      };
+    };
+    const embedding = createEmbeddingModel(model({ kind: "embedding", dimensions: 2 }), { fetch });
+
+    await embedding.embed(["a"], controller.signal);
+    expect(received).toBe(controller.signal);
+  });
+
   it("computes cosine similarity correctly", () => {
     expect(cosineSimilarity([1, 0], [1, 0])).toBeCloseTo(1);
     expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0);
@@ -211,6 +266,36 @@ describe("rerank adapter", () => {
     expect(result.results[0]!.id).toBe("doc-b");
     expect(result.results[0]!.score).toBeCloseTo(0.91);
     expect(result.results[1]!.id).toBe("doc-a");
+  });
+
+  it("does not send a pre-cancelled rerank request", async () => {
+    const fetch = vi.fn(async () => {
+      throw new Error("fetch should not be called");
+    }) as unknown as SafeFetch;
+    const rerank = createRerankModel(model({ kind: "rerank", providerType: "cohere" }), { fetch, apiKey: "k" });
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+
+    await expect(rerank.rerank("q", [{ id: "a", text: "body" }], 1, controller.signal)).rejects.toThrow(/cancelled/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("passes the AbortSignal to the rerank fetch init", async () => {
+    const controller = new AbortController();
+    let received: AbortSignal | null | undefined;
+    const fetch: SafeFetch = async <T>(_url: string, init?: SafeFetchInit): Promise<SafeFetchResponse<T>> => {
+      received = init?.signal;
+      return {
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        data: { results: [{ index: 0, relevance_score: 1 }] } as T,
+        url: "https://stub.invalid/v1/rerank",
+      };
+    };
+    const rerank = createRerankModel(model({ kind: "rerank", providerType: "cohere" }), { fetch, apiKey: "k" });
+
+    await rerank.rerank("q", [{ id: "a", text: "body" }], 1, controller.signal);
+    expect(received).toBe(controller.signal);
   });
 
   it("truncates long documents before sending them", async () => {
