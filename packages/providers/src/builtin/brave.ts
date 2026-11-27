@@ -7,7 +7,6 @@ import {
   type ProviderSearchInput,
   type ProviderSearchOutput,
   type ProviderTestResult,
-  type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
 import { callJson, expectObject, joinApiPath, mapItem } from "../http.js";

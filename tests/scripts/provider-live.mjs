@@ -36,7 +36,6 @@ import { redactText, providerKeysFromEnv } from "./redact-secrets.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const PLACEHOLDER_HOSTS = ["example.com", "example.org", "example.net", "localhost", "127.0.0.1"];
-const REPOSITORY_URL = "https://github.com/alicia1030su/search-hub";
 
 const GENERAL_QUERIES = [
   { label: "zh-current-affairs", query: "中国 新能源汽车 产业 最新政策", freshness: "month" },

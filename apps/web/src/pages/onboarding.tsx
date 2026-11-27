@@ -8,7 +8,6 @@ import { categoryLabel, providerAuthLabel, t, verificationLabel } from "../lib/i
 import type {
   HealthCheckResult,
   HealthOverview,
-  OnboardingStatus,
   ProviderCatalogEntry,
   ProviderSummary,
   RuntimeHealthValue,

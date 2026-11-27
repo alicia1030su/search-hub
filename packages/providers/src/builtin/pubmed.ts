@@ -26,10 +26,6 @@ const DEFAULT_BASE_URL = "https://eutils.ncbi.nlm.nih.gov";
  *
  * Verification: `documented` and **live-tested** against the public API.
  */
-interface ESearchPayload {
-  esearchresult?: { idlist?: unknown; count?: unknown };
-}
-
 interface ESummaryDoc {
   title?: unknown;
   pubdate?: unknown;
