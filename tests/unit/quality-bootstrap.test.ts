@@ -65,9 +65,11 @@ describe("pairedStratifiedBootstrap", () => {
     });
     const result = run(input);
     const interval = result.observed!.deltaCi;
-    expect(interval.lower).toBeLessThanOrEqual(interval.upper);
-    expect(interval.lower).toBeGreaterThanOrEqual(-0.141);
-    expect(interval.upper).toBeLessThanOrEqual(-0.04);
+    expect(interval.lower).not.toBeNull();
+    expect(interval.upper).not.toBeNull();
+    expect(interval.lower!).toBeLessThanOrEqual(interval.upper!);
+    expect(interval.lower!).toBeGreaterThanOrEqual(-0.141);
+    expect(interval.upper!).toBeLessThanOrEqual(-0.04);
     expect(result.status).toBe("INSUFFICIENT_EVIDENCE");
     expect(result.reasons).toContain("improvement_not_confirmed_in_both_lenses");
   });
@@ -136,7 +138,7 @@ describe("pairedStratifiedBootstrap", () => {
 
   it("computes Recall only for complete qrels", () => {
     const input = samples();
-    input[4]!.candidate.judgmentsComplete = false;
+    input[4]!.judgmentsComplete = false;
     const result = run(input, "recallAtK");
     expect(result.observed!.pairedN).toBe(31);
     expect(result.releaseScore!.pairedN).toBe(31);
