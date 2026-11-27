@@ -104,7 +104,10 @@ function testConfig(dir: string): AppConfig {
 afterEach(async () => {
   for (const harness of harnesses.splice(0)) {
     await harness.app.close();
-    rmSync(harness.dir, { recursive: true, force: true });
+    // Windows can keep a just-closed SQLite/backup directory locked for a few
+    // milliseconds. Retry the OS unlink instead of turning a passing cache test
+    // into a flaky cleanup failure; the directory is still removed on success.
+    rmSync(harness.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
