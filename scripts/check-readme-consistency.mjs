@@ -25,9 +25,9 @@ export const README_ANCHORS = Object.freeze([
   "license",
 ]);
 export const SCREENSHOT_FILES = Object.freeze([
-  "docs/screenshots/v0116/dashboard.png",
-  "docs/screenshots/v0116/search-lab.png",
-  "docs/screenshots/v0116/provider-health.png",
+  "docs/screenshots/v0117/dashboard.png",
+  "docs/screenshots/v0117/search-lab.png",
+  "docs/screenshots/v0117/provider-health.png",
 ]);
 export const README_MIN_LINES = 100;
 export const README_MAX_LINES = 150;

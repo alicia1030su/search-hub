@@ -17,6 +17,7 @@ import type {
   ModelConfig,
   ModelInput,
   ModelTestResult,
+  OnboardingStatus,
   ProviderInput,
   ProviderRuntimeSnapshot,
   ProviderSummary,
@@ -472,6 +473,12 @@ export const api = {
     request<AppSettings>("/admin/settings", { signal }),
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>("/admin/settings", { method: "PUT", body: patch }),
+  onboardingStatus: (signal?: AbortSignal) =>
+    request<OnboardingStatus>("/admin/onboarding/status", { signal }),
+  completeOnboarding: () =>
+    request<OnboardingStatus>("/admin/onboarding/complete", { method: "POST", body: {} }),
+  dismissOnboarding: () =>
+    request<OnboardingStatus>("/admin/onboarding/dismiss", { method: "POST", body: {} }),
 
   // ---- cache ----
   cacheStats: (signal?: AbortSignal) => request<CacheStats>("/admin/cache", { signal }),

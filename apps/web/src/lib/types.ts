@@ -95,6 +95,26 @@ export interface SetupStatus {
   setupTokenRequired?: boolean;
 }
 
+export interface OnboardingStatus {
+  completed: boolean;
+  dismissed: boolean;
+  step: 1 | 2 | 3;
+  steps: {
+    admin: { complete: boolean };
+    provider: { complete: boolean; readyProviderIds: string[] };
+    search: { complete: boolean };
+  };
+  recommendedProviders: Array<{
+    type: string;
+    name: string;
+    verification: ProviderVerification;
+    authType: ProviderAuthType;
+    capability: ProviderCapability;
+    category: ProviderCategory;
+    description: string;
+  }>;
+}
+
 export interface AuthSession {
   user: User;
   csrfToken: string;
@@ -633,6 +653,11 @@ export interface AppSettings {
   cache: { enabled: boolean; ttlSeconds: number };
   logging: { level: string };
   initializedAt: string | null;
+  onboarding: {
+    completedAt: string | null;
+    dismissedAt: string | null;
+    lastSeenVersion: string | null;
+  };
 }
 
 /** Read-only process, activity, queue, and cache disk snapshot (GET /api/admin/resources). */

@@ -5,7 +5,7 @@ name: Promote release candidate
 # annotated Stable tag's commit.
 on:
   push:
-    tags: ["v0.1.16"]
+    tags: ["v0.1.17"]
   workflow_dispatch:
     inputs:
       tag:
