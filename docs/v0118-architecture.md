@@ -258,9 +258,9 @@ render: z.boolean().optional()
 
 | 策略 | 召回/融合 | 扩展 | 模型阶段 | 最终体验 |
 |---|---|---|---|---|
-| Fast | 单轮、RRF、≤200 rankingInput | 不做 | 无 | 最低延迟 |
+| Fast | 单轮、basic、≤200 rankingInput | 不做 | 无 | 最低延迟 |
 | Balanced | 单轮、RRF、≤200 | 仅确定性规则满足阈值且模型可用时 | 可选 | 新策略推荐 |
-| Quality | 扩大有界池、RRF 后 Rerank | 可选 | Rerank 可选；无模型降级 RRF | 研究/比较 |
+| Quality | 扩大有界池、RRF 后可选 Rerank | 可选 | Rerank 可选；无模型保持 RRF，不得让基础搜索失败 | 研究/比较 |
 | Deep | 多轮、多查询、B3 融合 | 可选 | 扩展/摘要/Rerank 可选 | 复杂问题，非默认 |
 
 ### 6.3 旧 mode 等价与冲突
@@ -269,16 +269,16 @@ render: z.boolean().optional()
 
 | strategy | 等价 mode |
 |---|---|
-| fast | rrf |
+| fast | basic |
 | balanced | rrf |
-| quality | rerank |
+| quality | rrf（rerank 为可选阶段，不是基础模式） |
 | deep | deep |
 
 - 只传旧 mode：兼容路径，旧响应字段不删、类型不变；缺陷修复可改变错误结果。
 - 只传 strategy：新路径，返回 `strategy`、`route`、`appliedStages`、`degradations`。
 - 都不传：沿用 SettingsService 默认 mode（当前 basic），不改变旧客户端成本/行为。
 - `/api/search/deep` 强制 Deep；传入冲突 strategy 返回 400，不得被端点静默覆盖。
-- `strategy=quality` 单独使用且无 rerank 模型：执行 RRF 并返回 degradation；旧 `mode=rerank` 或等价的 `strategy=quality+mode=rerank` 缺模型仍 fail-fast 400。
+- `strategy=quality` 单独使用且无 rerank 模型：执行 RRF 并返回 degradation，不得让基础搜索失败；旧 `mode=rerank` 是显式模型阶段请求，缺模型仍 fail-fast 400。strategy 只提供基础模式与可选阶段默认值，不重写旧 `SearchMode` 枚举，也不吞掉显式 mode 的模型阶段语义。
 - MCP/CLI/Skills 复用同一 Zod schema 和 SearchService；OpenAPI、CLI help、Skill 文档同批更新。
 
 ### 6.4 测试落点
@@ -468,7 +468,9 @@ v1 行按原 version 读取，不删除、不重写；不满足条件为逻辑 m
 
 ### 13.1 模块
 
-- `packages/core/src/evaluation/bootstrap.ts`：`pairedBootstrap()`、`mulberry32()`、分层抽样。
+- `packages/core/src/evaluation/bootstrap.ts`：`pairedStratifiedBootstrap()`、`mulberry32()`、分层抽样。
+- `packages/core/src/evaluation/snapshot.ts`：`evaluationSnapshotSchema`、`parseEvaluationSnapshot()`、`snapshotFingerprint()`；v2 保留旧 QuerySnapshot 字段并增加 language/providerFingerprints/modelArtifacts/deepRounds，旧 ProviderSnapshot[] 按 v1 读取。
+- `packages/core/src/evaluation/strategy.ts`：`RankStrategy=fusion|embedding|rerank|route|deep`、`compareRankStrategies()`。
 - `packages/core/src/evaluation/protocol.ts`：样本完整性、missing、observed/releaseScore、发布门槛。
 - `scripts/quality-eval.mjs`：冻结数据集与双实现执行入口。
 - `apps/api/src/services/quality.ts` / `routes/quality-routes.ts`：Search Lab snapshot/live、原始证据引用、对比报告。
@@ -478,10 +480,11 @@ v1 行按原 version 读取，不删除、不重写；不满足条件为逻辑 m
 
 冻结至少 40 条真实公开查询，中英文各 ≥12，覆盖导航、事实、比较、技术、新闻/时效。至少两名人工标注者对基线/候选结果并集 top 20 按 0–3 标注，分歧仲裁；保留 `human` 来源与 qrels 指纹。Recall 仅在标注完整时计算。固定 exact commit、查询集、qrels、top K、去重和公式；development/holdout 不泄漏。
 
-两层证据分开：同快照重排隔离算法变化；真实联网配对验证端到端。两次独立 live 抓取不得包装成同快照。
+两层证据分开：同快照重排隔离算法变化；真实联网配对验证端到端。两次独立 live 抓取不得包装成同快照。快照中的 `modelArtifacts` 使用非密结构 `Record<'embedding'|'rerank'|'chat', {modelId, configFingerprint, stageVersion}|undefined>`，`providerFingerprints` 为 `Record<providerId,string>`；不得包含 Key、Authorization 或凭证 URL。
 
 ### 13.3 Bootstrap（B8）
 
+- `pairedStratifiedBootstrap({pairs, iterations=10000, seed=118, metric})` 接收冻结配对样本；`pairs` 含 language/category/queryId、baseline/candidate QueryMetrics、failure/provisional。返回 observed、releaseScore、delta、ci95、strata、pairedN、excludedN、status。
 - 配对 query 级重采样 10,000 次，seed=118，PRNG=mulberry32；全运行只用一个 PRNG 实例。
 - 调用顺序：iteration 外层、stratum 内层；层按名称排序，层内 queryId 升序。
 - 分层 `language × category`；每层有放回抽取与原层相同数量，同一抽取索引同时应用于 v0.1.17/v0.1.18。
