@@ -3,6 +3,7 @@ import { SearchHubError, searchRequestSchema } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
 import { authenticate, actorLabel } from "../auth.js";
 import { audit, jsonFor, parseInput } from "../http.js";
+import { startSearchStream } from "../services/search-stream.js";
 
 export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): void {
   const execute = async (request: FastifyRequest, body: unknown) => {
@@ -39,6 +40,35 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
       return response;
     }),
   );
+
+  app.post("/api/search/stream", async (request, reply) => {
+    const actor = authenticate(
+      {
+        headers: request.headers as Record<string, string | string[] | undefined>,
+        cookies: request.cookies as Record<string, string | undefined>,
+        ip: request.ip,
+      },
+      ctx.authDeps,
+      { scope: "search" },
+    );
+    const input = parseInput(searchRequestSchema, request.body);
+    const format = input.stream ?? "sse";
+    const controller = new AbortController();
+    request.raw.once("close", () => {
+      if (!request.raw.readableEnded) controller.abort(new Error("client disconnected"));
+    });
+    const handle = startSearchStream(ctx.search, {
+      request: input,
+      actor: actorLabel(actor),
+      signal: controller.signal,
+      format,
+    });
+    reply.header("content-type", format === "ndjson" ? "application/x-ndjson; charset=utf-8" : "text/event-stream; charset=utf-8");
+    reply.header("cache-control", "no-cache, no-transform");
+    reply.header("connection", "keep-alive");
+    reply.header("x-accel-buffering", "no");
+    return reply.send(handle.stream);
+  });
 
   app.get(
     "/api/search/tasks/:id",

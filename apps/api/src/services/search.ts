@@ -431,7 +431,7 @@ export class SearchService {
           },
         });
         options.onEvent?.({ type: "status", data: { status: cached.status, terminal: false } });
-        options.onEvent?.({ type: "search_completed", data: { status: cached.status, results: cached.results, stats: cached.stats, cached: true } });
+        options.onEvent?.({ type: "search_completed", data: { ...cached, cached: true } as unknown as Record<string, unknown> });
         this.deps.db
           .insert(searchTasks)
           .values({
@@ -547,7 +547,7 @@ export class SearchService {
         } else if (response.status === "failed") {
           options.onEvent?.({ type: "search_failed", data: { status: response.status, errors: response.errors, failedSources: response.failedSources } });
         } else {
-          options.onEvent?.({ type: "search_completed", data: { status: response.status, results: response.results, stats: response.stats } });
+          options.onEvent?.({ type: "search_completed", data: { ...response } as unknown as Record<string, unknown> });
         }
         if (cacheUsable && cacheKey && this.isCacheable(response, cancelled)) {
           try {
