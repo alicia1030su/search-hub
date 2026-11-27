@@ -22,7 +22,14 @@ import {
   providerAuthLabel,
   t,
   verificationLabel,
+  type MessageKey,
 } from "../../lib/i18n";
+import {
+  isGeneralWebEntry,
+  providerConfigFields,
+  providerFixHint,
+  type ProviderFixHint,
+} from "../../lib/provider-config-view";
 import { runStatusWord } from "../../lib/batch-labels";
 import { forgetBatchJob, readRememberedBatchJob } from "../../lib/batch-job-store";
 import type {
@@ -30,8 +37,11 @@ import type {
   GroupInput,
   ProviderCatalogEntry,
   ProviderCategory,
+  ProviderHealthRow,
   ProviderSummary,
   ProviderTestResult,
+  ProviderVerification,
+  RuntimeHealthValue,
   SearchGroup,
 } from "../../lib/types";
 import { ConfirmDialog, Dialog, Sheet } from "../../components/overlay";
@@ -74,6 +84,14 @@ const implementationTone = {
   planned: "muted",
   unavailable: "muted",
 } as const;
+
+function runtimeLabel(runtime: RuntimeHealthValue): string {
+  return t(`providers.health.runtime.${runtime}` as MessageKey);
+}
+
+function fixHintLabel(hint: ProviderFixHint): string {
+  return t(`providers.fix.${hint}` as MessageKey);
+}
 
 export function ProvidersPage() {
   useDocumentTitle(t("providers.title"));
@@ -225,6 +243,8 @@ export function ProvidersPage() {
   const [costDialog, setCostDialog] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<"all" | ProviderCategory>("all");
   const [authFilter, setAuthFilter] = useState<"all" | "need" | "none">("all");
+  const [verificationFilter, setVerificationFilter] = useState<"all" | ProviderVerification>("all");
+  const [coverageFilter, setCoverageFilter] = useState<"all" | "general_web" | "vertical" | "other">("all");
 
   const providers = useAsyncData((signal) => api.providers(signal), []);
   const groups = useAsyncData((signal) => api.groups(signal), []);
@@ -242,6 +262,10 @@ export function ProvidersPage() {
       if (categoryFilter !== "all" && entry.category !== categoryFilter) return false;
       if (authFilter === "need" && entry.authType === "none") return false;
       if (authFilter === "none" && entry.authType !== "none") return false;
+      if (verificationFilter !== "all" && entry.verification !== verificationFilter) return false;
+      if (coverageFilter === "general_web" && !isGeneralWebEntry(entry)) return false;
+      if (coverageFilter === "vertical" && entry.category !== "vertical") return false;
+      if (coverageFilter === "other" && (isGeneralWebEntry(entry) || entry.category === "vertical")) return false;
       if (!filter.trim()) return true;
       const needle = filter.trim().toLowerCase();
       return (
@@ -256,13 +280,19 @@ export function ProvidersPage() {
         entries: filtered.filter((entry) => entry.category === category),
       }))
       .filter((group) => group.entries.length > 0);
-  }, [providers.data, filter, categoryFilter, authFilter]);
+  }, [providers.data, filter, categoryFilter, authFilter, verificationFilter, coverageFilter]);
 
   const runtimeById = useMemo(() => {
     const map = new Map<string, NonNullable<typeof providers.data>["status"][number]>();
     for (const snapshot of providers.data?.status ?? []) map.set(snapshot.providerId, snapshot);
     return map;
   }, [providers.data]);
+
+  const healthById = useMemo(() => {
+    const map = new Map<string, ProviderHealthRow>();
+    for (const row of health.data?.providers ?? []) map.set(row.providerId, row);
+    return map;
+  }, [health.data]);
 
   useEffect(() => {
     if (!focusId || !providers.data) return;
@@ -611,6 +641,28 @@ export function ProvidersPage() {
                     <option value="need">{t("providers.market.needKey")}</option>
                     <option value="none">{t("providers.market.noKey")}</option>
                   </Select>
+                  <Select
+                    value={verificationFilter}
+                    onChange={(event) => setVerificationFilter(event.target.value as "all" | ProviderVerification)}
+                    className="h-8 w-32 text-xs"
+                    aria-label={t("providers.market.filterVerification")}
+                  >
+                    <option value="all">{t("providers.market.all")}</option>
+                    {(["live_tested", "documented", "mock_verified", "unverified", "no_official_api"] as ProviderVerification[]).map((verification) => (
+                      <option key={verification} value={verification}>{verificationLabel(verification)}</option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={coverageFilter}
+                    onChange={(event) => setCoverageFilter(event.target.value as "all" | "general_web" | "vertical" | "other")}
+                    className="h-8 w-32 text-xs"
+                    aria-label={t("providers.market.filterCoverage")}
+                  >
+                    <option value="all">{t("providers.market.all")}</option>
+                    <option value="general_web">{t("providers.market.coverage.generalWeb")}</option>
+                    <option value="vertical">{t("providers.market.coverage.vertical")}</option>
+                    <option value="other">{t("providers.market.coverage.other")}</option>
+                  </Select>
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => void runBulk("install_all")}>
                     {t("providers.market.installAll")}
                   </Button>
@@ -639,6 +691,8 @@ export function ProvidersPage() {
                     {entries.map((entry) => {
                       const configured = configuredByType.get(entry.type) ?? 0;
                       const addable = canAdd(entry);
+                      const configFields = providerConfigFields(entry);
+                      const generalWeb = isGeneralWebEntry(entry);
                       return (
                         <Card
                           key={entry.type}
@@ -680,6 +734,9 @@ export function ProvidersPage() {
                                 {verificationLabel(entry.verification)}
                               </Badge>
                               <Badge tone="muted">{providerAuthLabel(entry.authType)}</Badge>
+                              <Badge tone={generalWeb ? "info" : "muted"}>
+                                {generalWeb ? t("providers.market.coverage.generalWeb") : t("providers.market.coverage.verticalOther")}
+                              </Badge>
                               <Badge tone="outline">
                                 {entry.capability === "grounded_answer"
                                   ? t("lab.capability.grounded")
@@ -698,7 +755,20 @@ export function ProvidersPage() {
                                 <Badge tone="outline">{t("lab.capability.grounded")}</Badge>
                               ) : null}
                             </div>
-                            <div className="mt-auto flex items-center justify-between gap-2 pt-1">
+                          {configFields.length > 0 ? (
+                            <div className="rounded-md border bg-muted/20 p-2">
+                              <p className="text-[10px] font-medium text-muted-foreground">{t("providers.configFields")}</p>
+                              <ul className="mt-1 space-y-0.5">
+                                {configFields.map((field) => (
+                                  <li key={`${field.target}:${field.key}`} className="flex items-center gap-1 text-[11px]">
+                                    <span>{field.label}</span>
+                                    {field.required ? <span className="text-destructive" title={t("providers.configRequired")}>*</span> : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                          <div className="mt-auto flex items-center justify-between gap-2 pt-1">
                               {entry.docsUrl ? (
                                 <a
                                   href={entry.docsUrl}
@@ -785,6 +855,8 @@ export function ProvidersPage() {
                 <div className="space-y-2 md:hidden">
                   {providers.data.providers.map((provider) => {
                     const snapshot = runtimeById.get(provider.id);
+                    const healthRow = healthById.get(provider.id);
+                    const fixHint = providerFixHint(provider, healthRow);
                     return (
                       <Card
                         key={provider.id}
@@ -826,6 +898,13 @@ export function ProvidersPage() {
                               </span>
                             ) : null}
                           </div>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <Badge tone="outline">{runtimeLabel(healthRow?.runtime ?? "unknown")}</Badge>
+                            <span>{t("providers.list.lastChecked")}: {healthRow?.lastCheckedAt ? formatDateTime(healthRow.lastCheckedAt) : t("providers.health.neverChecked")}</span>
+                          </div>
+                          {fixHint ? (
+                            <Alert tone="warning" title={fixHintLabel(fixHint)} />
+                          ) : null}
                           <div className="flex flex-wrap gap-1.5">
                             <Button size="sm" variant="outline" onClick={() => setKeyProvider(provider)}>
                               <KeyRound aria-hidden />
@@ -851,7 +930,7 @@ export function ProvidersPage() {
                 </div>
 
                 <div className="hidden md:block">
-                  <Table minWidth="min-w-[960px]" caption={t("providers.list.title")}>
+                  <Table minWidth="min-w-[1120px]" caption={t("providers.list.title")}>
                     <THead>
                       <tr>
                         <TH className="w-8">
@@ -878,6 +957,8 @@ export function ProvidersPage() {
                         <TH>{t("providers.form.keyStrategy")}</TH>
                         <TH>{t("common.priority")} / {t("common.weight")}</TH>
                         <TH>{t("providers.list.circuitClosed")}</TH>
+                        <TH>{t("providers.list.lastChecked")}</TH>
+                        <TH>{t("providers.list.runtime")}</TH>
                         <TH>{t("common.updatedAt")}</TH>
                         <TH className="text-right">{t("common.actions")}</TH>
                       </tr>
@@ -885,6 +966,8 @@ export function ProvidersPage() {
                     <TBody>
                       {providers.data.providers.map((provider) => {
                         const snapshot = runtimeById.get(provider.id);
+                        const healthRow = healthById.get(provider.id);
+                        const fixHint = providerFixHint(provider, healthRow);
                         return (
                           <TR
                             key={provider.id}
@@ -963,6 +1046,15 @@ export function ProvidersPage() {
                               ) : (
                                 <Badge tone="success">{t("providers.list.circuitClosed")}</Badge>
                               )}
+                            </TD>
+                            <TD className="whitespace-nowrap text-[11px] text-muted-foreground">
+                              {healthRow?.lastCheckedAt ? formatDateTime(healthRow.lastCheckedAt) : t("providers.health.neverChecked")}
+                            </TD>
+                            <TD>
+                              <div className="space-y-1">
+                                <Badge tone="outline">{runtimeLabel(healthRow?.runtime ?? "unknown")}</Badge>
+                                {fixHint ? <p className="max-w-56 text-[10px] text-muted-foreground">{fixHintLabel(fixHint)}</p> : null}
+                              </div>
                             </TD>
                             <TD className="whitespace-nowrap text-[11px] text-muted-foreground">
                               {formatDateTime(provider.updatedAt)}
