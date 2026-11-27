@@ -7,11 +7,10 @@ import {
   type ProviderSearchInput,
   type ProviderSearchOutput,
   type ProviderTestResult,
-  type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson, expectObject, joinApiPath, mapItem } from "../http.js";
-import { paginate } from "../pagination.js";
+import { callJson, expectArray, expectObject, joinApiPath, mapItem } from "../http.js";
+import { paginate, type PaginatedPage } from "../pagination.js";
 
 const DEFAULT_BASE_URL = "https://api.search.brave.com";
 
@@ -89,7 +88,7 @@ export const braveAdapter: SearchProviderAdapter = {
     const language = mapLanguage(input.language ?? ctx.config.language ?? undefined);
     const country = ctx.config.config["country"];
 
-    const fetchPage = async (index: number, pageSize: number): Promise<RawSearchResult[]> => {
+    const fetchPage = async (index: number, pageSize: number): Promise<PaginatedPage> => {
       const url = new URL(joinApiPath(baseUrl, "/res/v1/web/search"));
       url.searchParams.set("q", input.query);
       // Official range: count 1-20, offset 0-9.
@@ -116,19 +115,10 @@ export const braveAdapter: SearchProviderAdapter = {
       });
 
       const body = expectObject(ctx, response.data, "Brave response");
-      const web = body["web"];
-      const rawResults = web ? getByPath(web, "results") : undefined;
-      if (web !== undefined && rawResults !== undefined && !Array.isArray(rawResults)) {
-        throw new ProviderError(
-          ctx.config.id,
-          "brave",
-          "bad_request",
-          "Brave response contained a non-array web.results value",
-        );
-      }
-      const items: unknown[] = Array.isArray(rawResults) ? rawResults : [];
+      const web = expectObject(ctx, body["web"], "Brave web");
+      const items = expectArray(ctx, web["results"], "Brave web.results");
 
-      return items
+      const mapped = items
         .map((item) => {
           // `description` is the primary snippet; Brave's `extra_snippets[]` holds
           // up to 5 alternative excerpts the caller opted into. Keep one excerpt as
@@ -148,13 +138,14 @@ export const braveAdapter: SearchProviderAdapter = {
           });
         })
         .filter((item): item is NonNullable<typeof item> => item !== null);
+      return { items: mapped, rawCount: items.length };
     };
 
     const requestUrl = joinApiPath(baseUrl, "/res/v1/web/search");
 
     if (!search) {
       const single = await fetchPage(0, Math.min(input.limit, MAX_PAGE_SIZE));
-      return { results: single.slice(0, input.limit), requestUrl };
+      return { results: single.items.slice(0, input.limit), requestUrl };
     }
 
     const paged = await paginate({ search, fetchPage, maxPages: MAX_PAGES, signal: input.signal });

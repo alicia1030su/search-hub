@@ -1,5 +1,8 @@
 {
   "provider": "pubmed",
+  "schemaVersion": 2,
+  "sourceCommit": "cc59fd6eb37b083a69a2307b531fcd2546cd4868",
+  "adapterVersion": "0.1.5",
   "status": "live_tested",
   "lastSuccess": {
     "checkedAt": "2026-11-16T11:40:42Z",
@@ -16,5 +19,16 @@
     "checkedAt": "2026-11-16T11:40:42Z",
     "httpStatus": 200,
     "ok": true
-  }
+  },
+  "attempts": [
+    {
+      "label": "historical-success",
+      "query": "information retrieval",
+      "ok": true,
+      "httpStatus": 200,
+      "resultCount": 3,
+      "latencyMs": 2586,
+      "requestUrl": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=information+retrieval&retmode=json&retmax=3"
+    }
+  ]
 }

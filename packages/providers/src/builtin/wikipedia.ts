@@ -1,4 +1,5 @@
 import {
+  ProviderError,
   type ProviderContext,
   type ProviderSearchInput,
   type ProviderSearchOutput,
@@ -6,7 +7,8 @@ import {
   type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson } from "../http.js";
+import { callJson, expectArray, expectObject } from "../http.js";
+import { providerRateLimitKey, withProviderRateLimit } from "../rate-limit.js";
 
 /**
  * Wikipedia / Wikimedia search (MediaWiki Action API).
@@ -55,23 +57,38 @@ export const wikipediaAdapter: SearchProviderAdapter = {
     url.searchParams.set("format", "json");
     url.searchParams.set("formatversion", "2");
 
-    const response = await callJson(ctx, {
-      url: url.toString(),
-      method: "GET",
-      headers: {
-        accept: "application/json",
-        // Wikimedia's UA policy requires a descriptive agent; an empty one is
-        // rejected with 403.
-        "user-agent": "SearchHub/0.1.4 (self-hosted search aggregator)",
-      },
-    });
+    const userAgent = typeof ctx.config.config["userAgent"] === "string" && ctx.config.config["userAgent"].trim()
+      ? ctx.config.config["userAgent"].trim()
+      : "SearchHub (https://github.com/alicia1030su/search-hub; self-hosted search aggregator)";
+    const response = await withProviderRateLimit(
+      providerRateLimitKey("wikipedia", baseUrl),
+      { maxPerMinute: 60, maxInFlight: 2 },
+      () => callJson(ctx, {
+        url: url.toString(),
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          // Wikimedia requires a descriptive agent with a way to contact the
+          // operator; a generic or versionless agent is rate-limited aggressively.
+          "user-agent": userAgent,
+        },
+      }),
+    );
 
-    const payload = response.data as Record<string, unknown>;
-    const query = (payload["query"] ?? {}) as Record<string, unknown>;
-    const items = Array.isArray(query["search"]) ? (query["search"] as WikiSearchItem[]) : [];
+    const payload = expectObject(ctx, response.data, "Wikipedia response");
+    if (payload["error"] !== undefined) {
+      const detail = payload["error"];
+      const message = typeof detail === "object" && detail !== null
+        ? String((detail as Record<string, unknown>)["info"] ?? (detail as Record<string, unknown>)["code"] ?? "unknown error")
+        : String(detail);
+      throw new ProviderError(ctx.config.id, "wikipedia", "bad_request", `Wikipedia returned a business error: ${message.slice(0, 200)}`);
+    }
+    const query = expectObject(ctx, payload["query"], "Wikipedia query");
+    const items = expectArray(ctx, query["search"], "Wikipedia search results");
 
     const results: RawSearchResult[] = [];
-    for (const item of items) {
+    for (const raw of items) {
+      const item = raw as WikiSearchItem;
       const pageId = typeof item.pageid === "number" ? item.pageid : undefined;
       const title = typeof item.title === "string" ? item.title : "";
       if (!title || pageId === undefined) continue;

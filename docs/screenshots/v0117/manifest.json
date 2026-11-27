@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "version": "0.1.17",
+  "capturedAt": "2026-11-27T07:15:25.057Z",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture.",
+  "screenshots": [
+    {
+      "file": "onboarding.png",
+      "route": "/onboarding",
+      "version": "0.1.17",
+      "capturedAt": "2026-11-27T07:15:23.000Z",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 138075,
+      "sha256": "62152b9bd84c3d342f076ae0194a39ff6c7d682e5b201740aca103537e9f97d5",
+      "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture."
+    },
+    {
+      "file": "search-lab.png",
+      "route": "/lab",
+      "version": "0.1.17",
+      "capturedAt": "2026-11-27T07:15:24.025Z",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 138723,
+      "sha256": "0ef3b4653ca1334b8ed19585b816d7e636502587ca8412efe8b4875cd26da103",
+      "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture."
+    },
+    {
+      "file": "dashboard.png",
+      "route": "/",
+      "version": "0.1.17",
+      "capturedAt": "2026-11-27T07:15:24.525Z",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 97888,
+      "sha256": "d05204121295ac583be8f5110da708d83bab2cbc73c37b71da88f4954374341e",
+      "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture."
+    },
+    {
+      "file": "provider-health.png",
+      "route": "/providers",
+      "version": "0.1.17",
+      "capturedAt": "2026-11-27T07:15:25.057Z",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 119118,
+      "sha256": "dac7a9558f1c0dac7eb03d4c26fb17a5497fd5c65db9a5c560e13b6e51b3f174",
+      "redaction": "Built-in mock providers only; no provider credentials created; random admin password and setup token are not recorded; no external vendor calls; temporary data directory is removed after capture."
+    }
+  ]
+}

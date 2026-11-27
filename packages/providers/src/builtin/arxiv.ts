@@ -1,4 +1,5 @@
 import {
+  ProviderError,
   type ProviderContext,
   type ProviderSearchInput,
   type ProviderSearchOutput,
@@ -6,6 +7,8 @@ import {
   type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
+import { callJson } from "../http.js";
+import { providerRateLimitKey, withProviderRateLimit } from "../rate-limit.js";
 
 
 const DEFAULT_BASE_URL = "https://export.arxiv.org";
@@ -52,18 +55,43 @@ export const arxivAdapter: SearchProviderAdapter = {
     url.searchParams.set("sortBy", "relevance");
 
     // arXiv answers Atom XML, not JSON, so the body is taken as raw text.
-    const response = await ctx.fetch<string>(url.toString(), {
-      method: "GET",
-      headers: { accept: "application/atom+xml" },
-      signal: ctx.signal,
-    });
+    const response = await withProviderRateLimit(
+      providerRateLimitKey("arxiv", baseUrl),
+      { minIntervalMs: 3_000, maxInFlight: 1 },
+      () => callJson(ctx, {
+        url: url.toString(),
+        method: "GET",
+        headers: { accept: "application/atom+xml" },
+      }),
+    );
     const xml = typeof response.data === "string" ? response.data : String(response.data ?? "");
+    if (!/<feed\b/i.test(xml) || /<html\b/i.test(xml)) {
+      throw new ProviderError(
+        ctx.config.id,
+        "arxiv",
+        "bad_request",
+        "arXiv returned an unexpected response (expected an Atom feed)",
+      );
+    }
+    if (/<error\b/i.test(xml)) {
+      const message = extract(xml, "error").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      throw new ProviderError(
+        ctx.config.id,
+        "arxiv",
+        "bad_request",
+        `arXiv returned a business error${message ? `: ${message.slice(0, 200)}` : ""}`,
+      );
+    }
 
     const results: RawSearchResult[] = [];
     for (const match of xml.matchAll(ENTRY_PATTERN)) {
       const block = match[1] ?? "";
       const title = decodeXml(extract(block, "title"));
-      const url_ = decodeXml(extract(block, "id"));
+      const rawUrl = decodeXml(extract(block, "id"));
+      // arXiv's Atom feed still emits `http://` identifiers. The same article
+      // is available over HTTPS, and returning the insecure scheme would make
+      // every result fail downstream URL validation.
+      const url_ = rawUrl.replace(/^http:\/\/arxiv\.org\//i, "https://arxiv.org/");
       const snippet = decodeXml(extract(block, "summary"));
       const published = decodeXml(extract(block, "published"));
       if (!title || !url_ || !/^https?:\/\//i.test(url_)) continue;

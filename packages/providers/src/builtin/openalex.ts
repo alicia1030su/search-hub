@@ -6,7 +6,7 @@ import {
   type RawSearchResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson } from "../http.js";
+import { callJson, expectArray, expectObject } from "../http.js";
 
 const DEFAULT_BASE_URL = "https://api.openalex.org";
 
@@ -65,8 +65,8 @@ export const openalexAdapter: SearchProviderAdapter = {
       headers: { accept: "application/json" },
     });
 
-    const payload = response.data as Record<string, unknown>;
-    const items = Array.isArray(payload["results"]) ? (payload["results"] as OpenAlexWork[]) : [];
+    const payload = expectObject(ctx, response.data, "OpenAlex response");
+    const items = expectArray(ctx, payload["results"], "OpenAlex results") as OpenAlexWork[];
 
     const results: RawSearchResult[] = [];
     for (const item of items) {

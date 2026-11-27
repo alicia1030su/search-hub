@@ -8,7 +8,7 @@ import {
   type SearchProviderAdapter,
 } from "@search-hub/shared";
 import { callJson } from "../http.js";
-import { paginate } from "../pagination.js";
+import { paginate, type PaginatedPage } from "../pagination.js";
 
 const DEFAULT_BASE_URL = "https://dapi.kakao.com";
 
@@ -53,7 +53,7 @@ export const kakaoAdapter: SearchProviderAdapter = {
     const kind = typeof kindRaw === "string" && ["web", "blog", "cafe", "book"].includes(kindRaw) ? kindRaw : "web";
 
     let isEnd = false;
-    const fetchPage = async (index: number, pageSize: number): Promise<RawSearchResult[]> => {
+    const fetchPage = async (index: number, pageSize: number): Promise<PaginatedPage> => {
       const size = Math.max(1, Math.min(MAX_SIZE, Math.trunc(pageSize || input.limit)));
       const url = new URL(`${baseUrl}/v2/search/${kind}`);
       url.searchParams.set("query", input.query);
@@ -82,14 +82,14 @@ export const kakaoAdapter: SearchProviderAdapter = {
           language: "ko",
         });
       }
-      return rows;
+      return { items: rows, rawCount: documents.length };
     };
 
     const requestUrl = `${baseUrl}/v2/search/${kind}`;
 
     if (!search) {
       const single = await fetchPage(0, Math.min(input.limit, MAX_SIZE));
-      return { results: single.slice(0, input.limit), requestUrl };
+      return { results: single.items.slice(0, input.limit), requestUrl };
     }
 
     const paged = await paginate({ search, fetchPage, maxPages: 10, signal: input.signal });

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "provider": "arxiv",
+  "status": "live_tested",
+  "sourceCommit": "11348f055094cb67ede8bb89ed2cbc6ac74b4557",
+  "adapterVersion": "0.1.17",
+  "lastSuccess": {
+    "checkedAt": "2026-11-27T06:39:38.408Z",
+    "requestUrl": "https://export.arxiv.org/api/query?search_query=all%3Atransformer%2BAND%2Battention&start=0&max_results=5&sortBy=relevance",
+    "httpStatus": 200,
+    "resultCount": 5,
+    "sampleUrls": [
+      "https://arxiv.org/abs/2209.15001v3",
+      "https://arxiv.org/abs/2206.03003v2",
+      "https://arxiv.org/abs/2609.27735v3"
+    ],
+    "latencyMs": 1327,
+    "recordedBy": "local provider-live.mjs"
+  },
+  "lastAttempt": {
+    "checkedAt": "2026-11-27T06:39:40.490Z",
+    "label": "en-preprint-2",
+    "query": "graph neural networks",
+    "ok": true,
+    "httpStatus": 200,
+    "resultCount": 5,
+    "latencyMs": 2081,
+    "requestUrl": "https://export.arxiv.org/api/query?search_query=all%3Agraph%2BAND%2Bneural%2BAND%2Bnetworks&start=0&max_results=5&sortBy=relevance"
+  },
+  "attempts": [
+    {
+      "label": "en-preprint",
+      "query": "transformer attention",
+      "ok": true,
+      "httpStatus": 200,
+      "resultCount": 5,
+      "latencyMs": 1327,
+      "requestUrl": "https://export.arxiv.org/api/query?search_query=all%3Atransformer%2BAND%2Battention&start=0&max_results=5&sortBy=relevance"
+    },
+    {
+      "label": "en-preprint-2",
+      "query": "graph neural networks",
+      "ok": true,
+      "httpStatus": 200,
+      "resultCount": 5,
+      "latencyMs": 2081,
+      "requestUrl": "https://export.arxiv.org/api/query?search_query=all%3Agraph%2BAND%2Bneural%2BAND%2Bnetworks&start=0&max_results=5&sortBy=relevance"
+    }
+  ]
+}

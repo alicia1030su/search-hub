@@ -9,7 +9,7 @@ import {
   type SearchProviderAdapter,
 } from "@search-hub/shared";
 import { callJson } from "../http.js";
-import { paginate } from "../pagination.js";
+import { paginate, type PaginatedPage } from "../pagination.js";
 
 const DEFAULT_BASE_URL = "https://www.searchapi.io";
 
@@ -54,7 +54,7 @@ export const searchapiAdapter: SearchProviderAdapter = {
     const region = search?.region ?? (ctx.config.config["gl"] as string | undefined);
     const language = input.language ?? ctx.config.language ?? undefined;
 
-    const fetchPage = async (index: number, pageSize: number): Promise<RawSearchResult[]> => {
+    const fetchPage = async (index: number, pageSize: number): Promise<PaginatedPage> => {
       const url = new URL(`${baseUrl}/api/v1/search`);
       url.searchParams.set("engine", engine);
       url.searchParams.set("q", input.query);
@@ -84,14 +84,14 @@ export const searchapiAdapter: SearchProviderAdapter = {
           ...(typeof item.position === "number" ? { upstreamRank: item.position } : {}),
         });
       }
-      return rows;
+      return { items: rows, rawCount: organic.length };
     };
 
     const requestUrl = `${baseUrl}/api/v1/search`;
 
     if (!search) {
       const single = await fetchPage(0, Math.min(input.limit, MAX_NUM));
-      return { results: single.slice(0, input.limit), requestUrl };
+      return { results: single.items.slice(0, input.limit), requestUrl };
     }
 
     const paged = await paginate({ search, fetchPage, maxPages: 10, signal: input.signal });

@@ -73,6 +73,11 @@ export interface AppSettings {
     level: string;
   };
   initializedAt: string | null;
+  onboarding: {
+    completedAt: string | null;
+    dismissedAt: string | null;
+    lastSeenVersion: string | null;
+  };
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -103,6 +108,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   logging: { level: "info" },
   initializedAt: null,
+  onboarding: { completedAt: null, dismissedAt: null, lastSeenVersion: null },
 };
 
 const SETTINGS_KEY = "app";

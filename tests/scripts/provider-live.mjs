@@ -1,58 +1,88 @@
 #!/usr/bin/env node
 /**
- * Live (real network) verification for one builtin general web-search adapter.
+ * Live (real network) verification for one builtin search adapter.
  *
- * This is the ONLY script that can move a provider from `documented` to
- * `live_tested`. It calls the real adapter against the real vendor endpoint —
- * no mocks, no fixtures.
+ * This is the ONLY script that may produce a candidate `live_tested` evidence
+ * record. It calls the real adapter against the real vendor endpoint — no
+ * mocks, no fixtures. A green run still requires human review before the
+ * catalog is changed.
  *
  * Usage (tsx is required because the adapters are TypeScript sources):
- *   TAVILY_API_KEY=... corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider tavily
- *   BOCHA_API_KEY=...  corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider bocha
- *   BRAVE_API_KEY=...  corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider brave
+ *   pnpm exec tsx tests/scripts/provider-live.mjs --provider wikipedia --output docs/live-evidence/wikipedia.json
+ *   TAVILY_API_KEY=... pnpm exec tsx tests/scripts/provider-live.mjs --provider tavily --output docs/live-evidence/tavily.json
  *
  * Options:
- *   --provider tavily|bocha|brave   (required)
- *   --base-url <url>                override the official endpoint (staging/proxy)
- *   --limit <n>                     results per query (default 5)
+ *   --provider <name>       required; see PROVIDERS below
+ *   --base-url <url>        override the official endpoint (staging/proxy)
+ *   --limit <n>             results per query (default 5)
+ *   --output <file>         write a structured, redacted evidence JSON record
  *
  * Exit codes:
- *   0  LIVE PASSED — both queries returned non-empty, https, non-placeholder URLs
- *   1  FAIL — auth, transport or mapping problem (details printed, no secret)
- *   2  SKIPPED: no credential — deliberately NOT 0 so CI cannot read it as a pass
+ *   0  LIVE PASSED — every query returned non-empty, https, non-placeholder URLs
+ *   1  FAIL — auth, transport, business or mapping problem
+ *   2  SKIPPED: required credential missing — deliberately NOT 0
  *
- * CREDENTIAL HANDLING (deliberately strict):
- * - The key is read ONLY from the process environment. There is no --key
- *   option: a command-line value would appear in argv of this process AND of
- *   any re-exec child, and could be echoed by shell tracing.
- * - Every string that may contain third-party data (upstream error bodies,
- *   titles, URLs, dates) is passed through `scrub()` before it is printed.
- *   GitHub masks registered secret values in job logs, but it does NOT mask
- *   URL-encoded/base64/transformed echoes, and it does NOT mask artifact files.
- * - The workflow therefore does not upload raw logs as artifacts.
+ * CREDENTIAL HANDLING:
+ * - Keys are read only from the environment. There is no --key option.
+ * - Every string that may contain third-party data is scrubbed before printing
+ *   or writing an evidence file.
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { redactText, providerKeysFromEnv } from "./redact-secrets.mjs";
 
-const PROVIDERS = {
-  tavily: { env: "TAVILY_API_KEY", label: "Tavily" },
-  bocha: { env: "BOCHA_API_KEY", label: "Bocha" },
-  brave: { env: "BRAVE_API_KEY", label: "Brave" },
-};
-
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const PLACEHOLDER_HOSTS = ["example.com", "example.org", "example.net", "localhost", "127.0.0.1"];
 
-const QUERIES = [
-  // Chinese current-affairs style query (exercises CJK handling + freshness path).
+const GENERAL_QUERIES = [
   { label: "zh-current-affairs", query: "中国 新能源汽车 产业 最新政策", freshness: "month" },
-  // English technical query (exercises latin text + general web index).
   { label: "en-tech", query: "typescript monorepo best practices" },
 ];
 
-/** All configured keys, so a cross-provider echo is redacted too. */
+const PROVIDERS = {
+  tavily: { env: "TAVILY_API_KEY", label: "Tavily", credential: "required", queries: GENERAL_QUERIES },
+  bocha: { env: "BOCHA_API_KEY", label: "Bocha", credential: "required", queries: GENERAL_QUERIES },
+  brave: { env: "BRAVE_API_KEY", label: "Brave", credential: "required", queries: GENERAL_QUERIES },
+  wikipedia: {
+    env: null,
+    label: "Wikipedia",
+    credential: "none",
+    queries: [
+      { label: "en-encyclopedia", query: "search engine" },
+      { label: "zh-encyclopedia", query: "人工智能" },
+    ],
+    config: { language: "en" },
+    allowedHosts: ["wikipedia.org"],
+  },
+  arxiv: {
+    env: null,
+    label: "arXiv",
+    credential: "none",
+    queries: [
+      { label: "en-preprint", query: "transformer attention" },
+      { label: "en-preprint-2", query: "graph neural networks" },
+    ],
+    config: {},
+    allowedHosts: ["arxiv.org"],
+  },
+  github: {
+    env: null,
+    label: "GitHub",
+    credential: "none",
+    queries: [
+      { label: "en-repositories", query: "search engine" },
+      { label: "en-repositories-2", query: "typescript monorepo" },
+    ],
+    config: { kind: "repositories" },
+    allowedHosts: ["api.github.com"],
+  },
+};
+
 const CONFIGURED_KEYS = providerKeysFromEnv();
 
-/** Scrub anything that may contain third-party data before printing it. */
 function scrub(text) {
   return redactText(text, CONFIGURED_KEYS);
 }
@@ -92,17 +122,46 @@ function isUsableUrl(rawUrl) {
   return { ok: true };
 }
 
+function hostAllowed(rawUrl, allowedHosts) {
+  if (!allowedHosts?.length) return true;
+  try {
+    const host = new URL(rawUrl).hostname.toLowerCase();
+    return allowedHosts.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  } catch {
+    return false;
+  }
+}
+
+function sourceCommit() {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+function adapterVersion() {
+  try {
+    return JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8")).version;
+  } catch {
+    return "unknown";
+  }
+}
+
+function writeEvidence(output, evidence) {
+  if (!output) return;
+  mkdirSync(dirname(resolve(output)), { recursive: true });
+  writeFileSync(resolve(output), scrub(`${JSON.stringify(evidence, null, 2)}\n`), "utf8");
+}
+
 async function main() {
   const providerName = arg("provider");
   if (!providerName || !(providerName in PROVIDERS)) {
     fail(`--provider must be one of ${Object.keys(PROVIDERS).join(", ")}`);
   }
   const provider = PROVIDERS[providerName];
-
-  // Credential gate runs BEFORE any import/network work: a missing key must be a
-  // cheap, unambiguous SKIPPED (exit 2), never a silent success.
-  const key = process.env[provider.env] ?? "";
-  if (!key) {
+  const key = provider.env ? (process.env[provider.env] ?? "") : "";
+  if (provider.credential === "required" && !key) {
     say(`SKIPPED: no credential (set ${provider.env})`);
     process.exit(2);
   }
@@ -110,31 +169,20 @@ async function main() {
   let adapters;
   let shared;
   try {
-    // Relative paths (not the workspace package names) so tsx resolves the TS
-    // sources without needing a node_modules link at the repo root.
     adapters = await import("../../packages/providers/src/index.ts");
     shared = await import("../../packages/shared/src/index.ts");
   } catch (error) {
-    // Plain `node` cannot import the TypeScript sources (the workspace uses
-    // `.js` specifiers that tsx remaps). Re-exec once through tsx so the
-    // documented `node tests/scripts/provider-live.mjs ...` invocation works.
-    // The child inherits the environment (that is the only credential channel)
-    // and receives no credential in argv. CI runs through `pnpm exec tsx`
-    // directly, so this child never exists there.
     if (process.env["PROVIDER_LIVE_TSX"] !== "1") {
       const { spawnSync } = await import("node:child_process");
       const reexec = spawnSync(
         process.execPath,
         ["--import", "tsx", process.argv[1], ...process.argv.slice(2)],
-        {
-          stdio: "inherit",
-          env: { ...process.env, PROVIDER_LIVE_TSX: "1" },
-        },
+        { stdio: "inherit", env: { ...process.env, PROVIDER_LIVE_TSX: "1" } },
       );
       process.exit(reexec.status ?? 1);
     }
     warn("FAIL: the TypeScript adapters could not be loaded.");
-    warn(`Run through tsx: ${provider.env}=... corepack pnpm exec tsx tests/scripts/provider-live.mjs --provider ${providerName}`);
+    warn(`Run through tsx: pnpm exec tsx tests/scripts/provider-live.mjs --provider ${providerName}`);
     warn(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
@@ -143,16 +191,44 @@ async function main() {
   if (!adapter) fail(`no builtin adapter registered for "${providerName}"`);
 
   const baseUrl = arg("base-url") ?? null;
+  if (baseUrl && !hostAllowed(baseUrl, provider.allowedHosts)) {
+    fail(`--base-url host is not allowed for ${providerName}`);
+  }
   const limit = Number(arg("limit") ?? 5);
-  const safeFetch = shared.createSafeFetch({ timeoutMs: 20_000 });
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) fail("--limit must be an integer from 1 to 50");
+  const output = arg("output");
+  const safeFetch = shared.createSafeFetch({
+    timeoutMs: 20_000,
+    ...(process.env["SEARCH_HUB_LIVE_PROXY"] || process.env["HTTPS_PROXY"] || process.env["HTTP_PROXY"]
+      ? {
+          proxy: {
+            proxy: process.env["SEARCH_HUB_LIVE_PROXY"] || process.env["HTTPS_PROXY"] || process.env["HTTP_PROXY"],
+            noProxy: process.env["NO_PROXY"] ?? process.env["no_proxy"] ?? null,
+            proxyTrust: "untrusted",
+          },
+        }
+      : {}),
+  });
   const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
+  const observations = [];
+  const recordingFetch = async (url, init) => {
+    const response = await safeFetch(url, init);
+    observations.push({
+      url: shared.sanitizeUrl(response.url || String(url), key ? [key] : []),
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "",
+    });
+    return response;
+  };
 
   say(`LIVE: provider=${providerName} endpoint=${baseUrl ?? "official default"} limit=${limit}`);
-  say("LIVE: credential loaded (value never printed)");
+  say(provider.credential === "none" ? "LIVE: keyless provider" : "LIVE: credential loaded (value never printed)");
 
   const failures = [];
+  const attempts = [];
+  let lastSuccess = null;
 
-  for (const query of QUERIES) {
+  for (const query of provider.queries) {
     const config = {
       id: `live_${providerName}`,
       name: provider.label,
@@ -166,12 +242,12 @@ async function main() {
       maxRetries: 0,
       breakerThreshold: 3,
       breakerCooldownMs: 30_000,
-      config: {},
+      config: provider.config ?? {},
     };
     const controller = new AbortController();
     const ctx = {
-      fetch: safeFetch,
-      apiKey: key,
+      fetch: recordingFetch,
+      ...(key ? { apiKey: key } : {}),
       config,
       signal: controller.signal,
       logger: silentLogger,
@@ -193,6 +269,7 @@ async function main() {
       const code = error && typeof error === "object" && "code" in error ? error.code : "unknown";
       const message = error instanceof Error ? error.message : String(error);
       failures.push(`${query.label}: ${code} — ${message}`);
+      attempts.push({ label: query.label, query: query.query, ok: false, code, message: scrub(message) });
       warn(`FAIL ${query.label}: ${code} — ${message}`);
       continue;
     } finally {
@@ -201,10 +278,26 @@ async function main() {
 
     const latencyMs = Date.now() - started;
     const results = result.results ?? [];
-    say(`\n[${query.label}] "${query.query}" -> ${results.length} result(s) in ${latencyMs}ms`);
+    const observation = observations.at(-1) ?? { url: result.requestUrl ?? "", status: 0, contentType: "" };
+    const attempt = {
+      label: query.label,
+      query: query.query,
+      ok: results.length > 0 && observation.status === 200,
+      httpStatus: observation.status,
+      resultCount: results.length,
+      latencyMs,
+      requestUrl: observation.url,
+    };
+    attempts.push(attempt);
+
+    say(`\n[${query.label}] "${query.query}" -> ${results.length} result(s) in ${latencyMs}ms (HTTP ${observation.status})`);
     if (results.length === 0) {
       failures.push(`${query.label}: returned zero results`);
       warn(`FAIL ${query.label}: returned zero results`);
+      continue;
+    }
+    if (observation.status !== 200) {
+      failures.push(`${query.label}: unexpected HTTP ${observation.status}`);
       continue;
     }
 
@@ -227,26 +320,53 @@ async function main() {
     const duplicateUrls = results.length - new Set(results.map((item) => item.url)).size;
     if (duplicateUrls > 0) {
       failures.push(`${query.label}: ${duplicateUrls} duplicate url(s) in one response`);
-      warn(`FAIL ${query.label}: ${duplicateUrls} duplicate url(s) in one response`);
+      warn(`FAIL ${query.label}: ${duplicateUrls} duplicate url(s)`);
+    }
+
+    if (!lastSuccess && failures.length === 0) {
+      lastSuccess = {
+        checkedAt: new Date().toISOString(),
+        requestUrl: observation.url,
+        httpStatus: observation.status,
+        resultCount: results.length,
+        sampleUrls: results.slice(0, 3).map((item) => item.url),
+        latencyMs,
+        recordedBy: process.env["GITHUB_RUN_ID"] ? "provider-live workflow" : "local provider-live.mjs",
+      };
     }
   }
 
-  if (failures.length > 0) {
-    say(`\nLIVE FAILED: ${failures.length} problem(s)`);
+  const checkedAt = new Date().toISOString();
+  const lastAttempt = attempts.at(-1) ?? { checkedAt, httpStatus: 0, ok: false };
+  const evidence = {
+    schemaVersion: 2,
+    provider: providerName,
+    status: failures.length === 0 && lastSuccess ? "live_tested" : "failed",
+    sourceCommit: sourceCommit(),
+    adapterVersion: adapterVersion(),
+    ...(process.env["GITHUB_RUN_ID"]
+      ? { runUrl: `${process.env["GITHUB_SERVER_URL"] ?? "https://github.com"}/${process.env["GITHUB_REPOSITORY"]}/actions/runs/${process.env["GITHUB_RUN_ID"]}` }
+      : {}),
+    ...(lastSuccess ? { lastSuccess } : {}),
+    lastAttempt: { checkedAt, ...lastAttempt },
+    attempts,
+  };
+  writeEvidence(output, evidence);
+
+  if (failures.length > 0 || !lastSuccess) {
+    say(`\nLIVE FAILED: ${failures.length || 1} problem(s)`);
     failures.forEach((entry) => say(`  - ${entry}`));
     process.exit(1);
   }
 
   say(
-    `\nLIVE PASSED — ${provider.label} answered both queries with real https results. ` +
-      "Record this run before changing the catalog to live_tested. " +
+    `\nLIVE PASSED — ${provider.label} answered ${provider.queries.length} quer${provider.queries.length === 1 ? "y" : "ies"} with real https results. ` +
+      "Review the evidence record before changing the catalog to live_tested. " +
       "This verifies the ADAPTER only, not the REST/MCP end-to-end chain.",
   );
 }
 
 main().catch((error) => {
-  // Never echo the key: provider errors carry codes/messages only, and scrub()
-  // handles transformed third-party echoes as well.
   warn(`FAIL: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });

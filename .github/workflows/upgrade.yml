@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid stable version: $VERSION"; exit 1; }
-          node -e 'const current=process.argv[1].split(".").map(Number); for (const old of ["0.1.14","0.1.15"]) { const prior=old.split(".").map(Number); const newer=current[0]>prior[0] || (current[0]===prior[0] && (current[1]>prior[1] || (current[1]===prior[1] && current[2]>prior[2]))); if (!newer) process.exit(1); }' "$VERSION"
+          node -e 'const current=process.argv[1].split(".").map(Number); for (const old of ["0.1.14","0.1.15","0.1.16"]) { const prior=old.split(".").map(Number); const newer=current[0]>prior[0] || (current[0]===prior[0] && (current[1]>prior[1] || (current[1]===prior[1] && current[2]>prior[2]))); if (!newer) process.exit(1); }' "$VERSION"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Build the current package
         shell: bash
@@ -190,6 +190,16 @@ jobs:
           test -n "$TARGET" || { echo "no package was built"; exit 1; }
           echo "target package: $TARGET"
           node packaging/upgrade-matrix.mjs --from v0.1.15 --to "$TARGET" --port 8934
+
+      - name: Upgrade v0.1.16 → current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET=$(find dist/package -maxdepth 1 \( -name '*.zip' -o -name '*.tar.gz' \) | head -1)
+          test -n "$TARGET" || { echo "no package was built"; exit 1; }
+          echo "target package: $TARGET"
+          node packaging/upgrade-matrix.mjs --from v0.1.16 --to "$TARGET" --port 8935
 
       # beta -> stable of the same minor version: the path an operator on the
       # beta channel actually takes, and the one where the updater must accept

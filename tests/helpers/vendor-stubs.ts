@@ -176,6 +176,45 @@ export async function startBraveStub(
 }
 
 /**
+ * OpenAI Responses API shape with a real `web_search_call` and one citation.
+ * Used to prove grounded-answer probes count citations and never run as a
+ * supposedly free connectivity check.
+ */
+export async function startGroundedStub(): Promise<VendorStub> {
+  let requests = 0;
+  let inFlight = 0;
+  let peak = 0;
+  let headers: Record<string, string | string[] | undefined> = {};
+  const server = createServer((request, response) => {
+    requests += 1;
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    headers = request.headers;
+    const finish = () => { inFlight -= 1; };
+    response.on("close", finish);
+    if (!request.url?.startsWith("/v1/responses")) {
+      response.writeHead(404).end("not found");
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      output: [
+        { type: "web_search_call", action: { sources: [{ url: "https://example.org/grounded", title: "Grounded source" }] } },
+        { type: "message", content: [{ type: "output_text", text: "A grounded answer.", annotations: [{ type: "url_citation", url: "https://example.org/grounded", title: "Grounded source" }] }] },
+      ],
+    }));
+  });
+  const port = await listen(server);
+  return {
+    base: `http://127.0.0.1:${port}`,
+    hits: () => requests,
+    lastHeaders: () => headers,
+    peak: () => peak,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+/**
  * Creates a provider through the admin API and asserts it was accepted.
  *
  * Duplicated across suites otherwise, and a silent creation failure turns a

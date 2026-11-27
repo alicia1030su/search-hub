@@ -11,11 +11,17 @@
 | `crossref` | `crossref.json` | 公开 REST API |
 | `openalex` | `openalex.json` | 公开 REST API |
 | `pubmed` | `pubmed.json` | NCBI E-utilities |
+| `wikipedia` | `wikipedia.json` | MediaWiki Action API，中英文真实调用 |
+| `arxiv` | `arxiv.json` | arXiv Atom API，两次真实调用 |
+| `github` | `github.json` | GitHub 匿名 repositories 搜索，两次真实调用 |
 
 ## 什么算证据
 
 一条记录必须包含：调用时间、请求 URL（不含凭证）、HTTP 状态、返回条数、
 以及至少一条真实结果的 URL。**本地模拟服务、mock adapter、契约测试都不算。**
+
+v0.1.17 起证据使用 `schemaVersion: 2`，还必须包含 `sourceCommit`、`adapterVersion`、
+`lastAttempt` 与逐次 `attempts`；`scripts/check-doc-consistency.mjs` 会校验这些字段。
 
 ## 什么不算
 

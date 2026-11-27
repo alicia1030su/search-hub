@@ -11,11 +11,18 @@ import type { RawSearchResult, ResolvedSearchConfig } from "@search-hub/shared";
  * It never pads results. If the vendor has fewer rows, the caller gets fewer
  * rows — the count we report must be the count we actually received.
  */
+export interface PaginatedPage {
+  /** Mapped, de-duplicable rows. */
+  items: RawSearchResult[];
+  /** Number of rows the vendor returned before mapping/filtering. */
+  rawCount: number;
+}
+
 export interface PaginateOptions {
   /** Resolved platform config (target rows, page size, budgets). */
   search: ResolvedSearchConfig;
   /** Fetches one page. `index` is 0-based. Return an empty array to stop. */
-  fetchPage: (index: number, pageSize: number) => Promise<RawSearchResult[]>;
+  fetchPage: (index: number, pageSize: number) => Promise<PaginatedPage>;
   /** Hard stop when the adapter knows the vendor cannot page further. */
   maxPages?: number;
   signal?: AbortSignal;
@@ -43,15 +50,16 @@ export async function paginate(options: PaginateOptions): Promise<PaginateResult
     if (options.signal?.aborted) break;
     const page = await fetchPage(index, search.pageSize);
     requests += 1;
-    for (const item of page) {
+    for (const item of page.items) {
       if (seen.has(item.url)) continue;
       seen.add(item.url);
       collected.push(item);
     }
     if (collected.length >= search.targetResults) break;
-    // A short page means the vendor has nothing further; asking again would
-    // waste a paid request.
-    if (page.length < search.pageSize) {
+    // A short *raw* page means the vendor has nothing further; asking again
+    // would waste a paid request. Mapped rows may be fewer because an item was
+    // malformed or duplicated, so page.items.length is not the right signal.
+    if (page.rawCount < search.pageSize) {
       exhausted = true;
       break;
     }
@@ -60,7 +68,10 @@ export async function paginate(options: PaginateOptions): Promise<PaginateResult
   return {
     results: collected.slice(0, search.targetResults),
     requests,
-    exhausted: exhausted || collected.length < search.targetResults,
+    // True only when the vendor itself returned a short raw page. Reaching
+    // maxPages or the request budget is a local limit, not proof that the
+    // vendor has no more rows.
+    exhausted,
   };
 }
 

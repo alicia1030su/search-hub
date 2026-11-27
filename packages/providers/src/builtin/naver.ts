@@ -8,7 +8,7 @@ import {
   type SearchProviderAdapter,
 } from "@search-hub/shared";
 import { callJson } from "../http.js";
-import { paginate } from "../pagination.js";
+import { paginate, type PaginatedPage } from "../pagination.js";
 
 const DEFAULT_BASE_URL = "https://openapi.naver.com";
 
@@ -68,7 +68,7 @@ export const naverAdapter: SearchProviderAdapter = {
     const kindRaw = ctx.config.config["kind"];
     const kind = typeof kindRaw === "string" && ["webkr", "news", "blog", "kin"].includes(kindRaw) ? kindRaw : "webkr";
 
-    const fetchPage = async (index: number, pageSize: number): Promise<RawSearchResult[]> => {
+    const fetchPage = async (index: number, pageSize: number): Promise<PaginatedPage> => {
       const display = Math.max(1, Math.min(MAX_DISPLAY, Math.trunc(pageSize || input.limit)));
       const start = Math.min(MAX_START, index * display + 1);
       const url = new URL(`${baseUrl}/v1/search/${kind}`);
@@ -97,14 +97,14 @@ export const naverAdapter: SearchProviderAdapter = {
           language: "ko",
         });
       }
-      return rows;
+      return { items: rows, rawCount: items.length };
     };
 
     const requestUrl = `${baseUrl}/v1/search/${kind}`;
 
     if (!search) {
       const single = await fetchPage(0, Math.min(input.limit, MAX_DISPLAY));
-      return { results: single.slice(0, input.limit), requestUrl };
+      return { results: single.items.slice(0, input.limit), requestUrl };
     }
 
     const paged = await paginate({ search, fetchPage, maxPages: 10, signal: input.signal });

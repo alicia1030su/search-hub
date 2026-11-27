@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "provider": "github",
+  "status": "live_tested",
+  "sourceCommit": "11348f055094cb67ede8bb89ed2cbc6ac74b4557",
+  "adapterVersion": "0.1.17",
+  "lastSuccess": {
+    "checkedAt": "2026-11-27T06:36:36.335Z",
+    "requestUrl": "https://api.github.com/search/repositories?q=search+engine&per_page=5&page=1",
+    "httpStatus": 200,
+    "resultCount": 5,
+    "sampleUrls": [
+      "https://github.com/elastic/elasticsearch",
+      "https://github.com/opensearch-project/OpenSearch",
+      "https://github.com/edoardottt/awesome-hacker-search-engines"
+    ],
+    "latencyMs": 976,
+    "recordedBy": "local provider-live.mjs"
+  },
+  "lastAttempt": {
+    "checkedAt": "2026-11-27T06:36:36.890Z",
+    "label": "en-repositories-2",
+    "query": "typescript monorepo",
+    "ok": true,
+    "httpStatus": 200,
+    "resultCount": 5,
+    "latencyMs": 554,
+    "requestUrl": "https://api.github.com/search/repositories?q=typescript+monorepo&per_page=5&page=1"
+  },
+  "attempts": [
+    {
+      "label": "en-repositories",
+      "query": "search engine",
+      "ok": true,
+      "httpStatus": 200,
+      "resultCount": 5,
+      "latencyMs": 976,
+      "requestUrl": "https://api.github.com/search/repositories?q=search+engine&per_page=5&page=1"
+    },
+    {
+      "label": "en-repositories-2",
+      "query": "typescript monorepo",
+      "ok": true,
+      "httpStatus": 200,
+      "resultCount": 5,
+      "latencyMs": 554,
+      "requestUrl": "https://api.github.com/search/repositories?q=typescript+monorepo&per_page=5&page=1"
+    }
+  ]
+}

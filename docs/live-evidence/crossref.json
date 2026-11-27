@@ -1,5 +1,8 @@
 {
   "provider": "crossref",
+  "schemaVersion": 2,
+  "sourceCommit": "cc59fd6eb37b083a69a2307b531fcd2546cd4868",
+  "adapterVersion": "0.1.5",
   "status": "live_tested",
   "lastSuccess": {
     "checkedAt": "2026-11-16T11:40:41Z",
@@ -18,5 +21,16 @@
     "checkedAt": "2026-11-16T11:40:41Z",
     "httpStatus": 200,
     "ok": true
-  }
+  },
+  "attempts": [
+    {
+      "label": "historical-success",
+      "query": "information retrieval",
+      "ok": true,
+      "httpStatus": 200,
+      "resultCount": 3,
+      "latencyMs": 2545,
+      "requestUrl": "https://api.crossref.org/works?query=information+retrieval&rows=3"
+    }
+  ]
 }

@@ -7,6 +7,7 @@ import { useLocale } from "./lib/hooks";
 import { t } from "./lib/i18n";
 import { SetupPage, LoginPage } from "./pages/auth";
 import { DashboardPage } from "./pages/dashboard";
+import { OnboardingPage } from "./pages/onboarding";
 import { ProvidersPage } from "./pages/providers";
 import { ModelsPage } from "./pages/models";
 import { LabPage } from "./pages/lab";
@@ -109,6 +110,7 @@ function AppRoutes() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/onboarding" element={<OnboardingPage />} />
         <Route path="/providers" element={<ProvidersPage />} />
         <Route path="/models" element={<ModelsPage />} />
         <Route path="/lab" element={<LabPage />} />

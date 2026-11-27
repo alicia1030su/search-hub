@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // The scripts are plain ESM without types; declare the helpers the tests use.
 // @ts-expect-error -- untyped .mjs script, signature declared below
-import { checkCountValue as rawCheckCountValue } from "../../scripts/check-doc-consistency.mjs";
+import { checkCountValue as rawCheckCountValue, validateLiveEvidence as rawValidateLiveEvidence } from "../../scripts/check-doc-consistency.mjs";
 // @ts-expect-error -- untyped .mjs script, signature declared below
 import { resolveReadmeMode as rawResolveReadmeMode, SCREENSHOT_FILES as rawScreenshotFiles } from "../../scripts/check-readme-consistency.mjs";
 
@@ -21,6 +21,7 @@ const resolveReadmeMode = rawResolveReadmeMode as (options?: {
   fileExists?: (file: string) => boolean;
 }) => "interim" | "final";
 const SCREENSHOT_FILES = rawScreenshotFiles as string[];
+const validateLiveEvidence = rawValidateLiveEvidence as (record: unknown, expectedProvider: string) => string[];
 import { describe, expect, it } from "vitest";
 import { PROVIDER_CATALOG, listAdapters, getAdapter } from "@search-hub/providers";
 
@@ -31,6 +32,49 @@ import { PROVIDER_CATALOG, listAdapters, getAdapter } from "@search-hub/provider
  * failure show up in the normal test run too — the place a developer looks
  * first after editing a README.
  */
+describe("live evidence schema", () => {
+  const valid = {
+    schemaVersion: 2,
+    provider: "wikipedia",
+    status: "live_tested",
+    sourceCommit: "a".repeat(40),
+    adapterVersion: "0.1.17",
+    lastSuccess: {
+      checkedAt: "2026-11-27T00:00:00.000Z",
+      requestUrl: "https://en.wikipedia.org/w/api.php?action=query",
+      httpStatus: 200,
+      resultCount: 5,
+      sampleUrls: ["https://en.wikipedia.org/?curid=1"],
+      latencyMs: 100,
+      recordedBy: "test",
+    },
+    lastAttempt: { checkedAt: "2026-11-27T00:00:00.000Z", httpStatus: 200, ok: true },
+    attempts: [{ label: "en", query: "search engine", ok: true, httpStatus: 200, resultCount: 5, latencyMs: 100, requestUrl: "https://en.wikipedia.org/w/api.php?action=query" }],
+  };
+
+  it("accepts a complete v2 record", () => {
+    expect(validateLiveEvidence(valid, "wikipedia")).toEqual([]);
+  });
+
+  it("requires a non-empty per-query attempts array", () => {
+    expect(validateLiveEvidence({ ...valid, attempts: undefined }, "wikipedia").join("\n")).toContain("attempts must contain at least one");
+    expect(validateLiveEvidence({ ...valid, attempts: [] }, "wikipedia").join("\n")).toContain("attempts must contain at least one");
+  });
+
+  it("rejects provider mismatch, missing provenance and insecure URLs", () => {
+    const problems = validateLiveEvidence({
+      ...valid,
+      provider: "arxiv",
+      sourceCommit: "abc",
+      lastSuccess: { ...valid.lastSuccess, requestUrl: "http://en.wikipedia.org/w/api.php", sampleUrls: [] },
+    }, "wikipedia");
+    expect(problems.join("\n")).toContain('provider must be "wikipedia"');
+    expect(problems.join("\n")).toContain("sourceCommit");
+    expect(problems.join("\n")).toContain("https URL");
+    expect(problems.join("\n")).toContain("sampleUrls");
+  });
+});
+
 describe("catalog ↔ docs consistency", () => {
   it("every builtin entry has an adapter and every adapter has an entry", () => {
     const adapters = new Set(listAdapters().map((adapter) => adapter.type));
@@ -86,7 +130,7 @@ describe("catalog ↔ docs consistency", () => {
       expect(resolveReadmeMode({ root })).toBe("interim");
       expect(resolveReadmeMode({ requested: "auto", root })).toBe("interim");
       expect(resolveReadmeMode({ requested: "final", root })).toBe("final");
-      const screenshotDir = join(root, "docs", "screenshots", "v0116");
+      const screenshotDir = join(root, "docs", "screenshots", "v0117");
       mkdirSync(screenshotDir, { recursive: true });
       for (const file of SCREENSHOT_FILES) writeFileSync(join(root, file), "fixture");
       expect(resolveReadmeMode({ root })).toBe("final");

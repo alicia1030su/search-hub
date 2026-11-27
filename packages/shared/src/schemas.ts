@@ -400,6 +400,13 @@ export const settingsUpdateSchema = z.object({
       publicBaseUrl: z.string().max(500).optional(),
     })
     .optional(),
+  onboarding: z
+    .object({
+      completedAt: z.string().datetime().nullable().optional(),
+      dismissedAt: z.string().datetime().nullable().optional(),
+      lastSeenVersion: z.string().max(64).nullable().optional(),
+    })
+    .optional(),
 });
 
 export type SearchRequestInput = z.infer<typeof searchRequestSchema>;

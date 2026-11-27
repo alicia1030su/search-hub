@@ -14,6 +14,7 @@ import { registerHealthRoutes, registerProviderHealthRoutes } from "./routes/hea
 import { registerQualityRoutes } from "./routes/quality-routes.js";
 import { registerMcpAdminRoutes } from "./routes/mcp-admin-routes.js";
 import { registerProviderRoutes } from "./routes/provider-routes.js";
+import { registerOnboardingRoutes } from "./routes/onboarding-routes.js";
 import { registerModelRoutes } from "./routes/model-routes.js";
 import { registerAdminRoutes } from "./routes/admin-routes.js";
 import { registerMcpRoutes } from "./routes/mcp-routes.js";
@@ -174,6 +175,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     toolCount: () => MCP_TOOL_COUNT,
   });
   registerProviderRoutes(app, ctx);
+  registerOnboardingRoutes(app, ctx);
   registerModelRoutes(app, ctx);
   registerAdminRoutes(app, ctx);
   registerMcpRoutes(app, ctx);

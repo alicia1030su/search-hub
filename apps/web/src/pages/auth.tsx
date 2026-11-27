@@ -81,6 +81,7 @@ export function SetupPage() {
         ...(setupToken.trim() ? { setupToken: setupToken.trim() } : {}),
       });
       toast.success({ title: t("auth.setup.success") });
+      window.location.assign("/onboarding");
     } catch (caught) {
       const apiError = toApiError(caught);
       setError(apiError.message);

@@ -12,9 +12,10 @@ const sha = "a".repeat(40);
 const version = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
 const currentTag = `v${version}`;
 const screenshotFiles = [
-  "docs/screenshots/v0116/dashboard.png",
-  "docs/screenshots/v0116/search-lab.png",
-  "docs/screenshots/v0116/provider-health.png",
+  "docs/screenshots/v0117/onboarding.png",
+  "docs/screenshots/v0117/dashboard.png",
+  "docs/screenshots/v0117/search-lab.png",
+  "docs/screenshots/v0117/provider-health.png",
 ];
 const readmeAnchors = [
   "top", "highlights", "screenshots", "quick-start", "interfaces",
@@ -36,7 +37,7 @@ function finalReadme(english: boolean): string {
   const facts = english
     ? [
         "mcp:use sources:read get_search_sources",
-        "Hacker News Crossref OpenAlex PubMed",
+        "Hacker News Crossref OpenAlex PubMed Wikipedia arXiv GitHub",
         "live_tested documented mock_verified",
         "Windows x64 Linux x64 Linux arm64 Docker Compose",
         "SHA256SUMS resource-evidence.json best-effort",
@@ -44,7 +45,7 @@ function finalReadme(english: boolean): string {
       ]
     : [
         "mcp:use sources:read get_search_sources",
-        "Hacker News Crossref OpenAlex PubMed",
+        "Hacker News Crossref OpenAlex PubMed Wikipedia arXiv GitHub",
         "live_tested documented mock_verified",
         "Windows x64 Linux x64 Linux arm64 Docker Compose",
         "SHA256SUMS resource-evidence.json best-effort",
@@ -70,7 +71,7 @@ function finalReadmeFixture(): string {
   writeFileSync(join(directory, "package.json"), JSON.stringify({ version, engines: { node: ">=22.12.0" } }));
   writeFileSync(join(directory, "README.md"), finalReadme(false));
   writeFileSync(join(directory, "README_EN.md"), finalReadme(true));
-  mkdirSync(join(directory, "docs", "screenshots", "v0116"), { recursive: true });
+  mkdirSync(join(directory, "docs", "screenshots", "v0117"), { recursive: true });
   writeFileSync(
     join(directory, "docs", "cli.md"),
     `# CLI\n\nshub-v${version}-node22.tar.gz\nNode.js >=22.12.0\n\n## Configuration\n`,
@@ -141,7 +142,7 @@ describe("release gate", () => {
 
   it("requires candidate workflow_dispatch evidence only in the six-workflow preflight", () => {
     const mainPush = Object.keys(REQUIRED_WORKFLOWS).map((path) => run(path));
-    const candidate = run("release-candidate.yml", { event: "workflow_dispatch", head_branch: "feat/v0116-stable" });
+    const candidate = run("release-candidate.yml", { event: "workflow_dispatch", head_branch: "feat/v0117-stable" });
     expect(evaluateRuns([...mainPush, candidate], sha).allGreen).toBe(true);
     expect(evaluateRuns(mainPush, sha).allGreen).toBe(true);
     expect(evaluateRuns(mainPush, sha, { includeCandidate: true }).allGreen).toBe(false);
@@ -217,7 +218,7 @@ describe("release gate", () => {
     expect(finalize.match(/gh release edit /g)).toHaveLength(1);
   });
 
-  it("accepts a final README fixture with three screenshots and valid links", () => {
+  it("accepts a final README fixture with four screenshots and valid links", () => {
     expect(verifyFinalReadme(finalReadmeFixture())).toEqual({ ok: true, version });
   });
 

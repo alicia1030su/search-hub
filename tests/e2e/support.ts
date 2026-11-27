@@ -15,6 +15,18 @@ export const EMAIL = "admin@example.com";
 export const PASSWORD = "E2E-Local-Only-Password-1";
 
 /**
+ * The first-run guide is intentionally outside the dashboard shell. Suites that
+ * exercise older surfaces dismiss it through the real UI so their assertions
+ * stay focused on the surface under test.
+ */
+export async function dismissOnboardingIfVisible(page: Page): Promise<void> {
+  const heading = page.getByRole("heading", { name: "首次使用引导" });
+  if (!(await heading.isVisible().catch(() => false))) return;
+  await page.getByRole("button", { name: "跳过引导" }).click();
+  await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
+}
+
+/**
  * Signs in, running first-time setup when this file is the first to run.
  *
  * A targeted run (`pnpm test:e2e -- <file>`) starts from an empty database, so
@@ -37,7 +49,8 @@ export async function ensureSignedIn(page: Page): Promise<void> {
     await page.locator("#setup-password").fill(PASSWORD);
     await page.locator("#setup-confirm").fill(PASSWORD);
     await page.getByRole("button", { name: "创建管理员并进入" }).click();
-    await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "首次使用引导" })).toBeVisible({ timeout: 20_000 });
+    await dismissOnboardingIfVisible(page);
     return;
   }
 
@@ -46,6 +59,7 @@ export async function ensureSignedIn(page: Page): Promise<void> {
     await page.locator("#login-password").fill(PASSWORD);
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible({ timeout: 20_000 });
+    await dismissOnboardingIfVisible(page);
     return;
   }
 

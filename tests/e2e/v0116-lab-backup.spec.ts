@@ -1,27 +1,9 @@
 import { expect, test, type Download, type Page } from "@playwright/test";
+import { ensureSignedIn } from "./support";
 
-const PASSWORD = "E2E-Local-Only-Password-1";
 const CANARY = "V0116-UPSTREAM-RAW-CANARY-7f3c9d";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
-
-async function completeSetup(page: Page): Promise<void> {
-  await page.goto("/");
-  await page.waitForURL(/\/(?:login|setup)$/);
-  if (new URL(page.url()).pathname === "/login") {
-    await page.locator("#login-email").fill("admin@example.com");
-    await page.locator("#login-password").fill(PASSWORD);
-    await page.getByRole("button", { name: "登录", exact: true }).click();
-  } else {
-    await page.locator("#setup-token").fill("e2e-setup-token");
-    await page.locator("#setup-email").fill("admin@example.com");
-    await page.locator("#setup-name").fill("管理员");
-    await page.locator("#setup-password").fill(PASSWORD);
-    await page.locator("#setup-confirm").fill(PASSWORD);
-    await page.getByRole("button", { name: "创建管理员并进入", exact: true }).click();
-  }
-  await expect(page.getByRole("heading", { name: "仪表盘", exact: true })).toBeVisible({ timeout: 20_000 });
-}
 
 async function downloadText(download: Download): Promise<string> {
   const stream = await download.createReadStream();
@@ -107,7 +89,7 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
       });
     });
 
-    await completeSetup(page);
+    await ensureSignedIn(page);
     await page.getByRole("link", { name: "搜索实验室", exact: true }).click();
     await expect(page.getByText("Local mock", { exact: true })).toBeVisible();
     await page.locator("#lab-query").fill("lab privacy");
@@ -152,7 +134,7 @@ test.describe("v0.1.16 Lab raw-data privacy", () => {
       });
     });
 
-    await completeSetup(page);
+    await ensureSignedIn(page);
     await page.getByRole("link", { name: "搜索实验室", exact: true }).click();
     await expect(page.getByText("Local mock", { exact: true })).toBeVisible();
     await page.getByText("高级参数", { exact: true }).click();
@@ -211,7 +193,7 @@ test.describe("v0.1.16 backup loading semantics", () => {
     const databaseValue = page.getByText("数据库", { exact: true }).locator("..").locator("p").nth(1);
     const walValue = page.getByText("WAL", { exact: true }).locator("..").locator("p").nth(1);
     try {
-      await completeSetup(page);
+      await ensureSignedIn(page);
       await page.getByRole("link", { name: "备份中心", exact: true }).click();
       await expect(page.getByRole("heading", { name: "备份与灾备", exact: true })).toBeVisible();
       await expect(databaseValue).toBeVisible();

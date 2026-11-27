@@ -327,6 +327,12 @@ export class HealthService {
     if (!adapter) throw new SearchHubError("unsupported", `Provider type "${row.type}" is not implemented`);
 
     const kind = options.kind ?? "connect";
+    if (adapter.capability === "grounded_answer" && kind === "connect") {
+      throw new SearchHubError(
+        "validation_error",
+        "Grounded-answer providers require a search probe; a connectivity probe would invoke a paid model.",
+      );
+    }
     const trigger = options.trigger ?? "manual";
     const policy = this.ctx.settings.get().health;
     const catalogEntry = getCatalogEntry(row.type);
@@ -601,9 +607,12 @@ export class HealthService {
       }
 
       const latencyMs = this.clock() - started;
-      const count = result.results.length;
+      const citationCount = result.answer?.citations.length ?? 0;
+      const count = Math.max(result.results.length, citationCount);
       // HTTP 200 with no rows is a degraded answer, not a healthy one: the
       // vendor answered, but the source is not usable for searching right now.
+      // Grounded answers count when they carry verifiable citations even though
+      // they intentionally do not populate `results`.
       const cause: HealthCause = count > 0 ? "ok" : "empty_results";
       keyOutcome = requests === 0
         ? { ok: false, notSent: true }
@@ -934,6 +943,10 @@ export class HealthService {
       const row = this.db.select().from(providerInstances).where(eq(providerInstances.id, id)).get();
       if (row) {
         const config = safeJson(row.configJson);
+        if (kind === "connect" && getAdapter(row.type)?.capability === "grounded_answer") {
+          emitSkip(id, "SKIPPED_UNSUPPORTED", "grounded_answer_requires_search_probe");
+          return;
+        }
         const requiresKey = this.ctx.providers.providerRequiresKey(row.type, config);
         const credentialed = requiresKey;
         const anonymousSearch = !credentialed && (kind === "search" || row.type === "generic-http");
@@ -1380,7 +1393,9 @@ export class HealthService {
       },
       autoProbeEnabled: state?.autoProbeEnabled ?? true,
       nextProbeAt: state?.nextProbeAt ?? null,
-      probeMode: policy.paidProbesEnabled ? "search" : "connect",
+      probeMode: getAdapter(row.type)?.capability === "grounded_answer"
+        ? "search"
+        : policy.paidProbesEnabled ? "search" : "connect",
       healthScore: lastCheck?.healthScore ?? 0,
       lastCheckedAt: lastCheck?.checkedAt ?? null,
       lastSuccessAt: lastSuccess?.checkedAt ?? null,

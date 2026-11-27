@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suite": "search-hub-disaster-recovery-v0.1.16",
+  "suite": "search-hub-disaster-recovery-v0.1.17",
   "status": "NOT TESTED",
   "notes": "R01-R38 are the user acceptance IDs. A01-A12 are internal supplemental IDs and do not replace the user R IDs. Every item stays NOT TESTED until its command runs and evidence is aggregated.",
   "requirements": {
@@ -34,7 +34,7 @@
     "R28": {"command": "bash tests/disaster-recovery/platform-docker.sh <image> <shub> <evidence>", "fixture": "fresh Docker project/network/volumes", "expectedEvidence": "health/API/MCP and production volume hash unchanged", "platforms": ["docker"], "status": "NOT TESTED"},
     "R29": {"command": "bash tests/disaster-recovery/platform-systemd.sh <package-root> <shub> <candidate> <evidence>", "fixture": "real systemd custom units/data/db/ports", "expectedEvidence": "health/modes/old directory retained", "platforms": ["systemd"], "status": "NOT TESTED"},
     "R30": {"command": "bash tests/disaster-recovery/platform-linux.sh <package-root> <shub> <evidence>", "fixture": "restored packaged server", "expectedEvidence": "health/login/provider/key/search/MCP all pass", "platforms": ["windows", "linux", "docker", "systemd"], "status": "NOT TESTED"},
-    "R31": {"command": "node packaging/upgrade-matrix.mjs --from v0.1.14 --to <v0.1.16-candidate> && node packaging/upgrade-matrix.mjs --from v0.1.15 --to <v0.1.16-candidate>", "fixture": "real v0.1.14 and v0.1.15 releases plus exact-SHA candidate", "expectedEvidence": "state preserved and migrations complete for both source versions", "platforms": ["windows", "linux", "systemd"], "status": "NOT TESTED"},
+    "R31": {"command": "node packaging/upgrade-matrix.mjs --from v0.1.14 --to <v0.1.17-candidate> && node packaging/upgrade-matrix.mjs --from v0.1.15 --to <v0.1.17-candidate> && node packaging/upgrade-matrix.mjs --from v0.1.16 --to <v0.1.17-candidate>", "fixture": "real v0.1.14, v0.1.15 and v0.1.16 releases plus exact-SHA candidate", "expectedEvidence": "state preserved and migrations complete for all three source versions", "platforms": ["windows", "linux", "systemd"], "status": "NOT TESTED"},
     "R32": {"command": "bash tests/disaster-recovery/platform-systemd.sh <package-root> <shub> <candidate> <evidence>", "fixture": "broken healthy-check candidate with schema movement", "expectedEvidence": "updater exit 3 and old program/data healthy", "platforms": ["windows", "linux", "systemd"], "status": "NOT TESTED"},
     "R33": {"command": "bash tests/disaster-recovery/platform-systemd.sh <package-root> <shub> <candidate> <evidence>", "fixture": "original API key after rollback", "expectedEvidence": "rollback-verify.json keyDecrypt=true", "platforms": ["windows", "linux", "systemd"], "status": "NOT TESTED"},
     "R34": {"command": "node --import tsx tests/disaster-recovery/backup-performance.mjs --run --cli <shub> --sizes 10,64,256 --rounds 5 --warmup 1 --fresh-rounds 5 --output-dir <reports/performance>", "fixture": "10/64/256 real packages plus integrated same-process loops", "expectedEvidence": "performanceSubset=PASS and independent memory-loop reports PASS; aggregator combines both", "platforms": ["windows", "linux"], "status": "NOT TESTED"},

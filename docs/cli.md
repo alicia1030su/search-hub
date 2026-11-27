@@ -7,14 +7,14 @@ health probes or model calls. Every command uses the existing REST API.
 ## Install
 
 Download the matching asset from the
-[v0.1.16 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.16):
+[v0.1.17 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.17):
 
 | Platform | Asset | Requirements |
 |---|---|---|
-| Windows x64 | `shub-v0.1.16-windows-x64.zip` | None |
-| Linux x64 | `shub-v0.1.16-linux-x64.tar.gz` | None |
-| Linux arm64 | `shub-v0.1.16-linux-arm64.tar.gz` | None |
-| Portable | `shub-v0.1.16-node22.tar.gz` | Node.js >=22.12.0 |
+| Windows x64 | `shub-v0.1.17-windows-x64.zip` | None |
+| Linux x64 | `shub-v0.1.17-linux-x64.tar.gz` | None |
+| Linux arm64 | `shub-v0.1.17-linux-arm64.tar.gz` | None |
+| Portable | `shub-v0.1.17-node22.tar.gz` | Node.js >=22.12.0 |
 
 Extract the archive and run `shub` (`shub.exe` on Windows). Verify downloads with
 `sha256sum -c SHA256SUMS` and, optionally,
@@ -109,6 +109,6 @@ after a disconnect. Billable `POST /api/search` requests are never retried.
 
 ## Compatibility
 
-The v0.1.16 CLI accepts server versions `0.1.12` and later within `0.1.x`.
+The v0.1.17 CLI accepts server versions `0.1.12` and later within `0.1.x`.
 Compatible fields remain usable; a missing endpoint fails explicitly instead of
 being treated as an empty success.
