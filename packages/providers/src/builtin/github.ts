@@ -81,11 +81,14 @@ export const githubAdapter: SearchProviderAdapter = {
     );
     const payload = expectObject(ctx, response.data, "GitHub response");
     if (typeof payload["message"] === "string" && payload["items"] === undefined) {
-      const message = payload["message"];
-      if (/rate limit/i.test(message)) {
-        throw new ProviderError(ctx.config.id, "github", "rate_limited", message, { retryable: true });
+      if (/rate limit/i.test(payload["message"])) {
+        throw new ProviderError(ctx.config.id, "github", "rate_limited", "GitHub API rate limit exceeded.", {
+          retryable: true,
+        });
       }
-      throw new ProviderError(ctx.config.id, "github", "bad_request", `GitHub returned a business error: ${message.slice(0, 200)}`);
+      throw new ProviderError(ctx.config.id, "github", "bad_request", "GitHub returned a business error.", {
+        retryable: false,
+      });
     }
     const items = expectArray(ctx, payload["items"], "GitHub items") as GithubRepo[];
 

@@ -50,7 +50,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     type: "hackernews",
     name: "Hacker News（Algolia 官方搜索 API）",
-    category: "general",
+    category: "vertical",
     authType: "none",
     implementation: "builtin",
     defaultBaseUrl: "https://hn.algolia.com",
@@ -196,7 +196,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     type: "duckduckgo",
     name: "DuckDuckGo（Instant Answer API）",
-    category: "general",
+    category: "vertical",
     capability: "raw_search",
     authType: "none",
     implementation: "builtin",

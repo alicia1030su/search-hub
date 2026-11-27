@@ -26,8 +26,8 @@ describe("provider config view", () => {
   it("recognises general web search without counting community or test sources", () => {
     expect(isGeneralWebEntry(entry("brave", "general"))).toBe(true);
     expect(isGeneralWebEntry(entry("tavily", "general"))).toBe(true);
-    expect(isGeneralWebEntry(entry("hackernews", "general"))).toBe(false);
-    expect(isGeneralWebEntry(entry("duckduckgo", "general"))).toBe(false);
+    expect(isGeneralWebEntry(entry("hackernews", "vertical"))).toBe(false);
+    expect(isGeneralWebEntry(entry("duckduckgo", "vertical"))).toBe(false);
     expect(isGeneralWebEntry(entry("mock", "custom"))).toBe(false);
     expect(isGeneralWebEntry(entry("crossref", "vertical"))).toBe(false);
   });
@@ -38,13 +38,15 @@ describe("provider config view", () => {
         { key: "apiKey", label: "API Key", type: "password", required: true, target: "credential" },
         { key: "baseUrl", label: "Base URL", type: "text", target: "baseUrl" },
         { key: "region", label: "Region", type: "text", required: true, target: "config" },
-        { key: "model", label: "Model", type: "text", target: "model" },
+        { key: "model", label: "Model", type: "text", required: true, target: "model" },
+        { key: "optionalModel", label: "Optional model", type: "text", target: "model" },
       ],
     });
     expect(fields).toEqual([
       { key: "apiKey", label: "API Key", required: true, target: "credential" },
       { key: "baseUrl", label: "Base URL", required: false, target: "baseUrl" },
       { key: "region", label: "Region", required: true, target: "config" },
+      { key: "model", label: "Model", required: true, target: "model" },
     ]);
   });
 
@@ -55,14 +57,16 @@ describe("provider config view", () => {
     expect(providerFixHint(provider(null), health("rate_limited", "rate_limited"))).toBe("rate_limited");
     expect(providerFixHint(provider(null), health("quota_exceeded", "quota_exceeded"))).toBe("quota");
     expect(providerFixHint(provider(null), health("unhealthy", "network"))).toBe("network");
-    expect(providerFixHint(provider(null), health("degraded", "empty_results"))).toBe("empty_results");
+    expect(providerFixHint(provider(null), health("degraded", "no_available_key"))).toBe("empty_results");
     expect(providerFixHint(provider(null), health("degraded", "timeout"))).toBe("timeout");
-    expect(providerFixHint(provider(null), health("permission_denied", "forbidden"))).toBe("permission");
+    expect(providerFixHint(provider(null), health("permission_denied", "blocked"))).toBe("permission");
+    expect(providerFixHint(provider(null), health("cooldown", "rate_limited"))).toBe("rate_limited");
+    expect(providerFixHint(provider(null), health("cooldown", null))).toBeNull();
     expect(providerFixHint(provider(null), health("unverified", null, 0))).toBe("no_key");
     expect(providerFixHint(provider(null), health("healthy"))).toBeNull();
   });
 
   it("never reports HTTP 200 empty results as an authentication failure", () => {
-    expect(providerFixHint(provider(null), health("degraded", "empty_results"))).toBe("empty_results");
+    expect(providerFixHint(provider(null), health("degraded", "no_available_key"))).toBe("empty_results");
   });
 });

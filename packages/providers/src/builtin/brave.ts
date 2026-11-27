@@ -9,7 +9,7 @@ import {
   type ProviderTestResult,
   type SearchProviderAdapter,
 } from "@search-hub/shared";
-import { callJson, expectObject, joinApiPath, mapItem } from "../http.js";
+import { callJson, expectArray, expectObject, joinApiPath, mapItem } from "../http.js";
 import { paginate, type PaginatedPage } from "../pagination.js";
 
 const DEFAULT_BASE_URL = "https://api.search.brave.com";
@@ -115,17 +115,8 @@ export const braveAdapter: SearchProviderAdapter = {
       });
 
       const body = expectObject(ctx, response.data, "Brave response");
-      const web = body["web"];
-      const rawResults = web ? getByPath(web, "results") : undefined;
-      if (web !== undefined && rawResults !== undefined && !Array.isArray(rawResults)) {
-        throw new ProviderError(
-          ctx.config.id,
-          "brave",
-          "bad_request",
-          "Brave response contained a non-array web.results value",
-        );
-      }
-      const items: unknown[] = Array.isArray(rawResults) ? rawResults : [];
+      const web = expectObject(ctx, body["web"], "Brave web");
+      const items = expectArray(ctx, web["results"], "Brave web.results");
 
       const mapped = items
         .map((item) => {

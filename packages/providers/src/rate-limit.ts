@@ -22,10 +22,8 @@ interface Bucket {
   nextStartAt: number;
   blockedUntil: number;
   inFlight: number;
-  minuteStart: number;
-  minuteCount: number;
-  hourStart: number;
-  hourCount: number;
+  minuteStarts: number[];
+  hourStarts: number[];
   lastNow: number;
   queue: Waiter[];
   timer: ReturnType<typeof setTimeout> | null;
@@ -62,10 +60,8 @@ function resetBucket(bucket: Bucket): void {
   bucket.nextStartAt = 0;
   bucket.blockedUntil = 0;
   bucket.inFlight = 0;
-  bucket.minuteStart = 0;
-  bucket.minuteCount = 0;
-  bucket.hourStart = 0;
-  bucket.hourCount = 0;
+  bucket.minuteStarts = [];
+  bucket.hourStarts = [];
   bucket.lastNow = 0;
   if (bucket.timer) clearTimeout(bucket.timer);
   bucket.timer = null;
@@ -80,10 +76,8 @@ function getBucket(key: string, policy: ProviderRateLimitPolicy): Bucket {
       nextStartAt: 0,
       blockedUntil: 0,
       inFlight: 0,
-      minuteStart: 0,
-      minuteCount: 0,
-      hourStart: 0,
-      hourCount: 0,
+      minuteStarts: [],
+      hourStarts: [],
       lastNow: 0,
       queue: [],
       timer: null,
@@ -111,21 +105,15 @@ function pump(bucket: Bucket): void {
   const now = Date.now();
   bucket.lastNow = now;
 
-  if (now - bucket.minuteStart >= 60_000) {
-    bucket.minuteStart = now;
-    bucket.minuteCount = 0;
-  }
-  if (now - bucket.hourStart >= 3_600_000) {
-    bucket.hourStart = now;
-    bucket.hourCount = 0;
-  }
+  bucket.minuteStarts = bucket.minuteStarts.filter((startedAt) => startedAt > now - 60_000);
+  bucket.hourStarts = bucket.hourStarts.filter((startedAt) => startedAt > now - 3_600_000);
 
   while (bucket.queue.length > 0 && bucket.inFlight < bucket.policy.maxInFlight) {
-    const minuteWait = bucket.minuteCount >= bucket.policy.maxPerMinute
-      ? bucket.minuteStart + 60_000 - now
+    const minuteWait = bucket.minuteStarts.length >= bucket.policy.maxPerMinute
+      ? bucket.minuteStarts[0]! + 60_000 - now
       : 0;
-    const hourWait = bucket.hourCount >= bucket.policy.maxPerHour
-      ? bucket.hourStart + 3_600_000 - now
+    const hourWait = bucket.hourStarts.length >= bucket.policy.maxPerHour
+      ? bucket.hourStarts[0]! + 3_600_000 - now
       : 0;
     const wait = Math.max(
       bucket.nextStartAt - now,
@@ -140,8 +128,8 @@ function pump(bucket: Bucket): void {
 
     const waiter = bucket.queue.shift()!;
     bucket.inFlight += 1;
-    bucket.minuteCount += 1;
-    bucket.hourCount += 1;
+    bucket.minuteStarts.push(now);
+    bucket.hourStarts.push(now);
     bucket.nextStartAt = now + bucket.policy.minIntervalMs;
     waiter.resolve();
   }

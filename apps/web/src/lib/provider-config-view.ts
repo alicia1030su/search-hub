@@ -6,7 +6,7 @@ import type {
 } from "./types";
 
 export type ProviderConfigField = Pick<ProviderCatalogField, "key" | "label" | "required"> & {
-  target: "config" | "baseUrl" | "credential";
+  target: "config" | "baseUrl" | "credential" | "model";
 };
 
 export type ProviderFixHint =
@@ -32,8 +32,9 @@ export function providerConfigFields(
   entry: Pick<ProviderCatalogEntry, "fields">,
 ): ProviderConfigField[] {
   return (entry.fields ?? [])
-    .filter((field): field is ProviderCatalogField & { target: "config" | "baseUrl" | "credential" } =>
-      field.target === "config" || field.target === "baseUrl" || field.target === "credential",
+    .filter((field): field is ProviderCatalogField & { target: "config" | "baseUrl" | "credential" | "model" } =>
+      field.target === "config" || field.target === "baseUrl" || field.target === "credential" ||
+      (field.target === "model" && field.required === true),
     )
     .map((field) => ({
       key: field.key,
@@ -56,10 +57,10 @@ export function providerFixHint(
   const runtime = healthRow?.runtime;
   const errorCode = healthRow?.lastErrorCode ?? "";
   if (runtime === "invalid_credentials" || errorCode === "auth_invalid") return "auth_failed";
-  if (runtime === "rate_limited" || runtime === "cooldown" || errorCode === "rate_limited") return "rate_limited";
+  if (runtime === "rate_limited" || errorCode === "rate_limited") return "rate_limited";
   if (runtime === "quota_exceeded" || errorCode === "quota_exceeded") return "quota";
-  if (runtime === "permission_denied" || errorCode === "forbidden") return "permission";
-  if (errorCode === "empty_results") return "empty_results";
+  if (runtime === "permission_denied" || errorCode === "blocked" || errorCode === "forbidden") return "permission";
+  if (errorCode === "no_available_key" || errorCode === "empty_results") return "empty_results";
   if (errorCode === "timeout") return "timeout";
   if (errorCode === "server_error" || errorCode === "bad_response") return "server_error";
   if (runtime === "unhealthy" || ["network", "dns", "tls", "network_error"].includes(errorCode)) return "network";

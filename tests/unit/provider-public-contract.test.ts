@@ -288,6 +288,59 @@ describe("public provider HTTP and response contracts", () => {
     await assertion;
   });
 
+  it("accepts Brave web.results as a valid empty result", async () => {
+    const { baseUrl } = await startServer(() => ({ body: JSON.stringify({ web: { results: [] } }) }));
+    const ctx = providerContext("brave", baseUrl, { apiKey: "sk-BRAVE-CONTRACT-0000000000" });
+
+    const output = await braveAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx);
+
+    expect(output.results).toEqual([]);
+  });
+
+  it.each([
+    {},
+    { web: null },
+    { web: [] },
+    { web: {} },
+    { web: { results: {} } },
+  ])("rejects Brave responses without an object web and array web.results: %j", async (body) => {
+    const { baseUrl } = await startServer(() => ({ body: JSON.stringify(body) }));
+    const ctx = providerContext("brave", baseUrl, { apiKey: "sk-BRAVE-CONTRACT-0000000000" });
+
+    await expect(
+      braveAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("sanitizes GitHub HTTP 200 business errors while preserving code and retryability", async () => {
+    const upstreamSecret = "sk-GITHUB-UPSTREAM-SECRET";
+    const cases = [
+      {
+        message: `API rate limit exceeded for token ${upstreamSecret}`,
+        code: "rate_limited",
+        safeMessage: "GitHub API rate limit exceeded.",
+        retryable: true,
+      },
+      {
+        message: `Validation failed for credential ${upstreamSecret}`,
+        code: "bad_request",
+        safeMessage: "GitHub returned a business error.",
+        retryable: false,
+      },
+    ];
+    for (const testCase of cases) {
+      const { baseUrl } = await startServer(() => ({ body: JSON.stringify({ message: testCase.message }) }));
+      const ctx = providerContext("github", baseUrl);
+      await expect(
+        githubAdapter.search({ query: "x", limit: 5, signal: ctx.signal }, ctx),
+      ).rejects.toMatchObject({
+        code: testCase.code,
+        message: testCase.safeMessage,
+        retryable: testCase.retryable,
+      });
+    }
+  });
+
   it("continues Brave pagination when a full raw page contains an unmappable row", async () => {
     const { baseUrl, requests } = await startServer((_request, index) => {
       const rows = Array.from({ length: 20 }, (_, row) => ({

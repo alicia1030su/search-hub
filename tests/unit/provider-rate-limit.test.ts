@@ -5,7 +5,14 @@ import type {
   SafeFetch,
   SafeFetchResponse,
 } from "@search-hub/shared";
-import { arxivAdapter, githubAdapter, wikipediaAdapter, resetProviderRateLimitsForTests } from "@search-hub/providers";
+import {
+  arxivAdapter,
+  githubAdapter,
+  wikipediaAdapter,
+  providerRateLimitKey,
+  resetProviderRateLimitsForTests,
+  withProviderRateLimit,
+} from "@search-hub/providers";
 
 const REPOSITORY_URL = "https://github.com/alicia1030su/search-hub";
 
@@ -89,6 +96,28 @@ afterEach(() => {
 });
 
 describe("public provider rate limits", () => {
+  it("uses a sliding minute window instead of resetting a fixed bucket", async () => {
+    const starts: number[] = [];
+    const key = providerRateLimitKey("sliding-test", "https://stub.invalid", "minute");
+    const run = () => withProviderRateLimit(key, { maxPerMinute: 2 }, async () => {
+      starts.push(Date.now());
+    });
+
+    await run();
+    await vi.advanceTimersByTimeAsync(59_000);
+    await run();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const third = run();
+    const fourth = run();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(starts).toEqual([0, 59_000, 60_000]);
+
+    await vi.runAllTimersAsync();
+    await Promise.all([third, fourth]);
+    expect(starts).toEqual([0, 59_000, 60_000, 119_000]);
+  });
+
   it("serializes arXiv searches at least 3000ms apart with one in-flight request", async () => {
     const starts: number[] = [];
     let inFlight = 0;
