@@ -276,7 +276,7 @@ render: z.boolean().optional()
 | auto | 不额外限制旧 mode，按显式 mode 执行 |
 
 - `quality+rerank` 接受：显式 rerank 阶段优先，缺 rerank 模型仍按旧显式 mode 契约 fail-fast 400。
-- `quality+basic` 接受：Quality 默认 RRF 加可选 rerank；若显式 rerank 可用则执行，否则保持 RRF。
+- `quality+basic` 因基础模式冲突返回 400：Quality 的基础模式是 RRF，不能退化为 basic。
 - 其余基础模式不匹配的组合（如 `fast+rrf`、`balanced+basic`、`deep+rrf`）返回 400。
 - 只传旧 mode：兼容路径，旧响应字段不删、类型不变；缺陷修复可改变错误结果。
 - 只传 strategy：新路径，返回 `strategy`、`route`、`appliedStages`、`degradations`。
