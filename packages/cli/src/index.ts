@@ -4,6 +4,7 @@ import { HttpClient } from "./client/http.js";
 import { asCliError, usageError } from "./errors/index.js";
 import { writeError, writeText, type OutputFormat } from "./output/index.js";
 import { runSearch } from "./commands/search.js";
+import { runFetch } from "./commands/fetch.js";
 import { runSources } from "./commands/sources.js";
 import { runStatus } from "./commands/status.js";
 import { runDoctor } from "./commands/doctor.js";
@@ -51,6 +52,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     switch (command) {
       case "search":
         return await runSearch(args, client, format);
+      case "fetch":
+        return await runFetch(args, client, format);
       case "sources":
         return await runSources(args, client, token, format);
       case "status":

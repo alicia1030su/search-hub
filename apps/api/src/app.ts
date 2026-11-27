@@ -10,6 +10,7 @@ import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "./context.js";
 import { registerAuthRoutes } from "./routes/auth-routes.js";
 import { registerSearchRoutes } from "./routes/search-routes.js";
+import { registerWebRoutes } from "./routes/web-routes.js";
 import { registerHealthRoutes, registerProviderHealthRoutes } from "./routes/health-routes.js";
 import { registerQualityRoutes } from "./routes/quality-routes.js";
 import { registerMcpAdminRoutes } from "./routes/mcp-admin-routes.js";
@@ -165,6 +166,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
 
   registerAuthRoutes(app, ctx);
   registerSearchRoutes(app, ctx);
+  registerWebRoutes(app, ctx);
   registerHealthRoutes(app, ctx);
   registerProviderHealthRoutes(app, ctx);
   registerQualityRoutes(app, ctx);

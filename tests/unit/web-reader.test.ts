@@ -278,6 +278,14 @@ describe("fetchWebpage limits, cancellation and validation", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("redacts credential query values from result URLs", async () => {
+    const result = await fetchWebpage("https://example.com/?token=secret&q=article", {
+      fetch: fakeFetch(response(article())),
+    });
+    expect(result.requestedUrl).toBe("https://example.com/?token=%5Bredacted%5D&q=article");
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
   it("rethrows network errors for REST 502 mapping", async () => {
     const networkError = new SearchHubError("network", "network unavailable", { status: 502 });
     await expect(fetchWebpage("https://example.com/", { fetch: fakeFetch(networkError) })).rejects.toBe(networkError);

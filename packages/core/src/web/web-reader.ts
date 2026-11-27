@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import { SearchHubError, type SafeFetch, type SafeFetchInit } from "@search-hub/shared";
+import { sanitizeUrl, SearchHubError, type SafeFetch, type SafeFetchInit } from "@search-hub/shared";
 
 export type WebpageReadStatus =
   | "ok"
@@ -219,12 +219,13 @@ function upstreamStatus(error: unknown): number | null {
 function upstreamUrl(error: unknown, fallback: string): string {
   if (!(error instanceof SearchHubError) || !error.details || typeof error.details !== "object") return fallback;
   const url = (error.details as { url?: unknown }).url;
-  return typeof url === "string" ? url : fallback;
+  return typeof url === "string" ? sanitizeUrl(url) : fallback;
 }
 
 /** Read a public HTTP page into bounded Markdown without launching a browser. */
 export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions): Promise<WebpageReadResult> {
   const requested = parseRequestedUrl(rawUrl);
+  const requestedUrl = sanitizeUrl(rawUrl);
   throwIfAborted(options.signal);
   const timeoutMs = positiveInteger(options.timeoutMs, DEFAULT_WEB_READ_TIMEOUT_MS);
   const maxContentChars = positiveInteger(options.maxContentChars, DEFAULT_WEB_MAX_CONTENT_CHARS);
@@ -241,32 +242,32 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
   } catch (error) {
     throwIfAborted(options.signal);
     const status = upstreamStatus(error);
-    if (status === 503) return unavailableResult(rawUrl, upstreamUrl(error, rawUrl), "maintenance");
-    if (status === 404 || status === 410) return unavailableResult(rawUrl, upstreamUrl(error, rawUrl), "not_found");
+    if (status === 503) return unavailableResult(requestedUrl, upstreamUrl(error, requestedUrl), "maintenance");
+    if (status === 404 || status === 410) return unavailableResult(requestedUrl, upstreamUrl(error, requestedUrl), "not_found");
     throw error;
   }
   throwIfAborted(options.signal);
 
-  const finalUrl = response.url || requested.toString();
+  const finalUrl = sanitizeUrl(response.url || requested.toString());
   const httpUnavailableStatus: WebpageReadStatus | null = response.status === 503
     ? "maintenance"
     : response.status === 404 || response.status === 410 ? "not_found" : null;
 
   const contentType = response.headers.get("content-type") ?? "";
   if (typeof response.data !== "string" || !HTML_CONTENT_TYPE.test(contentType)) {
-    return unavailableResult(rawUrl, finalUrl, httpUnavailableStatus ?? "unsupported");
+    return unavailableResult(requestedUrl, finalUrl, httpUnavailableStatus ?? "unsupported");
   }
   const htmlBytes = Buffer.byteLength(response.data, "utf8");
-  if (htmlBytes > maxHtmlBytes) return unavailableResult(rawUrl, finalUrl, "unsupported");
+  if (htmlBytes > maxHtmlBytes) return unavailableResult(requestedUrl, finalUrl, "unsupported");
   if (response.data.length === 0) {
-    return unavailableResult(rawUrl, finalUrl, httpUnavailableStatus ?? "unsupported");
+    return unavailableResult(requestedUrl, finalUrl, httpUnavailableStatus ?? "unsupported");
   }
 
   let $: cheerio.CheerioAPI;
   try {
     $ = cheerio.load(response.data);
   } catch {
-    return unavailableResult(rawUrl, finalUrl, "unsupported");
+    return unavailableResult(requestedUrl, finalUrl, "unsupported");
   }
   const title = cleanMetadata($("title").first().text()) ?? cleanMetadata($("h1").first().text());
   const author = metadata($, ["meta[name='author']", "meta[property='article:author']", "meta[name='byl']"]);
@@ -281,7 +282,7 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
   const captchaElement = $(CAPTCHA_SELECTOR).length > 0;
   const humanTitle = /^(?:verify you are human|please verify you are human)(?:\s*[|-].{0,80})?$/i.test(title ?? "");
   if (captchaElement || (humanTitle && $("form").length > 0)) {
-    return unavailableResult(rawUrl, finalUrl, "captcha", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "captcha", { title, author, publishedAt });
   }
 
   $("head script, head style, head noscript, head template").remove();
@@ -293,27 +294,27 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
     return LOGIN_PATH.test(action) || $(form).text().toLowerCase().includes("login") || $(form).text().toLowerCase().includes("sign in");
   });
   if (words < 200 && (loginForm || (LOGIN_TITLE.test(title ?? "") && (passwordInput || words < 200)))) {
-    return unavailableResult(rawUrl, finalUrl, "login_required", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "login_required", { title, author, publishedAt });
   }
 
   if (response.status === 404 || response.status === 410) {
-    return unavailableResult(rawUrl, finalUrl, "not_found", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "not_found", { title, author, publishedAt });
   }
   const exactNotFound = (title ?? "").split(/\s+[|-]\s+/).some((part) => NOT_FOUND_TITLE.test(normalize(part)))
     || NOT_FOUND_TITLE.test(normalize($("h1").first().text()));
   if (exactNotFound && NOT_FOUND_BODY.test(textForClassification)) {
-    return unavailableResult(rawUrl, finalUrl, "not_found", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "not_found", { title, author, publishedAt });
   }
 
   const maintenanceTitle = (title ?? "").split(/\s+[|-]\s+/).some((part) => MAINTENANCE_TITLE.test(normalize(part)));
   if (response.status === 503) {
-    return unavailableResult(rawUrl, finalUrl, "maintenance", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "maintenance", { title, author, publishedAt });
   }
   if (response.headers.has("retry-after") && maintenanceTitle && words < 200) {
-    return unavailableResult(rawUrl, finalUrl, "maintenance", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "maintenance", { title, author, publishedAt });
   }
   if (maintenanceTitle && words < 200 && MAINTENANCE_BODY.test(textForClassification)) {
-    return unavailableResult(rawUrl, finalUrl, "maintenance", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "maintenance", { title, author, publishedAt });
   }
 
   $(REMOVED_SELECTOR).remove();
@@ -325,7 +326,7 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
   const truncated = markdown.length > maxContentChars;
   const content = markdown.slice(0, maxContentChars);
   if (wordCount(markdown) < 20 || markdown.replace(/[#>*_`![]()\s-]/g, "").length < 40) {
-    return unavailableResult(rawUrl, finalUrl, "unsupported", { title, author, publishedAt });
+    return unavailableResult(requestedUrl, finalUrl, "unsupported", { title, author, publishedAt });
   }
 
   return {
@@ -333,7 +334,7 @@ export async function fetchWebpage(rawUrl: string, options: WebpageReadOptions):
     content,
     author,
     publishedAt,
-    requestedUrl: rawUrl,
+    requestedUrl,
     finalUrl,
     contentLength: content.length,
     readStatus: "ok",

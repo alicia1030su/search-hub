@@ -12,6 +12,7 @@ const options = {
   strict: { type: "boolean" },
   verbose: { type: "boolean" },
   limit: { type: "string" },
+  "max-chars": { type: "string" },
   provider: { type: "string", multiple: true },
   group: { type: "string" },
   mode: { type: "string" },
@@ -104,6 +105,7 @@ export function helpText(): string {
 
 Usage:
   shub search <query> [options]
+  shub fetch <URL> [--max-chars N] [--json]
   shub sources [--enabled] [--json]
   shub status [--json]
   shub doctor [--verbose] [--json]
@@ -133,6 +135,9 @@ Global options:
 Search options:
   --limit <1..100> --provider <id> --group <name> --mode <mode>
   --language <tag> --freshness <day|week|month|year|all> --strict
+
+Fetch options:
+  --max-chars <1..500000>      Maximum Markdown characters to return
 
 Provider test options:
   --kind <connect|search> --include-keyless --confirm-cost --key-id <id>

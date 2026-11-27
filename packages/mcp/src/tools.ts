@@ -17,8 +17,13 @@ export interface McpProviderService {
   status(): Promise<ProviderRuntimeSnapshot[]>;
 }
 
+export interface McpWebpageService {
+  read(url: string, options?: { maxContentChars?: number }): Promise<unknown>;
+}
+
 export interface McpDeps {
   search: McpSearchService;
+  webpage?: McpWebpageService;
   providers: McpProviderService;
   /**
    * Read-only health snapshot, supplied by the API.
@@ -210,6 +215,32 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         });
       } catch (error) {
         return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "fetch_webpage",
+    {
+      title: "Fetch webpage",
+      description:
+        "Read a public HTTP(S) page as bounded Markdown. Returns stable readStatus/reasonCode for unavailable pages and never launches a browser.",
+      inputSchema: z.object({
+        url: z.string().min(1).max(8192).url(),
+        maxContentChars: z.number().int().min(1).max(500_000).optional(),
+      }),
+    },
+    async (args, context) => {
+      try {
+        assertHttpToolScope(context, "search");
+        if (!deps.webpage) {
+          return jsonResult({ available: false, reason: "This server build does not expose webpage reading over MCP." }, true);
+        }
+        const result = await deps.webpage.read(args.url, { maxContentChars: args.maxContentChars });
+        const unavailable = result !== null && typeof result === "object" && "readStatus" in result && result.readStatus !== "ok";
+        return jsonResult(result, unavailable);
+      } catch {
+        return jsonResult({ error: { code: "webpage_read_failed", message: "Webpage request failed" } }, true);
       }
     },
   );
@@ -506,4 +537,4 @@ export function toToolResult(result: SearchResponse["results"][number]) {
 }
 
 /** Number of tools registered by `registerTools`; read by the admin status page. */
-export const MCP_TOOL_COUNT = 11;
+export const MCP_TOOL_COUNT = 12;
