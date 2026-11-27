@@ -1,0 +1,472 @@
+{
+  "schemaVersion": 1,
+  "name": "Search Hub v0.1.18 real-web quality queries",
+  "version": "human-curated-v1",
+  "origin": "human_curated_real_web",
+  "frozen": true,
+  "queryCount": 40,
+  "labelCount": 80,
+  "relevanceScale": {
+    "0": "不相关",
+    "1": "弱相关或仅提供部分答案",
+    "2": "直接回答查询意图"
+  },
+  "strata": [
+    "zh:zh_web",
+    "en:en_web",
+    "en:technical",
+    "en:academic",
+    "zh:news_time",
+    "zh:long_tail",
+    "en:proper_noun",
+    "zh:cross_lingual"
+  ],
+  "notes": [
+    "所有 normalizedUrl 均为稳定、公开、允许访问的官方文档、论文、政府或机构页面；不使用搜索跟踪参数。",
+    "每个查询包含一个 relevance=2 的主答案和一个 relevance=1 的相关背景页；本文件不声明 qrels 完整，因此 Recall 不可计算。",
+    "cross_lingual 层使用中文查询检索英文权威页面，用于验证跨语言召回；其余层 query 与主答案语言一致。",
+    "本数据集用于同快照算法对比与 live AB/BA 配对评测，不用于训练或调参。"
+  ],
+  "queries": [
+    {
+      "queryId": "q0118-001",
+      "query": "2024年政府工作报告 全文",
+      "language": "zh",
+      "category": "zh_web",
+      "stratum": "zh:zh_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.gov.cn/yaowen/liebiao/202403/content_6939153.htm", "title": "政府工作报告", "reason": "中国政府网发布的2024年政府工作报告全文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.stats.gov.cn/sj/zxfb/202401/t20240117_1946624.html", "title": "2023年国民经济回升向好 高质量发展扎实推进", "reason": "提供报告涉及的2023年经济数据背景，但不是2024年报告全文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-002",
+      "query": "中国科学院 简介 成立 时间 职责",
+      "language": "zh",
+      "category": "zh_web",
+      "stratum": "zh:zh_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.cas.cn/xxgkml/zgkxyyb/jgsz/jbqk", "title": "中国科学院简介", "reason": "中国科学院官方简介，直接说明成立时间、定位与职责。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://english.cas.cn/about-cas", "title": "About CAS", "reason": "官方英文概览，提供相同机构信息，但语言与中文查询不完全一致。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-003",
+      "query": "中华人民共和国个人信息保护法 全文",
+      "language": "zh",
+      "category": "zh_web",
+      "stratum": "zh:zh_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.cac.gov.cn/2021-08/20/c_1631050028355286.htm", "title": "中华人民共和国个人信息保护法", "reason": "中国网信网发布的法律全文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://society.people.com.cn/n1/2021/0823/c1008-32202785.html", "title": "中华人民共和国个人信息保护法", "reason": "人民网转载法律全文，内容相关但属于镜像来源。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-004",
+      "query": "中华人民共和国数据安全法 全文",
+      "language": "zh",
+      "category": "zh_web",
+      "stratum": "zh:zh_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.cac.gov.cn/2021-06/11/c_1624994566919140.htm", "title": "中华人民共和国数据安全法", "reason": "中国网信网发布的数据安全法全文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.chizhou.gov.cn/Content/show/646519.html", "title": "中华人民共和国数据安全法", "reason": "池州市政府转载的法律全文，内容相关但不是首发来源。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-005",
+      "query": "2023年国民经济和社会发展统计公报",
+      "language": "zh",
+      "category": "zh_web",
+      "stratum": "zh:zh_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.stats.gov.cn/sj/zxfb/202402/t20240228_1947915.html", "title": "中华人民共和国2023年国民经济和社会发展统计公报", "reason": "国家统计局发布的完整统计公报，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.gov.cn/lianbo/bumen/202402/content_6934935.htm", "title": "中华人民共和国2023年国民经济和社会发展统计公报", "reason": "中国政府网转载同一公报，内容相关但属于镜像来源。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-006",
+      "query": "What is the IPCC and what does it assess?",
+      "language": "en",
+      "category": "en_web",
+      "stratum": "en:en_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.ipcc.ch/about", "title": "About the IPCC", "reason": "IPCC官方页面直接说明机构性质、评估范围和工作方式。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.ipcc.ch/site/assets/uploads/2024/04/IPCCFactSheet_WhatisIPCC.pdf", "title": "What is the IPCC", "reason": "IPCC官方事实表提供简明背景，但页面主体已更完整。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-007",
+      "query": "WHO Constitution principles objective",
+      "language": "en",
+      "category": "en_web",
+      "stratum": "en:en_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.who.int/about/governance/constitution", "title": "Constitution of the World Health Organization", "reason": "WHO官方宪法页面直接列出目标与原则。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.who.int/about", "title": "About WHO", "reason": "WHO官方机构概览提供背景，但不包含宪法全文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-008",
+      "query": "United Nations Charter full text",
+      "language": "en",
+      "category": "en_web",
+      "stratum": "en:en_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.un.org/en/about-us/un-charter/full-text", "title": "United Nations Charter (full text)", "reason": "联合国官网提供宪章全文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.un.org/en/about-us", "title": "About Us", "reason": "联合国官方概览说明宪章地位，但不是全文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-009",
+      "query": "NASA Artemis program Moon to Mars overview",
+      "language": "en",
+      "category": "en_web",
+      "stratum": "en:en_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.nasa.gov/humans-in-space/artemis", "title": "Moon to Mars | NASA's Artemis Program", "reason": "NASA官方Artemis项目概览，直接说明目标与任务序列。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.nasa.gov/?p=190617", "title": "Artemis I", "reason": "NASA官方Artemis I任务页提供首个任务背景，但范围较窄。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-010",
+      "query": "How does the Internet work open standards network of networks",
+      "language": "en",
+      "category": "en_web",
+      "stratum": "en:en_web",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.internetsociety.org/internet", "title": "About the Internet and How it Works", "reason": "Internet Society官方页面直接解释网络之网络和开放标准。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.internetsociety.org/internet/how-it-works", "title": "How It Works", "reason": "Internet Society官方专题页提供补充说明，但概览页更完整。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-011",
+      "query": "AbortController abort fetch JavaScript",
+      "language": "en",
+      "category": "technical",
+      "stratum": "en:technical",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController", "title": "AbortController", "reason": "MDN直接说明AbortController及中止fetch的用法。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal", "title": "AbortSignal", "reason": "MDN说明信号对象与超时API，是取消机制的相关组成。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-012",
+      "query": "Python asyncio Task.cancel CancelledError",
+      "language": "en",
+      "category": "technical",
+      "stratum": "en:technical",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://docs.python.org/3/library/asyncio-task.html", "title": "Coroutines and Tasks", "reason": "Python官方文档直接说明Task.cancel与CancelledError。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://docs.python.org/3/library/asyncio.html", "title": "Asyncio — Asynchronous I/O", "reason": "Python官方asyncio概览提供任务与取消的上下文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-013",
+      "query": "PostgreSQL multicolumn indexes leftmost leading column",
+      "language": "en",
+      "category": "technical",
+      "stratum": "en:technical",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.postgresql.org/docs/current/indexes-multicolumn.html", "title": "11.3. Multicolumn Indexes", "reason": "PostgreSQL官方文档直接解释多列索引与前导列规则。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.postgresql.org/docs/current/indexes.html", "title": "Chapter 11. Indexes", "reason": "PostgreSQL官方索引章节提供通用背景，但不专注多列索引。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-014",
+      "query": "When to use SQLite appropriate uses",
+      "language": "en",
+      "category": "technical",
+      "stratum": "en:technical",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.sqlite.org/whentouse.html", "title": "Appropriate Uses For SQLite", "reason": "SQLite官方页面直接列出适用场景。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.sqlite.org/docs.html", "title": "SQLite Documentation", "reason": "SQLite官方文档入口提供完整参考，但需要进一步导航。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-015",
+      "query": "RFC 9110 HTTP Semantics",
+      "language": "en",
+      "category": "technical",
+      "stratum": "en:technical",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.rfc-editor.org/rfc/rfc9110", "title": "RFC 9110: HTTP Semantics", "reason": "RFC Editor官方页面直接对应查询的标准文档。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.rfc-editor.org/rfc/rfc9111", "title": "RFC 9111: HTTP Caching", "reason": "同一HTTP标准系列的缓存规范，与语义主题相关但范围不同。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-016",
+      "query": "Attention Is All You Need Transformer paper",
+      "language": "en",
+      "category": "academic",
+      "stratum": "en:academic",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://arxiv.org/abs/1706.03762", "title": "Attention Is All You Need", "reason": "arXiv原始论文页面，直接对应Transformer论文。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://arxiv.org/abs/1810.04805", "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding", "reason": "BERT论文基于Transformer并提供后续应用，但不是原始Transformer论文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-017",
+      "query": "BERT Pre-training of Deep Bidirectional Transformers paper",
+      "language": "en",
+      "category": "academic",
+      "stratum": "en:academic",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://arxiv.org/abs/1810.04805", "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding", "reason": "arXiv原始BERT论文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://arxiv.org/abs/1706.03762", "title": "Attention Is All You Need", "reason": "Transformer原始论文提供架构背景，但不介绍BERT预训练。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-018",
+      "query": "GPT-3 Language Models are Few-Shot Learners paper",
+      "language": "en",
+      "category": "academic",
+      "stratum": "en:academic",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://arxiv.org/abs/2005.14165", "title": "Language Models are Few-Shot Learners", "reason": "arXiv原始GPT-3论文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://arxiv.org/abs/1706.03762", "title": "Attention Is All You Need", "reason": "提供GPT系列所依赖的Transformer架构背景，但不讨论GPT-3少样本学习。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-019",
+      "query": "Deep Residual Learning for Image Recognition ResNet paper",
+      "language": "en",
+      "category": "academic",
+      "stratum": "en:academic",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://arxiv.org/abs/1512.03385", "title": "Deep Residual Learning for Image Recognition", "reason": "arXiv原始ResNet论文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://arxiv.org/abs/1603.05027", "title": "Identity Mappings in Deep Residual Networks", "reason": "后续残差网络分析论文，与ResNet直接相关但不是原始论文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-020",
+      "query": "Adam A Method for Stochastic Optimization paper",
+      "language": "en",
+      "category": "academic",
+      "stratum": "en:academic",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://arxiv.org/abs/1412.6980", "title": "Adam: A Method for Stochastic Optimization", "reason": "arXiv原始Adam论文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://arxiv.org/abs/1212.5701", "title": "ADADELTA: An Adaptive Learning Rate Method", "reason": "自适应学习率相关论文，提供算法背景但不是Adam原文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-021",
+      "query": "中国气象局 2023年中国气候公报 平均气温",
+      "language": "zh",
+      "category": "news_time",
+      "stratum": "zh:news_time",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.cma.gov.cn/2011xwzx/2011xmtjj/202402/t20240219_6075555.html", "title": "中国气象局发布《2023年中国气候公报》 去年全国平均气温偏高", "reason": "中国气象局官方新闻直接公布2023年气候公报核心数据。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.cma.gov.cn/zfxxgk/gknr/qxbg/202402/W020240223586744867426.pdf", "title": "中国气候公报(2023)", "reason": "中国气象局发布的完整公报PDF，内容权威但需下载阅读。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-022",
+      "query": "2024年诺贝尔物理学奖 获奖者 理由",
+      "language": "zh",
+      "category": "news_time",
+      "stratum": "zh:news_time",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.nobelprize.org/prizes/physics/2024/press-release", "title": "Press release: The Nobel Prize in Physics 2024", "reason": "诺贝尔奖官方新闻稿直接公布获奖者与获奖理由。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.nobelprize.org/prizes/physics/2024/summary", "title": "The Nobel Prize in Physics 2024", "reason": "诺贝尔奖官方摘要页提供结构化信息，但新闻稿更完整。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-023",
+      "query": "WHO 2020年3月11日 新冠疫情 大流行",
+      "language": "zh",
+      "category": "news_time",
+      "stratum": "zh:news_time",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://who.int/europe/emergencies/situations/covid-19", "title": "Coronavirus disease (COVID-19) pandemic", "reason": "WHO官方页面明确记载2020年3月11日将疫情定性为大流行。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://humanrights.hust.edu.cn/info/1136/2235.htm", "title": "世卫组织将新型冠状病毒肺炎疫情定性为“大流行”", "reason": "华中科技大学机构页面转载并介绍当日讲话，属于二手机构来源。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-024",
+      "query": "NASA Artemis I 2022年11月16日 发射",
+      "language": "zh",
+      "category": "news_time",
+      "stratum": "zh:news_time",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.nasa.gov/news-release/liftoff-nasas-artemis-i-mega-rocket-launches-orion-to-moon", "title": "Liftoff! NASA’s Artemis I Mega Rocket Launches Orion to Moon", "reason": "NASA官方发布稿直接记载2022年11月16日Artemis I发射。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.nasa.gov/?p=190617", "title": "Artemis I", "reason": "NASA官方任务页提供任务时间线与结果，但发布稿更贴近新闻事件。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-025",
+      "query": "韦伯太空望远镜 第一张深场图像 2022年7月11日",
+      "language": "zh",
+      "category": "news_time",
+      "stratum": "zh:news_time",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://science.nasa.gov/?p=891516", "title": "Webb’s First Deep Field Unveiled (NIRCam Image)", "reason": "NASA Science官方页面直接介绍Webb第一张深场图像。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.nasa.gov/news-release/president-biden-reveals-first-image-from-nasas-webb-telescope", "title": "President Biden Reveals First Image from NASA’s Webb Telescope", "reason": "NASA官方新闻稿记录2022年7月11日发布事件，与图像页面互补。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-026",
+      "query": "个人信息出境标准合同办法 适用条件 备案",
+      "language": "zh",
+      "category": "long_tail",
+      "stratum": "zh:long_tail",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.gov.cn/zhengce/202311/content_6917770.htm", "title": "个人信息出境标准合同办法", "reason": "中国政府网发布办法全文，直接说明适用条件和备案要求。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.cac.gov.cn/2021-08/20/c_1631050028355286.htm", "title": "中华人民共和国个人信息保护法", "reason": "上位法提供个人信息出境规则背景，但不具体说明标准合同备案。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-027",
+      "query": "个人所得税专项附加扣除暂行办法 六项 扣除",
+      "language": "zh",
+      "category": "long_tail",
+      "stratum": "zh:long_tail",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.gov.cn/gongbao/content/2019/content_5355465.htm", "title": "国务院关于印发个人所得税专项附加扣除暂行办法的通知", "reason": "中国政府网发布办法全文，直接列出六项专项附加扣除。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.chinatax.gov.cn/chinatax/n810219/n810780/c3965653/content.html", "title": "国务院印发《个人所得税专项附加扣除暂行办法》", "reason": "税务总局官方解读概述六项扣除，但不如办法全文完整。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-028",
+      "query": "2025年完善增值税期末留抵退税政策 公告",
+      "language": "zh",
+      "category": "long_tail",
+      "stratum": "zh:long_tail",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5242450/content.html", "title": "财政部 税务总局关于完善增值税期末留抵退税政策的公告", "reason": "国家税务总局政策法规库发布公告全文，直接满足查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://shanghai.chinatax.gov.cn/zzzb/zcwj/202508/t477459.html", "title": "关于完善增值税期末留抵退税政策的公告", "reason": "上海税务局转载同一公告，内容相关但属于地方镜像。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-029",
+      "query": "GB 7718-2025 预包装食品标签 生产日期 保质期",
+      "language": "zh",
+      "category": "long_tail",
+      "stratum": "zh:long_tail",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.nhc.gov.cn/sps/c100087/202509/bc824a504ec34c27883da73f14c20d44.shtml", "title": "《食品安全国家标准 预包装食品标签通则》（GB 7718-2025）问答", "reason": "国家卫健委官方问答直接解释生产日期、保质期及标签要求。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.nhc.gov.cn/cmsresources/mohwsjdj/cmsrsdocument/doc11940.pdf", "title": "食品安全国家标准 预包装食品标签通则", "reason": "国家卫健委官方标准PDF提供条文原文，但问答页更易直接回答。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-030",
+      "query": "专利审查指南 2023 国家知识产权局",
+      "language": "zh",
+      "category": "long_tail",
+      "stratum": "zh:long_tail",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.cnipa.gov.cn/art/2023/12/21/art_2790_189500.html", "title": "专利审查指南（2023）", "reason": "国家知识产权局官方页面直接发布2023年审查指南。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.cnipa.gov.cn/art/2024/1/18/art_2199_189865.html", "title": "《专利审查指南》(2023)修改解读(四)", "reason": "官方修改解读聚焦计算机程序领域，提供部分背景而非完整指南。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-031",
+      "query": "James Webb Space Telescope mission overview",
+      "language": "en",
+      "category": "proper_noun",
+      "stratum": "en:proper_noun",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://science.nasa.gov/mission/webb", "title": "James Webb Space Telescope", "reason": "NASA Science官方任务页直接介绍JWST目标与关键事实。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://science.nasa.gov/mission/webb/about-overview", "title": "About Webb", "reason": "NASA官方概览页提供补充背景，但任务主页更全面。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-032",
+      "query": "CERN Large Hadron Collider overview",
+      "language": "en",
+      "category": "proper_noun",
+      "stratum": "en:proper_noun",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://home.cern/science/accelerators/large-hadron-collider", "title": "The Large Hadron Collider", "reason": "CERN官方页面直接说明LHC规模、位置与科学目标。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://home.cern/science/experiments/how-detector-works", "title": "How detectors work", "reason": "CERN官方探测器说明提供实验背景，但不是LHC完整概览。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-033",
+      "query": "ESA Euclid mission dark universe",
+      "language": "en",
+      "category": "proper_noun",
+      "stratum": "en:proper_noun",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.science.esa.int/web/cm25/euclid", "title": "Euclid", "reason": "ESA Science官方任务页直接说明Euclid暗宇宙目标与仪器。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.esa.int/ESA_Multimedia/Images/2023/05/Euclid_in_a_nutshell", "title": "Euclid in a nutshell", "reason": "ESA官方图文摘要提供任务概览，但科学任务页更完整。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-034",
+      "query": "NIST Cybersecurity Framework 2.0",
+      "language": "en",
+      "category": "proper_noun",
+      "stratum": "en:proper_noun",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.nist.gov/cyberframework", "title": "Cybersecurity Framework", "reason": "NIST官方框架页面直接提供CSF 2.0文档与资源入口。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.nist.gov/cyberframework/quick-start-guides", "title": "CSF 2.0 Quick-Start Guides", "reason": "NIST官方快速入门指南提供CSF 2.0实施背景，但不是框架主页。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-035",
+      "query": "OpenAPI Specification latest version",
+      "language": "en",
+      "category": "proper_noun",
+      "stratum": "en:proper_noun",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://spec.openapis.org/oas/latest.html", "title": "OpenAPI Specification", "reason": "OpenAPI官方规范站直接提供最新规范正文。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://github.com/OAI/OpenAPI-Specification", "title": "OpenAPI-Specification", "reason": "OpenAPI Initiative官方仓库提供规范源文件与版本记录。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-036",
+      "query": "Transformer 原始论文 注意力机制",
+      "language": "zh",
+      "category": "cross_lingual",
+      "stratum": "zh:cross_lingual",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://arxiv.org/abs/1706.03762", "title": "Attention Is All You Need", "reason": "中文查询指向英文原始论文，页面直接满足意图。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://arxiv.org/abs/1810.04805", "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding", "reason": "英文BERT论文提供Transformer后续应用背景。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-037",
+      "query": "HTTP 语义 RFC 9110 中文查询",
+      "language": "zh",
+      "category": "cross_lingual",
+      "stratum": "zh:cross_lingual",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.rfc-editor.org/rfc/rfc9110", "title": "RFC 9110: HTTP Semantics", "reason": "中文查询明确指定英文RFC编号，官方标准页直接满足。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.rfc-editor.org/rfc/rfc9111", "title": "RFC 9111: HTTP Caching", "reason": "相关HTTP标准系列文档，提供缓存语义背景。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-038",
+      "query": "TLS 1.3 协议 RFC 8446",
+      "language": "zh",
+      "category": "cross_lingual",
+      "stratum": "zh:cross_lingual",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.rfc-editor.org/rfc/rfc8446", "title": "The Transport Layer Security (TLS) Protocol Version 1.3", "reason": "RFC Editor官方TLS 1.3标准，直接满足中文查询。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.rfc-editor.org/rfc/rfc5246", "title": "The Transport Layer Security (TLS) Protocol Version 1.2", "reason": "TLS 1.2标准提供版本演进背景，但不是TLS 1.3原文。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-039",
+      "query": "SQLite 适合哪些应用场景",
+      "language": "zh",
+      "category": "cross_lingual",
+      "stratum": "zh:cross_lingual",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://www.sqlite.org/whentouse.html", "title": "Appropriate Uses For SQLite", "reason": "SQLite官方英文页面直接回答适用场景，跨语言仍能满足意图。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://www.sqlite.org/docs.html", "title": "SQLite Documentation", "reason": "SQLite官方英文文档入口提供进一步技术背景。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    },
+    {
+      "queryId": "q0118-040",
+      "query": "JavaScript AbortController 如何取消 fetch",
+      "language": "zh",
+      "category": "cross_lingual",
+      "stratum": "zh:cross_lingual",
+      "labels": [
+        {"relevance": 2, "normalizedUrl": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController", "title": "AbortController", "reason": "MDN官方英文文档直接说明中止fetch的机制与示例。", "annotator": "human-curated-v1", "provisional": false},
+        {"relevance": 1, "normalizedUrl": "https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal", "title": "AbortSignal", "reason": "MDN官方英文文档说明信号、超时与监听器清理。", "annotator": "human-curated-v1", "provisional": false}
+      ]
+    }
+  ]
+}
