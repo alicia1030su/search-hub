@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@search-hub/shared": "workspace:*"
+    "@search-hub/shared": "workspace:*",
+    "cheerio": "^1.2.0"
   }
 }
