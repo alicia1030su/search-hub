@@ -27,7 +27,7 @@ describe("query expansion core", () => {
     const modelExpander = vi.fn(async () => ["RAG architecture design patterns", "RAG architecture design tradeoffs", "RAG architecture design examples", "RAG architecture design fundamentals"]);
     const result = await expandQuery({ query: "RAG architecture design", queryExpansion: true }, { modelExpander });
     expect(result.queries).toHaveLength(3);
-    expect(result.queries[0].kind).toBe("original");
+    expect(result.queries[0]?.kind).toBe("original");
     for (const budget of [1, 2, 3, 4]) {
       const bounded = await expandQuery({ query: "RAG architecture design", queryExpansion: true }, { maxQueries: budget, modelExpander });
       expect(bounded.queries).toHaveLength(budget);
@@ -62,7 +62,7 @@ describe("query expansion core", () => {
     expect(detectQueryLanguage("机器学习")).toBe("zh");
     expect(detectQueryLanguage("machine learning")).toBe("en");
     expect(detectQueryLanguage("機械学習の検索")).toBe("ja");
-    expect(detectQueryLanguage("RAG 检索")).toBe("mixed");
+    expect(detectQueryLanguage("RAG 检索")).toBe("zh-Latn");
     expect(detectQueryLanguage("123 !")).toBe("und");
     for (const query of ["日本語の検索", "mixed RAG 查询"]) {
       await expect(expandQuery({ query })).resolves.toBeDefined();
@@ -79,13 +79,21 @@ describe("query expansion core", () => {
     ]);
     const result = await expandQuery({ query: "RAG retrieval architecture", queryExpansion: true }, { modelExpander });
     expect(result.queries.filter((item) => item.source === "model").map((item) => item.query)).toEqual(["RAG retrieval architecture design"]);
-    expect(result.queries[0].query).toBe("RAG retrieval architecture");
+    expect(result.queries[0]?.query).toBe("RAG retrieval architecture");
+  });
+
+  it("reports rejected unrelated model output and keeps rule fallback", async () => {
+    const modelExpander = vi.fn(async () => ["banana bread recipe", "quantum physics lecture"]);
+    const result = await expandQuery({ query: "RAG retrieval architecture", queryExpansion: true }, { modelExpander });
+    expect(result.queries.some((item) => item.source === "model")).toBe(false);
+    expect(result.queries[0]?.kind).toBe("original");
+    expect(result.skippedReason).toBe("model_output_rejected");
   });
 
   it("falls back to valid rule queries and the original when the model fails", async () => {
     const modelExpander = vi.fn(async () => { throw new Error("offline"); });
     const result = await expandQuery({ query: "RAG retrieval architecture", queryExpansion: true }, { modelExpander });
-    expect(result.queries[0].kind).toBe("original");
+    expect(result.queries[0]?.kind).toBe("original");
     expect(result.queries.length).toBeGreaterThan(1);
     expect(result.skippedReason).toBe("model_failed");
   });
@@ -114,7 +122,7 @@ describe("query expansion core", () => {
     const result = await expandQuery({ query: "RAG retrieval architecture", queryExpansion: true }, { signal: controller.signal, modelExpander });
     expect(modelExpander.mock.calls[0]?.[1]).toBe(controller.signal);
     expect(result.skippedReason).toBe("cancelled");
-    expect(result.queries[0].kind).toBe("original");
+    expect(result.queries[0]?.kind).toBe("original");
     expect(result.queries.length).toBeLessThanOrEqual(3);
   });
 

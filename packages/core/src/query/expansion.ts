@@ -1,4 +1,4 @@
-export type QueryLanguage = "zh" | "en" | "ja" | "mixed" | "und";
+export type QueryLanguage = "zh" | "en" | "ja" | "zh-Latn" | "und";
 export type ExpansionKind = "original" | "synonym" | "reordered" | "keywords" | "translation" | "rewrite";
 export type ExpansionSource = "original" | "rule" | "model";
 
@@ -98,7 +98,7 @@ export function detectQueryLanguage(query: string): QueryLanguage {
   if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(normalized)) return "ja";
   const hasCjk = /\p{Script=Han}/u.test(normalized);
   const hasLatin = /\p{Script=Latin}/u.test(normalized);
-  if (hasCjk && hasLatin) return "mixed";
+  if (hasCjk && hasLatin) return "zh-Latn";
   if (hasCjk) return "zh";
   if (hasLatin) return "en";
   return "und";
@@ -180,9 +180,9 @@ function modelCandidateIsValid(query: string, candidate: string, locale?: string
   const originalLanguage = detectQueryLanguage(query);
   const candidateLanguage = detectQueryLanguage(candidate);
   if (locale && /^zh(?:-|$)/i.test(locale)) {
-    if (!["zh", "mixed"].includes(candidateLanguage)) return false;
+    if (!["zh", "zh-Latn"].includes(candidateLanguage)) return false;
   } else if (locale && /^en(?:-|$)/i.test(locale)) {
-    if (!["en", "mixed"].includes(candidateLanguage)) return false;
+    if (!["en", "zh-Latn"].includes(candidateLanguage)) return false;
   } else if (locale && /^ja(?:-|$)/i.test(locale)) {
     if (candidateLanguage !== "ja") return false;
   } else if (candidateLanguage !== originalLanguage) {
@@ -222,7 +222,7 @@ function ruleCandidates(request: ExpansionRequest): ExpandedQuery[] {
 
   for (const [source, replacement] of SYNONYMS) {
     const escaped = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const expression = language === "zh" || language === "mixed" || /[\p{Script=Han}]/u.test(source)
+    const expression = language === "zh" || language === "zh-Latn" || /[\p{Script=Han}]/u.test(source)
       ? new RegExp(escaped, "gu")
       : new RegExp(`(?<![\\p{Letter}\\p{Number}])${escaped}(?![\\p{Letter}\\p{Number}])`, "giu");
     if (expression.test(query)) {
@@ -236,7 +236,7 @@ function ruleCandidates(request: ExpansionRequest): ExpandedQuery[] {
     add(`${query.slice(englishPrefix.length).trim()} ${englishPrefix}`, "reordered", 0.75, "reordered question prefix");
   }
 
-  if (["zh", "en", "mixed"].includes(language)) {
+  if (["zh", "en", "zh-Latn"].includes(language)) {
     const words = contentWords(query);
     if (words.length > 0) {
       const translatedWords = words.map((word) => TRANSLATIONS[word]).filter(Boolean);
@@ -247,7 +247,7 @@ function ruleCandidates(request: ExpansionRequest): ExpandedQuery[] {
         const remaining = normalizeQueryIdentity(query);
         const hanLength = (remaining.match(/\p{Script=Han}/gu) ?? []).length;
         const latinLength = (remaining.match(/[a-z]/giu) ?? []).length;
-        const translateFromHan = language === "zh" || (language === "mixed" && hanLength > latinLength);
+        const translateFromHan = language === "zh" || (language === "zh-Latn" && hanLength > latinLength);
         const entries = Object.entries(TRANSLATIONS)
           .filter(([source]) => /\p{Script=Han}/u.test(source) === translateFromHan)
           .sort(([left], [right]) => right.length - left.length);
@@ -316,13 +316,16 @@ export async function expandQuery(request: ExpansionRequest, options: ExpansionO
       if (options.signal?.aborted) {
         skippedReasons.push("cancelled");
       } else {
-        for (const raw of modelOutputQueries(output).slice(0, MAX_MODEL_OUTPUTS)) {
+        const outputs = modelOutputQueries(output).slice(0, MAX_MODEL_OUTPUTS);
+        const acceptedBeforeModel = accepted.length;
+        for (const raw of outputs) {
           if (accepted.length + 2 > budget) break;
           if (hasControlCharacters(raw)) continue;
           const candidate = raw.normalize("NFKC").replace(/\s+/gu, " ").trim();
           if (!modelCandidateIsValid(query, candidate, request.locale)) continue;
           accept({ query: candidate, kind: "rewrite", weight: 0.8, reason: "validated model rewrite", source: "model", language: detectQueryLanguage(candidate) });
         }
+        if (outputs.length > 0 && accepted.length === acceptedBeforeModel) skippedReasons.push("model_output_rejected");
       }
     } catch {
       skippedReasons.push(options.signal?.aborted ? "cancelled" : "model_failed");
