@@ -4,6 +4,7 @@ import {
   type ProviderAttemptStat,
   type ProviderRuntimeConfig,
   type SearchErrorSummary,
+  type SearchExecutionEvent,
   type SearchFunnel,
   type SearchMode,
   type SearchRequest,
@@ -38,6 +39,8 @@ export interface ExecuteSearchOptions {
   taskId: string;
   /** Called before each physical upstream request; throw to refuse it. */
   beforeRequest?: (providerId: string, url: string) => void;
+  /** Optional incremental observer; old callers remain unchanged. */
+  onEvent?: (event: SearchExecutionEvent) => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -84,9 +87,23 @@ export async function executeSearch(
 
   const retryBudget = new RetryBudget(Math.max(4, selectedRuntimes.length * 2 + 2));
   const mode: SearchMode = request.mode ?? "basic";
+  const selectedProviderIds = selectedRuntimes.map((runtime) => runtime.config.id);
+  options.onEvent?.({
+    type: "meta",
+    data: {
+      taskId: options.taskId,
+      query: request.query,
+      mode,
+      strategy: request.strategy,
+      selectedProviderIds,
+      requestedProviderCount,
+      selectedProviderCount: selectedProviderIds.length,
+    },
+  });
 
   try {
     const fanoutStarted = Date.now();
+    const completedOutcomes: FanoutResult[] = [];
     const outcomes = await fanoutProviders(selectedRuntimes, {
       query: request.query,
       limitPerProvider: perProviderLimit,
@@ -99,6 +116,47 @@ export async function executeSearch(
       fetch: deps.fetch,
       credentials: deps.credentials,
       ...(options.beforeRequest === undefined ? {} : { beforeRequest: options.beforeRequest }),
+      ...(options.onEvent === undefined ? {} : {
+        onProviderStart: (runtime) => options.onEvent?.({
+          type: "provider_started",
+          data: { providerId: runtime.config.id, providerName: runtime.config.name, providerType: runtime.config.type },
+        }),
+        onProviderComplete: (result) => {
+          completedOutcomes.push(result);
+          options.onEvent?.({
+            type: "provider_completed",
+            data: {
+              providerId: result.providerId,
+              providerName: result.providerName,
+              ok: result.ok,
+              resultCount: result.stat.resultCount,
+              errorCode: result.stat.errorCode,
+              latencyMs: result.stat.latencyMs,
+            },
+          });
+          const partial = buildResponse({
+            taskId: options.taskId,
+            request,
+            mode,
+            outcomes: [...completedOutcomes],
+            startedAt,
+            fanoutMs: Date.now() - fanoutStarted,
+            fusionMs: 0,
+            cancelled: false,
+            requestedProviderCount,
+            selectedProviderIds,
+          });
+          options.onEvent?.({
+            type: "results_updated",
+            data: {
+              results: partial.results,
+              stats: partial.stats,
+              errors: partial.errors,
+              failedSources: partial.failedSources,
+            },
+          });
+        },
+      }),
     });
     const fanoutMs = Date.now() - fanoutStarted;
     const cancelled = controller.signal.aborted && options.signal?.aborted === true;
@@ -114,7 +172,7 @@ export async function executeSearch(
       fusionMs: 0,
       cancelled,
       requestedProviderCount,
-      selectedProviderIds: selectedRuntimes.map((runtime) => runtime.config.id),
+      selectedProviderIds,
     });
     response.stats.timing.fusionMs = Date.now() - fusionStarted;
     response.stats.timing.totalMs = Date.now() - startedAt;

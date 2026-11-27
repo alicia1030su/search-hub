@@ -6,8 +6,11 @@ import {
   type Freshness,
   type ProviderErrorCode,
   type SearchErrorSummary,
+  type SearchExecutionEvent,
   type SearchRequest,
   type SearchResponse,
+  type SearchRouteExplanation,
+  type SearchDegradation,
   type SearchResult,
   type SearchFunnel,
   type SearchQueryOrigin,
@@ -18,7 +21,10 @@ import {
 import {
   dedupeResults,
   executeSearch,
+  expandQuery,
   fuseLayeredRrf,
+  resolveSearchIntent,
+  routeProviders,
   type CandidateResult,
   type ProviderRuntime,
 } from "@search-hub/core";
@@ -91,6 +97,10 @@ function modeIncludesSummary(mode: SearchRequest["mode"]): boolean {
   return mode === "rerank_summary";
 }
 
+function modeUsesRrfForResponse(mode: SearchRequest["mode"]): boolean {
+  return mode !== "basic";
+}
+
 /**
  * Stable identity of one provider *as configured right now*.
  *
@@ -161,9 +171,13 @@ export class SearchService {
        * vendor spend passes this instead of counting "attempts" after the fact.
        */
       beforeRequest?: (providerId: string, url: string) => void;
+      /** Optional incremental observer used by streaming transports. */
+      onEvent?: (event: SearchExecutionEvent) => void;
     } = {},
   ): Promise<SearchResponse> {
     const settings = this.deps.settings.get();
+    const intent = resolveSearchIntent(request, settings.defaults.mode);
+    request = { ...request, mode: intent.mode };
     const taskId = `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
     const controller = new AbortController();
     const onExternalAbort = () => controller.abort(options.signal?.reason ?? new Error("cancelled"));
@@ -199,7 +213,7 @@ export class SearchService {
       );
     }
 
-    const mode = request.mode ?? settings.defaults.mode;
+    const mode = intent.mode;
 
     // Health-based isolation: a source parked for an account-wide failure (quota
     // exhausted, credential rejected) is skipped until its cooldown expires.
@@ -209,6 +223,25 @@ export class SearchService {
     // overwrite each other's skip list, so one could report the other's parked
     // sources — or none at all. It is threaded explicitly from here.
     const blocked = this.deps.health.blockedProviders();
+    let routeExplanation: SearchRouteExplanation | undefined;
+    if (request.strategy) {
+      const observations = Object.fromEntries([...blocked.entries()].map(([id, value]) => [id, { blocked: true, successRate: 0 }]));
+      routeExplanation = routeProviders({
+        query: request.query,
+        runtimes,
+        capability,
+        explicitProviderIds: providerIds,
+        observations,
+      });
+      const selected = new Set(routeExplanation.selectedProviderIds);
+      runtimes = runtimes.filter((runtime) => selected.has(runtime.config.id));
+      if (providerIds.length > 0) {
+        const byId = new Map(runtimes.map((runtime) => [runtime.config.id, runtime] as const));
+        runtimes = providerIds.map((id) => byId.get(id)).filter((runtime): runtime is ProviderRuntime => runtime !== undefined);
+      } else {
+        runtimes = [...runtimes].sort((left, right) => left.config.id.localeCompare(right.config.id));
+      }
+    }
     let skippedByHealth: SearchErrorSummary[] = [];
     if (blocked.size > 0) {
       const skipped: SearchErrorSummary[] = [];
@@ -234,13 +267,33 @@ export class SearchService {
           skipped,
           "Every selected source is parked by the health gate",
         );
+        options.onEvent?.({
+          type: "meta",
+          data: {
+            taskId,
+            query: request.query,
+            mode,
+            strategy: request.strategy,
+            route: routeExplanation,
+            selectedProviderIds: [],
+            requestedProviderCount: routeExplanation?.requestedProviderCount ?? 0,
+            selectedProviderCount: 0,
+          },
+        });
+        options.onEvent?.({ type: "search_failed", data: { status: response.status, errors: response.errors, failedSources: response.failedSources } });
         if (options.evaluate !== true) {
           this.persistTaskRow(taskId, request, mode, runtimes, response, options.actor);
         }
         return response;
       }
     }
-
+    if (routeExplanation) {
+      routeExplanation = {
+        ...routeExplanation,
+        selectedProviderIds: runtimes.map((runtime) => runtime.config.id),
+        selectedProviderCount: runtimes.length,
+      };
+    }
 
     const wantsRerank = request.rerank ?? modeIncludesRerank(mode);
     const wantsEmbedding = request.embedding ?? modeIncludesEmbedding(mode);
@@ -282,6 +335,8 @@ export class SearchService {
       cacheConfig.ttlSeconds > 0 &&
       request.skipCache !== true &&
       !rawBypass &&
+      request.strategy === undefined &&
+      request.queryExpansion !== true &&
       options.evaluate !== true;
 
     // Every input that can change the *content* of the response belongs in the
@@ -363,6 +418,20 @@ export class SearchService {
           cached.stats.partial = true;
           if (cached.status === "completed") cached.status = "partial";
         }
+        options.onEvent?.({
+          type: "meta",
+          data: {
+            taskId,
+            query: request.query,
+            mode,
+            selectedProviderIds: runtimes.map((runtime) => runtime.config.id),
+            requestedProviderCount: runtimes.length,
+            selectedProviderCount: runtimes.length,
+            cached: true,
+          },
+        });
+        options.onEvent?.({ type: "status", data: { status: cached.status, terminal: false } });
+        options.onEvent?.({ type: "search_completed", data: { status: cached.status, results: cached.results, stats: cached.stats, cached: true } });
         this.deps.db
           .insert(searchTasks)
           .values({
@@ -411,17 +480,33 @@ export class SearchService {
     this.controllers.set(taskId, controller);
 
     try {
+      options.onEvent?.({
+        type: "meta",
+        data: {
+          taskId,
+          query: request.query,
+          mode,
+          strategy: request.strategy,
+          route: routeExplanation,
+          selectedProviderIds: runtimes.map((runtime) => runtime.config.id),
+          requestedProviderCount: routeExplanation?.requestedProviderCount ?? runtimes.length,
+          selectedProviderCount: runtimes.length,
+        },
+      });
+      options.onEvent?.({ type: "status", data: { status: "running", terminal: false } });
       const beforeRequest = options.beforeRequest;
       const performPhysical = async (sharedSignal: AbortSignal, leaderTaskId: string): Promise<SearchResponse> => {
-        let response =
-          mode === "deep"
-            ? await this.runDeep(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest)
-            : await this.runStandard(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest);
+        const useMultiQueryPipeline = mode === "deep" || request.queryExpansion === true;
+        let response = useMultiQueryPipeline
+          ? await this.runDeep(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest, options.onEvent)
+          : await this.runStandard(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest, options.onEvent);
+        if (useMultiQueryPipeline && mode !== "deep") response.mode = mode;
 
         if (wantsEmbedding && mode !== "deep") {
           response = await this.applyEmbedding(response, request, sharedSignal);
         }
         if (wantsRerank && mode !== "deep") {
+          options.onEvent?.({ type: "rerank_started", data: { taskId: leaderTaskId, candidateCount: response.results.length } });
           response = await this.applyRerank(response, request, sharedSignal);
         }
         // A failed response has no results to summarize; calling the model would
@@ -432,9 +517,38 @@ export class SearchService {
 
         response.results = response.results.slice(0, request.limit ?? 20);
         if (response.stats.funnel) response.stats.funnel.returnedCount = response.results.length;
+        if (request.strategy) {
+          response.strategy = request.strategy;
+          if (routeExplanation) response.route = routeExplanation;
+          response.appliedStages = [
+            "fanout",
+            modeUsesRrfForResponse(mode) ? "rrf" : "basic",
+            ...(response.queryExpansion ? ["query_expansion"] : []),
+            ...(response.stats.embeddingApplied ? ["embedding"] : []),
+            ...(response.stats.rerankApplied ? ["rerank"] : []),
+            ...(response.stats.summaryApplied ? ["summary"] : []),
+          ];
+          const degradations: SearchDegradation[] = [];
+          if (request.strategy === "quality" && !this.deps.models.findDefault("rerank")) {
+            degradations.push({ stage: "rerank", reason: "model_not_configured" });
+          }
+          if (degradations.length > 0) response.degradations = degradations;
+        }
+        options.onEvent?.({
+          type: "results_updated",
+          data: { results: response.results, stats: response.stats, errors: response.errors, failedSources: response.failedSources },
+        });
         response.stats.timing.totalMs = Date.now() - startedAt;
         response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
         const cancelled = sharedSignal.aborted;
+        options.onEvent?.({ type: "status", data: { status: response.status, terminal: false } });
+        if (cancelled || response.status === "cancelled") {
+          options.onEvent?.({ type: "status", data: { status: "cancelled", terminal: true } });
+        } else if (response.status === "failed") {
+          options.onEvent?.({ type: "search_failed", data: { status: response.status, errors: response.errors, failedSources: response.failedSources } });
+        } else {
+          options.onEvent?.({ type: "search_completed", data: { status: response.status, results: response.results, stats: response.stats } });
+        }
         if (cacheUsable && cacheKey && this.isCacheable(response, cancelled)) {
           try {
             this.deps.cache.put(cacheKey, response, cacheConfig.ttlSeconds, mode);
@@ -768,6 +882,7 @@ export class SearchService {
     taskId: string,
     skippedByHealth: readonly SearchErrorSummary[] = [],
     beforeRequest?: (providerId: string, url: string) => void,
+    onEvent?: (event: SearchExecutionEvent) => void,
   ): Promise<SearchResponse> {
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
@@ -775,6 +890,11 @@ export class SearchService {
       signal,
       taskId,
       ...(beforeRequest === undefined ? {} : { beforeRequest }),
+      ...(onEvent === undefined ? {} : {
+        onEvent: (event) => {
+          if (event.type !== "meta") onEvent(event);
+        },
+      }),
     });
     this.applyHealthSkips(response, skippedByHealth);
     if (signal.aborted) {
@@ -800,20 +920,68 @@ export class SearchService {
     taskId: string,
     skippedByHealth: readonly SearchErrorSummary[] = [],
     beforeRequest?: (providerId: string, url: string) => void,
+    onEvent?: (event: SearchExecutionEvent) => void,
   ): Promise<SearchResponse> {
-    const chat = this.deps.models.chatModel(request.chatModelId);
-    const rewritten = await rewriteQuery(chat, request.query, 3, signal);
-    const queries = rewritten.slice(0, 3).map((rawQuery, index) => {
-      const queryIndex = index + 1;
-      return {
-        query: rawQuery.trim(),
-        id: `q${queryIndex}`,
-        kind: queryIndex === 1 ? "original" as const : "rewrite" as const,
-        weight: queryIndex === 1 ? 1 : 0.8,
-        queryIndex,
-        round: 1,
+    let expansionMetadata: SearchResponse["queryExpansion"];
+    let queries: Array<{
+      query: string;
+      id: string;
+      kind: "original" | "rewrite";
+      weight: number;
+      queryIndex: number;
+      round: number;
+    }>;
+    if (request.queryExpansion === true) {
+      const chat = this.deps.models.findDefault("chat") ? this.deps.models.chatModel(request.chatModelId) : null;
+      const expansion = await expandQuery(
+        { query: request.query, queryExpansion: true, strategy: request.strategy ?? "deep" },
+        {
+          maxQueries: request.maxSubqueries ?? 3,
+          signal,
+          ...(chat === null ? {} : {
+            modelExpander: async (query, expansionSignal) => {
+              const completion = await chat.complete([
+                { role: "system", content: "Rewrite the search query conservatively. Return strict JSON {\"queries\":[\"...\"]}." },
+                { role: "user", content: query },
+              ], { signal: expansionSignal, maxTokens: 300, json: true });
+              return completion.text;
+            },
+          }),
+        },
+      );
+      expansionMetadata = {
+        language: expansion.language,
+        queries: expansion.queries.map((query) => ({
+          query: query.query,
+          kind: query.kind,
+          weight: query.weight,
+          source: query.source,
+        })),
+        skippedReasons: expansion.skippedReasons,
       };
-    });
+      queries = expansion.queries.map((query, index) => ({
+        query: query.query,
+        id: `q${index + 1}`,
+        kind: index === 0 ? "original" : "rewrite",
+        weight: query.weight,
+        queryIndex: index + 1,
+        round: 1,
+      }));
+    } else {
+      const chat = this.deps.models.chatModel(request.chatModelId);
+      const rewritten = await rewriteQuery(chat, request.query, 3, signal);
+      queries = rewritten.slice(0, 3).map((rawQuery, index) => {
+        const queryIndex = index + 1;
+        return {
+          query: rawQuery.trim(),
+          id: `q${queryIndex}`,
+          kind: queryIndex === 1 ? "original" as const : "rewrite" as const,
+          weight: queryIndex === 1 ? 1 : 0.8,
+          queryIndex,
+          round: 1,
+        };
+      });
+    }
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
 
@@ -827,7 +995,16 @@ export class SearchService {
           const response = await executeSearch(
             deps,
             { ...request, query: queryInfo.query, mode: "rrf", summarize: false, timeoutMs: request.timeoutMs },
-            { signal, taskId, ...(beforeRequest === undefined ? {} : { beforeRequest }) },
+            {
+              signal,
+              taskId,
+              ...(beforeRequest === undefined ? {} : { beforeRequest }),
+              ...(onEvent === undefined ? {} : {
+                onEvent: (event) => {
+                  if (event.type !== "meta") onEvent(event);
+                },
+              }),
+            },
           );
           return { query: queryInfo, index, response };
         } catch (error) {
@@ -909,6 +1086,7 @@ export class SearchService {
       },
         errors: failures,
         failedSources: failures.map((item) => ({ id: item.providerId, code: item.code })),
+        ...(expansionMetadata ? { queryExpansion: expansionMetadata } : {}),
         debug: { rewrittenQueries: queries.map((query) => query.query) },
       };
     }
@@ -1096,6 +1274,7 @@ export class SearchService {
       },
       failedSources: errors.map((item) => ({ id: item.providerId, code: item.code })),
       errors,
+      ...(expansionMetadata ? { queryExpansion: expansionMetadata } : {}),
       debug: {
         ...base.debug,
         rewrittenQueries: queries.map((query) => query.query),

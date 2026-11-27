@@ -79,6 +79,83 @@ function chatReturning(queries: string[]) {
 }
 
 describe("search service quality regressions", () => {
+  it("maps fast strategy to basic without requiring a model", async () => {
+    const provider = runtime("fast", async () => ({
+      results: [{ title: "Fast", url: "https://example.com/fast", snippet: "fast body" }],
+    }));
+    const service = serviceWith({}, [provider]);
+
+    const response = await service.execute(
+      { query: "fast", strategy: "fast", limit: 5, skipCache: true },
+      { evaluate: true },
+    );
+
+    expect(response.mode).toBe("basic");
+    expect(response.strategy).toBe("fast");
+    expect(response.stats.embeddingApplied).toBe(false);
+    expect(response.stats.rerankApplied).toBe(false);
+  });
+
+  it("keeps quality search successful when no rerank model is configured", async () => {
+    const provider = runtime("quality", async () => ({
+      results: [{ title: "Quality", url: "https://example.com/quality", snippet: "quality body" }],
+    }));
+    const service = serviceWith({ findDefault: () => null }, [provider]);
+
+    const response = await service.execute(
+      { query: "quality", strategy: "quality", limit: 5, skipCache: true },
+      { evaluate: true },
+    );
+
+    expect(response.mode).toBe("rrf");
+    expect(response.strategy).toBe("quality");
+    expect(response.stats.rerankApplied).toBe(false);
+    expect(response.degradations).toContainEqual({ stage: "rerank", reason: "model_not_configured" });
+  });
+
+  it("emits service-level meta, provider, status and terminal events", async () => {
+    const provider = runtime("events", async () => ({
+      results: [{ title: "Event", url: "https://example.com/event", snippet: "event body" }],
+    }));
+    const service = serviceWith({}, [provider]);
+    const events: string[] = [];
+
+    await service.execute(
+      { query: "events", strategy: "fast", limit: 5, skipCache: true },
+      { evaluate: true, onEvent: (event) => events.push(event.type) },
+    );
+
+    expect(events).toContain("meta");
+    expect(events).toContain("provider_started");
+    expect(events).toContain("provider_completed");
+    expect(events).toContain("results_updated");
+    expect(events).toContain("status");
+    expect(events.at(-1)).toBe("search_completed");
+  });
+
+  it("keeps query expansion off by default and enables it only on request", async () => {
+    const calls: string[] = [];
+    const provider = runtime("expand", async (input) => {
+      calls.push(input.query);
+      return { results: [{ title: "Expanded", url: "https://example.com/expanded", snippet: "expanded body" }] };
+    });
+    const service = serviceWith({ findDefault: () => null }, [provider]);
+
+    await service.execute(
+      { query: "machine learning tutorial", strategy: "balanced", limit: 5, skipCache: true },
+      { evaluate: true },
+    );
+    expect(calls).toEqual(["machine learning tutorial"]);
+
+    calls.length = 0;
+    const response = await service.execute(
+      { query: "machine learning tutorial", strategy: "balanced", queryExpansion: true, limit: 5, skipCache: true },
+      { evaluate: true },
+    );
+    expect(calls.length).toBeGreaterThan(1);
+    expect(response.queryExpansion?.queries[0]?.query).toBe("machine learning tutorial");
+  });
+
   it("reranks the full candidate set instead of only the pre-truncated request.limit", async () => {
     const provider = runtime("recall", async (input) => ({
       results: Array.from({ length: input.limit }, (_, index) => ({

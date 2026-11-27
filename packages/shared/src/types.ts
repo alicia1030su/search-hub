@@ -58,6 +58,15 @@ export type SearchMode =
 
 export type SearchTaskStatus = "running" | "completed" | "partial" | "failed" | "cancelled";
 
+export type SearchStrategy = "auto" | "fast" | "balanced" | "quality" | "deep";
+
+export interface ResolvedSearchIntent {
+  strategy?: SearchStrategy;
+  mode: SearchMode;
+  effectiveStrategy: SearchStrategy;
+  routeVersion: string;
+}
+
 export type ProviderErrorCode =
   | "rate_limited"
   | "auth_invalid"
@@ -90,6 +99,12 @@ export interface SearchRequest {
   language?: string;
   freshness?: Freshness;
   mode?: SearchMode;
+  strategy?: SearchStrategy;
+  stream?: "sse" | "ndjson";
+  queryExpansion?: boolean;
+  maxSubqueries?: number;
+  maxRounds?: number;
+  render?: boolean;
   rerank?: boolean;
   embedding?: boolean;
   summarize?: boolean;
@@ -233,11 +248,56 @@ export interface SearchTruncationReason {
   count: number;
 }
 
+export interface SearchRouteDecision {
+  providerId: string;
+  score: number;
+  reasons: string[];
+}
+
+export interface SearchRouteExplanation {
+  intent: string;
+  matchedRules: string[];
+  selectedProviderIds: string[];
+  requestedProviderCount: number;
+  selectedProviderCount: number;
+  decisions: SearchRouteDecision[];
+  truncatedProviderIds: string[];
+}
+
+export interface SearchDegradation {
+  stage: "route" | "query_expansion" | "embedding" | "rerank" | "summary";
+  reason: string;
+}
+
+export type SearchExecutionEventType =
+  | "meta"
+  | "provider_started"
+  | "provider_completed"
+  | "results_updated"
+  | "rerank_started"
+  | "status"
+  | "search_completed"
+  | "search_failed";
+
+export interface SearchExecutionEvent {
+  type: SearchExecutionEventType;
+  data: Record<string, unknown>;
+}
+
 export interface SearchResponse {
   taskId: string;
   query: string;
   mode: SearchMode;
   status: Exclude<SearchTaskStatus, "running">;
+  strategy?: SearchStrategy;
+  route?: SearchRouteExplanation;
+  appliedStages?: string[];
+  degradations?: SearchDegradation[];
+  queryExpansion?: {
+    language: string;
+    queries: Array<{ query: string; kind: string; weight: number; source: string }>;
+    skippedReasons: string[];
+  };
   results: SearchResult[];
   stats: {
     rawCount: number;

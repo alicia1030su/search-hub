@@ -58,6 +58,9 @@ export interface FanoutOptions {
    * idea how many pages an adapter will fetch.
    */
   beforeRequest?: (providerId: string, url: string) => void;
+  /** Optional observers for incremental UI/streaming consumers. */
+  onProviderStart?: (runtime: ProviderRuntime) => void;
+  onProviderComplete?: (result: FanoutResult) => void;
 }
 
 export interface FanoutResult {
@@ -446,12 +449,14 @@ export async function fanoutProviders(
 ): Promise<FanoutResult[]> {
   if (runtimes.length === 0) return [];
   const tasks = runtimes.map(async (runtime) => {
+    options.onProviderStart?.(runtime);
+    let result: FanoutResult;
     try {
-      return await runProvider(runtime, options);
+      result = await runProvider(runtime, options);
     } catch (error) {
       const code: ProviderErrorCode = isAbortError(error) ? "cancelled" : "unknown";
       const message = redactSecrets(errorMessage(error));
-      return {
+      result = {
         providerId: runtime.config.id,
         providerName: runtime.config.name,
         providerType: runtime.config.type,
@@ -476,6 +481,8 @@ export async function fanoutProviders(
         },
       } satisfies FanoutResult;
     }
+    options.onProviderComplete?.(result);
+    return result;
   });
 
   return Promise.all(tasks);

@@ -155,6 +155,25 @@ describe("search engine recall regressions", () => {
     expect(response.stats.truncationReasons).toContainEqual({ reason: "provider_limit", count: 2 });
   });
 
+  it("emits incremental provider and results events when an observer is supplied", async () => {
+    const runtimes = [
+      runtimeReturning("p1", async () => ({ results: [{ title: "One", url: "https://example.com/1", snippet: "body one" }] })),
+      runtimeReturning("p2", async () => ({ results: [{ title: "Two", url: "https://example.com/2", snippet: "body two" }] })),
+    ];
+    const events: string[] = [];
+
+    await executeSearch(
+      { runtimes, fetch: unusedFetch, credentials: { getKeyValue: async () => undefined }, logger },
+      { query: "events", mode: "basic", limit: 10 },
+      { taskId: "task-events", onEvent: (event) => events.push(event.type) },
+    );
+
+    expect(events.filter((type) => type === "meta")).toHaveLength(1);
+    expect(events.filter((type) => type === "provider_started")).toHaveLength(2);
+    expect(events.filter((type) => type === "provider_completed")).toHaveLength(2);
+    expect(events.filter((type) => type === "results_updated")).toHaveLength(2);
+  });
+
   it("does not collapse same-title pages with different URLs and bodies", async () => {
     const runtime = runtimeReturning("titles", async () => ({
       results: [
