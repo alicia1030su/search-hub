@@ -54,6 +54,11 @@ describe("resource budget thresholds and hysteresis", () => {
   it("crosses the exact normal, warning and critical boundaries", () => {
     let pressure = 0.7499;
     const controller = createController({ sample: () => lowSample(pressure) });
+    expect(controller.snapshot()).toMatchObject({
+      state: "normal",
+      stateSince: "2026-11-28T00:00:00.000Z",
+      lastTransitionReason: "initial_state",
+    });
     controller.start();
 
     tick();
@@ -61,11 +66,23 @@ describe("resource budget thresholds and hysteresis", () => {
 
     pressure = 0.75;
     tick();
-    expect(controller.snapshot()).toMatchObject({ state: "warning", budget: 16, reason: "pressure_warning" });
+    expect(controller.snapshot()).toMatchObject({
+      state: "warning",
+      stateSince: "2026-11-28T00:00:02.000Z",
+      lastTransitionReason: "pressure_warning",
+      budget: 16,
+      reason: "pressure_warning",
+    });
 
     pressure = 0.9;
     tick();
-    expect(controller.snapshot()).toMatchObject({ state: "critical", budget: 4, reason: "pressure_critical" });
+    expect(controller.snapshot()).toMatchObject({
+      state: "critical",
+      stateSince: "2026-11-28T00:00:03.000Z",
+      lastTransitionReason: "pressure_critical",
+      budget: 4,
+      reason: "pressure_critical",
+    });
   });
 
   it("keeps warning for three dwell samples, then prioritizes P<=0.55 recovery", () => {
@@ -178,10 +195,21 @@ describe("resource budget recovery", () => {
 
     pressure = 0.5;
     tick(3);
-    expect(controller.snapshot()).toMatchObject({ state: "recovering", budget: 4 });
+    expect(controller.snapshot()).toMatchObject({
+      state: "recovering",
+      stateSince: "2026-11-28T00:00:04.000Z",
+      lastTransitionReason: "recovering",
+      budget: 4,
+    });
 
     tick(3);
-    expect(controller.snapshot()).toMatchObject({ state: "recovering", budget: 13, reason: "recovering_step" });
+    expect(controller.snapshot()).toMatchObject({
+      state: "recovering",
+      stateSince: "2026-11-28T00:00:04.000Z",
+      lastTransitionReason: "recovering",
+      budget: 13,
+      reason: "recovering_step",
+    });
     tick(3);
     expect(controller.snapshot().budget).toBe(22);
     tick(3);
@@ -237,7 +265,31 @@ describe("resource sample failures", () => {
     tick();
     expect(controller.snapshot()).toMatchObject({ state: "warning", budget: 16, staleSamples: 2, reason: "stale_sample" });
     tick();
-    expect(controller.snapshot()).toMatchObject({ state: "critical", budget: 4, staleSamples: 3, reason: "sample_failure_limit" });
+    expect(controller.snapshot()).toMatchObject({
+      state: "critical",
+      stateSince: "2026-11-28T00:00:04.000Z",
+      lastTransitionReason: "sample_failure_limit",
+      budget: 4,
+      staleSamples: 3,
+      reason: "sample_failure_limit",
+    });
+  });
+
+  it("keeps transition metadata stable for stale samples and non-transition limit changes", () => {
+    let sample: ResourceSample | null = lowSample(0.8);
+    const controller = createController({ sample: () => sample });
+    controller.start();
+    tick();
+    const transition = {
+      stateSince: "2026-11-28T00:00:01.000Z",
+      lastTransitionReason: "pressure_warning",
+    };
+
+    sample = null;
+    tick();
+    expect(controller.snapshot()).toMatchObject(transition);
+    controller.setHardLimit(20);
+    expect(controller.snapshot()).toMatchObject(transition);
   });
 
   it("treats thrown samples and samples without valid ratios as failures", () => {
@@ -347,7 +399,14 @@ describe("resource budget limits and timer lifecycle", () => {
     expect(controller.snapshot()).toMatchObject({ state: "recovering", budget: 22 });
 
     controller.setHardLimit(20);
-    expect(controller.snapshot()).toMatchObject({ state: "normal", budget: 20, hardMax: 20 });
+    expect(controller.snapshot()).toMatchObject({
+      state: "normal",
+      stateSince: "2026-11-28T00:00:10.000Z",
+      lastTransitionReason: "recovered",
+      reason: "hard_limit_lowered",
+      budget: 20,
+      hardMax: 20,
+    });
     tick(4);
     expect(controller.snapshot().budget).toBeLessThanOrEqual(20);
   });

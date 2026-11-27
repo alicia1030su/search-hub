@@ -19,10 +19,13 @@ export type ResourceBudgetReason =
   | "stale_sample"
   | "sample_failure_limit"
   | "hard_limit_lowered"
-  | "hard_limit_raised";
+  | "hard_limit_raised"
+  | "initial_state";
 
 export interface ResourceBudgetSnapshot {
   state: BudgetState;
+  stateSince: string | null;
+  lastTransitionReason: ResourceBudgetReason;
   budget: number;
   hardMax: number;
   minBudget: number;
@@ -63,6 +66,8 @@ export function calculateResourcePressure(sample: ResourceSample | null | undefi
 
 export class ResourceBudgetController {
   private state: BudgetState = "normal";
+  private stateSince: string | null;
+  private lastTransitionReason: ResourceBudgetReason = "initial_state";
   private budget: number;
   private pressure: number | null = null;
   private reason: ResourceBudgetReason = "normal";
@@ -82,6 +87,7 @@ export class ResourceBudgetController {
     }
     this.budget = options.hardMax;
     this.clock = options.clock ?? (() => Date.now());
+    this.stateSince = this.readClock();
   }
 
   start(): void {
@@ -99,6 +105,8 @@ export class ResourceBudgetController {
   snapshot(): ResourceBudgetSnapshot {
     return {
       state: this.state,
+      stateSince: this.stateSince,
+      lastTransitionReason: this.lastTransitionReason,
       budget: this.budget,
       hardMax: this.options.hardMax,
       minBudget: this.options.minBudget,
@@ -165,8 +173,8 @@ export class ResourceBudgetController {
     this.stateSamples += 1;
 
     if (this.state === "normal") {
-      if (pressure >= CRITICAL_THRESHOLD) this.transition("critical", "pressure_critical");
-      else if (pressure >= WARNING_THRESHOLD) this.transition("warning", "pressure_warning");
+      if (pressure >= CRITICAL_THRESHOLD) this.transition("critical", "pressure_critical", now);
+      else if (pressure >= WARNING_THRESHOLD) this.transition("warning", "pressure_warning", now);
       else {
         this.lowPressureSamples = 0;
         this.budget = Math.min(this.budget, this.options.hardMax);
@@ -177,16 +185,16 @@ export class ResourceBudgetController {
 
     if (this.state === "warning") {
       if (pressure >= CRITICAL_THRESHOLD) {
-        this.transition("critical", "pressure_critical");
+        this.transition("critical", "pressure_critical", now);
         return;
       }
       if (this.stateSamples >= STATE_DWELL_SAMPLES) {
         if (pressure <= RECOVERY_THRESHOLD) {
-          this.transition("recovering", "recovering");
+          this.transition("recovering", "recovering", now);
           return;
         }
         if (pressure < WARNING_THRESHOLD) {
-          this.transition("normal", "recovered");
+          this.transition("normal", "recovered", now);
           return;
         }
       }
@@ -199,11 +207,11 @@ export class ResourceBudgetController {
     if (this.state === "critical") {
       this.lowPressureSamples = pressure <= RECOVERY_THRESHOLD ? this.lowPressureSamples + 1 : 0;
       if (this.stateSamples >= STATE_DWELL_SAMPLES && this.lowPressureSamples >= STATE_DWELL_SAMPLES) {
-        this.transition("recovering", "recovering");
+        this.transition("recovering", "recovering", now);
         return;
       }
       if (this.stateSamples >= STATE_DWELL_SAMPLES && pressure < CRITICAL_THRESHOLD) {
-        this.transition("warning", "pressure_warning");
+        this.transition("warning", "pressure_warning", now);
         return;
       }
       this.budget = this.options.minBudget;
@@ -212,11 +220,11 @@ export class ResourceBudgetController {
     }
 
     if (pressure >= CRITICAL_THRESHOLD) {
-      this.transition("critical", "pressure_critical");
+      this.transition("critical", "pressure_critical", now);
       return;
     }
     if (pressure >= WARNING_THRESHOLD) {
-      this.transition("warning", "pressure_warning");
+      this.transition("warning", "pressure_warning", now);
       return;
     }
 
@@ -228,12 +236,12 @@ export class ResourceBudgetController {
 
     this.lowPressureSamples = 0;
     if (this.budget >= this.options.hardMax) {
-      this.transition("normal", "recovered");
+      this.transition("normal", "recovered", now);
       return;
     }
     const step = Math.ceil((this.options.hardMax - this.options.minBudget) / RECOVERY_STEPS);
     this.budget = Math.min(this.options.hardMax, this.budget + step);
-    if (this.budget === this.options.hardMax) this.transition("normal", "recovered");
+    if (this.budget === this.options.hardMax) this.transition("normal", "recovered", now);
     else this.reason = "recovering_step";
   }
 
@@ -246,15 +254,17 @@ export class ResourceBudgetController {
       this.reason = "stale_sample";
       return;
     }
-    if (this.state !== "critical") this.transition("critical", "sample_failure_limit");
+    if (this.state !== "critical") this.transition("critical", "sample_failure_limit", sampledAt);
     else {
       this.budget = this.options.minBudget;
       this.reason = "sample_failure_limit";
     }
   }
 
-  private transition(state: BudgetState, reason: ResourceBudgetReason): void {
+  private transition(state: BudgetState, reason: ResourceBudgetReason, stateSince: string | null = this.readClock()): void {
     this.state = state;
+    this.stateSince = stateSince;
+    this.lastTransitionReason = reason;
     this.reason = reason;
     this.stateSamples = 0;
     this.lowPressureSamples = 0;
