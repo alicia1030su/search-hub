@@ -163,6 +163,26 @@ describe("admin onboarding", () => {
     expect(status.recommendedProviders.map((provider: { type: string }) => provider.type)).not.toContain("mock");
   });
 
+  it("does not count community or instant-answer sources as general-web coverage", async () => {
+    const harness = await createHarness();
+    for (const type of ["hackernews", "duckduckgo"]) {
+      const created = await harness.app.inject({
+        method: "POST",
+        url: "/api/admin/providers",
+        ...auth(harness),
+        payload: { name: `onboarding-${type}`, type, enabled: true },
+      });
+      expect(created.statusCode, created.body).toBe(200);
+    }
+    const response = await harness.app.inject({
+      method: "GET",
+      url: "/api/admin/onboarding/status",
+      ...auth(harness),
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().coverage).toEqual({ generalWebReady: false });
+  });
+
   it("requires successful search evidence before persisting completion", async () => {
     const harness = await createHarness();
     const missingEvidence = await harness.app.inject({

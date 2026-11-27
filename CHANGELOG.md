@@ -22,6 +22,7 @@ All notable changes to this project are documented here. The format follows
 - Fixed Brave pagination when a full raw page contains an unmappable row.
 - Grounded-answer providers no longer run as free connectivity probes, and citation-backed answers count as successful search probes.
 - Onboarding completion now requires a caller-owned completed or partial search task with at least one result or verifiable citation; dismissal clears prior completion and vertical-only readiness is reported explicitly.
+- Rejected malformed Brave envelopes, sanitized GitHub HTTP 200 business errors, corrected provider remediation hints, and changed public-provider budgets to true sliding windows.
 
 ### Changed
 

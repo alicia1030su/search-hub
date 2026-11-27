@@ -48,7 +48,8 @@ function onboardingStatus(ctx: AppContext) {
   const readyProviderIds = readyProviders.map((provider) => provider.id);
   const generalWebReady = readyProviders.some((provider) => {
     const entry = PROVIDER_CATALOG.find((candidate) => candidate.type === provider.type);
-    return entry?.implementation === "builtin" && entry.category === "general";
+    return entry?.implementation === "builtin" && entry.category === "general" &&
+      !["hackernews", "duckduckgo", "mock"].includes(entry.type);
   });
   const completed = onboarding.completedAt !== null;
   const dismissed = onboarding.dismissedAt !== null;
