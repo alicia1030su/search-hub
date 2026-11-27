@@ -145,7 +145,8 @@ async function launch(executable) {
   child.stderr.on("data", (chunk) => logs.push(String(chunk)));
 
   let healthy = false;
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  // Windows CI can spend just over 40s launching the packaged runtime.
+  for (let attempt = 0; attempt < 120; attempt += 1) {
     if (child.exitCode !== null) break;
     try {
       const response = await fetch(`http://127.0.0.1:${PORT}/api/health`);

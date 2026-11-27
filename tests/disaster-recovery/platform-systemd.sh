@@ -49,6 +49,14 @@ run_logged() {
   cat "$log"
   return "$code"
 }
+next_patch_version() {
+  local version=${1:-}
+  if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    echo "invalid stable version: ${version:-<empty>}" >&2
+    return 1
+  fi
+  printf '%s.%s.%d\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$((10#${BASH_REMATCH[3]} + 1))"
+}
 make_unit() {
   local unit=$1 data=$2 port=$3
   cat > "/etc/systemd/system/$unit.service" <<EOF
@@ -113,15 +121,19 @@ set -e
 [[ "$REPEAT_CODE" != "0" ]]
 [[ "$BEFORE" == "$(sha256sum "$RESTORED/search-hub.db" | awk '{print $1}')" ]]
 
+CURRENT_VERSION_FILE="$APP_ROOT/apps/api/dist/version.txt"
+[[ -f "$CURRENT_VERSION_FILE" ]] || { echo "BLOCKED: missing current version file: $CURRENT_VERSION_FILE" >&2; exit 1; }
+CURRENT_VERSION=$(tr -d '[:space:]' < "$CURRENT_VERSION_FILE")
+BROKEN_VERSION=$(next_patch_version "$CURRENT_VERSION")
 BROKEN_ROOT="$WORK/broken"
 mkdir -p "$BROKEN_ROOT/app/apps/api/dist"
 printf 'import { createServer } from "node:http";\nsetTimeout(() => {}, 600000);\n' > "$BROKEN_ROOT/app/apps/api/dist/server.mjs"
-printf '0.1.16\n' > "$BROKEN_ROOT/app/apps/api/dist/version.txt"
-BROKEN_PKG="$WORK/search-hub-v0.1.16-linux-x64.tar.gz"
+printf '%s\n' "$BROKEN_VERSION" > "$BROKEN_ROOT/app/apps/api/dist/version.txt"
+BROKEN_PKG="$WORK/search-hub-v${BROKEN_VERSION}-linux-x64.tar.gz"
 tar -czf "$BROKEN_PKG" -C "$BROKEN_ROOT" app
 SHA=$(sha256sum "$BROKEN_PKG" | awk '{print $1}'); SIZE=$(stat -c%s "$BROKEN_PKG")
 set +e
-SEARCH_HUB_SYSTEMD_UNIT="$SOURCE_UNIT" "$BASE/bin/update" --package "$BROKEN_PKG" --version 0.1.16 --sha256 "$SHA" --size "$SIZE" --root "$BASE" --data "$DATA" --db-path "$DATA/search-hub.db" --port "$PORT" > "$EVIDENCE/updater-rollback.log" 2>&1
+SEARCH_HUB_SYSTEMD_UNIT="$SOURCE_UNIT" "$BASE/bin/update" --package "$BROKEN_PKG" --version "$BROKEN_VERSION" --sha256 "$SHA" --size "$SIZE" --root "$BASE" --data "$DATA" --db-path "$DATA/search-hub.db" --port "$PORT" > "$EVIDENCE/updater-rollback.log" 2>&1
 ROLLBACK_CODE=$?
 set -e
 [[ "$ROLLBACK_CODE" == "3" ]]
