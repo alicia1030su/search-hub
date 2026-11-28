@@ -153,6 +153,14 @@ describe("shub search --stream", () => {
     expect(outputLines(stderr).join("")).toContain(message);
   });
 
+  it("accepts the status-based cancelled terminal contract", async () => {
+    const { stdout, stderr } = captureOutput();
+    mockFetch(response(sse(event("status", 1, { status: "cancelled", terminal: true, final: true, message: "Search cancelled" }))));
+    await expect(runSearch(parseCliArgs(["search", "hello", "--stream", "--json"]), streamClient(), "json")).resolves.toBe(EXIT_CODES.interrupted);
+    expect(JSON.parse(outputLines(stdout)[0]!)).toMatchObject({ type: "status", status: "cancelled", terminal: true, final: true, resultSet: "final" });
+    expect(outputLines(stderr).join("")).toContain("Search cancelled");
+  });
+
   it("aborts fetch and releases the reader when the client is interrupted", async () => {
     captureOutput();
     const interrupt = new AbortController();

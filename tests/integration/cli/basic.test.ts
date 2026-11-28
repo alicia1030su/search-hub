@@ -27,6 +27,14 @@ async function fixture(handler: StubHandler, token = "sh_test_token_1234567890")
   return { server, env };
 }
 
+function streamEvent(type: string, sequence: number, data: Record<string, unknown> = {}): string {
+  return JSON.stringify({ type, sequence, final: type === "done", ...data });
+}
+
+function sseFrame(value: string): string {
+  return `event: search\ndata: ${value}\n\n`;
+}
+
 function standardHandler(overrides: { search?: unknown; searchStatus?: number; version?: string } = {}): StubHandler {
   return (request, response) => {
     if (request.url === "/api/health") return json(response, 200, health(overrides.version));
@@ -99,6 +107,71 @@ describe("CLI basic and search commands", () => {
     expect(result.status).toBe(0);
     expect(server.requests.some((request) => request.url === "/api/search/deep")).toBe(true);
     expect(server.requests.some((request) => request.url === "/api/search")).toBe(false);
+  });
+
+  it("streams live SSE events by default and prints one authoritative final result", async () => {
+    const completed = searchResponse();
+    const { server, env } = await fixture((request, response) => {
+      if (request.url === "/api/health") return json(response, 200, health("0.1.18"));
+      if (request.url !== "/api/search/stream") return json(response, 404, { error: { code: "not_found", message: "not found" } });
+      response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
+      response.write(sseFrame(streamEvent("meta", 1, { taskId: completed.taskId, mode: "basic" })));
+      response.write(sseFrame(streamEvent("status", 2, { stage: "provider_started", providerId: "prv_1" })));
+      response.write(sseFrame(streamEvent("results", 3, { results: [{ title: "Temporary result", url: "https://example.com/tmp", providerName: "Mock" }] })));
+      response.end(sseFrame(streamEvent("done", 4, completed)));
+    });
+    const result = await runCli(["search", "Linux", "--stream", "--limit", "5"], env);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("[provider] stage=provider_started providerId=prv_1");
+    expect(result.stdout).toContain("[results_updated] [temporary]");
+    expect(result.stdout.match(/\[final\]/g)).toHaveLength(1);
+    expect(result.stdout).toContain("Linux result");
+    const stream = server.requests.find((request) => request.url === "/api/search/stream");
+    expect(stream?.headers["authorization"]).toBe("Bearer sh_test_token_1234567890");
+    expect(stream?.body).toMatchObject({ query: "Linux", limit: 5, stream: "sse" });
+  });
+
+  it("streams NDJSON when --stream-format ndjson is selected", async () => {
+    const completed = searchResponse();
+    const { server, env } = await fixture((request, response) => {
+      if (request.url === "/api/health") return json(response, 200, health("0.1.18"));
+      if (request.url !== "/api/search/stream") return json(response, 404, { error: { code: "not_found", message: "not found" } });
+      response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8" });
+      response.end([
+        streamEvent("meta", 1, { taskId: completed.taskId }),
+        streamEvent("results", 2, { results: [] }),
+        streamEvent("done", 3, completed),
+      ].join("\n") + "\n");
+    });
+    const result = await runCli(["search", "Linux", "--stream", "--stream-format", "ndjson", "--format", "ndjson"], env);
+    expect(result.status, result.stderr).toBe(0);
+    const events = result.stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(events.map((event) => event.type)).toEqual(["meta", "results", "done"]);
+    expect(events[1].resultSet).toBe("temporary");
+    expect(events[2]).toMatchObject({ resultSet: "final", results: completed.results });
+    expect(server.requests.find((request) => request.url === "/api/search/stream")?.body).toMatchObject({ stream: "ndjson" });
+  });
+
+  it("rejects --stream-format without --stream before opening a stream", async () => {
+    const { server, env } = await fixture(standardHandler());
+    const result = await runCli(["search", "Linux", "--stream-format", "ndjson"], env);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--stream-format requires --stream");
+    expect(server.requests.some((request) => request.url === "/api/search/stream")).toBe(false);
+  });
+
+  it("returns 130 for a status-based cancelled terminal event", async () => {
+    const { env } = await fixture((request, response) => {
+      if (request.url === "/api/health") return json(response, 200, health("0.1.18"));
+      response.writeHead(200, { "content-type": "application/x-ndjson" });
+      response.end(JSON.stringify({ type: "status", sequence: 1, final: true, status: "cancelled", terminal: true, message: "Search cancelled" }) + "\n");
+    });
+    const result = await runCli(["search", "Linux", "--stream", "--stream-format", "ndjson", "--format", "ndjson"], env);
+    expect(result.status).toBe(130);
+    const events = result.stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "status", status: "cancelled", terminal: true, final: true, resultSet: "final" });
+    expect(result.stderr).toContain("Search cancelled");
   });
 
   it("C09 keeps partial results and returns zero by default", async () => {

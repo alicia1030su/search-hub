@@ -170,7 +170,7 @@ export class SearchStreamDecoder {
     ) {
       throw new CliError("invalid_stream", "Search Hub sent an invalid stream event", EXIT_CODES.server);
     }
-    const terminal = event["type"] === "done" || event["type"] === "error" || event["type"] === "cancelled";
+    const terminal = event["type"] === "done" || event["type"] === "error" || isCancelledEvent(event);
     if (event["final"] !== terminal || event["sequence"] !== this.sequence + 1 || this.terminalSeen) {
       throw new CliError("invalid_stream", "Search Hub sent an out-of-order stream event", EXIT_CODES.server);
     }
@@ -189,6 +189,10 @@ function streamFormat(values: ParsedCliArgs["values"]): StreamFormat {
   return format;
 }
 
+function isCancelledEvent(event: Record<string, unknown>): boolean {
+  return event["type"] === "cancelled" || (event["type"] === "status" && event["status"] === "cancelled" && event["terminal"] === true);
+}
+
 function responseFromTerminal(event: SearchStreamEvent): SearchCommandResponse {
   const response = Object.fromEntries(
     Object.entries(event).filter(([key]) => !["type", "sequence", "final", "resultSet"].includes(key)),
@@ -202,7 +206,7 @@ function responseFromTerminal(event: SearchStreamEvent): SearchCommandResponse {
 function terminalMessage(event: SearchStreamEvent): string {
   const message = event["message"];
   if (typeof message === "string" && message.length > 0) return message;
-  const code = event["code"];
+  const code = event["code"] ?? (isCancelledEvent(event) ? "cancelled" : undefined);
   return typeof code === "string" && code.length > 0 ? `Search ${event["type"]}: ${code}` : `Search ${event["type"]}`;
 }
 
@@ -216,7 +220,7 @@ function emitStreamEvent(event: SearchStreamEvent, format: OutputFormat, client:
   if (format !== "table") {
     const output: Record<string, unknown> = { ...safeEvent, streaming: true };
     if (event.type === "results") output["resultSet"] = "temporary";
-    if (event.type === "done" || event.type === "error" || event.type === "cancelled") output["resultSet"] = "final";
+    if (event.type === "done" || event.type === "error" || isCancelledEvent(event)) output["resultSet"] = "final";
     if (format === "ndjson") writeNdjson(output);
     else writeJson(output);
     return;
@@ -226,6 +230,10 @@ function emitStreamEvent(event: SearchStreamEvent, format: OutputFormat, client:
       writeText(`[meta] taskId=${String(safeEvent["taskId"] ?? "unknown")} mode=${String(safeEvent["mode"] ?? "unknown")}`);
       break;
     case "status": {
+      if (isCancelledEvent(event)) {
+        writeText(`[cancelled] [final] ${terminalMessage(safeEvent)}`);
+        break;
+      }
       const stage = String(safeEvent["stage"] ?? "status");
       const label = stage.startsWith("provider_") ? "provider" : "progress";
       writeText(`[${label}] ${eventDetails(safeEvent)}`);
@@ -319,9 +327,9 @@ async function runStreamingSearch(
       return terminal;
     },
   ).then((terminal) => {
-    if (terminal.type === "error" || terminal.type === "cancelled") {
+    if (terminal.type === "error" || isCancelledEvent(terminal)) {
       diag(terminalMessage(client.redact(terminal) as SearchStreamEvent));
-      return terminal.type === "cancelled" ? EXIT_CODES.interrupted : EXIT_CODES.server;
+      return isCancelledEvent(terminal) ? EXIT_CODES.interrupted : EXIT_CODES.server;
     }
     const response = responseFromTerminal(terminal);
     if (response.status === "partial") diag("Search completed partially; valid results were preserved.");
@@ -346,7 +354,7 @@ export async function runSearch(
     ...(numberValue(args.values, "limit", { min: 1, max: 100 }) === undefined
       ? {}
       : { limit: numberValue(args.values, "limit", { min: 1, max: 100 }) }),
-    ...(stringValue(args.values, "mode") === undefined ? {} : { mode: stringValue(args.values, "mode") }),
+    ...(stringValue(args.values, "mode") === undefined ? { mode: "basic" } : { mode: stringValue(args.values, "mode") }),
     ...(stringValue(args.values, "language") === undefined ? {} : { language: stringValue(args.values, "language") }),
     ...(stringValue(args.values, "freshness") === undefined ? {} : { freshness: stringValue(args.values, "freshness") }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
