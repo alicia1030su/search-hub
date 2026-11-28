@@ -1,0 +1,13 @@
+{
+  "format": "search-hub.public-provider-smoke/1",
+  "evidenceKind": "single_implementation_public_provider",
+  "abba": false,
+  "provider": "duckduckgo",
+  "query": "search engine",
+  "startedAt": "2026-11-28T04:29:06.885Z",
+  "finishedAt": "2026-11-28T04:29:07.109Z",
+  "latencyMs": 223,
+  "resultHash": "3cec3a897e39f4a01aa12fb5984cf4d0077de2b49ab5d2ef4d49cf801b4aeda2",
+  "ok": false,
+  "error": "Network error requesting https://api.duckduckgo.com/?q=search+engine&format=json&no_html=1&skip_disambig=1"
+}

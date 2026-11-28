@@ -1,0 +1,13 @@
+{
+  "format": "search-hub.public-provider-smoke/1",
+  "evidenceKind": "single_implementation_public_provider",
+  "abba": false,
+  "provider": "wikipedia",
+  "query": "search engine",
+  "startedAt": "2026-11-28T04:28:54.792Z",
+  "finishedAt": "2026-11-28T04:29:05.494Z",
+  "latencyMs": 10700,
+  "resultHash": "0cb358f11c087cc247971b5c47c030f8903f6c8bbc925d70e3688830f27934e6",
+  "ok": false,
+  "error": "Network error requesting https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=search+engine&srlimit=5&format=json&formatversion=2"
+}

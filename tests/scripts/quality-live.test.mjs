@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { parseRetryAfter, runQualityLive } from "../../scripts/quality-live.mjs";
+import { buildLiveComparison, parseRetryAfter, runQualityLive } from "../../scripts/quality-live.mjs";
 
 function manifest(count = 3) {
   return {
@@ -30,7 +30,7 @@ function response(body, status = 200, headers = {}) {
 function searchBody() {
   return {
     status: "completed",
-    results: [],
+    results: [{ id: "https://a.test/1", title: "A", url: "https://a.test/1", snippet: "evidence" }],
     stats: { providers: [{ providerId: "alpha", providerName: "Alpha", providerType: "fixture", ok: true, attempts: 1, httpRequests: 2, latencyMs: 3 }] },
     debug: {
       perProviderResults: [{ providerId: "alpha", providerName: "Alpha", results: [{ id: "https://a.test/1", title: "A", url: "https://a.test/1", snippet: "evidence" }] }],
@@ -154,12 +154,86 @@ test("Retry-After supports seconds and HTTP dates", () => {
   assert.equal(parseRetryAfter(null, 0), 1000);
 });
 
+test("frozen implementation requests cover rrf/rerank/deep without allowing both mode and strategy", async () => {
+  for (const mode of ["basic", "rrf", "rerank", "deep"]) {
+    const seen = [];
+    const input = options({
+      manifest: {
+        ...manifest(1),
+        baseline: { commit: "base", configFingerprint: "cfg", request: { mode } },
+        candidate: { commit: "candidate", configFingerprint: "cfg", request: { mode } },
+      },
+      fetchImpl: async (_url, init) => {
+        seen.push(JSON.parse(init.body));
+        return response(searchBody());
+      },
+    });
+    const report = await runQualityLive(input);
+    assert.ok(seen.every((request) => request.mode === mode));
+    assert.equal(report.pairs[0].captures.baseline.request.mode, mode);
+    assert.equal(report.pairs[0].captures.baseline.responseMode, null);
+  }
+  await assert.rejects(runQualityLive(options({
+    manifest: { ...manifest(1), baseline: { commit: "base", configFingerprint: "cfg", request: { mode: "deep", strategy: "deep" } } },
+  })), /both mode and strategy/);
+  await assert.rejects(runQualityLive(options({
+    manifest: { ...manifest(1), request: { apiKey: "canary" } },
+  })), /not allowed/);
+});
+
+test("missing per-provider debug evidence is a failed capture, not an empty success", async () => {
+  const body = searchBody();
+  delete body.debug.perProviderResults;
+  const report = await runQualityLive(options({
+    manifest: manifest(1),
+    fetchImpl: async () => response(body),
+  }));
+  assert.equal(report.pairs[0].captures.baseline.ok, false);
+  assert.equal(report.pairs[0].captures.baseline.evidenceComplete, false);
+  assert.equal(report.pairs[0].captures.baseline.errors[0].code, "missing_per_provider_evidence");
+});
+
+test("human qrels produce observed/releaseScore evidence and never mix snapshot with live", async () => {
+  const qrels = {
+    source: "human",
+    judgmentsComplete: true,
+    queries: [{ queryId: "q1", judgments: [{ documentId: "https://a.test/1", relevance: 3 }] }],
+  };
+  const report = await runQualityLive(options({ manifest: manifest(1), qrels, fetchImpl: async () => response(searchBody()) }));
+  assert.equal(report.comparison.evidenceKind, "live_paired_abba");
+  assert.equal(report.comparison.sameSnapshot, false);
+  assert.equal(report.comparison.perQuery[0].baseline.ndcgAtK, 1);
+  assert.equal(report.comparison.metrics.ndcgAtK.observed.pairedN, 1);
+  assert.equal(report.comparison.metrics.ndcgAtK.releaseScore.pairedN, 1);
+  assert.equal(report.comparison.status, "INSUFFICIENT_EVIDENCE");
+  assert.equal(buildLiveComparison(report, null).reason, "qrels_not_provided");
+  assert.equal(buildLiveComparison(report, { ...qrels, source: "machine_generated" }).reason, "qrels_not_human");
+});
+
+test("empty live results stay N/A in observed and become zero only in releaseScore", async () => {
+  const qrels = {
+    source: "human", judgmentsComplete: true,
+    queries: Array.from({ length: 24 }, (_, index) => ({ queryId: `q${index + 1}`, judgments: [{ documentId: "https://a.test/1", relevance: 3 }] })),
+  };
+  const report = await runQualityLive(options({
+    manifest: manifest(24), qrels,
+    fetchImpl: async (url) => {
+      const body = searchBody();
+      if (new URL(url).pathname === "/candidate") body.results = [];
+      return response(body);
+    },
+  }));
+  assert.equal(report.comparison.metrics.ndcgAtK.observed.pairedN, 0);
+  assert.equal(report.comparison.metrics.ndcgAtK.releaseScore.pairedN, 24);
+  assert.equal(report.comparison.metrics.ndcgAtK.releaseScore.candidateMean, 0);
+});
+
 test("model metadata cannot smuggle credentials and request cannot enable cache", async () => {
   const seen = [];
   const input = options({
     manifest: {
       ...manifest(1),
-      request: { skipCache: false, providers: [], query: "overwritten" },
+      request: { language: "en" },
       baseline: { commit: "base", configFingerprint: "cfg", modelArtifacts: { chat: { modelId: "m", configFingerprint: "c", stageVersion: "v", apiKey: "canary" } } },
     },
     fetchImpl: async (_url, init) => {
@@ -171,6 +245,9 @@ test("model metadata cannot smuggle credentials and request cannot enable cache"
   assert.equal(seen[0].skipCache, true);
   assert.deepEqual(seen[0].providers, ["alpha"]);
   assert.equal(seen[0].query, "query 1");
+  assert.equal(seen[0].language, "en");
+  await assert.rejects(runQualityLive(options({ manifest: { ...manifest(1), request: { skipCache: false } } })), /not allowed/);
+  await assert.rejects(runQualityLive(options({ manifest: { ...manifest(1), request: { providers: [] } } })), /not allowed/);
   const serialized = JSON.stringify(report);
   assert.ok(!serialized.includes("canary"));
   assert.deepEqual(Object.keys(report.pairs[0].captures.baseline.envelope.modelArtifacts.chat).sort(), ["configFingerprint", "modelId", "stageVersion"]);
