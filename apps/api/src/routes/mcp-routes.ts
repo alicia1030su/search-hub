@@ -15,7 +15,9 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
     webpage: {
       read: (url, options) => readWebpageWithBudget(url, {
         fetch: ctx.fetch,
+        webReadService: ctx.webReadService,
         resourceSlots: ctx.resourceSlots,
+        signal: options?.signal,
         maxContentChars: options?.maxContentChars,
         timeoutMs: 20_000,
       }),
@@ -122,6 +124,12 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
   }));
 
   app.all("/mcp", async (request, reply) => {
+    const controller = new AbortController();
+    const onDisconnect = () => {
+      if (!reply.raw.writableEnded) controller.abort(new Error("client disconnected"));
+    };
+    request.raw.once("aborted", onDisconnect);
+    reply.raw.once("close", onDisconnect);
     try {
       const hostHeader = request.headers.host;
       if (!isAllowedHost(hostHeader, ctx.config.allowedHosts)) {
@@ -161,6 +169,7 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
         method: request.method,
         headers,
         ...(body === undefined ? {} : { body }),
+        signal: controller.signal,
       });
 
       const response = await handler.fetch(webRequest, {
@@ -180,6 +189,9 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
       reply.send(buffer);
     } catch (error) {
       sendError(reply, error);
+    } finally {
+      request.raw.removeListener("aborted", onDisconnect);
+      reply.raw.removeListener("close", onDisconnect);
     }
   });
 }

@@ -236,7 +236,8 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         if (!deps.webpage) {
           return jsonResult({ available: false, reason: "This server build does not expose webpage reading over MCP." }, true);
         }
-        const result = await deps.webpage.read(args.url, { maxContentChars: args.maxContentChars });
+        const signal = (context as { signal?: AbortSignal }).signal;
+        const result = await deps.webpage.read(args.url, { maxContentChars: args.maxContentChars, signal });
         const unavailable = result !== null && typeof result === "object" && "readStatus" in result && result.readStatus !== "ok";
         return jsonResult(result, unavailable);
       } catch (error) {

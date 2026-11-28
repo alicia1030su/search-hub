@@ -1,4 +1,4 @@
-import type { ProviderCapability } from "@search-hub/shared";
+import { SearchHubError, type ProviderCapability } from "@search-hub/shared";
 import type { ProviderRuntime } from "../engine/fanout.js";
 
 export type QueryIntent = "news" | "code" | "academic" | "chinese" | "general";
@@ -99,9 +99,12 @@ export function routeProviders(options: RouteProviderOptions): RouteExplanation 
 
   if (explicit.length > 0) {
     const byId = new Map(compatible.map((runtime) => [runtime.config.id, runtime]));
-    const selected = explicit.flatMap((id) => {
+    const selected = explicit.slice(0, maxProviders).map((id) => {
       const runtime = byId.get(id);
-      return runtime ? [runtime] : [];
+      if (!runtime) {
+        throw new SearchHubError("validation_error", `Explicit provider "${id}" is unknown, disabled, or capability-incompatible`);
+      }
+      return runtime;
     });
     return {
       intent: classifyQueryIntent(options.query).intent,

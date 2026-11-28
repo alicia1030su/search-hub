@@ -22,6 +22,7 @@ import { HealthService } from "./services/health.js";
 import { ProviderBatchService } from "./services/provider-batch.js";
 import { SearchService } from "./services/search.js";
 import { CacheService } from "./services/cache.js";
+import { WebReadService } from "./services/web-read.js";
 import { RuntimeMonitor } from "./services/runtime-monitor.js";
 import {
   ResourceBudgetController,
@@ -132,6 +133,8 @@ export interface AppContext {
    * code never reassigns it.
    */
   cache: CacheService;
+  /** Cached, resource-budgeted webpage reads shared by REST and HTTP MCP. */
+  webReadService: WebReadService;
   /** Provider health probes and the aggregated dashboard view. */
   health: HealthService;
   /**
@@ -311,6 +314,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     ...(options.cacheLimits === undefined ? {} : { limits: options.cacheLimits }),
   });
   cache.initialize();
+  const webReadService = new WebReadService({ cache, logger: appLogger });
 
   let resourceBudget!: ResourceBudgetController;
   const resourceSlots = new ResourceSemaphore(() => resourceBudget?.budgetFor("concurrency") ?? 8);
@@ -463,6 +467,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     resourceBudget,
     resourceSlots,
     cache,
+    webReadService,
     health,
     batch,
     quality,

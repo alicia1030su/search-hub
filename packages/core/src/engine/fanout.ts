@@ -242,7 +242,8 @@ export async function runProvider(
       break;
     }
 
-    const timeoutMs = Math.min(config.timeoutMs, Math.max(500, deadline - nowMs()));
+    // The task deadline always wins, including its final sub-500ms slice.
+    const timeoutMs = Math.max(1, Math.min(config.timeoutMs, deadline - nowMs()));
     const timeoutController = new AbortController();
     const timer = setTimeout(() => timeoutController.abort(new Error("provider timeout")), timeoutMs);
     const signal = combineSignals(options.signal, timeoutController.signal);
@@ -454,15 +455,26 @@ export async function fanoutProviders(
   options: FanoutOptions,
 ): Promise<FanoutResult[]> {
   if (runtimes.length === 0) return [];
+  const deadlineAtMs = Date.now() + options.deadlineMs;
   const tasks = runtimes.map(async (runtime) => {
     let release: (() => void) | undefined;
     let result: FanoutResult;
     try {
-      release = await options.providerSlot?.acquire(options.signal, Date.now() + options.deadlineMs);
+      release = await options.providerSlot?.acquire(options.signal, deadlineAtMs);
       options.onProviderStart?.(runtime);
-      result = await runProvider(runtime, options);
+      // Queue time is part of the request deadline. Starting runProvider with
+      // the original duration here would silently extend every queued search.
+      result = await runProvider(runtime, {
+        ...options,
+        deadlineMs: Math.max(0, deadlineAtMs - Date.now()),
+      });
     } catch (error) {
-      const code: ProviderErrorCode = options.signal.aborted || isAbortError(error) ? "cancelled" : "unknown";
+      const classified = classifyError(error);
+      const code: ProviderErrorCode = options.signal.aborted || isAbortError(error)
+        ? "cancelled"
+        : error instanceof SearchHubError && ["timeout", "rate_limited", "cancelled"].includes(error.code)
+          ? error.code as ProviderErrorCode
+          : classified.code;
       const message = redactSecrets(errorMessage(error));
       result = {
         providerId: runtime.config.id,

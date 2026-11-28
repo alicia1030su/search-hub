@@ -1,5 +1,6 @@
 import { and, eq, lt } from "drizzle-orm";
 import {
+  ProviderError,
   SearchHubError,
   normalizeUrl,
   redactSecrets,
@@ -9,6 +10,7 @@ import {
   type SearchExecutionEvent,
   type SearchRequest,
   type SearchResponse,
+  type SearchStrategy,
   type SearchRouteExplanation,
   type SearchDegradation,
   type SearchResult,
@@ -23,9 +25,9 @@ import {
   executeSearch,
   expandQuery,
   fuseLayeredRrf,
+  normalizeQueryIdentity,
   resolveSearchIntent,
   routeProviders,
-  normalizeQueryIdentity,
   routeSearchStrategy,
   type CandidateResult,
   type ProviderRuntime,
@@ -68,8 +70,6 @@ export interface SearchServiceDeps {
 
 const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
 
-function abortMessage(signal?: AbortSignal): string {
-  const reason = signal?.reason;
 interface DeepQueryPlanItem {
   query: string;
   id: string;
@@ -89,6 +89,8 @@ interface DeepQueryPlan {
   roundsPlanned: number;
 }
 
+function abortMessage(signal?: AbortSignal): string {
+  const reason = signal?.reason;
   return reason instanceof Error ? reason.message : String(reason ?? "");
 }
 
@@ -222,7 +224,22 @@ export class SearchService {
     const settings = this.deps.settings.get();
     const requestedMode = request.mode;
     const requestedStrategy = request.strategy;
-    const autoRoute = requestedStrategy === "auto" ? routeSearchStrategy(request) : null;
+    const routedAuto = requestedStrategy === "auto" ? routeSearchStrategy(request) : null;
+    const explicitModeStrategy: SearchStrategy = requestedMode === "deep"
+      ? "deep"
+      : requestedMode === "rerank"
+        ? "quality"
+        : requestedMode === "basic" || requestedMode === "web" || requestedMode === "grounded"
+          ? "fast"
+          : "balanced";
+    const autoRoute = routedAuto && requestedMode !== undefined
+      ? {
+          ...routedAuto,
+          selected: explicitModeStrategy,
+          ruleId: "explicit_mode_override",
+          matchedSignals: ["explicit_mode"],
+        }
+      : routedAuto;
     const intent = resolveSearchIntent(
       autoRoute && requestedMode === undefined ? { ...request, strategy: autoRoute.selected } : request,
       settings.defaults.mode,
@@ -314,9 +331,29 @@ export class SearchService {
           code: reason.code as SearchErrorSummary["code"],
           message: `${reason.message} until ${reason.until}`,
         });
-        return false;
+        return request.strategy !== undefined;
       });
       skippedByHealth = skipped;
+      if (request.strategy !== undefined) {
+        runtimes = runtimes.map((runtime) => {
+          const reason = blocked.get(runtime.config.id);
+          if (!reason) return runtime;
+          return {
+            ...runtime,
+            adapter: {
+              ...runtime.adapter,
+              search: async () => {
+                throw new ProviderError(
+                  runtime.config.id,
+                  runtime.config.type,
+                  reason.code as ProviderErrorCode,
+                  `${reason.message} until ${reason.until}`,
+                );
+              },
+            },
+          } satisfies ProviderRuntime;
+        });
+      }
       if (runtimes.length === 0) {
         // Structured failure, never an empty "success". It is persisted first:
         // the caller is holding a taskId, so `getTask` must be able to find it.
@@ -355,7 +392,7 @@ export class SearchService {
       };
     }
 
-    const wantsRerank = request.rerank ?? modeIncludesRerank(mode);
+    const wantsRerank = request.rerank ?? (intent.effectiveStrategy === "quality" || modeIncludesRerank(mode));
     const wantsEmbedding = request.embedding ?? modeIncludesEmbedding(mode);
     const wantsSummary = request.summarize ?? modeIncludesSummary(mode);
 
@@ -367,7 +404,9 @@ export class SearchService {
     if (request.chatModelId) this.deps.models.getEnabled(request.chatModelId, "chat");
 
     // Fail fast before spending provider quota when an optional model is missing.
-    if (wantsRerank && !this.deps.models.findDefault("rerank")) {
+    const rerankRequired = request.rerank === true ||
+      (request.rerank === undefined && intent.effectiveStrategy !== "quality" && modeIncludesRerank(mode));
+    if (rerankRequired && !this.deps.models.findDefault("rerank")) {
       throw new SearchHubError("validation_error", "Rerank was requested but no rerank model is configured.");
     }
     if (wantsEmbedding && !this.deps.models.findDefault("embedding")) {
@@ -384,6 +423,22 @@ export class SearchService {
     }
 
     const startedAt = Date.now();
+    const deadlineAtMs = startedAt + (request.timeoutMs ?? settings.defaults.timeoutMs);
+    let deepPlan: DeepQueryPlan | undefined;
+    if (mode === "deep" || request.queryExpansion === true) {
+      const planningDeadline = new AbortController();
+      const planningSignal = AbortSignal.any([controller.signal, planningDeadline.signal]);
+      const planningTimer = setTimeout(
+        () => planningDeadline.abort(new Error("Search deadline exceeded")),
+        Math.max(1, deadlineAtMs - Date.now()),
+      );
+      planningTimer.unref();
+      try {
+        deepPlan = await this.prepareDeepPlan(request, planningSignal);
+      } finally {
+        clearTimeout(planningTimer);
+      }
+    }
     const cacheConfig = settings.cache;
     // `includeRaw` responses carry the upstream payload verbatim. Persisting
     // them would write provider-internal debug data into the database and hand
@@ -404,7 +459,7 @@ export class SearchService {
       credentialVersion: this.deps.providers.credentialVersion(runtime.config.id),
     }));
     const modelIdentities: NonNullable<SearchCacheV2Input["models"]> = {};
-    if (wantsRerank) {
+    if (wantsRerank && this.deps.models.findDefault?.("rerank")) {
       const fingerprint = modelFingerprint(this.deps.models.resolveConfig(request.rerankModelId, "rerank"));
       if (fingerprint) modelIdentities.rerank = { fingerprint, stageVersion: "rerank-v1" };
     }
@@ -423,22 +478,6 @@ export class SearchService {
       providers: providerIdentities.map((provider) => provider.configFingerprint).sort(),
       limit: request.limit ?? settings.defaults.limit,
       perProviderLimit: request.perProviderLimit ?? null,
-    const deadlineAtMs = startedAt + (request.timeoutMs ?? settings.defaults.timeoutMs);
-    let deepPlan: DeepQueryPlan | undefined;
-    if (mode === "deep" || request.queryExpansion === true) {
-      const planningDeadline = new AbortController();
-      const planningSignal = AbortSignal.any([controller.signal, planningDeadline.signal]);
-      const planningTimer = setTimeout(
-        () => planningDeadline.abort(new Error("Search deadline exceeded")),
-        Math.max(1, deadlineAtMs - Date.now()),
-      );
-      planningTimer.unref();
-      try {
-        deepPlan = await this.prepareDeepPlan(request, planningSignal);
-      } finally {
-        clearTimeout(planningTimer);
-      }
-    }
       timeoutMs: request.timeoutMs ?? null,
       language: request.language ?? null,
       freshness: request.freshness ?? null,
@@ -488,8 +527,7 @@ export class SearchService {
       // cache fault into a 500 would make the cache a dependency.
       let hit: ReturnType<typeof this.deps.cache.get> = null;
       try {
-        hit = this.deps.cache.get(cacheKey);
-        if (!hit && legacyCacheKey) hit = this.deps.cache.get(legacyCacheKey);
+        hit = this.deps.cache.getAny(legacyCacheKey ? [cacheKey, legacyCacheKey] : [cacheKey]);
       } catch (error) {
         this.deps.logger.warn({ err: error }, "cache lookup failed; continuing without a hit");
       }
@@ -601,11 +639,11 @@ export class SearchService {
         if (useMultiQueryPipeline && mode !== "deep") response.mode = mode;
 
         if (wantsEmbedding && mode !== "deep") {
-          response = await this.applyEmbedding(response, request, sharedSignal);
+          response = await this.applyEmbedding(response, request, sharedSignal, deadlineAtMs);
         }
         if (wantsRerank && mode !== "deep") {
           options.onEvent?.({ type: "rerank_started", data: { taskId: leaderTaskId, candidateCount: response.results.length } });
-          response = await this.applyRerank(response, request, sharedSignal);
+          response = await this.applyRerank(response, request, sharedSignal, deadlineAtMs);
         }
         // A failed response has no results to summarize; calling the model would
         // add a second, misleading error on top of the real provider failure.
@@ -1124,41 +1162,6 @@ export class SearchService {
       ...query,
       round: roundsPlanned === 1 ? 1 : index === 0 ? 1 : 2,
     }));
-    const deps = this.engineDeps();
-    deps.runtimes = runtimes;
-
-    // Each rewrite is its own search. A sub-search that comes back with
-    // `status: "failed"` is NOT a usable result: it means every provider for
-    // that query failed. Treating it as valid is how a deep search used to
-    // report `completed` with zero results.
-    const maxProviderQueryCalls = 32;
-    const maxHttpRequests = 64;
-    const deadline = deadlineAtMs;
-    let providerQueryCalls = 0;
-    let httpRequests = 0;
-    let budgetExhausted = false;
-    const outcomes: Array<{
-      query: (typeof plannedQueries)[number];
-      index: number;
-      response: SearchResponse | null;
-      error?: unknown;
-    }> = [];
-    const gatedBeforeRequest = (providerId: string, url: string): void => {
-      beforeRequest?.(providerId, url);
-      if (httpRequests >= maxHttpRequests) {
-        budgetExhausted = true;
-        throw new SearchHubError("rate_limited", "Deep search HTTP request budget exhausted");
-      }
-      httpRequests += 1;
-    };
-
-    for (let round = 1; round <= roundsPlanned; round += 1) {
-      if (signal.aborted || Date.now() >= deadline) break;
-      const roundQueries = plannedQueries.filter((query) => query.round === round);
-      const allocations: Array<{ query: (typeof plannedQueries)[number]; runtimes: ProviderRuntime[] }> = [];
-      for (const queryInfo of roundQueries) {
-        const remaining = maxProviderQueryCalls - providerQueryCalls;
-        if (remaining <= 0) {
     return {
       queries: plannedQueries,
       ...(expansionMetadata ? { expansionMetadata } : {}),
@@ -1214,6 +1217,41 @@ export class SearchService {
     const queries = plannedQueries;
     const deepDegradations = plan.degradations;
     const modelCalls = plan.modelCalls;
+    const deps = this.engineDeps();
+    deps.runtimes = runtimes;
+
+    // Each rewrite is its own search. A sub-search that comes back with
+    // `status: "failed"` is NOT a usable result: it means every provider for
+    // that query failed. Treating it as valid is how a deep search used to
+    // report `completed` with zero results.
+    const maxProviderQueryCalls = 32;
+    const maxHttpRequests = 64;
+    const deadline = deadlineAtMs;
+    let providerQueryCalls = 0;
+    let httpRequests = 0;
+    let budgetExhausted = false;
+    const outcomes: Array<{
+      query: (typeof plannedQueries)[number];
+      index: number;
+      response: SearchResponse | null;
+      error?: unknown;
+    }> = [];
+    const gatedBeforeRequest = (providerId: string, url: string): void => {
+      beforeRequest?.(providerId, url);
+      if (httpRequests >= maxHttpRequests) {
+        budgetExhausted = true;
+        throw new SearchHubError("rate_limited", "Deep search HTTP request budget exhausted");
+      }
+      httpRequests += 1;
+    };
+
+    for (let round = 1; round <= roundsPlanned; round += 1) {
+      if (signal.aborted || Date.now() >= deadline) break;
+      const roundQueries = plannedQueries.filter((query) => query.round === round);
+      const allocations: Array<{ query: (typeof plannedQueries)[number]; runtimes: ProviderRuntime[] }> = [];
+      for (const queryInfo of roundQueries) {
+        const remaining = maxProviderQueryCalls - providerQueryCalls;
+        if (remaining <= 0) {
           budgetExhausted = true;
           break;
         }
@@ -1542,33 +1580,53 @@ export class SearchService {
     };
   }
 
+  private async withResourceSlot<T>(
+    signal: AbortSignal,
+    deadlineAtMs: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (Date.now() >= deadlineAtMs) {
+      throw new SearchHubError("timeout", "Search deadline exceeded before model stage", { status: 504, retryable: true });
+    }
+    if (!this.deps.resourceSlots) return operation();
+    const release = await this.deps.resourceSlots.acquire(signal, deadlineAtMs);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
   private async applyEmbedding(
     response: SearchResponse,
     request: SearchRequest,
     signal: AbortSignal,
+    deadlineAtMs: number,
   ): Promise<SearchResponse> {
     if (signal.aborted) return response;
     const started = Date.now();
     try {
-      const embedding = this.deps.models.embeddingModel(request.embeddingModelId);
-      const reranked = await rerankWithEmbeddings(
-        embedding,
-        request.query,
-        response.results,
-        response.results.length,
-        signal,
-      );
-      return {
-        ...response,
-        results: reranked,
-        stats: {
-          ...response.stats,
-          embeddingApplied: true,
-          timing: { ...response.stats.timing, embeddingMs: Date.now() - started },
-        },
-      };
+      return await this.withResourceSlot(signal, deadlineAtMs, async () => {
+        const embedding = this.deps.models.embeddingModel(request.embeddingModelId);
+        const reranked = await rerankWithEmbeddings(
+          embedding,
+          request.query,
+          response.results,
+          response.results.length,
+          signal,
+        );
+        return {
+          ...response,
+          results: reranked,
+          stats: {
+            ...response.stats,
+            embeddingApplied: true,
+            timing: { ...response.stats.timing, embeddingMs: Date.now() - started },
+          },
+        };
+      });
     } catch (error) {
-      if (signal.aborted) throw error;
+      if (signal.aborted || (error instanceof SearchHubError && (error.code === "timeout" || error.code === "rate_limited"))) throw error;
       return this.withWarning(response, "embedding", error, "embeddingMs", started);
     }
   }
@@ -1577,46 +1635,49 @@ export class SearchService {
     response: SearchResponse,
     request: SearchRequest,
     signal: AbortSignal,
+    deadlineAtMs: number,
   ): Promise<SearchResponse> {
     if (signal.aborted) return response;
     const started = Date.now();
     try {
-      const rerank = this.deps.models.rerankModel(request.rerankModelId);
-      const documents = response.results.map((result) => ({
-        id: result.url,
-        text: `${result.title}\n${result.snippet}`,
-      }));
-      if (documents.length === 0) {
-        return { ...response, stats: { ...response.stats, rerankApplied: true } };
-      }
-      const before = response.results.slice(0, 100);
-      const ranked = await rerank.rerank(request.query, documents, documents.length, signal);
-      const index = new Map(response.results.map((result) => [result.url, result] as const));
-      const reordered = ranked.results
-        .map((item) => {
-          const result = index.get(item.id);
-          if (!result) return null;
-          return { ...result, rerankScore: item.score };
-        })
-        .filter((item): item is NonNullable<typeof item> => item !== null);
-      return {
-        ...response,
-        results: reordered,
-        debug: {
-          ...response.debug,
-          rerankComparison: { before, after: reordered.slice(0, 100) },
-        },
-        stats: {
-          ...response.stats,
-          rerankApplied: true,
-          funnel: response.stats.funnel
-            ? { ...response.stats.funnel, rerankInputCount: response.stats.funnel.candidateSelectedCount }
-            : undefined,
-          timing: { ...response.stats.timing, rerankMs: Date.now() - started },
-        },
-      };
+      return await this.withResourceSlot(signal, deadlineAtMs, async () => {
+        const rerank = this.deps.models.rerankModel(request.rerankModelId);
+        const documents = response.results.map((result) => ({
+          id: result.url,
+          text: `${result.title}\n${result.snippet}`,
+        }));
+        if (documents.length === 0) {
+          return { ...response, stats: { ...response.stats, rerankApplied: true } };
+        }
+        const before = response.results.slice(0, 100);
+        const ranked = await rerank.rerank(request.query, documents, documents.length, signal);
+        const index = new Map(response.results.map((result) => [result.url, result] as const));
+        const reordered = ranked.results
+          .map((item) => {
+            const result = index.get(item.id);
+            if (!result) return null;
+            return { ...result, rerankScore: item.score };
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null);
+        return {
+          ...response,
+          results: reordered,
+          debug: {
+            ...response.debug,
+            rerankComparison: { before, after: reordered.slice(0, 100) },
+          },
+          stats: {
+            ...response.stats,
+            rerankApplied: true,
+            funnel: response.stats.funnel
+              ? { ...response.stats.funnel, rerankInputCount: response.stats.funnel.candidateSelectedCount }
+              : undefined,
+            timing: { ...response.stats.timing, rerankMs: Date.now() - started },
+          },
+        };
+      });
     } catch (error) {
-      if (signal.aborted) throw error;
+      if (signal.aborted || (error instanceof SearchHubError && (error.code === "timeout" || error.code === "rate_limited"))) throw error;
       return this.withWarning(response, "rerank", error, "rerankMs", started);
     }
   }

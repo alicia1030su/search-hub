@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderRuntime } from "@search-hub/core";
+import { SearchHubError } from "@search-hub/shared";
 import { classifyQueryIntent, routeProviders } from "../../packages/core/src/routing/route.js";
 
 function runtime(type: string, id = `prv_${type}`, capability: "raw_search" | "grounded_answer" = "raw_search"): ProviderRuntime {
@@ -45,6 +46,32 @@ describe("rule-based provider routing", () => {
     expect(result.decisions.find((item) => item.providerId === "prv_github")?.reasons.join(" ")).toContain("code intent");
   });
 
+  it("explains news intent and prefers news-capable providers", () => {
+    const result = routeProviders({
+      query: "latest AI news",
+      runtimes: [runtime("brave"), runtime("searxng"), runtime("github"), runtime("arxiv")],
+    });
+    expect(result.intent).toBe("news");
+    expect(result.matchedRules).toEqual(["news_terms"]);
+    expect(result.selectedProviderIds.slice(0, 2)).toEqual(["prv_brave", "prv_searxng"]);
+    expect(result.decisions.find((item) => item.providerId === "prv_brave")?.reasons).toContain(
+      "provider capability matches news intent",
+    );
+  });
+
+  it("explains academic intent and prefers academic providers", () => {
+    const result = routeProviders({
+      query: "randomized controlled trial metadata",
+      runtimes: [runtime("brave"), runtime("arxiv"), runtime("pubmed"), runtime("openalex")],
+    });
+    expect(result.intent).toBe("academic");
+    expect(result.matchedRules).toEqual(["academic_terms"]);
+    expect(result.selectedProviderIds.slice(0, 3)).toEqual(["prv_arxiv", "prv_openalex", "prv_pubmed"]);
+    expect(result.decisions.find((item) => item.providerId === "prv_pubmed")?.reasons).toContain(
+      "provider capability matches academic intent",
+    );
+  });
+
   it("keeps explicit provider selection authoritative and ordered", () => {
     const result = routeProviders({
       query: "latest news",
@@ -53,6 +80,44 @@ describe("rule-based provider routing", () => {
     });
     expect(result.selectedProviderIds).toEqual(["prv_github", "prv_brave"]);
     expect(result.matchedRules).toEqual(["explicit_provider_selection"]);
+  });
+
+  it("caps explicit provider selection at eight and reports truncation", () => {
+    const ids = Array.from({ length: 10 }, (_, index) => `prv_${index}`);
+    const result = routeProviders({
+      query: "web",
+      runtimes: ids.map((id) => runtime("brave", id)),
+      explicitProviderIds: ids,
+    });
+    expect(result.selectedProviderIds).toEqual(ids.slice(0, 8));
+    expect(result.selectedProviderCount).toBe(8);
+    expect(result.truncatedProviderIds).toEqual(ids.slice(8));
+  });
+
+  it("rejects unknown explicit provider ids instead of silently dropping them", () => {
+    expect(() => routeProviders({
+      query: "web",
+      runtimes: [runtime("brave")],
+      explicitProviderIds: ["prv_missing"],
+    })).toThrow(/unknown|disabled|capability/i);
+  });
+
+  it.each<[string, ProviderRuntime]>([
+    ["disabled", { ...runtime("brave", "prv_disabled"), enabled: false }],
+    ["capability-incompatible", runtime("grounded", "prv_grounded", "grounded_answer")],
+  ])("returns validation_error for an explicit %s provider", (_label, invalidRuntime) => {
+    try {
+      routeProviders({
+        query: "web",
+        runtimes: [runtime("brave"), invalidRuntime],
+        explicitProviderIds: [invalidRuntime.config.id],
+        capability: "raw_search",
+      });
+      throw new Error("expected routeProviders to reject the explicit provider");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SearchHubError);
+      expect(error).toMatchObject({ code: "validation_error" });
+    }
   });
 
   it("does not silently remove a blocked provider", () => {

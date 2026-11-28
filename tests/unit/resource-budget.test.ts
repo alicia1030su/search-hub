@@ -86,24 +86,30 @@ describe("resource budget thresholds and hysteresis", () => {
     });
   });
 
-  it("moves warning directly to recovering at P<=0.55 without dwell", () => {
+  it("keeps warning for three effective samples, then prioritizes P<=0.55 recovery", () => {
     let pressure = 0.8;
     const controller = createController({ sample: () => lowSample(pressure) });
     controller.start();
     tick();
 
     pressure = 0.55;
+    tick(2);
+    expect(controller.snapshot()).toMatchObject({ state: "warning", budget: 16, stateSamples: 2 });
+
     tick();
     expect(controller.snapshot()).toMatchObject({ state: "recovering", budget: 4, reason: "recovering" });
   });
 
-  it("returns warning directly to normal when 0.55<P<0.75", () => {
+  it("returns warning to normal on the third effective sample when 0.55<P<0.75", () => {
     let pressure = 0.8;
     const controller = createController({ sample: () => lowSample(pressure) });
     controller.start();
     tick();
 
     pressure = 0.5501;
+    tick(2);
+    expect(controller.snapshot().state).toBe("warning");
+
     tick();
     expect(controller.snapshot()).toMatchObject({ state: "normal", budget: 32, reason: "recovered" });
   });

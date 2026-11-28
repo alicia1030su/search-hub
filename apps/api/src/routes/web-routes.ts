@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { WebpageReadResult } from "@search-hub/core";
 import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
-import { authenticate } from "../auth.js";
+import { authenticate, actorLabel } from "../auth.js";
 import { jsonFor, parseInput } from "../http.js";
 import { readWebpageWithBudget } from "../services/web-read-budget.js";
 
@@ -14,13 +14,16 @@ const webReadSchema = z.object({
   }, "url must be an HTTP(S) URL without credentials"),
   maxContentChars: z.number().int().min(1).max(500_000).optional(),
   timeoutMs: z.number().int().min(1).max(120_000).optional(),
+  skipCache: z.boolean().optional(),
+  refresh: z.boolean().optional(),
+  render: z.boolean().optional(),
 });
 
 export function registerWebRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.post(
     "/api/web/read",
     jsonFor(app, async (request, reply) => {
-      authenticate(
+      const actor = authenticate(
         {
           headers: request.headers as Record<string, string | string[] | undefined>,
           cookies: request.cookies as Record<string, string | undefined>,
@@ -40,12 +43,20 @@ export function registerWebRoutes(app: FastifyInstance, ctx: AppContext): void {
       try {
         result = await readWebpageWithBudget(input.url, {
           fetch: ctx.fetch,
+          webReadService: ctx.webReadService,
           resourceSlots: ctx.resourceSlots,
           signal: controller.signal,
+          actor: actorLabel(actor),
           maxContentChars: input.maxContentChars,
           timeoutMs: input.timeoutMs,
+          skipCache: input.skipCache,
+          refresh: input.refresh,
+          render: input.render,
         });
       } catch (error) {
+        if (error instanceof TypeError) {
+          throw new SearchHubError("network", "Webpage request failed", { status: 502 });
+        }
         if (error instanceof SearchHubError && error.status >= 500) {
           const message = error.code === "timeout" ? "Webpage request timed out" : "Webpage request failed";
           throw new SearchHubError(error.code === "timeout" ? "timeout" : "network", message, { status: error.status });

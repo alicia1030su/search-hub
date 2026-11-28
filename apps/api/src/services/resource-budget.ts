@@ -186,13 +186,15 @@ export class ResourceBudgetController {
         this.transition("critical", "pressure_critical", now);
         return;
       }
-      if (pressure <= RECOVERY_THRESHOLD) {
-        this.transition("recovering", "recovering", now);
-        return;
-      }
-      if (pressure < WARNING_THRESHOLD) {
-        this.transition("normal", "recovered", now);
-        return;
+      if (this.stateSamples >= STATE_DWELL_SAMPLES) {
+        if (pressure <= RECOVERY_THRESHOLD) {
+          this.transition("recovering", "recovering", now);
+          return;
+        }
+        if (pressure < WARNING_THRESHOLD) {
+          this.transition("normal", "recovered", now);
+          return;
+        }
       }
       this.lowPressureSamples = 0;
       this.budget = Math.min(this.budget, this.warningBudget());

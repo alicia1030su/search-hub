@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SafeFetch } from "@search-hub/shared";
 import { ResourceSemaphore } from "../../apps/api/src/services/resource-budget.js";
 import { readWebpageWithBudget } from "../../apps/api/src/services/web-read-budget.js";
+import { WebReadService } from "../../apps/api/src/services/web-read.js";
 
 function htmlFetch(onStart: () => void, onEnd: () => void): SafeFetch {
   return async <T>(): Promise<{ status: number; headers: Headers; data: T; url: string }> => {
@@ -28,8 +29,8 @@ describe("webpage resource budget", () => {
     );
 
     await Promise.all([
-      readWebpageWithBudget("https://example.com/a", { fetch, resourceSlots: semaphore }),
-      readWebpageWithBudget("https://example.com/b", { fetch, resourceSlots: semaphore }),
+      readWebpageWithBudget("https://example.com/a", { fetch, webReadService: new WebReadService(), resourceSlots: semaphore }),
+      readWebpageWithBudget("https://example.com/b", { fetch, webReadService: new WebReadService(), resourceSlots: semaphore }),
     ]);
 
     expect(maxActive).toBe(1);
@@ -43,6 +44,7 @@ describe("webpage resource budget", () => {
 
     await expect(readWebpageWithBudget("https://example.com/", {
       fetch: htmlFetch(() => undefined, () => undefined),
+      webReadService: new WebReadService(),
       resourceSlots: semaphore,
       signal: controller.signal,
     })).rejects.toThrow(/cancelled/i);

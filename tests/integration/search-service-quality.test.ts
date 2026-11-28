@@ -47,7 +47,12 @@ function runtime(id: string, search: SearchProviderAdapter["search"]): ProviderR
   };
 }
 
-function serviceWith(models: Record<string, unknown>, runtimes: ProviderRuntime[], fetch: SafeFetch = unusedFetch): SearchService {
+function serviceWith(
+  models: Record<string, unknown>,
+  runtimes: ProviderRuntime[],
+  fetch: SafeFetch = unusedFetch,
+  blocked: Map<string, { code: string; message: string; until: string }> = new Map(),
+): SearchService {
   return new SearchService({
     db: {},
     providers: {
@@ -66,7 +71,7 @@ function serviceWith(models: Record<string, unknown>, runtimes: ProviderRuntime[
     },
     fetch,
     logger,
-    health: { blockedProviders: () => new Map() },
+    health: { blockedProviders: () => blocked },
     cache: {},
   } as unknown as ConstructorParameters<typeof SearchService>[0]);
 }
@@ -151,6 +156,21 @@ describe("search service quality regressions", () => {
     expect(response.mode).toBe("basic");
     expect(response.strategy).toBe("auto");
     expect(response.route).toMatchObject({ selectedStrategy: "fast", ruleId: "fast_intent" });
+  });
+
+  it("keeps a blocked strategy source visible as a failed source", async () => {
+    const provider = runtime("blocked", async () => ({ results: [] }));
+    const service = serviceWith({}, [provider], unusedFetch, new Map([
+      [provider.config.id, { code: "rate_limited", message: "parked", until: "2099-01-01T00:00:00.000Z" }],
+    ]));
+
+    const response = await service.execute(
+      { query: "blocked", strategy: "fast", limit: 5, skipCache: true },
+      { evaluate: true },
+    );
+
+    expect(response.route?.selectedProviderIds).toContain(provider.config.id);
+    expect(response.failedSources).toContainEqual({ id: provider.config.id, code: "rate_limited" });
   });
 
   it("maps fast strategy to basic without requiring a model", async () => {

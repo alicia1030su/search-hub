@@ -12,6 +12,7 @@ import {
   AccountQuotaRegistry,
   KeyScheduler,
   RetryBudget,
+  fanoutProviders,
   runProvider,
   type ProviderRuntime,
 } from "@search-hub/core";
@@ -343,5 +344,69 @@ describe("fanout key lease safety", () => {
     });
     expect(result.ok).toBe(true);
     expect(scheduler.snapshot()[0]).toMatchObject({ inFlight: 0, requestCount: 0, quotaUsedToday: 0 });
+  });
+
+  it("does not restart the provider deadline after waiting for a resource slot", async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    try {
+      const pendingFetch: SafeFetch = async <T>(_url: string, init?: SafeFetchInit) => {
+        return await new Promise<T>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("provider timeout")), { once: true });
+        });
+      };
+      const { runtime } = setup({
+        requiresKey: false,
+        adapter: adapter({
+          requiresKey: false,
+          async search(_input, ctx) {
+            await ctx.fetch("https://example.org/search", { signal: ctx.signal });
+            return { results: [] };
+          },
+        }),
+      });
+      let settled = false;
+      const pending = fanoutProviders([runtime], {
+        ...options(pendingFetch),
+        deadlineMs: 1_000,
+        providerSlot: {
+          acquire: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            return () => {};
+          },
+        },
+      }).then((results) => {
+        settled = true;
+        return results;
+      });
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const results = await pending;
+      expect(Date.now() - startedAt).toBe(1_000);
+      expect(results[0]).toMatchObject({ ok: false, error: { code: "timeout" } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves resource queue rejection codes without starting the provider", async () => {
+    const { runtime } = setup({ requiresKey: false });
+    let started = false;
+    const results = await fanoutProviders([runtime], {
+      ...options(unexpectedFetch),
+      providerSlot: {
+        acquire: async () => {
+          throw new SearchHubError("rate_limited", "Resource wait queue is full", { status: 429, retryable: true });
+        },
+      },
+      onProviderStart: () => { started = true; },
+    });
+
+    expect(started).toBe(false);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+    expect(results[0]!.stat.attempts).toBe(0);
   });
 });
