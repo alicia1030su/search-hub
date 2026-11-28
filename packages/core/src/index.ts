@@ -7,6 +7,7 @@ export * from "./errors/classify.js";
 export * from "./evaluation/index.js";
 export * from "./routing/route.js";
 export * from "./strategy/intent.js";
+export * from "./strategy/router.js";
 export * from "./query/expansion.js";
 export * from "./streaming/events.js";
 export * from "./web/web-reader.js";

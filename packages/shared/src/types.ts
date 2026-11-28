@@ -275,6 +275,10 @@ export interface SearchRouteExplanation {
   selectedProviderCount: number;
   decisions: SearchRouteDecision[];
   truncatedProviderIds: string[];
+  selectedStrategy?: SearchStrategy;
+  ruleId?: string;
+  matchedSignals?: string[];
+  considered?: Array<{ ruleId: string; matched: boolean; signals: string[] }>;
 }
 
 export interface SearchDegradation {
@@ -346,6 +350,7 @@ export interface SearchDebugInfo {
   droppedDuplicates?: Array<{ url: string; keptUrl: string; reason: "exact_url" | "near_title" }>;
   perProviderResults?: Array<{ providerId: string; providerName: string; results: SearchResult[] }>;
   selectedProviderIds?: string[];
+  rerankComparison?: { before: SearchResult[]; after: SearchResult[] };
 }
 
 /** Provider runtime configuration after DB + credential resolution. */

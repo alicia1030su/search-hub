@@ -143,6 +143,7 @@ export async function executeSearch(
             fanoutMs: Date.now() - fanoutStarted,
             fusionMs: 0,
             cancelled: false,
+            deadlineExceeded: false,
             requestedProviderCount,
             selectedProviderIds,
           });
@@ -159,7 +160,10 @@ export async function executeSearch(
       }),
     });
     const fanoutMs = Date.now() - fanoutStarted;
-    const cancelled = controller.signal.aborted && options.signal?.aborted === true;
+    const reason = controller.signal.reason;
+    const deadlineExceeded = controller.signal.aborted &&
+      (options.signal?.aborted !== true || /deadline|timeout/i.test(reason instanceof Error ? reason.message : String(reason ?? "")));
+    const cancelled = controller.signal.aborted && !deadlineExceeded;
 
     const fusionStarted = Date.now();
     const response = buildResponse({
@@ -171,6 +175,7 @@ export async function executeSearch(
       fanoutMs,
       fusionMs: 0,
       cancelled,
+      deadlineExceeded,
       requestedProviderCount,
       selectedProviderIds,
     });
@@ -192,6 +197,7 @@ interface BuildResponseInput {
   fanoutMs: number;
   fusionMs: number;
   cancelled: boolean;
+  deadlineExceeded: boolean;
   requestedProviderCount: number;
   selectedProviderIds: string[];
 }
@@ -316,12 +322,15 @@ function buildResponse(input: BuildResponseInput): SearchResponse {
   const errorSummaries: SearchErrorSummary[] = outcomes
     .filter((outcome) => !outcome.ok && outcome.error)
     .map((outcome) => outcome.error!);
+  if (input.deadlineExceeded) {
+    errorSummaries.push({ providerId: "engine", providerName: "Search Hub", code: "timeout", message: "Search deadline exceeded" });
+  }
 
   const degradedCount = outcomes.filter((outcome) => outcome.ok && outcome.stat.warning).length;
   const status: SearchResponse["status"] =
     input.cancelled
       ? "cancelled"
-      : okCount === 0
+      : input.deadlineExceeded || okCount === 0
         ? "failed"
         : errorSummaries.length > 0 || degradedCount > 0
           ? "partial"

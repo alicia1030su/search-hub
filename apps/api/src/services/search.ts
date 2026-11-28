@@ -25,6 +25,7 @@ import {
   fuseLayeredRrf,
   resolveSearchIntent,
   routeProviders,
+  routeSearchStrategy,
   type CandidateResult,
   type ProviderRuntime,
 } from "@search-hub/core";
@@ -36,6 +37,13 @@ import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
 import { CacheService } from "./cache.js";
 import { SearchFlightService } from "./singleflight.js";
+import {
+  buildSearchFingerprintV1,
+  buildSearchFingerprintV2,
+  canReadV1,
+  type SearchCacheV1Input,
+  type SearchCacheV2Input,
+} from "./search-cache-key.js";
 
 export interface SearchServiceDeps {
   db: SearchHubDb;
@@ -55,6 +63,19 @@ export interface SearchServiceDeps {
 }
 
 const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
+
+function abortMessage(signal?: AbortSignal): string {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason.message : String(reason ?? "");
+}
+
+function isDeadlineAbort(signal?: AbortSignal): boolean {
+  return signal?.aborted === true && /deadline|timeout/i.test(abortMessage(signal));
+}
+
+function isCancellationAbort(signal?: AbortSignal): boolean {
+  return signal?.aborted === true && !isDeadlineAbort(signal);
+}
 
 function emptyFunnel(): SearchFunnel {
   return {
@@ -176,7 +197,14 @@ export class SearchService {
     } = {},
   ): Promise<SearchResponse> {
     const settings = this.deps.settings.get();
-    const intent = resolveSearchIntent(request, settings.defaults.mode);
+    const requestedMode = request.mode;
+    const requestedStrategy = request.strategy;
+    const autoRoute = requestedStrategy === "auto" ? routeSearchStrategy(request) : null;
+    const intent = resolveSearchIntent(
+      autoRoute && requestedMode === undefined ? { ...request, strategy: autoRoute.selected } : request,
+      settings.defaults.mode,
+    );
+    if (autoRoute) intent.effectiveStrategy = autoRoute.selected;
     request = { ...request, mode: intent.mode };
     const taskId = `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
     const controller = new AbortController();
@@ -225,7 +253,7 @@ export class SearchService {
     const blocked = this.deps.health.blockedProviders();
     let routeExplanation: SearchRouteExplanation | undefined;
     if (request.strategy) {
-      const observations = Object.fromEntries([...blocked.entries()].map(([id, value]) => [id, { blocked: true, successRate: 0 }]));
+      const observations = Object.fromEntries([...blocked.keys()].map((id) => [id, { blocked: true, successRate: 0 }]));
       routeExplanation = routeProviders({
         query: request.query,
         runtimes,
@@ -233,6 +261,15 @@ export class SearchService {
         explicitProviderIds: providerIds,
         observations,
       });
+      if (autoRoute) {
+        routeExplanation = {
+          ...routeExplanation,
+          selectedStrategy: autoRoute.selected,
+          ruleId: autoRoute.ruleId,
+          matchedSignals: autoRoute.matchedSignals,
+          considered: autoRoute.considered,
+        };
+      }
       const selected = new Set(routeExplanation.selectedProviderIds);
       runtimes = runtimes.filter((runtime) => selected.has(runtime.config.id));
       if (providerIds.length > 0) {
@@ -316,10 +353,10 @@ export class SearchService {
         "Semantic scoring was requested but no embedding model is configured.",
       );
     }
-    if ((wantsSummary || mode === "deep") && !this.deps.models.findDefault("chat")) {
+    if (wantsSummary && !this.deps.models.findDefault("chat")) {
       throw new SearchHubError(
         "validation_error",
-        "AI summarization/deep search requires a chat model. Add one in AI Models or use basic mode.",
+        "AI summarization requires a chat model. Add one in AI Models or disable summarize.",
       );
     }
 
@@ -335,53 +372,67 @@ export class SearchService {
       cacheConfig.ttlSeconds > 0 &&
       request.skipCache !== true &&
       !rawBypass &&
-      request.strategy === undefined &&
-      request.queryExpansion !== true &&
       options.evaluate !== true;
 
-    // Every input that can change the *content* of the response belongs in the
-    // key. Forgetting one is not a performance bug, it is a correctness bug: a
-    // request that asked for less could be served a richer cached response.
-    const cacheKey = cacheUsable
-      ? CacheService.buildKey({
-          v: 1,
-          query: request.query,
-          mode,
-          capability: capability ?? null,
-          // Sorted so provider order in the request cannot split one entry in two.
-          providers: runtimes
-            .map((runtime) =>
-              providerFingerprint(runtime, this.deps.providers.credentialVersion(runtime.config.id)),
-            )
-            .sort(),
-          limit: request.limit ?? settings.defaults.limit,
-          perProviderLimit: request.perProviderLimit ?? null,
-          timeoutMs: request.timeoutMs ?? null,
-          language: request.language ?? null,
-          freshness: request.freshness ?? null,
-          includeRaw: false,
-          rerank: wantsRerank,
-          embedding: wantsEmbedding,
-          summarize: wantsSummary,
-          // The id alone is not enough: the same id can point at a different
-          // model, endpoint or parameter set after an edit.
-          models: {
-            rerank: wantsRerank
-              ? modelFingerprint(this.deps.models.resolveConfig(request.rerankModelId, "rerank"))
-              : null,
-            embedding: wantsEmbedding
-              ? modelFingerprint(this.deps.models.resolveConfig(request.embeddingModelId, "embedding"))
-              : null,
-            chat:
-              wantsSummary || mode === "deep"
-                ? modelFingerprint(this.deps.models.resolveConfig(request.chatModelId, "chat"))
-                : null,
-          },
-          // The health gate decides which sources may be used. A cached entry
-          // produced while a source was parked must not be replayed after the
-          // park lifts and vice versa, so the gate's verdict is part of the key.
-          parked: [...blocked.keys()].sort(),
-        })
+    const providerIdentities = runtimes.map((runtime) => ({
+      id: runtime.config.id,
+      capability: runtime.adapter.capability ?? "raw_search",
+      configFingerprint: providerFingerprint(runtime, this.deps.providers.credentialVersion(runtime.config.id)),
+      credentialVersion: this.deps.providers.credentialVersion(runtime.config.id),
+    }));
+    const modelIdentities: NonNullable<SearchCacheV2Input["models"]> = {};
+    if (wantsRerank) {
+      const fingerprint = modelFingerprint(this.deps.models.resolveConfig(request.rerankModelId, "rerank"));
+      if (fingerprint) modelIdentities.rerank = { fingerprint, stageVersion: "rerank-v1" };
+    }
+    if (wantsEmbedding) {
+      const fingerprint = modelFingerprint(this.deps.models.resolveConfig(request.embeddingModelId, "embedding"));
+      if (fingerprint) modelIdentities.embedding = { fingerprint, stageVersion: "embedding-v1" };
+    }
+    if ((wantsSummary || mode === "deep") && this.deps.models.findDefault?.("chat")) {
+      const fingerprint = modelFingerprint(this.deps.models.resolveConfig(request.chatModelId, "chat"));
+      if (fingerprint) modelIdentities.chat = { fingerprint, stageVersion: "chat-v1" };
+    }
+    const legacyInput: SearchCacheV1Input = {
+      query: request.query,
+      mode,
+      capability: capability ?? null,
+      providers: providerIdentities.map((provider) => provider.configFingerprint).sort(),
+      limit: request.limit ?? settings.defaults.limit,
+      perProviderLimit: request.perProviderLimit ?? null,
+      timeoutMs: request.timeoutMs ?? null,
+      language: request.language ?? null,
+      freshness: request.freshness ?? null,
+      rerank: wantsRerank,
+      embedding: wantsEmbedding,
+      summarize: wantsSummary,
+      models: {
+        rerank: wantsRerank ? modelIdentities.rerank?.fingerprint ?? null : null,
+        embedding: wantsEmbedding ? modelIdentities.embedding?.fingerprint ?? null : null,
+        chat: wantsSummary || mode === "deep" ? modelIdentities.chat?.fingerprint ?? null : null,
+      },
+      parked: [...blocked.keys()].sort(),
+    };
+    const legacyFingerprint = buildSearchFingerprintV1(legacyInput);
+    const v2Fingerprint = buildSearchFingerprintV2({
+      query: request.query,
+      mode: requestedMode,
+      strategy: requestedStrategy,
+      capability: capability ?? null,
+      effectiveMode: mode,
+      effectiveStrategy: intent.effectiveStrategy,
+      limit: request.limit ?? settings.defaults.limit,
+      perProviderLimit: request.perProviderLimit ?? null,
+      providers: providerIdentities,
+      routeVersion: intent.routeVersion,
+      queryExpansion: request.queryExpansion === true,
+      queryPlan: [{ queryId: "q1", query: request.query, kind: "original", round: 1, weight: 1 }],
+      models: modelIdentities,
+      parked: [...blocked.keys()].sort(),
+    });
+    const cacheKey = cacheUsable ? CacheService.buildKey(v2Fingerprint) : null;
+    const legacyCacheKey = cacheUsable && canReadV1(legacyInput, legacyFingerprint)
+      ? CacheService.buildKey(legacyFingerprint)
       : null;
 
     if (cacheUsable && cacheKey) {
@@ -391,6 +442,7 @@ export class SearchService {
       let hit: ReturnType<typeof this.deps.cache.get> = null;
       try {
         hit = this.deps.cache.get(cacheKey);
+        if (!hit && legacyCacheKey) hit = this.deps.cache.get(legacyCacheKey);
       } catch (error) {
         this.deps.logger.warn({ err: error }, "cache lookup failed; continuing without a hit");
       }
@@ -430,7 +482,6 @@ export class SearchService {
             cached: true,
           },
         });
-        options.onEvent?.({ type: "status", data: { status: cached.status, terminal: false } });
         options.onEvent?.({ type: "search_completed", data: { ...cached, cached: true } as unknown as Record<string, unknown> });
         this.deps.db
           .insert(searchTasks)
@@ -511,8 +562,13 @@ export class SearchService {
         }
         // A failed response has no results to summarize; calling the model would
         // add a second, misleading error on top of the real provider failure.
-        if ((wantsSummary || mode === "deep") && response.status !== "failed" && !sharedSignal.aborted) {
+        if ((wantsSummary || mode === "deep") && response.status !== "failed" && !sharedSignal.aborted && this.deps.models.findDefault?.("chat")) {
           response = await this.applySummary(response, request, sharedSignal);
+        } else if (mode === "deep" && !this.deps.models.findDefault?.("chat")) {
+          response.degradations = [
+            ...(response.degradations ?? []),
+            { stage: "summary", reason: "model_not_configured" },
+          ];
         }
 
         response.results = response.results.slice(0, request.limit ?? 20);
@@ -528,7 +584,7 @@ export class SearchService {
             ...(response.stats.rerankApplied ? ["rerank"] : []),
             ...(response.stats.summaryApplied ? ["summary"] : []),
           ];
-          const degradations: SearchDegradation[] = [];
+          const degradations: SearchDegradation[] = [...(response.degradations ?? [])];
           if (request.strategy === "quality" && !this.deps.models.findDefault("rerank")) {
             degradations.push({ stage: "rerank", reason: "model_not_configured" });
           }
@@ -540,7 +596,7 @@ export class SearchService {
         });
         response.stats.timing.totalMs = Date.now() - startedAt;
         response.stats.timing.dbWriteMs = Math.round(dbWriteMs * 100) / 100;
-        const cancelled = sharedSignal.aborted;
+        const cancelled = isCancellationAbort(sharedSignal);
         options.onEvent?.({ type: "status", data: { status: response.status, terminal: false } });
         if (cancelled || response.status === "cancelled") {
           options.onEvent?.({ type: "status", data: { status: "cancelled", terminal: true } });
@@ -562,9 +618,25 @@ export class SearchService {
 
       const canShare = cacheUsable && cacheKey !== null && beforeRequest === undefined;
       const deadlineMs = request.timeoutMs ?? settings.defaults.timeoutMs;
+      let ledPhysical = false;
+      const physical = (sharedSignal: AbortSignal): Promise<SearchResponse> => {
+        ledPhysical = true;
+        return performPhysical(sharedSignal, taskId);
+      };
       const shared = canShare
-        ? await this.flights.run(cacheKey, controller.signal, (sharedSignal) => performPhysical(sharedSignal, taskId), { deadlineAtMs: startedAt + deadlineMs })
+        ? await this.flights.run(cacheKey, controller.signal, physical, { deadlineAtMs: startedAt + deadlineMs })
         : await performPhysical(controller.signal, taskId);
+      if (canShare && !ledPhysical) {
+        options.onEvent?.({ type: "results_updated", data: { results: shared.results, stats: shared.stats, errors: shared.errors, failedSources: shared.failedSources } });
+        options.onEvent?.({ type: "status", data: { status: shared.status, terminal: false } });
+        if (shared.status === "failed") {
+          options.onEvent?.({ type: "search_failed", data: { status: shared.status, errors: shared.errors, failedSources: shared.failedSources } });
+        } else if (shared.status === "cancelled") {
+          options.onEvent?.({ type: "status", data: { status: "cancelled", terminal: true } });
+        } else {
+          options.onEvent?.({ type: "search_completed", data: { ...shared } as unknown as Record<string, unknown> });
+        }
+      }
       const response: SearchResponse = {
         ...structuredClone(shared),
         taskId,
@@ -585,30 +657,28 @@ export class SearchService {
         (output, runtime) => this.redactForProvider(runtime.config.id, output),
         redactSecrets(rawMessage),
       );
-      const status = controller.signal.aborted ? "cancelled" : "failed";
+      const externalCancelled = isCancellationAbort(controller.signal);
+      const deadline = isDeadlineAbort(controller.signal) || /deadline|timeout/i.test(message);
+      const status = externalCancelled ? "cancelled" : "failed";
+      const errorCode = externalCancelled ? "cancelled" : deadline ? "timeout" : "unknown";
       if (options.evaluate !== true) {
         this.deps.db
           .update(searchTasks)
           .set({
             status,
             durationMs: Date.now() - startedAt,
-            errorsJson: JSON.stringify([{ providerId: "engine", code: "unknown", message }]),
+            errorsJson: JSON.stringify([{ providerId: "engine", code: errorCode, message }]),
             diagnosticsSanitized: true,
             finishedAt: new Date().toISOString(),
           })
           .where(eq(searchTasks.id, taskId))
           .run();
       }
-      if (controller.signal.aborted && options.signal?.aborted) {
-        const response = this.failedResponse(request, mode, taskId, [], "Search cancelled by caller");
-        response.errors = [{
-          providerId: "engine",
-          providerName: "Search Hub",
-          code: "cancelled",
-          message: "Search cancelled by caller",
-        }];
-        response.failedSources = [];
-        return response;
+      if (externalCancelled) {
+        return this.failedResponse(request, mode, taskId, [], "Search cancelled by caller", "cancelled");
+      }
+      if (deadline) {
+        return this.failedResponse(request, mode, taskId, [], "Search deadline exceeded", "failed");
       }
       throw error;
     } finally {
@@ -644,16 +714,25 @@ export class SearchService {
     actor?: string,
     options: { allowUnowned?: boolean } = {},
   ): boolean {
-    if (actor !== undefined) {
-      const task = this.getTask(taskId);
-      if (!task || (task.actor !== actor && !(task.actor === null && options.allowUnowned))) {
-        return false;
-      }
+    return this.cancelDetailed(taskId, actor, options).ok;
+  }
+
+  cancelDetailed(
+    taskId: string,
+    actor?: string,
+    options: { allowUnowned?: boolean } = {},
+  ): { ok: boolean; status: "cancelling" | "already_terminal" | "not_found" | "forbidden"; taskStatus?: string } {
+    const task = this.getTask(taskId);
+    if (actor !== undefined && (!task || (task.actor !== actor && !(task.actor === null && options.allowUnowned)))) {
+      return { ok: false, status: "forbidden" };
+    }
+    if (task && task.status !== "running") {
+      return { ok: false, status: "already_terminal", taskStatus: task.status };
     }
     const controller = this.controllers.get(taskId);
-    if (!controller) return false;
-    controller.abort(new Error("cancelled by user"));
-    return true;
+    if (!controller) return { ok: false, status: "not_found" };
+    if (!controller.signal.aborted) controller.abort(new Error("cancelled by user"));
+    return { ok: true, status: "cancelling" };
   }
 
   getTask(taskId: string): {
@@ -796,12 +875,13 @@ export class SearchService {
     taskId: string,
     errors: SearchErrorSummary[],
     reason: string,
+    status: "failed" | "cancelled" = "failed",
   ): SearchResponse {
     return {
       taskId,
       query: request.query,
       mode,
-      status: "failed",
+      status,
       results: [],
       stats: {
         rawCount: 0,
@@ -816,8 +896,13 @@ export class SearchService {
         funnel: emptyFunnel(),
         truncationReasons: [],
       },
-      errors: [...errors, { providerId: "engine", providerName: "Search Hub", code: "no_available_key", message: reason }],
-      failedSources: errors.map((item) => ({ id: item.providerId, code: item.code })),
+      errors: [...errors, {
+        providerId: "engine",
+        providerName: "Search Hub",
+        code: status === "cancelled" ? "cancelled" : status === "failed" && /timeout|deadline/i.test(reason) ? "timeout" : "no_available_key",
+        message: reason,
+      }],
+      failedSources: status === "cancelled" ? [] : errors.map((item) => ({ id: item.providerId, code: item.code })),
       debug: { rewrittenQueries: [] },
     };
   }
@@ -898,12 +983,13 @@ export class SearchService {
     });
     this.applyHealthSkips(response, skippedByHealth);
     if (signal.aborted) {
-      response.status = "cancelled";
+      const deadline = isDeadlineAbort(signal);
+      response.status = deadline ? "failed" : "cancelled";
       response.errors.push({
         providerId: "engine",
         providerName: "Search Hub",
-        code: "cancelled",
-        message: "Search cancelled by caller",
+        code: deadline ? "timeout" : "cancelled",
+        message: deadline ? "Search deadline exceeded" : "Search cancelled by caller",
       });
     }
     return response;
@@ -923,6 +1009,7 @@ export class SearchService {
     onEvent?: (event: SearchExecutionEvent) => void,
   ): Promise<SearchResponse> {
     let expansionMetadata: SearchResponse["queryExpansion"];
+    const deepDegradations: SearchDegradation[] = [];
     let modelCalls = 0;
     const maxQueries = Math.min(4, Math.max(1, request.maxSubqueries ?? (request.strategy || request.queryExpansion ? 4 : 3)));
     const maxRounds = Math.min(2, Math.max(1, request.maxRounds ?? 2));
@@ -934,8 +1021,14 @@ export class SearchService {
       queryIndex: number;
       round: number;
     }>;
-    if (request.queryExpansion === true) {
-      const chat = this.deps.models.findDefault("chat") ? this.deps.models.chatModel(request.chatModelId) : null;
+    const modelService = this.deps.models as Partial<ModelService>;
+    const chatAvailable = Boolean(
+      request.chatModelId ||
+      (typeof modelService.findDefault === "function" ? modelService.findDefault("chat") : typeof modelService.chatModel === "function"),
+    );
+    if (request.queryExpansion === true || !chatAvailable) {
+      const chat = chatAvailable ? this.deps.models.chatModel(request.chatModelId) : null;
+      if (!chat) deepDegradations.push({ stage: "query_expansion", reason: "model_not_configured" });
       const expansion = await expandQuery(
         { query: request.query, queryExpansion: true, strategy: request.strategy ?? "deep" },
         {
@@ -1130,11 +1223,14 @@ export class SearchService {
       // A parked source is a reason the rewrites failed, and the caller is
       // entitled to see it here rather than only in REST's generic error.
       const failures = [...queryFailures(), ...skippedByHealth];
+      if (isDeadlineAbort(signal)) {
+        failures.push({ providerId: "engine", providerName: "Search Hub", code: "timeout", message: "Search deadline exceeded" });
+      }
       return {
         taskId,
         query: request.query,
         mode: "deep",
-        status: signal.aborted ? "cancelled" : "failed",
+        status: isCancellationAbort(signal) ? "cancelled" : "failed",
         results: [],
         stats: {
           rawCount: 0,
@@ -1154,14 +1250,21 @@ export class SearchService {
         failedSources: failures.map((item) => ({ id: item.providerId, code: item.code })),
         ...(expansionMetadata ? { queryExpansion: expansionMetadata } : {}),
         deepBudget,
+        ...(deepDegradations.length > 0 ? { degradations: deepDegradations } : {}),
         debug: { rewrittenQueries: queries.map((query) => query.query) },
       };
     }
 
     const valid = succeeded.map((outcome) => outcome.response);
     const deepCandidates: CandidateResult[] = [];
+    let invalidDropped = 0;
+    let rawPoolTruncated = 0;
     for (const outcome of succeeded) {
-      for (const result of outcome.response.results) {
+      invalidDropped += outcome.response.stats.funnel?.invalidDropped ?? 0;
+      const providerResults = outcome.response.debug?.perProviderResults?.length
+        ? outcome.response.debug.perProviderResults
+        : [{ providerId: outcome.response.results[0]?.provider ?? "unknown", providerName: outcome.response.results[0]?.providerName ?? "unknown", results: outcome.response.results }];
+      const providerCandidates: CandidateResult[][] = providerResults.map((provider) => provider.results.map((result) => {
         const bestByProvider = new Map<string, (typeof result.sources)[number]>();
         for (const source of result.sources) {
           const previous = bestByProvider.get(source.providerId);
@@ -1187,7 +1290,7 @@ export class SearchService {
           rank: source.rank,
           score: 1 / (60 + Math.max(1, source.rank)),
         }));
-        deepCandidates.push({
+        return {
           title: result.title,
           url: result.url,
           snippet: result.snippet,
@@ -1202,41 +1305,32 @@ export class SearchService {
           retrievedAt: result.retrievedAt,
           sources: result.sources.map((source) => ({ ...source })),
           queryOrigins,
+        } satisfies CandidateResult;
+      }));
+      for (const list of providerCandidates) {
+        list.sort((left, right) => {
+          if (left.rank !== right.rank) return left.rank - right.rank;
+          const leftUrl = normalizeUrl(left.url) ?? left.url;
+          const rightUrl = normalizeUrl(right.url) ?? right.url;
+          return leftUrl < rightUrl ? -1 : leftUrl > rightUrl ? 1 : 0;
         });
       }
-    }
-
-    const candidatesByQueryProvider = new Map<string, CandidateResult[]>();
-    for (const candidate of deepCandidates) {
-      const origin = candidate.queryOrigins?.[0];
-      const key = `${origin?.queryId ?? "q1"}:${candidate.providerId}`;
-      const list = candidatesByQueryProvider.get(key) ?? [];
-      list.push(candidate);
-      candidatesByQueryProvider.set(key, list);
-    }
-    for (const list of candidatesByQueryProvider.values()) {
-      list.sort((left, right) => {
-        if (left.rank !== right.rank) return left.rank - right.rank;
-        const leftUrl = normalizeUrl(left.url) ?? left.url;
-        const rightUrl = normalizeUrl(right.url) ?? right.url;
-        return leftUrl < rightUrl ? -1 : leftUrl > rightUrl ? 1 : 0;
-      });
-    }
-    const rawPool: CandidateResult[] = [];
-    const candidateLists = [...candidatesByQueryProvider.values()];
-    for (let index = 0; rawPool.length < 400; index += 1) {
-      let appended = false;
-      for (const list of candidateLists) {
-        const candidate = list[index];
-        if (!candidate) continue;
-        rawPool.push(candidate);
-        appended = true;
-        if (rawPool.length === 400) break;
+      const queryPool: CandidateResult[] = [];
+      for (let index = 0; queryPool.length < 400; index += 1) {
+        let appended = false;
+        for (const list of providerCandidates) {
+          const candidate = list[index];
+          if (!candidate) continue;
+          queryPool.push(candidate);
+          appended = true;
+          if (queryPool.length === 400) break;
+        }
+        if (!appended) break;
       }
-      if (!appended) break;
+      rawPoolTruncated += providerCandidates.reduce((sum, list) => sum + list.length, 0) - queryPool.length;
+      deepCandidates.push(...queryPool);
     }
-    const rawPoolTruncated = deepCandidates.length - rawPool.length;
-    const deduped = dedupeResults(rawPool);
+    const deduped = dedupeResults(deepCandidates);
     const fused = fuseLayeredRrf(
       deduped.results,
       queries.map((query) => ({ id: query.id, weight: query.weight })),
@@ -1281,6 +1375,9 @@ export class SearchService {
       seenErrors.add(key);
       errors.push(item);
     }
+    if (isDeadlineAbort(signal)) {
+      errors.push({ providerId: "engine", providerName: "Search Hub", code: "timeout", message: "Search deadline exceeded" });
+    }
     // A parked source is a failure of this search even when every rewrite
     // succeeded: the caller asked for N sources and got N-1.
     const anyFailure =
@@ -1290,9 +1387,9 @@ export class SearchService {
     const exactDuplicateDropped = deduped.dropped.filter((item) => item.reason === "exact_url").length;
     const nearDuplicateDropped = deduped.dropped.filter((item) => item.reason === "near_title").length;
     const funnel: SearchFunnel = {
-      rawReceived: rawPool.length,
-      invalidDropped: 0,
-      eligible: rawPool.length,
+      rawReceived: invalidDropped + deepCandidates.length,
+      invalidDropped,
+      eligible: deepCandidates.length,
       exactDuplicateDropped,
       nearDuplicateDropped,
       dedupedCount: deduped.results.length,
@@ -1327,7 +1424,7 @@ export class SearchService {
       ...base,
       query: request.query,
       mode: "deep",
-      status: signal.aborted ? "cancelled" : anyFailure ? "partial" : "completed",
+      status: isCancellationAbort(signal) ? "cancelled" : isDeadlineAbort(signal) ? "failed" : anyFailure ? "partial" : "completed",
       results,
       stats: {
         ...base.stats,
@@ -1344,6 +1441,7 @@ export class SearchService {
       errors,
       ...(expansionMetadata ? { queryExpansion: expansionMetadata } : {}),
       deepBudget,
+      ...(deepDegradations.length > 0 ? { degradations: deepDegradations } : {}),
       debug: {
         ...base.debug,
         rewrittenQueries: queries.map((query) => query.query),
@@ -1399,6 +1497,7 @@ export class SearchService {
       if (documents.length === 0) {
         return { ...response, stats: { ...response.stats, rerankApplied: true } };
       }
+      const before = response.results.slice(0, 100);
       const ranked = await rerank.rerank(request.query, documents, documents.length, signal);
       const index = new Map(response.results.map((result) => [result.url, result] as const));
       const reordered = ranked.results
@@ -1411,6 +1510,10 @@ export class SearchService {
       return {
         ...response,
         results: reordered,
+        debug: {
+          ...response.debug,
+          rerankComparison: { before, after: reordered.slice(0, 100) },
+        },
         stats: {
           ...response.stats,
           rerankApplied: true,
