@@ -61,7 +61,7 @@ const skills = readdirSync(ROOT, { withFileTypes: true })
     }
   });
 
-check(skills.length === 3, "three skills are present", skills.join(", "));
+check(skills.length === 4, "four skills are present", skills.join(", "));
 
 const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
 
@@ -118,6 +118,11 @@ const calls = [
     path: "/api/search/deep",
     body: { query: "self-hosted search aggregators and key rotation", limit: 5 },
   },
+  {
+    name: "fetch-webpage",
+    path: "/api/web/read",
+    body: { url: "https://www.rfc-editor.org/rfc/rfc9110", maxContentChars: 2000 },
+  },
 ];
 
 for (const item of calls) {
@@ -126,6 +131,14 @@ for (const item of calls) {
   const urls = results.map((row) => row.url).filter((url) => typeof url === "string");
   const absolute = urls.filter((url) => /^https?:\/\//.test(url));
   const hasToken = result.raw.includes(TOKEN);
+
+  if (item.name === "fetch-webpage") {
+    check(result.status === 200, `${item.name}: HTTP 200`, `HTTP ${result.status}`);
+    check(result.body?.readStatus === "ok", `${item.name}: readStatus=ok`, result.body?.readStatus);
+    check(typeof result.body?.content === "string" && result.body.content.length > 0, `${item.name}: returns page text`);
+    check(!hasToken, `${item.name}: response does not echo the token`);
+    continue;
+  }
 
   if (item.name.startsWith("deep-research")) {
     // Without a chat model this must fail with a clear 4xx, not return an

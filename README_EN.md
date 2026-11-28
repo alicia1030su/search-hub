@@ -23,10 +23,10 @@
 <a id="screenshots"></a>
 ## Interface
 
-![First-run onboarding](./docs/screenshots/v0117/onboarding.png)
-![Search Hub dashboard](./docs/screenshots/v0117/dashboard.png)
-![Search Lab](./docs/screenshots/v0117/search-lab.png)
-![Provider health](./docs/screenshots/v0117/provider-health.png)
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/onboarding.png after capture. -->
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/dashboard.png after capture. -->
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/search-lab.png after capture. -->
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/provider-health.png after capture. -->
 <a id="quick-start"></a>
 ## Quick start
 
@@ -109,7 +109,7 @@ Use the arm64 standalone package on arm64 hosts; Docker arm64 emulation is outsi
 | REST | `POST /api/search`, `/api/search/deep`, `/api/search/stream`, `/api/web/read` | Bearer with `search` scope | [API](./docs/api.md) |
 | MCP HTTP | `POST /mcp`, Streamable HTTP | Bearer with `mcp:use`; search tools also need `search`; `get_search_sources` also needs `sources:read` | [MCP](./docs/mcp.md) |
 | MCP stdio | `packages/mcp/dist/stdio.mjs`, a proxy to the same REST API | The same token and layered scopes: `mcp:use`, `search` for search tools, and `sources:read` for `get_search_sources` | [MCP](./docs/mcp.md) |
-| Agent Skills | `search-web`, `deep-research`, `research-with-citations` | `search` scope | [Skills](./docs/skills.md) |
+| Agent Skills | `search-web`, `deep-research`, `fetch-webpage`, `research-with-citations` | `search` scope | [Skills](./docs/skills.md) |
 | CLI | Standalone `shub`, reusing the REST API | Environment variable or `--token-stdin` | [CLI](./docs/cli.md) |
 
 ### CLI examples
@@ -117,8 +117,8 @@ Use the arm64 standalone package on arm64 hosts; Docker arm64 emulation is outsi
 ```bash
 export SEARCH_HUB_URL="http://127.0.0.1:8787"
 export SEARCH_HUB_TOKEN="sh_replace_with_your_token"
-shub status
 shub search "Linux" --json
+shub search "Linux" --stream --stream-format ndjson
 shub fetch https://www.python.org/ --json
 shub sources --enabled --json
 ```

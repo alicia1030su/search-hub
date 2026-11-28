@@ -187,9 +187,9 @@ describe("skill validation", () => {
     expect(results.every((item) => item.valid)).toBe(true);
   });
 
-  it("accepts the three skills that ship with the repository", async () => {
+  it("accepts the four skills that ship with the repository", async () => {
     const { validateSkillDir: validate } = await import("../../apps/api/src/services/skills.js");
-    for (const name of ["search-web", "deep-research", "research-with-citations"]) {
+    for (const name of ["search-web", "deep-research", "fetch-webpage", "research-with-citations"]) {
       const result = validate(join("packages", "skills", name));
       expect(result.valid, `${name}: ${JSON.stringify(result.issues)}`).toBe(true);
       expect(result.metadata.name).toBe(name);

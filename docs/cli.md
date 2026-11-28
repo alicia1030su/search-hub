@@ -56,7 +56,7 @@ shub config reset
 shub search "Linux 内核最新变化"
 shub search "AI" --limit 20 --provider prv_xxx --mode rrf
 shub search "AI 搜索技术" --mode deep
-shub search "AI 搜索技术" --mode deep --stream --format ndjson
+shub search "AI 搜索技术" --mode deep --stream --stream-format ndjson
 shub fetch https://www.python.org/ --json
 shub sources
 shub sources --enabled --json
@@ -97,7 +97,7 @@ exactly one JSON value to stdout and diagnostics go to stderr. Non-streaming
 `streaming:false`.
 
 `--stream` consumes the real `/api/search/stream` endpoint (SSE by default).
-Use `--stream --format ndjson` for one live event object per line; events carry
+Use `--stream --stream-format ndjson` for one live event object per line; events carry
 `streaming:true`, temporary result sets are marked `resultSet:"temporary"`, and
 the terminal event is marked `resultSet:"final"`. `--stream --json` emits one JSON
 object per event rather than a single JSON document, so NDJSON is the safer

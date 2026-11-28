@@ -4,8 +4,8 @@ description: Retrieve evidence through Search Hub and format a citation-ready so
 license: MIT
 metadata:
   author: search-hub
-  version: "0.1.4"
-  requires: search-hub>=0.1.1
+  version: "0.1.18"
+  requires: search-hub>=0.1.18
   transport: rest
 ---
 
@@ -37,7 +37,7 @@ curl -sS "$SEARCH_HUB_URL/api/search" \
   -d '{"query":"postgres logical replication","mode":"rrf","limit":12,"includeRaw":false}'
 ```
 
-Use `search_with_sources` over MCP when you also need per-provider timing and failure reasons.
+Use `search_with_sources` over MCP when you also need per-provider timing and failure reasons. This skill keeps the ordinary single-response search contract: it does not require SSE/NDJSON. New integrations may replace legacy `mode: "rrf"` with `strategy: "balanced"` or `strategy: "auto"`; do not send both unless the server explicitly accepts the mapping. Use the separate `fetch-webpage` skill only when a selected source needs full-text verification.
 
 ## Building the evidence table
 

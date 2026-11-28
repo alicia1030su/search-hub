@@ -23,10 +23,10 @@
 <a id="screenshots"></a>
 ## 界面
 
-![首次使用引导](./docs/screenshots/v0117/onboarding.png)
-![Search Hub 仪表盘](./docs/screenshots/v0117/dashboard.png)
-![搜索实验室](./docs/screenshots/v0117/search-lab.png)
-![搜索源健康](./docs/screenshots/v0117/provider-health.png)
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/onboarding.png after capture. -->
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/dashboard.png after capture. -->
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/search-lab.png after capture. -->
+<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/provider-health.png after capture. -->
 <a id="quick-start"></a>
 ## 快速开始
 
@@ -109,7 +109,7 @@ arm64 主机请使用 arm64 独立包；Docker arm64 模拟运行不在项目验
 | REST | `POST /api/search`、`/api/search/deep`、`/api/search/stream`、`/api/web/read` | Bearer `search` scope | [API](./docs/api.md) |
 | MCP HTTP | `POST /mcp`，Streamable HTTP | Bearer `mcp:use`；搜索工具另需 `search`；`get_search_sources` 另需 `sources:read` | [MCP](./docs/mcp.md) |
 | MCP stdio | `packages/mcp/dist/stdio.mjs`，代理同一 REST API | 同一 Token 与分层 scope：`mcp:use`、搜索工具 `search`、`get_search_sources` 的 `sources:read` | [MCP](./docs/mcp.md) |
-| Agent Skills | `search-web`、`deep-research`、`research-with-citations` | `search` scope | [Skills](./docs/skills.md) |
+| Agent Skills | `search-web`、`deep-research`、`fetch-webpage`、`research-with-citations` | `search` scope | [Skills](./docs/skills.md) |
 | CLI | 独立 `shub`，复用 REST API | 环境变量或 `--token-stdin` | [CLI](./docs/cli.md) |
 
 ### CLI 示例
@@ -117,8 +117,8 @@ arm64 主机请使用 arm64 独立包；Docker arm64 模拟运行不在项目验
 ```bash
 export SEARCH_HUB_URL="http://127.0.0.1:8787"
 export SEARCH_HUB_TOKEN="sh_replace_with_your_token"
-shub status
 shub search "Linux" --json
+shub search "Linux" --stream --stream-format ndjson
 shub fetch https://www.python.org/ --json
 shub sources --enabled --json
 ```

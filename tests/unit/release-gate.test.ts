@@ -12,10 +12,10 @@ const sha = "a".repeat(40);
 const version = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
 const currentTag = `v${version}`;
 const screenshotFiles = [
-  "docs/screenshots/v0117/onboarding.png",
-  "docs/screenshots/v0117/dashboard.png",
-  "docs/screenshots/v0117/search-lab.png",
-  "docs/screenshots/v0117/provider-health.png",
+  "docs/screenshots/v0118/onboarding.png",
+  "docs/screenshots/v0118/dashboard.png",
+  "docs/screenshots/v0118/search-lab.png",
+  "docs/screenshots/v0118/provider-health.png",
 ];
 const readmeAnchors = [
   "top", "highlights", "screenshots", "quick-start", "interfaces",
@@ -71,7 +71,7 @@ function finalReadmeFixture(): string {
   writeFileSync(join(directory, "package.json"), JSON.stringify({ version, engines: { node: ">=22.12.0" } }));
   writeFileSync(join(directory, "README.md"), finalReadme(false));
   writeFileSync(join(directory, "README_EN.md"), finalReadme(true));
-  mkdirSync(join(directory, "docs", "screenshots", "v0117"), { recursive: true });
+  mkdirSync(join(directory, "docs", "screenshots", "v0118"), { recursive: true });
   writeFileSync(
     join(directory, "docs", "cli.md"),
     `# CLI\n\nshub-v${version}-node22.tar.gz\nNode.js >=22.12.0\n\n## Configuration\n`,

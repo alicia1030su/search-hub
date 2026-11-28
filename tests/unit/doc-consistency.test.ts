@@ -130,7 +130,7 @@ describe("catalog ↔ docs consistency", () => {
       expect(resolveReadmeMode({ root })).toBe("interim");
       expect(resolveReadmeMode({ requested: "auto", root })).toBe("interim");
       expect(resolveReadmeMode({ requested: "final", root })).toBe("final");
-      const screenshotDir = join(root, "docs", "screenshots", "v0117");
+      const screenshotDir = join(root, "docs", "screenshots", "v0118");
       mkdirSync(screenshotDir, { recursive: true });
       for (const file of SCREENSHOT_FILES) writeFileSync(join(root, file), "fixture");
       expect(resolveReadmeMode({ root })).toBe("final");

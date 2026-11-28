@@ -102,7 +102,7 @@ describe("README relative-link gate", () => {
 
   it("treats image targets as files and rejects a missing screenshot", () => {
     const root = fixtureRoot();
-    const text = "![missing](./docs/screenshots/v0117/dashboard.png)";
+    const text = "![missing](./docs/screenshots/v0118/dashboard.png)";
     expect(checkReadmeLinks({ text, label: "README.md", file: "README.md", root }).join("\n"))
       .toContain("links to missing file");
   });

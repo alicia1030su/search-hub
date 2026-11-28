@@ -2,7 +2,7 @@
 /**
  * README structure, fact-parity, screenshot-mode and relative-link gates.
  *
- * Interim mode is used while the real v0.1.17 screenshots are being captured:
+ * Interim mode is used while the real current-release screenshots are being captured:
  * each README must contain exactly four CAPTURE_REQUIRED comments and no
  * screenshot links. Final mode requires zero placeholders and four real image
  * files, so a release can never ship with capture markers or broken images.
@@ -25,10 +25,10 @@ export const README_ANCHORS = Object.freeze([
   "license",
 ]);
 export const SCREENSHOT_FILES = Object.freeze([
-  "docs/screenshots/v0117/onboarding.png",
-  "docs/screenshots/v0117/dashboard.png",
-  "docs/screenshots/v0117/search-lab.png",
-  "docs/screenshots/v0117/provider-health.png",
+  "docs/screenshots/v0118/onboarding.png",
+  "docs/screenshots/v0118/dashboard.png",
+  "docs/screenshots/v0118/search-lab.png",
+  "docs/screenshots/v0118/provider-health.png",
 ]);
 export const README_MIN_LINES = 100;
 export const README_MAX_LINES = 150;

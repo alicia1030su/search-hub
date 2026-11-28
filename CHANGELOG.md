@@ -9,7 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - **Strategy-based search.** Fast, Balanced, Quality, Deep, and a deterministic local `auto` router with visible rule explanations; existing `mode` requests remain supported.
-- **Real streaming and webpage reading.** REST search supports SSE/NDJSON with distinct provisional and final events, and `shub search --stream` consumes the same protocol. `POST /api/web/read`, MCP `fetch_webpage`, and `shub fetch` share bounded HTTP extraction without launching Chromium by default.
+- **Real streaming and webpage reading.** REST search supports SSE/NDJSON with distinct provisional and final events, and `shub search --stream` consumes the same protocol. `POST /api/web/read`, MCP `fetch_webpage`, `shub fetch`, and the `fetch-webpage` Agent Skill share bounded HTTP extraction without launching Chromium.
 - **Search Lab diagnostics.** Provider participation, route decisions, query expansion, source contribution, candidate funnel, rerank movements, latency, cache state, and on-demand article reading are available in the existing Lab page.
 - **Reproducible quality workflow.** A frozen 40-query real-web draft, human-curated qrels protocol, and live ABBA evidence path complement the existing synthetic fixtures; they do not claim a universal quality improvement.
 

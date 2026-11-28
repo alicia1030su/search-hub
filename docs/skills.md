@@ -1,11 +1,12 @@
 # Agent Skills
 
-Search Hub ships three skills in the standard [agentskills.io](https://agentskills.io) layout: a directory containing `SKILL.md` with YAML frontmatter (`name`, `description`, optional `license`/`metadata`).
+Search Hub ships four skills in the standard [agentskills.io](https://agentskills.io) layout: a directory containing `SKILL.md` with YAML frontmatter (`name`, `description`, optional `license`/`metadata`).
 
 | Skill | Purpose | Needs |
 |---|---|---|
 | `search-web` | One search, top results with source attribution and citation rules | `search` scope |
-| `deep-research` | Rewrite → multi-query → synthesis with numbered citations | `search` scope + a chat model |
+| `deep-research` | Bounded multi-query retrieval → optional synthesis with numbered citations | `search` scope; chat model optional |
+| `fetch-webpage` | Read one selected public page as bounded text with stable availability status | `search` scope |
 | `research-with-citations` | Auditable evidence table (title, URL, date, provider, retrieved-at) | `search` scope |
 
 Skill files: `packages/skills/<name>/SKILL.md`.
@@ -35,7 +36,7 @@ export SEARCH_HUB_URL="https://search.example.com"
 export SEARCH_HUB_TOKEN="sh_..."
 ```
 
-Both skills read these two variables. Do not put provider API keys in the client; Search Hub holds them.
+All skills read these two variables. Do not put provider API keys in the client; Search Hub holds them.
 
 ### 3. Copy the skill directory
 
@@ -44,6 +45,7 @@ Most clients read skills from a directory such as `~/.claude/skills/` or a proje
 ```bash
 cp -r packages/skills/search-web ~/.claude/skills/
 cp -r packages/skills/deep-research ~/.claude/skills/
+cp -r packages/skills/fetch-webpage ~/.claude/skills/
 cp -r packages/skills/research-with-citations ~/.claude/skills/
 ```
 
@@ -51,7 +53,7 @@ From the admin UI, **Integrations → Skills** previews each file and offers a d
 
 ### 4. Confirm the client can execute
 
-Ask the agent to run the skill on a trivial question and check that it performs an HTTP call to `/api/search`. If the client cannot execute shell/HTTP, it can still read the instructions but must not claim it retrieved anything.
+Ask the agent to run the skill on a trivial question and check that it performs an HTTP call to `/api/search` or, for `fetch-webpage`, `/api/web/read`. If the client cannot execute shell/HTTP, it can still read the instructions but must not claim it retrieved anything.
 
 ## Client support status
 
@@ -69,13 +71,13 @@ We do **not** claim universal compatibility. The file format is standard; execut
 curl -sS "$SEARCH_HUB_URL/api/search" \
   -H "authorization: Bearer $SEARCH_HUB_TOKEN" \
   -H "content-type: application/json" \
-  -d '{"query":"postgres full text search ranking","mode":"rrf","limit":8}'
+  -d '{"query":"postgres full text search ranking","strategy":"balanced","limit":8}'
 ```
 
 The skill instructs the agent to:
 
 1. read the two environment variables (and stop if missing),
-2. call with `mode: "rrf"`,
+2. call with `strategy: "balanced"` (or legacy `mode: "rrf"`),
 3. retry once with a broader query if results are empty but the status is `completed`,
 4. keep results and disclose failures when the status is `partial`,
 5. cite exact URLs and never invent one.
@@ -89,7 +91,18 @@ curl -sS "$SEARCH_HUB_URL/api/search/deep" \
   -d '{"query":"How do self-hosted search aggregators rotate API keys?","limit":15}'
 ```
 
-Response includes `summary.text` with `[n]` markers and `summary.citations[]`. If `summary.degraded` is `true`, the model failed: the skill tells the agent to write the synthesis from `results` and say the model was unavailable, rather than pretending a summary exists.
+Response includes `deepBudget` (4 queries / 2 rounds / 32 Provider-query calls / 64 HTTP requests maximum), task-level `timeoutMs`, and per-result `queryOrigins`. Without a chat model, retrieval still runs and the summary stage is reported in `degradations`. If `summary.degraded` is `true`, the agent writes the synthesis from `results` and says the model was unavailable.
+
+## Example: fetch-webpage
+
+```bash
+curl -sS "$SEARCH_HUB_URL/api/web/read" \
+  -H "authorization: Bearer $SEARCH_HUB_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"url":"https://www.rfc-editor.org/rfc/rfc9110","maxContentChars":20000}'
+```
+
+The skill reads only the selected URL, never the whole result list. It reports `readStatus`, `reasonCode`, and `truncated`, and it does not launch Chromium. Browser rendering is not enabled in v0.1.18; `render=true` is rejected.
 
 ## Example: research-with-citations
 

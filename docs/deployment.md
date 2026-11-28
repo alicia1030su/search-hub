@@ -40,7 +40,7 @@ attestation proves which workflow and commit produced them.
 
 - The Lab and REST API expose Fast/Balanced/Quality/Deep presets plus deterministic local `auto` routing. Existing `mode` requests remain valid; do not send `strategy` and `mode` together unless the server explicitly accepts the mapping.
 - `POST /api/search/stream` supports SSE and NDJSON. Keep reverse-proxy buffering disabled and allow the existing 120-second read timeout; provisional events are not final results.
-- `POST /api/web/read`, MCP `fetch_webpage`, and `shub fetch` use bounded HTTP extraction and do not launch Chromium. Browser rendering is outside the default read path.
+- `POST /api/web/read`, MCP `fetch_webpage`, and `shub fetch` use bounded HTTP extraction and do not launch Chromium. Browser rendering is not enabled in v0.1.18; `render=true` is rejected.
 - Cache fingerprint v2 preserves compatible previous-Stable SQLite entries. An upgrade must not delete `search-hub.db` or clear the cache to “fix” misses.
 
 ## Backup and restore
