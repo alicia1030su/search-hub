@@ -75,8 +75,8 @@ export interface CacheStats {
   diagnostics: CacheStatsDiagnostics;
 }
 
-export interface CacheLookup {
-  response: SearchResponse;
+export interface CacheLookup<T = SearchResponse> {
+  response: T;
   createdAt: string;
   expiresAt: string;
   hitCount: number;
@@ -241,9 +241,18 @@ export class CacheService {
   }
 
   get(key: string): CacheLookup | null {
+    return this.readJson<SearchResponse>(key);
+  }
+
+  /** Generic JSON reads share the existing lookup and LRU-touch path. */
+  getJson<T>(key: string): CacheLookup<T> | null {
+    return this.readJson<T>(key);
+  }
+
+  private readJson<T>(key: string): CacheLookup<T> | null {
     const started = performance.now();
     try {
-      return this.getInternal(key);
+      return this.getInternal<T>(key);
     } finally {
       const duration = performance.now() - started;
       this.diagnostics.recordQuery(duration);
@@ -251,7 +260,7 @@ export class CacheService {
     }
   }
 
-  private getInternal(key: string): CacheLookup | null {
+  private getInternal<T>(key: string): CacheLookup<T> | null {
     const nowIso = new Date(this.now()).toISOString();
     const row = this.deps.db.select().from(searchCache).where(eq(searchCache.cacheKey, key)).get();
     if (!row) {
@@ -265,9 +274,9 @@ export class CacheService {
       return null;
     }
 
-    let parsed: SearchResponse;
+    let parsed: T;
     try {
-      parsed = JSON.parse(row.responseJson) as SearchResponse;
+      parsed = JSON.parse(row.responseJson) as T;
     } catch {
       this.deleteKeyWithTotals(key);
       this.count("misses");
@@ -291,6 +300,15 @@ export class CacheService {
   }
 
   put(key: string, response: SearchResponse, ttlSeconds: number, mode: string): CachePutResult {
+    return this.putValue(key, response, ttlSeconds, mode, response.status);
+  }
+
+  /** Generic JSON values share the same table, TTL, LRU limits and totals. */
+  putJson<T>(key: string, value: T, ttlSeconds: number, mode: string, status: string): CachePutResult {
+    return this.putValue(key, value, ttlSeconds, mode, status);
+  }
+
+  private putValue<T>(key: string, response: T, ttlSeconds: number, mode: string, status: string): CachePutResult {
     const responseJson = JSON.stringify(response);
     const sizeBytes = Buffer.byteLength(responseJson, "utf8");
     // Oversize responses are a successful search with no cache write: no
@@ -315,7 +333,7 @@ export class CacheService {
           .values({
             cacheKey: key,
             responseJson,
-            status: response.status,
+            status,
             mode,
             createdAt,
             expiresAt,
@@ -325,7 +343,7 @@ export class CacheService {
           })
           .onConflictDoUpdate({
             target: searchCache.cacheKey,
-            set: { responseJson, status: response.status, mode, createdAt, expiresAt, lastAccessedAt: createdAt, sizeBytes },
+            set: { responseJson, status, mode, createdAt, expiresAt, lastAccessedAt: createdAt, sizeBytes },
           })
           .run();
 
