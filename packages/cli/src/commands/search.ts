@@ -8,7 +8,7 @@ import type { SearchCommandResponse } from "../types.js";
 type StreamFormat = "sse" | "ndjson";
 
 interface SearchStreamEvent {
-  type: "meta" | "results" | "status" | "done" | "error" | "cancelled";
+  type: "meta" | "results" | "status" | "done" | "error";
   sequence: number;
   final: boolean;
   [key: string]: unknown;
@@ -164,7 +164,7 @@ export class SearchStreamDecoder {
     if (event["type"] === "heartbeat" && event["sequence"] === undefined) return null;
     if (
       typeof event["type"] !== "string" ||
-      !["meta", "results", "status", "done", "error", "cancelled"].includes(event["type"]) ||
+      !["meta", "results", "status", "done", "error"].includes(event["type"]) ||
       !Number.isSafeInteger(event["sequence"]) ||
       typeof event["final"] !== "boolean"
     ) {
@@ -190,7 +190,7 @@ function streamFormat(values: ParsedCliArgs["values"]): StreamFormat {
 }
 
 function isCancelledEvent(event: Record<string, unknown>): boolean {
-  return event["type"] === "cancelled" || (event["type"] === "status" && event["status"] === "cancelled" && event["terminal"] === true);
+  return event["type"] === "status" && event["status"] === "cancelled" && event["terminal"] === true;
 }
 
 function responseFromTerminal(event: SearchStreamEvent): SearchCommandResponse {
@@ -258,8 +258,7 @@ function emitStreamEvent(event: SearchStreamEvent, format: OutputFormat, client:
       break;
     }
     case "error":
-    case "cancelled":
-      writeText(`[${event.type}] [final] ${terminalMessage(safeEvent)}`);
+      writeText(`[error] [final] ${terminalMessage(safeEvent)}`);
       if (isSearchResponse(safeEvent)) {
         writeText(table(
           ["#", "Title", "Provider", "URL"],

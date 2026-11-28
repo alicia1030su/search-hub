@@ -142,15 +142,18 @@ describe("shub search --stream", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    { type: "error", code: 6, message: "provider unavailable" },
-    { type: "cancelled", code: 130, message: "Search cancelled" },
-  ])("returns a nonzero exit and concise stderr for $type", async ({ type, code, message }) => {
+  it("returns a nonzero exit and concise stderr for an error terminal", async () => {
     const { stdout, stderr } = captureOutput();
-    mockFetch(response(sse(event(type, 1, { message }))));
-    await expect(runSearch(parseCliArgs(["search", "hello", "--stream"]), streamClient(), "table")).resolves.toBe(code);
-    expect(outputLines(stdout).join("")).toContain(`[${type}] [final]`);
-    expect(outputLines(stderr).join("")).toContain(message);
+    mockFetch(response(sse(event("error", 1, { message: "provider unavailable" }))));
+    await expect(runSearch(parseCliArgs(["search", "hello", "--stream"]), streamClient(), "table")).resolves.toBe(EXIT_CODES.server);
+    expect(outputLines(stdout).join("")).toContain("[error] [final]");
+    expect(outputLines(stderr).join("")).toContain("provider unavailable");
+  });
+
+  it("rejects the removed cancelled event type", async () => {
+    captureOutput();
+    mockFetch(response(sse(event("cancelled", 1, { message: "Search cancelled" }))));
+    await expect(runSearch(parseCliArgs(["search", "hello", "--stream"]), streamClient(), "table")).rejects.toMatchObject({ code: "invalid_stream" });
   });
 
   it("accepts the status-based cancelled terminal contract", async () => {
@@ -209,6 +212,7 @@ describe("shub search --stream", () => {
     expect(output).toMatchObject({ taskId: "task-1", results: finalResponse.results });
     expect(output["token"]).toBe("[redacted]");
     expect(output).not.toHaveProperty("streaming");
+    expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body))).toMatchObject({ query: "stream test", mode: "basic" });
   });
 
   it("preserves ordinary failed search responses and their nonzero exit", async () => {
@@ -235,6 +239,7 @@ describe("SearchStreamDecoder", () => {
   it.each([
     [event("results", 2) + "\n", /out-of-order/],
     [event("done", 1, { final: false }) + "\n", /out-of-order/],
+    [event("cancelled", 1) + "\n", /invalid stream event/],
     ["not-json\n", /malformed/],
   ])("rejects invalid NDJSON grammar", (wire, message) => {
     const decoder = new SearchStreamDecoder("ndjson");
