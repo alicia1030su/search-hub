@@ -174,6 +174,7 @@ test("failed, timeout and budget-exhausted sides exclude the whole pair and trig
       capture.errors = [{ code: "timeout", message: "deadline" }];
     } else if (index === 1) {
       capture.ok = false;
+      capture.status = "budget_exhausted";
       capture.envelope.deepRounds = [{ budgetExhausted: true }];
     } else {
       capture.ok = false;

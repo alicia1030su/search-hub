@@ -233,10 +233,10 @@ function captureFailureReasons(capture, side) {
   const status = String(capture.status ?? "").toLowerCase();
   if (["failed", "error", "cancelled", "canceled"].includes(status)) reasons.push(`${side}_failed`);
   if (["timeout", "timed_out", "deadline_exceeded"].includes(status) || capture.timedOut === true) reasons.push(`${side}_timeout`);
-  if (capture.budgetExhausted === true || capture.envelope?.deepRounds?.some((item) => item?.budgetExhausted === true)) reasons.push(`${side}_budget_exhausted`);
+  if (status === "budget_exhausted" || capture.budgetExhausted === true || capture.envelope?.deepRounds?.some((item) => item?.budgetExhausted === true)) reasons.push(`${side}_budget_exhausted`);
   const errorText = JSON.stringify([capture.errors, capture.degradations, capture.error]).toLowerCase();
   if (/timeout|timed[_ -]?out|deadline/.test(errorText)) reasons.push(`${side}_timeout`);
-  if (/budget[_ -]?exhaust|resource[_ -]?budget|quota[_ -]?exhaust/.test(errorText)) reasons.push(`${side}_budget_exhausted`);
+  if (/budget[_ -]?exhaust|resource[_ -]?budget[_ -]?exhaust|quota[_ -]?exhaust/.test(errorText)) reasons.push(`${side}_budget_exhausted`);
   if (capture.evidenceComplete === false) reasons.push(`${side}_evidence_incomplete`);
   return unique(reasons);
 }
