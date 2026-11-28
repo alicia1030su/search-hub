@@ -60,6 +60,8 @@ export interface SearchCacheV2Input extends SearchCacheRequest {
   pipelineVersion?: string;
   routeVersion?: string;
   queryExpansion?: boolean;
+  maxRounds?: number;
+  maxSubqueries?: number;
   queryPlan?: readonly SearchCacheQueryPlanEntry[];
   models?: Partial<Record<"embedding" | "rerank" | "chat", SearchCacheModelIdentity>>;
   parked?: readonly string[];
@@ -148,6 +150,8 @@ export function buildSearchFingerprintV2(input: SearchCacheV2Input): Record<stri
     limit: input.limit,
     perProviderLimit: input.perProviderLimit ?? null,
     timeoutMs: input.timeoutMs ?? null,
+    maxRounds: input.maxRounds ?? null,
+    maxSubqueries: input.maxSubqueries ?? null,
     language: input.language ?? null,
     freshness: input.freshness ?? null,
     includeRaw: false,
@@ -164,6 +168,7 @@ export function buildSearchFingerprintV2(input: SearchCacheV2Input): Record<stri
       })),
     queryExpansion: {
       enabled: input.queryExpansion ?? false,
+      maxSubqueries: input.maxSubqueries ?? null,
       actualQueryPlan: queryPlan.map((entry) => ({
         queryId: entry.queryId,
         queryDigest: sha256(entry.query),

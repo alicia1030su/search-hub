@@ -86,6 +86,9 @@ describe("search cache fingerprint", () => {
     ["strategy", { effectiveStrategy: "balanced" as const }],
     ["limit", { limit: 11 }],
     ["perProviderLimit", { perProviderLimit: 13 }],
+    ["timeout", { timeoutMs: 5000 }],
+    ["max rounds", { maxRounds: 2 }],
+    ["max subqueries", { maxSubqueries: 4 }],
     ["providers", { providers: [] }],
     ["capability", { capability: "grounded_answer" }],
     ["language", { language: "en" }],
@@ -102,6 +105,23 @@ describe("search cache fingerprint", () => {
     ["plan", { queryPlan: [{ queryId: "q2", query: "expanded query", kind: "expanded" as const, round: 1, weight: 0.8 }] }],
   ])("changes the v2 key when %s changes", (_name, overrides) => {
     expect(key(buildSearchFingerprintV2(v2()))).not.toBe(key(buildSearchFingerprintV2(v2(overrides))));
+  });
+
+  it("isolates Deep budget and expansion settings even before a query plan exists", () => {
+    const deep = v2({ mode: "deep", effectiveMode: "deep", effectiveStrategy: "deep" });
+    const variants = [
+      { timeoutMs: 30_000 },
+      { maxRounds: 2 },
+      { maxSubqueries: 4 },
+      { queryExpansion: true },
+    ];
+    const baseline = key(buildSearchFingerprintV2(deep));
+    for (const variant of variants) {
+      expect(key(buildSearchFingerprintV2(v2({ ...deep, ...variant })))).not.toBe(baseline);
+    }
+    expect(key(buildSearchFingerprintV2(v2({ ...deep, queryExpansion: true, maxSubqueries: 3 })))).not.toBe(
+      key(buildSearchFingerprintV2(v2({ ...deep, queryExpansion: true, maxSubqueries: 4 }))),
+    );
   });
 
   it("is canonical across object insertion order and provider order", () => {
