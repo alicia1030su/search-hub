@@ -1,4 +1,5 @@
 import pino, { type Logger as PinoLogger } from "pino";
+import { totalmem } from "node:os";
 import { sql } from "drizzle-orm";
 import {
   createSafeFetch,
@@ -22,6 +23,11 @@ import { ProviderBatchService } from "./services/provider-batch.js";
 import { SearchService } from "./services/search.js";
 import { CacheService } from "./services/cache.js";
 import { RuntimeMonitor } from "./services/runtime-monitor.js";
+import {
+  ResourceBudgetController,
+  ResourceSemaphore,
+  type ResourceSample,
+} from "./services/resource-budget.js";
 import { QualityService } from "./services/quality.js";
 import { SessionService, TokenService, type AuthDependencies } from "./auth.js";
 
@@ -116,6 +122,8 @@ export interface AppContext {
   models: ModelService;
   search: SearchService;
   runtimeMonitor: RuntimeMonitor;
+  resourceBudget: ResourceBudgetController;
+  resourceSlots: ResourceSemaphore;
   /** Persistent search-response cache; shared by REST, MCP and Skills. */
   /**
    * Persistent search-response cache.
@@ -161,6 +169,8 @@ export interface ContextOptions {
   /** Injectable jitter source so backoff assertions are deterministic. */
   random?: () => number;
   cacheLimits?: { maxEntries: number; maxBytes: number };
+  resourceBudget?: { minBudget?: number; hardMax?: number };
+  resourceSample?: () => ResourceSample | null | undefined;
 }
 
 
@@ -302,6 +312,8 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
   });
   cache.initialize();
 
+  let resourceBudget!: ResourceBudgetController;
+  const resourceSlots = new ResourceSemaphore(() => resourceBudget?.budgetFor("concurrency") ?? 8);
   const search = new SearchService({
     db: handle.db,
     providers,
@@ -311,6 +323,7 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     logger,
     health,
     cache,
+    resourceSlots,
   });
 
   const runtimeMonitor = new RuntimeMonitor({
@@ -320,6 +333,27 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     health,
     dbPath: config.dbPath,
   });
+
+  const resourceHardMax = options.resourceBudget?.hardMax ?? 16;
+  resourceBudget = new ResourceBudgetController({
+    minBudget: options.resourceBudget?.minBudget ?? 1,
+    hardMax: resourceHardMax,
+    sample: () => {
+      if (options.resourceSample) return options.resourceSample();
+      const snapshot = runtimeMonitor.snapshot();
+      const memory = snapshot.process.memory;
+      return {
+        rssRatio: memory.rssBytes === null ? null : memory.rssBytes / totalmem(),
+        heapRatio: memory.heapUsedBytes === null || memory.heapTotalBytes === null || memory.heapTotalBytes === 0
+          ? null
+          : memory.heapUsedBytes / memory.heapTotalBytes,
+        queueRatio: snapshot.activity.queue.total / 256,
+        inFlightRatio: snapshot.activity.activeSearches / resourceHardMax,
+      };
+    },
+  });
+  resourceBudget.start();
+  models.setResourceBudget(resourceBudget);
 
   const quality = new QualityService({
     db: handle.db,
@@ -426,6 +460,8 @@ export function createContext(config: AppConfig, options: ContextOptions = {}): 
     models,
     search,
     runtimeMonitor,
+    resourceBudget,
+    resourceSlots,
     cache,
     health,
     batch,

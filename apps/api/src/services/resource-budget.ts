@@ -1,3 +1,5 @@
+import { SearchHubError } from "@search-hub/shared";
+
 export type BudgetState = "normal" | "warning" | "critical" | "recovering";
 
 export type ResourceBudgetKind = "concurrency" | "embeddingBatch";
@@ -82,8 +84,8 @@ export class ResourceBudgetController {
     if (!Number.isSafeInteger(options.minBudget) || options.minBudget < 1) {
       throw new RangeError("minBudget must be a positive safe integer");
     }
-    if (!Number.isSafeInteger(options.hardMax) || options.hardMax < options.minBudget) {
-      throw new RangeError("hardMax must be a safe integer greater than or equal to minBudget");
+    if (!Number.isSafeInteger(options.hardMax) || options.hardMax < 8 || options.hardMax < options.minBudget) {
+      throw new RangeError("hardMax must be a safe integer greater than or equal to 8 and minBudget");
     }
     this.budget = options.hardMax;
     this.clock = options.clock ?? (() => Date.now());
@@ -124,33 +126,29 @@ export class ResourceBudgetController {
   }
 
   setHardLimit(hardMax: number): void {
-    if (!Number.isSafeInteger(hardMax) || hardMax < this.options.minBudget) {
-      throw new RangeError("hardMax must be a safe integer greater than or equal to minBudget");
+    if (!Number.isSafeInteger(hardMax) || hardMax < 8 || hardMax < this.options.minBudget) {
+      throw new RangeError("hardMax must be a safe integer greater than or equal to 8 and minBudget");
     }
     const previousHardMax = this.options.hardMax;
     if (hardMax === previousHardMax) return;
     this.options.hardMax = hardMax;
 
-    if (hardMax < previousHardMax) {
-      if (this.state === "normal") this.budget = hardMax;
-      else if (this.state === "warning") this.budget = this.warningBudget();
-      else if (this.state === "critical") this.budget = this.options.minBudget;
-      else {
-        this.budget = Math.min(this.budget, hardMax);
-        if (this.budget === hardMax) this.transition("normal", "recovered");
-      }
-      this.reason = "hard_limit_lowered";
-      return;
+    if (this.state === "normal") {
+      this.budget = hardMax;
+    } else if (this.state === "warning") {
+      this.budget = this.warningBudget();
+    } else if (this.state === "critical") {
+      this.budget = this.options.minBudget;
+    } else {
+      this.budget = Math.min(this.budget, hardMax);
+      if (this.budget === hardMax) this.transition("normal", "recovered");
     }
-
-    // Raising the administrator ceiling never grants capacity immediately. Only
-    // the normal recovery path may spend the newly available headroom.
-    this.reason = "hard_limit_raised";
+    this.reason = hardMax < previousHardMax ? "hard_limit_lowered" : "hard_limit_raised";
   }
 
   budgetFor(kind: ResourceBudgetKind): number {
     if (kind === "concurrency") return Math.max(1, Math.floor(this.budget));
-    return Math.max(8, Math.floor(this.budget / 8) * 8);
+    return Math.min(this.options.hardMax, Math.max(8, Math.floor(this.budget / 8) * 8));
   }
 
   private sampleOnce(): void {
@@ -177,7 +175,7 @@ export class ResourceBudgetController {
       else if (pressure >= WARNING_THRESHOLD) this.transition("warning", "pressure_warning", now);
       else {
         this.lowPressureSamples = 0;
-        this.budget = Math.min(this.budget, this.options.hardMax);
+        this.budget = this.options.hardMax;
         this.reason = "normal";
       }
       return;
@@ -188,15 +186,13 @@ export class ResourceBudgetController {
         this.transition("critical", "pressure_critical", now);
         return;
       }
-      if (this.stateSamples >= STATE_DWELL_SAMPLES) {
-        if (pressure <= RECOVERY_THRESHOLD) {
-          this.transition("recovering", "recovering", now);
-          return;
-        }
-        if (pressure < WARNING_THRESHOLD) {
-          this.transition("normal", "recovered", now);
-          return;
-        }
+      if (pressure <= RECOVERY_THRESHOLD) {
+        this.transition("recovering", "recovering", now);
+        return;
+      }
+      if (pressure < WARNING_THRESHOLD) {
+        this.transition("normal", "recovered", now);
+        return;
       }
       this.lowPressureSamples = 0;
       this.budget = Math.min(this.budget, this.warningBudget());
@@ -284,6 +280,97 @@ export class ResourceBudgetController {
       return Number.isFinite(value) ? new Date(value).toISOString() : null;
     } catch {
       return null;
+    }
+  }
+}
+
+export interface ResourceSlotLimiter {
+  acquire(signal?: AbortSignal, deadlineAtMs?: number): Promise<() => void>;
+}
+
+interface SlotWaiter {
+  resolve: (release: () => void) => void;
+  reject: (error: unknown) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+  timer?: NodeJS.Timeout;
+}
+
+/** Bounded, cancellation-aware semaphore used by search and webpage extraction. */
+export class ResourceSemaphore implements ResourceSlotLimiter {
+  private active = 0;
+  private readonly waiters: SlotWaiter[] = [];
+
+  constructor(
+    private readonly limit: () => number,
+    private readonly maxWaiters = 256,
+  ) {}
+
+  acquire(signal?: AbortSignal, deadlineAtMs?: number): Promise<() => void> {
+    if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("cancelled"));
+    if (deadlineAtMs !== undefined && Date.now() >= deadlineAtMs) {
+      return Promise.reject(new SearchHubError("timeout", "Resource wait deadline exceeded", { status: 504, retryable: true }));
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: SlotWaiter = { resolve, reject, signal };
+      const cleanup = (): void => {
+        if (waiter.timer) clearTimeout(waiter.timer);
+        if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+      };
+      const fail = (error: unknown): void => {
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) this.waiters.splice(index, 1);
+        cleanup();
+        reject(error);
+      };
+      waiter.onAbort = () => fail(signal?.reason ?? new Error("cancelled"));
+      if (signal) signal.addEventListener("abort", waiter.onAbort, { once: true });
+      if (deadlineAtMs !== undefined) {
+        waiter.timer = setTimeout(() => fail(new SearchHubError("timeout", "Resource wait deadline exceeded", { status: 504, retryable: true })), Math.max(0, deadlineAtMs - Date.now()));
+        waiter.timer.unref?.();
+      }
+
+      if (this.waiters.length === 0 && this.active < this.limit()) {
+        cleanup();
+        this.active += 1;
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          this.active = Math.max(0, this.active - 1);
+          this.pump();
+        });
+        return;
+      }
+      if (this.waiters.length >= this.maxWaiters) {
+        fail(new SearchHubError("rate_limited", "Resource wait queue is full", { status: 429, retryable: true }));
+        return;
+      }
+      this.waiters.push(waiter);
+    });
+  }
+
+  dispose(): void {
+    for (const waiter of this.waiters.splice(0)) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+      waiter.reject(new Error("resource pool shut down"));
+    }
+  }
+
+  private pump(): void {
+    while (this.waiters.length > 0 && this.active < this.limit()) {
+      const waiter = this.waiters.shift()!;
+      if (waiter.timer) clearTimeout(waiter.timer);
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
+      this.active += 1;
+      let released = false;
+      waiter.resolve(() => {
+        if (released) return;
+        released = true;
+        this.active = Math.max(0, this.active - 1);
+        this.pump();
+      });
     }
   }
 }

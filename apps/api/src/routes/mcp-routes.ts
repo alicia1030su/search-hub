@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { createMcpHttpHandler } from "@search-hub/mcp";
-import { fetchWebpage } from "@search-hub/core";
 import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
 import { authenticate } from "../auth.js";
 import { jsonFor, sendError } from "../http.js";
 import { isAllowedHost, isAllowedOrigin } from "../security/host.js";
+import { readWebpageWithBudget } from "../services/web-read-budget.js";
 
 export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
   const handler = createMcpHttpHandler({
@@ -13,7 +13,12 @@ export function registerMcpRoutes(app: FastifyInstance, ctx: AppContext): void {
       execute: (request, options) => ctx.search.execute(request, options),
     },
     webpage: {
-      read: (url, options) => fetchWebpage(url, { fetch: ctx.fetch, maxContentChars: options?.maxContentChars }),
+      read: (url, options) => readWebpageWithBudget(url, {
+        fetch: ctx.fetch,
+        resourceSlots: ctx.resourceSlots,
+        maxContentChars: options?.maxContentChars,
+        timeoutMs: 20_000,
+      }),
     },
     providers: {
       list: async () =>

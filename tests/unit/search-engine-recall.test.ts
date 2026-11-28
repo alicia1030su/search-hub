@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { executeSearch, type ProviderRuntime } from "@search-hub/core";
 import { searchRequestSchema, type ProviderSearchOutput, type SafeFetch, type SearchProviderAdapter } from "@search-hub/shared";
+import { ResourceSemaphore } from "../../apps/api/src/services/resource-budget.js";
 
 const logger = { debug() {}, info() {}, warn() {}, error() {} };
 const unusedFetch: SafeFetch = async () => {
@@ -153,6 +154,27 @@ describe("search engine recall regressions", () => {
     expect(response.stats.selectedProviderCount).toBe(8);
     expect(response.debug?.selectedProviderIds).toHaveLength(8);
     expect(response.stats.truncationReasons).toContainEqual({ reason: "provider_limit", count: 2 });
+  });
+
+  it("bounds provider fanout through the shared resource semaphore", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const makeRuntime = (id: string) => runtimeReturning(id, async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return { results: [{ title: id, url: `https://example.com/${id}`, snippet: "body" }] };
+    });
+    const slots = new ResourceSemaphore(() => 1);
+
+    await executeSearch(
+      { runtimes: [makeRuntime("a"), makeRuntime("b")], fetch: unusedFetch, credentials: { getKeyValue: async () => undefined }, logger },
+      { query: "bounded", mode: "basic", limit: 10 },
+      { taskId: "task-bounded-fanout", providerSlot: slots },
+    );
+
+    expect(maxActive).toBe(1);
   });
 
   it("emits incremental provider and results events when an observer is supplied", async () => {

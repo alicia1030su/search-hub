@@ -4,6 +4,16 @@ import { scrubbingFetch } from "./redact.js";
 export interface EmbeddingDeps {
   fetch: SafeFetch;
   apiKey?: string;
+  /** Dynamic resource-budget batch size; quantized to 8..50 when supplied. */
+  batchSize?: () => number;
+}
+
+function resolveBatchSize(config: ModelConfig, deps: EmbeddingDeps): number {
+  const dynamic = deps.batchSize?.();
+  if (dynamic !== undefined && Number.isFinite(dynamic)) {
+    return Math.max(8, Math.min(50, Math.floor(dynamic / 8) * 8));
+  }
+  return Math.max(1, Math.min(config.batchSize, 50));
 }
 
 export interface EmbeddingModel {
@@ -40,8 +50,8 @@ export function createEmbeddingModel(config: ModelConfig, deps: EmbeddingDeps): 
       throwIfAborted(signal);
       const vectors =
         config.providerType === "custom-http"
-          ? await embedCustom(config, safeDeps, texts, signal)
-          : await embedOpenAICompatible(config, safeDeps, texts, signal);
+          ? await embedCustom(config, safeDeps, texts, signal, resolveBatchSize(config, safeDeps))
+          : await embedOpenAICompatible(config, safeDeps, texts, signal, resolveBatchSize(config, safeDeps));
 
       const dimension = vectors[0]?.length ?? 0;
       if (dimension === 0) {
@@ -72,11 +82,11 @@ async function embedOpenAICompatible(
   deps: EmbeddingDeps,
   texts: string[],
   signal?: AbortSignal,
+  batchSize = 50,
 ): Promise<number[][]> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (deps.apiKey) headers["authorization"] = `Bearer ${deps.apiKey}`;
 
-  const batchSize = Math.max(1, Math.min(config.batchSize, 50));
   const output: number[][] = [];
   for (let offset = 0; offset < texts.length; offset += batchSize) {
     throwIfAborted(signal);
@@ -121,6 +131,7 @@ async function embedCustom(
   deps: EmbeddingDeps,
   texts: string[],
   signal?: AbortSignal,
+  batchSize = 50,
 ): Promise<number[][]> {
   const cfg = config.params as CustomEmbeddingConfig;
   const path = cfg.path ?? "/embeddings";
@@ -131,41 +142,45 @@ async function embedCustom(
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (deps.apiKey) headers["authorization"] = `Bearer ${deps.apiKey}`;
 
-  const body: Record<string, unknown> = {
-    model: config.modelId,
-    [inputField]: texts,
-  };
-
-  throwIfAborted(signal);
-  const response = await deps.fetch<CustomEmbeddingResponse>(
-    `${config.baseUrl.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      timeoutMs: config.timeoutMs,
-      ...(signal === undefined ? {} : { signal }),
-    },
-  );
-
-  const resolved = resolvePath(response.data, itemsPath);
-  const items = Array.isArray(resolved) ? resolved : null;
-  if (!items || items.length === 0) {
-    throw new SearchHubError(
-      "server_error",
-      `Custom embedding endpoint returned no items at "${itemsPath}"`,
+  const output: number[][] = [];
+  for (let offset = 0; offset < texts.length; offset += batchSize) {
+    throwIfAborted(signal);
+    const batch = texts.slice(offset, offset + batchSize);
+    const body: Record<string, unknown> = {
+      model: config.modelId,
+      [inputField]: batch,
+    };
+    const response = await deps.fetch<CustomEmbeddingResponse>(
+      `${config.baseUrl.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        timeoutMs: config.timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+      },
     );
-  }
-  return items.map((item) => {
-    const vector = resolvePath(item, vectorPath);
-    if (!Array.isArray(vector) || vector.some((value) => typeof value !== "number")) {
+
+    const resolved = resolvePath(response.data, itemsPath);
+    const items = Array.isArray(resolved) ? resolved : null;
+    if (!items || items.length === 0) {
       throw new SearchHubError(
         "server_error",
-        `Custom embedding endpoint returned an invalid vector at "${vectorPath}"`,
+        `Custom embedding endpoint returned no items at "${itemsPath}"`,
       );
     }
-    return vector as number[];
-  });
+    for (const item of items) {
+      const vector = resolvePath(item, vectorPath);
+      if (!Array.isArray(vector) || vector.some((value) => typeof value !== "number")) {
+        throw new SearchHubError(
+          "server_error",
+          `Custom embedding endpoint returned an invalid vector at "${vectorPath}"`,
+        );
+      }
+      output.push(vector as number[]);
+    }
+  }
+  return output;
 }
 
 function resolvePath(input: unknown, path: string): unknown {

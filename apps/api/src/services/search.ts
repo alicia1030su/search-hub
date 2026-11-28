@@ -37,6 +37,7 @@ import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
 import { CacheService } from "./cache.js";
 import { SearchFlightService } from "./singleflight.js";
+import type { ResourceSlotLimiter } from "./resource-budget.js";
 import {
   buildSearchFingerprintV1,
   buildSearchFingerprintV2,
@@ -60,6 +61,8 @@ export interface SearchServiceDeps {
   health: { blockedProviders(now?: number): Map<string, { code: string; message: string; until: string }> };
   /** Persistent response cache. Shared by REST, MCP and Skills. */
   cache: CacheService;
+  /** Optional shared concurrency gate for provider fanout and webpage reads. */
+  resourceSlots?: ResourceSlotLimiter;
 }
 
 const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
@@ -975,6 +978,7 @@ export class SearchService {
       signal,
       taskId,
       ...(beforeRequest === undefined ? {} : { beforeRequest }),
+      ...(this.deps.resourceSlots === undefined ? {} : { providerSlot: this.deps.resourceSlots }),
       ...(onEvent === undefined ? {} : {
         onEvent: (event) => {
           if (event.type !== "meta") onEvent(event);
@@ -1145,6 +1149,7 @@ export class SearchService {
               signal,
               taskId,
               beforeRequest: gatedBeforeRequest,
+              ...(this.deps.resourceSlots === undefined ? {} : { providerSlot: this.deps.resourceSlots }),
               ...(onEvent === undefined ? {} : {
                 onEvent: (event) => {
                   if (event.type !== "meta") onEvent(event);

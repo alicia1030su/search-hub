@@ -249,6 +249,27 @@ describe("embedding adapter", () => {
     expect(calls).toBe(2);
   });
 
+  it("uses the dynamic resource batch size in multiples of eight", async () => {
+    const batchSizes: number[] = [];
+    const baseUrl = await startServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        const body = JSON.parse(raw) as { input: string[] };
+        batchSizes.push(body.input.length);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: body.input.map((_, index) => ({ index, embedding: [1, 0] })) }));
+      });
+    });
+    const embedding = createEmbeddingModel(
+      model({ kind: "embedding", baseUrl, dimensions: 2, batchSize: 100 }),
+      { fetch: safeFetch, batchSize: () => 8 },
+    );
+
+    await embedding.embed(Array.from({ length: 17 }, (_, index) => String(index)));
+    expect(batchSizes).toEqual([8, 8, 1]);
+  });
+
   it("computes cosine similarity correctly", () => {
     expect(cosineSimilarity([1, 0], [1, 0])).toBeCloseTo(1);
     expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0);
@@ -336,6 +357,27 @@ describe("rerank adapter", () => {
     const result = await rerank.rerank("q", documents);
     expect(calls).toBe(2);
     expect(result.results.find((item) => item.id === "doc-50")?.index).toBe(50);
+  });
+
+  it("uses the dynamic resource batch size for rerank requests", async () => {
+    const batchSizes: number[] = [];
+    const baseUrl = await startServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        const body = JSON.parse(raw) as { documents: string[] };
+        batchSizes.push(body.documents.length);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ results: body.documents.map((_, index) => ({ index, relevance_score: 1 })) }));
+      });
+    });
+    const rerank = createRerankModel(
+      model({ kind: "rerank", baseUrl, providerType: "cohere" }),
+      { fetch: safeFetch, apiKey: "k", batchSize: () => 8 },
+    );
+
+    await rerank.rerank("q", Array.from({ length: 17 }, (_, index) => ({ id: String(index), text: `body ${index}` })));
+    expect(batchSizes).toEqual([8, 8, 1]);
   });
 
   it("truncates long documents before sending them", async () => {

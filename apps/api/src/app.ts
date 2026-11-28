@@ -230,6 +230,8 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     ctx.providers.stopFlusher();
     await ctx.providers.flushDirty().catch(() => undefined);
     ctx.search.shutdown();
+    ctx.resourceBudget.stop();
+    ctx.resourceSlots.dispose();
     ctx.closeDb();
   });
 

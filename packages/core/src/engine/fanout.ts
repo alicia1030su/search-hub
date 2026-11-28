@@ -38,6 +38,10 @@ export interface ProviderRuntime {
   };
 }
 
+export interface ProviderSlotLimiter {
+  acquire(signal?: AbortSignal, deadlineAtMs?: number): Promise<() => void>;
+}
+
 export interface FanoutOptions {
   query: string;
   limitPerProvider: number;
@@ -61,6 +65,8 @@ export interface FanoutOptions {
   /** Optional observers for incremental UI/streaming consumers. */
   onProviderStart?: (runtime: ProviderRuntime) => void;
   onProviderComplete?: (result: FanoutResult) => void;
+  /** Optional shared concurrency gate; acquisition is deadline/cancellation aware. */
+  providerSlot?: ProviderSlotLimiter;
 }
 
 export interface FanoutResult {
@@ -449,12 +455,14 @@ export async function fanoutProviders(
 ): Promise<FanoutResult[]> {
   if (runtimes.length === 0) return [];
   const tasks = runtimes.map(async (runtime) => {
-    options.onProviderStart?.(runtime);
+    let release: (() => void) | undefined;
     let result: FanoutResult;
     try {
+      release = await options.providerSlot?.acquire(options.signal, Date.now() + options.deadlineMs);
+      options.onProviderStart?.(runtime);
       result = await runProvider(runtime, options);
     } catch (error) {
-      const code: ProviderErrorCode = isAbortError(error) ? "cancelled" : "unknown";
+      const code: ProviderErrorCode = options.signal.aborted || isAbortError(error) ? "cancelled" : "unknown";
       const message = redactSecrets(errorMessage(error));
       result = {
         providerId: runtime.config.id,
@@ -480,6 +488,8 @@ export async function fanoutProviders(
           message,
         },
       } satisfies FanoutResult;
+    } finally {
+      release?.();
     }
     options.onProviderComplete?.(result);
     return result;

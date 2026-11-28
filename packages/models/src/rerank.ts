@@ -10,6 +10,16 @@ import { scrubbingFetch } from "./redact.js";
 export interface RerankDeps {
   fetch: SafeFetch;
   apiKey?: string;
+  /** Dynamic resource-budget batch size; quantized to 8..50 when supplied. */
+  batchSize?: () => number;
+}
+
+function resolveBatchSize(deps: RerankDeps): number {
+  const dynamic = deps.batchSize?.();
+  if (dynamic !== undefined && Number.isFinite(dynamic)) {
+    return Math.max(8, Math.min(50, Math.floor(dynamic / 8) * 8));
+  }
+  return 50;
 }
 
 export interface RerankModel {
@@ -57,7 +67,7 @@ export function createRerankModel(config: ModelConfig, deps: RerankDeps): Rerank
       }));
 
       const ranked: Array<{ index?: number; score: number }> = [];
-      const batchSize = 50;
+      const batchSize = resolveBatchSize(safeDeps);
       for (let offset = 0; offset < truncated.length; offset += batchSize) {
         throwIfAborted(signal);
         const batch = truncated.slice(offset, offset + batchSize);

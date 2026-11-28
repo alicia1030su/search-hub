@@ -15,6 +15,7 @@ import { createChatModel, createEmbeddingModel, createRerankModel, scrubSecrets 
 import type { SearchHubDb } from "@search-hub/db";
 import { modelConfigs } from "@search-hub/db";
 import type { SecretBox } from "../security/crypto.js";
+import type { ResourceBudgetController } from "./resource-budget.js";
 
 export interface ModelRowShape {
   id: string;
@@ -127,6 +128,8 @@ export function assertModelBaseUrlAllowed(baseUrl: string, policy: SsrfPolicy): 
  * never included in list responses.
  */
 export class ModelService {
+  private resourceBudget?: Pick<ResourceBudgetController, "budgetFor">;
+
   constructor(
     private readonly db: SearchHubDb,
     private readonly secrets: SecretBox,
@@ -223,6 +226,7 @@ export class ModelService {
     return createEmbeddingModel(config, {
       fetch: this.fetchFor(),
       apiKey: this.apiKeyFor(config.id),
+      ...(this.resourceBudget ? { batchSize: () => this.resourceBudget!.budgetFor("embeddingBatch") } : {}),
     });
   }
 
@@ -234,6 +238,7 @@ export class ModelService {
     return createRerankModel(config, {
       fetch: this.fetchFor(),
       apiKey: this.apiKeyFor(config.id),
+      ...(this.resourceBudget ? { batchSize: () => this.resourceBudget!.budgetFor("embeddingBatch") } : {}),
     });
   }
 
@@ -372,5 +377,10 @@ export class ModelService {
   /** Injected once by the runtime so model calls share the SSRF policy. */
   setFetch(fetchImpl: SafeFetch): void {
     this.fetchImpl = fetchImpl;
+  }
+
+  /** Injected once by the runtime so model batches share the resource budget. */
+  setResourceBudget(budget: Pick<ResourceBudgetController, "budgetFor">): void {
+    this.resourceBudget = budget;
   }
 }

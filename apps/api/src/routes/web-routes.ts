@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { fetchWebpage, type WebpageReadResult } from "@search-hub/core";
+import type { WebpageReadResult } from "@search-hub/core";
 import { SearchHubError } from "@search-hub/shared";
 import type { AppContext } from "../context.js";
 import { authenticate } from "../auth.js";
 import { jsonFor, parseInput } from "../http.js";
+import { readWebpageWithBudget } from "../services/web-read-budget.js";
 
 const webReadSchema = z.object({
   url: z.string().min(1).max(8192).url().refine((value) => {
@@ -37,8 +38,9 @@ export function registerWebRoutes(app: FastifyInstance, ctx: AppContext): void {
       reply.raw.once("close", onDisconnect);
       let result: WebpageReadResult;
       try {
-        result = await fetchWebpage(input.url, {
+        result = await readWebpageWithBudget(input.url, {
           fetch: ctx.fetch,
+          resourceSlots: ctx.resourceSlots,
           signal: controller.signal,
           maxContentChars: input.maxContentChars,
           timeoutMs: input.timeoutMs,

@@ -14,7 +14,7 @@ import {
   type Logger,
   type SafeFetch,
 } from "@search-hub/shared";
-import { fanoutProviders, type CredentialResolver, type FanoutResult, type ProviderRuntime } from "./fanout.js";
+import { fanoutProviders, type CredentialResolver, type FanoutResult, type ProviderRuntime, type ProviderSlotLimiter } from "./fanout.js";
 import { RetryBudget, classifyError } from "../errors/classify.js";
 import {
   baseScore,
@@ -41,6 +41,8 @@ export interface ExecuteSearchOptions {
   beforeRequest?: (providerId: string, url: string) => void;
   /** Optional incremental observer; old callers remain unchanged. */
   onEvent?: (event: SearchExecutionEvent) => void;
+  /** Optional shared provider concurrency gate. */
+  providerSlot?: ProviderSlotLimiter;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -116,6 +118,7 @@ export async function executeSearch(
       fetch: deps.fetch,
       credentials: deps.credentials,
       ...(options.beforeRequest === undefined ? {} : { beforeRequest: options.beforeRequest }),
+      ...(options.providerSlot === undefined ? {} : { providerSlot: options.providerSlot }),
       ...(options.onEvent === undefined ? {} : {
         onProviderStart: (runtime) => options.onEvent?.({
           type: "provider_started",

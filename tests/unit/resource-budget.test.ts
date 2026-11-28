@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   calculateResourcePressure,
   ResourceBudgetController,
+  ResourceSemaphore,
   type ResourceSample,
 } from "../../apps/api/src/services/resource-budget.js";
 
@@ -85,30 +86,24 @@ describe("resource budget thresholds and hysteresis", () => {
     });
   });
 
-  it("keeps warning for three dwell samples, then prioritizes P<=0.55 recovery", () => {
+  it("moves warning directly to recovering at P<=0.55 without dwell", () => {
     let pressure = 0.8;
     const controller = createController({ sample: () => lowSample(pressure) });
     controller.start();
     tick();
 
     pressure = 0.55;
-    tick(2);
-    expect(controller.snapshot()).toMatchObject({ state: "warning", budget: 16, stateSamples: 2 });
-
     tick();
     expect(controller.snapshot()).toMatchObject({ state: "recovering", budget: 4, reason: "recovering" });
   });
 
-  it("returns warning to normal only after three dwell samples when 0.55<P<0.75", () => {
+  it("returns warning directly to normal when 0.55<P<0.75", () => {
     let pressure = 0.8;
     const controller = createController({ sample: () => lowSample(pressure) });
     controller.start();
     tick();
 
     pressure = 0.5501;
-    tick(2);
-    expect(controller.snapshot().state).toBe("warning");
-
     tick();
     expect(controller.snapshot()).toMatchObject({ state: "normal", budget: 32, reason: "recovered" });
   });
@@ -361,11 +356,11 @@ describe("resource budget limits and timer lifecycle", () => {
   });
 
   it("keeps hardMax unchanged when it equals minBudget", () => {
-    const controller = createController({ hardMax: 4, minBudget: 4 });
+    const controller = createController({ hardMax: 8, minBudget: 8 });
     controller.start();
     tick(4);
-    expect(controller.snapshot()).toMatchObject({ state: "normal", budget: 4 });
-    expect(controller.budgetFor("concurrency")).toBe(4);
+    expect(controller.snapshot()).toMatchObject({ state: "normal", budget: 8 });
+    expect(controller.budgetFor("concurrency")).toBe(8);
   });
 
   it("applies a lowered administrator hardMax immediately in every state", () => {
@@ -411,14 +406,14 @@ describe("resource budget limits and timer lifecycle", () => {
     expect(controller.snapshot().budget).toBeLessThanOrEqual(20);
   });
 
-  it("does not grant capacity immediately when the administrator raises hardMax", () => {
+  it("applies a raised hardMax immediately in normal state", () => {
     const controller = createController();
     controller.start();
     tick();
     controller.setHardLimit(64);
-    expect(controller.snapshot()).toMatchObject({ state: "normal", budget: 32, hardMax: 64, reason: "hard_limit_raised" });
+    expect(controller.snapshot()).toMatchObject({ state: "normal", budget: 64, hardMax: 64, reason: "hard_limit_raised" });
     tick();
-    expect(controller.snapshot().budget).toBe(32);
+    expect(controller.snapshot().budget).toBe(64);
   });
 
   it("uses a one-second unref timer, starts idempotently and cleans up on stop", () => {
@@ -448,13 +443,64 @@ describe("resource budget limits and timer lifecycle", () => {
     controller.stop();
   });
 
-  it("rejects invalid budget limits", () => {
+  it("rejects invalid budget limits and accepts the minimum valid hardMax", () => {
     expect(() => createController({ minBudget: 0 })).toThrow(RangeError);
     expect(() => createController({ minBudget: 8, hardMax: 7 })).toThrow(RangeError);
     expect(() => createController({ hardMax: 1.5 })).toThrow(RangeError);
 
-    const controller = createController({ minBudget: 4 });
-    expect(() => controller.setHardLimit(3)).toThrow(RangeError);
+    const controller = createController({ minBudget: 1, hardMax: 8 });
+    expect(controller.budgetFor("embeddingBatch")).toBe(8);
+    expect(() => controller.setHardLimit(7)).toThrow(RangeError);
     expect(() => controller.setHardLimit(Number.NaN)).toThrow(RangeError);
+    controller.setHardLimit(16);
+    expect(() => controller.setHardLimit(7)).toThrow(RangeError);
+    controller.setHardLimit(8);
+    expect(controller.snapshot().hardMax).toBe(8);
+  });
+});
+
+describe("resource semaphore", () => {
+  it("bounds concurrency and grants waiters in order after release", async () => {
+    const semaphore = new ResourceSemaphore(() => 1);
+    const first = await semaphore.acquire();
+    let granted = false;
+    const second = semaphore.acquire().then((release) => {
+      granted = true;
+      return release;
+    });
+
+    await Promise.resolve();
+    expect(granted).toBe(false);
+    first();
+    const releaseSecond = await second;
+    expect(granted).toBe(true);
+    releaseSecond();
+  });
+
+  it("removes aborted and expired waiters without leaking capacity", async () => {
+    const semaphore = new ResourceSemaphore(() => 1);
+    const held = await semaphore.acquire();
+    const controller = new AbortController();
+    const aborted = semaphore.acquire(controller.signal);
+    controller.abort(new Error("cancelled"));
+    await expect(aborted).rejects.toThrow(/cancelled/i);
+
+    const expired = semaphore.acquire(undefined, Date.now() + 5);
+    const expiration = expect(expired).rejects.toMatchObject({ code: "timeout" });
+    await vi.advanceTimersByTimeAsync(5);
+    await expiration;
+    held();
+
+    const release = await semaphore.acquire();
+    release();
+  });
+
+  it("rejects queued waiters when disposed", async () => {
+    const semaphore = new ResourceSemaphore(() => 1);
+    const held = await semaphore.acquire();
+    const queued = semaphore.acquire();
+    semaphore.dispose();
+    await expect(queued).rejects.toThrow(/shut down/i);
+    held();
   });
 });
