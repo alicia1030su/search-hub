@@ -231,6 +231,24 @@ describe("embedding adapter", () => {
     expect(received).toBe(controller.signal);
   });
 
+  it("caps embedding batches at 50 even when configured higher", async () => {
+    let calls = 0;
+    const baseUrl = await startServer((req, res) => {
+      calls += 1;
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        const body = JSON.parse(raw) as { input: string[] };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: body.input.map((_, index) => ({ index, embedding: [1, 0] })) }));
+      });
+    });
+    const embedding = createEmbeddingModel(model({ kind: "embedding", baseUrl, dimensions: 2, batchSize: 100 }), { fetch: safeFetch });
+
+    await embedding.embed(Array.from({ length: 51 }, (_, index) => String(index)));
+    expect(calls).toBe(2);
+  });
+
   it("computes cosine similarity correctly", () => {
     expect(cosineSimilarity([1, 0], [1, 0])).toBeCloseTo(1);
     expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0);
@@ -296,6 +314,28 @@ describe("rerank adapter", () => {
 
     await rerank.rerank("q", [{ id: "a", text: "body" }], 1, controller.signal);
     expect(received).toBe(controller.signal);
+  });
+
+  it("caps rerank batches at 50 and preserves global document indexes", async () => {
+    let calls = 0;
+    const baseUrl = await startServer((req, res) => {
+      calls += 1;
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        const body = JSON.parse(raw) as { documents: string[] };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          results: body.documents.map((_, index) => ({ index, relevance_score: index + 1 })),
+        }));
+      });
+    });
+    const rerank = createRerankModel(model({ kind: "rerank", baseUrl, providerType: "cohere" }), { fetch: safeFetch, apiKey: "k" });
+    const documents = Array.from({ length: 51 }, (_, index) => ({ id: `doc-${index}`, text: `body ${index}` }));
+
+    const result = await rerank.rerank("q", documents);
+    expect(calls).toBe(2);
+    expect(result.results.find((item) => item.id === "doc-50")?.index).toBe(50);
   });
 
   it("truncates long documents before sending them", async () => {

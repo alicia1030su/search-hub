@@ -76,7 +76,7 @@ async function embedOpenAICompatible(
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (deps.apiKey) headers["authorization"] = `Bearer ${deps.apiKey}`;
 
-  const batchSize = Math.max(1, Math.min(config.batchSize, 256));
+  const batchSize = Math.max(1, Math.min(config.batchSize, 50));
   const output: number[][] = [];
   for (let offset = 0; offset < texts.length; offset += batchSize) {
     throwIfAborted(signal);

@@ -54,6 +54,14 @@ beforeAll(async () => {
     payload: { name: "stream-mock", type: "mock", enabled: true, config: { resultCount: 3, latencyMs: 1, namespace: "stream" } },
   });
   expect(provider.statusCode).toBe(200);
+  const settings = await app.inject({
+    method: "PUT",
+    url: "/api/admin/settings",
+    cookies: { sh_session: cookie },
+    headers: { "x-csrf-token": csrf },
+    payload: { cache: { enabled: true, ttlSeconds: 3600 } },
+  });
+  expect(settings.statusCode, settings.body).toBe(200);
 });
 
 afterAll(async () => {
@@ -101,6 +109,31 @@ describe("search stream route", () => {
     expect(events[0]).toMatchObject({ type: "meta", sequence: 1, final: false });
     expect(events.at(-1)).toMatchObject({ type: "done", final: true, status: "completed" });
     expect(events.map((event) => event["sequence"])).toEqual(events.map((_, index) => index + 1));
+  });
+
+  it("emits only meta and done for a cache hit", async () => {
+    const payload = { query: "cached stream", mode: "basic", limit: 5, stream: "ndjson" };
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/search/stream",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload,
+    });
+    expect(first.statusCode).toBe(200);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/search/stream",
+      cookies: { sh_session: cookie },
+      headers: { "x-csrf-token": csrf },
+      payload,
+    });
+    expect(second.statusCode).toBe(200);
+    const events = second.payload.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events.map((event) => event["type"])).toEqual(["meta", "done"]);
+    expect(events[1]).toMatchObject({ final: true, cached: true });
   });
 
   it("validates before opening the stream", async () => {

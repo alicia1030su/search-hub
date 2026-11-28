@@ -98,7 +98,7 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
 
   app.post(
     "/api/search/tasks/:id/cancel",
-    jsonFor(app, async (request) => {
+    jsonFor(app, async (request, reply) => {
       const actor = authenticate(
         {
           headers: request.headers as Record<string, string | string[] | undefined>,
@@ -111,8 +111,11 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
       const { id } = request.params as { id: string };
       const task = ctx.search.getTask(id);
       const privileged = actor.type === "admin";
-      const cancelled = ctx.search.cancel(id, actorLabel(actor), { allowUnowned: privileged });
-      if (cancelled && privileged && task?.actor === null) {
+      const result = ctx.search.cancelDetailed(id, actorLabel(actor), { allowUnowned: privileged });
+      if (result.status === "already_terminal") {
+        return reply.status(409).send({ ok: false, taskId: id, status: result.taskStatus });
+      }
+      if (result.ok && privileged && task?.actor === null) {
         audit(
           ctx,
           actorLabel(actor),
@@ -122,7 +125,7 @@ export function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): voi
           request.ip,
         );
       }
-      return { ok: cancelled, taskId: id };
+      return { ok: result.ok, taskId: id, status: result.status };
     }),
   );
 }

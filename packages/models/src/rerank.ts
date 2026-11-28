@@ -56,10 +56,20 @@ export function createRerankModel(config: ModelConfig, deps: RerankDeps): Rerank
         text: doc.text.length > maxChars ? `${doc.text.slice(0, maxChars)}…` : doc.text,
       }));
 
-      const ranked =
-        config.providerType === "custom-http"
-          ? await rerankCustom(config, safeDeps, query, truncated, topK, signal)
-          : await rerankCohereCompatible(config, safeDeps, query, truncated, topK, signal);
+      const ranked: Array<{ index?: number; score: number }> = [];
+      const batchSize = 50;
+      for (let offset = 0; offset < truncated.length; offset += batchSize) {
+        throwIfAborted(signal);
+        const batch = truncated.slice(offset, offset + batchSize);
+        const batchTopK = topK === undefined ? batch.length : Math.min(topK, batch.length);
+        const batchRanked = config.providerType === "custom-http"
+          ? await rerankCustom(config, safeDeps, query, batch, batchTopK, signal)
+          : await rerankCohereCompatible(config, safeDeps, query, batch, batchTopK, signal);
+        ranked.push(...batchRanked.map((item) => ({
+          ...item,
+          index: (item.index ?? 0) + offset,
+        })));
+      }
 
       const byId = new Map(documents.map((doc, index) => [doc.id, index] as const));
       const results = ranked
