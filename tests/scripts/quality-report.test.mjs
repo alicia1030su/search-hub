@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { snapshotFingerprint } from "../../packages/core/src/evaluation/snapshot.ts";
 import {
   buildQualityReport,
   parseFrozenQueries,
@@ -52,7 +53,7 @@ function documents(query, side, extra = []) {
 function liveReport(queries, overrides = {}) {
   return {
     format: "search-hub.quality.live/1",
-    protocol: { order: "AB/BA", serial: true, cachePolicy: "bypass" },
+    protocol: { order: "AB/BA", serial: true, cachePolicy: "bypass", maxAttempts: 2, maxWindowMs: 24 * 60 * 60 * 1000 },
     region: "test-region",
     origin: "https://same.test",
     startedAt: "2026-01-01T00:00:00.000Z",
@@ -104,6 +105,63 @@ function reportFor(dataset, live = liveReport(dataset.queries), extra = {}) {
   });
 }
 
+function preciseFixture() {
+  const dataset = fixture();
+  for (const query of dataset.queries) {
+    const primary = `https://example.test/${query.queryId}/answer`;
+    const background = `https://example.test/${query.queryId}/background`;
+    const zero = `https://example.test/${query.queryId}/zero`;
+    const one = `https://example.test/${query.queryId}/one`;
+    query.labels = [
+      { relevance: 2, normalizedUrl: primary, title: "Answer", reason: "Direct", annotator: "human-test", provisional: false },
+      { relevance: 1, normalizedUrl: background, title: "Background", reason: "Background", annotator: "human-test", provisional: false },
+      { relevance: 0, normalizedUrl: zero, title: "Zero", reason: "Irrelevant", annotator: "human-test", provisional: false },
+      { relevance: 1, normalizedUrl: one, title: "One", reason: "Partial", annotator: "human-test", provisional: false },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        relevance: 0,
+        normalizedUrl: `https://example.test/${query.queryId}/other-${index}`,
+        title: `Other ${index}`,
+        reason: "Irrelevant",
+        annotator: "human-test",
+        provisional: false,
+      })),
+    ];
+  }
+  dataset.labelCount = dataset.queries.reduce((sum, query) => sum + query.labels.length, 0);
+  return dataset;
+}
+
+function preciseDocuments(query, side) {
+  const primary = `https://example.test/${query.queryId}/answer`;
+  const background = `https://example.test/${query.queryId}/background`;
+  const zero = `https://example.test/${query.queryId}/zero`;
+  const one = `https://example.test/${query.queryId}/one`;
+  const tail = side === "candidate" ? [one, zero] : [zero, one];
+  return [primary, background, ...tail, ...Array.from({ length: 6 }, (_, index) => `https://example.test/${query.queryId}/other-${index}`)]
+    .map((url) => ({ documentId: url, url, title: url }));
+}
+
+function canonicalAlgorithm(dataset) {
+  const providers = [{ providerId: "alpha", providerName: "Alpha", providerType: "fixture", ok: true, results: [] }];
+  return {
+    schemaVersion: 1,
+    source: "snapshot",
+    queriesFingerprint: createHash("sha256").update(JSON.stringify(dataset)).digest("hex"),
+    baseline: { commit: "baseline-sha", configFingerprint: "baseline-config" },
+    candidate: { commit: "candidate-sha", configFingerprint: "candidate-config" },
+    providers: ["alpha"],
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:01:00.000Z",
+    pairs: dataset.queries.map((query) => ({
+      queryId: query.queryId,
+      strategy: { baseline: "base", candidate: "rrf" },
+      snapshotHash: snapshotFingerprint(providers),
+      baseline: { providers, finalResults: documents(query, "baseline") },
+      candidate: { providers, finalResults: documents(query, "candidate") },
+    })),
+  };
+}
+
 test("parses the real frozen v0118 query set and forces Recall to N/A", () => {
   const path = new URL("../fixtures/quality-v0118/queries.json", import.meta.url);
   const raw = readFileSync(path, "utf8");
@@ -121,6 +179,11 @@ test("normal paired evidence produces core metrics, bootstrap lenses, provenance
   const report = reportFor(queries);
   const suite = report.suites[0];
   assert.equal(suite.status, "SUPPORTED");
+  assert.equal(suite.evidenceSufficiency, "SUFFICIENT");
+  assert.equal(suite.improvementVerdict, "IMPROVEMENT_SUPPORTED");
+  assert.equal(suite.releaseTargetMet, true);
+  assert.equal(suite.qualityImprovementClaimAllowed, true);
+  assert.equal(suite.reviewRequired, false);
   assert.equal(suite.expectedPairs, 32);
   assert.equal(suite.pairedN, 32);
   assert.equal(suite.excludedN, 0);
@@ -241,22 +304,7 @@ test("small samples and unjudged documents are excluded rather than filled with 
 test("same-snapshot algorithm comparisons remain separate from live suites", () => {
   const queries = fixture();
   const live = liveReport(queries.queries);
-  const algorithm = {
-    evidenceKind: "same_snapshot_algorithm_comparison",
-    snapshotHash: "c".repeat(64),
-    baselineCommit: "baseline-sha",
-    candidateCommit: "candidate-sha",
-    baselineConfigFingerprint: "baseline-config",
-    candidateConfigFingerprint: "candidate-config",
-    startedAt: "2026-01-01T00:00:00.000Z",
-    finishedAt: "2026-01-01T00:01:00.000Z",
-    providers: ["alpha"],
-    pairs: queries.queries.map((query) => ({
-      queryId: query.queryId,
-      baseline: { documents: documents(query, "baseline") },
-      candidate: { documents: documents(query, "candidate") },
-    })),
-  };
+  const algorithm = canonicalAlgorithm(queries);
   const report = reportFor(queries, live, {
     algorithmComparisons: [{ name: "same-snapshot", source: "algorithm.json", sourceSha256: "d".repeat(64), report: algorithm }],
   });
@@ -264,16 +312,25 @@ test("same-snapshot algorithm comparisons remain separate from live suites", () 
   assert.equal(report.suites[0].sameSnapshot, false);
   assert.equal(report.suites[1].sameSnapshot, true);
   assert.equal(report.suites[1].evidenceKind, "same_snapshot_algorithm_comparison");
+  assert.equal(report.suites[1].inputFormat, "canonical_snapshot/1");
   assert.equal(report.suites[1].pairedN, 32);
   assert.notEqual(report.suites[0].sourceSha256, report.suites[1].sourceSha256);
 
   const unverified = structuredClone(algorithm);
-  delete unverified.snapshotHash;
-  const invalid = reportFor(queries, live, {
+  delete unverified.pairs[0].snapshotHash;
+  assert.throws(() => reportFor(queries, live, {
     algorithmComparisons: [{ name: "unverified", source: "algorithm.json", sourceSha256: "d".repeat(64), report: unverified }],
+  }), /algorithm\.json: canonical snapshot\.pairs\[0\]\.snapshotHash/);
+
+  const legacy = structuredClone(algorithm);
+  delete legacy.schemaVersion;
+  delete legacy.source;
+  delete legacy.queriesFingerprint;
+  const legacyReport = reportFor(queries, live, {
+    algorithmComparisons: [{ name: "legacy", source: "legacy.json", sourceSha256: "d".repeat(64), report: legacy }],
   });
-  assert.ok(invalid.suites[1].exclusions.every((item) => item.reasons.includes("snapshot_identity_unverified")));
-  assert.equal(invalid.suites[1].status, "INSUFFICIENT_EVIDENCE");
+  assert.equal(legacyReport.suites[1].inputFormat, "legacy_snapshot/1");
+  assert.equal(legacyReport.suites[1].pairedN, 32);
 });
 
 test("multi-suite live capture files are split by suite and skipped suites remain insufficient", () => {
@@ -305,6 +362,156 @@ test("multi-suite live capture files are split by suite and skipped suites remai
   assert.equal(report.suites[2].skipReason, "missing_chat_model");
   assert.equal(report.summary.qualityImprovementClaimAllowed, false);
   assert.match(renderMarkdown(report), /capture=skipped；skipReason=missing_chat_model/);
+});
+
+test("real-shaped top10 unjudged results never produce a quality-improvement claim", () => {
+  const queries = fixture();
+  const live = liveReport(queries.queries);
+  for (const pair of live.pairs) {
+    for (const side of ["baseline", "candidate"]) {
+      const judged = documents(queries.queries.find((query) => query.queryId === pair.queryId), side);
+      const unknown = Array.from({ length: 8 }, (_, index) => ({
+        documentId: `https://example.test/${pair.queryId}/unjudged-${index}`,
+        url: `https://example.test/${pair.queryId}/unjudged-${index}`,
+        title: `Unjudged ${index}`,
+      }));
+      pair.captures[side].finalResults = [...unknown, ...judged];
+    }
+  }
+  const suite = reportFor(queries, live).suites[0];
+  assert.equal(suite.evidenceSufficiency, "INSUFFICIENT");
+  assert.equal(suite.pairedN, 0);
+  assert.equal(suite.excludedN, 32);
+  assert.equal(suite.qualityImprovementClaimAllowed, false);
+  assert.ok(suite.exclusions.every((item) => item.reasons.includes("provisional_unjudged")));
+});
+
+test("small positive, zero and negative nDCG deltas do not falsely claim improvement", () => {
+  const smallDeltaDataset = preciseFixture();
+  const smallDeltaLive = liveReport(smallDeltaDataset.queries);
+  for (const pair of smallDeltaLive.pairs) {
+    const query = smallDeltaDataset.queries.find((item) => item.queryId === pair.queryId);
+    pair.captures.baseline.finalResults = preciseDocuments(query, "baseline");
+    pair.captures.candidate.finalResults = preciseDocuments(query, "candidate");
+  }
+  const smallDelta = reportFor(smallDeltaDataset, smallDeltaLive).suites[0];
+  assert.equal(smallDelta.evidenceSufficiency, "SUFFICIENT");
+  assert.ok(smallDelta.metrics.ndcgAtK.observed.delta > 0);
+  assert.ok(smallDelta.metrics.ndcgAtK.observed.delta < 0.03);
+  assert.equal(smallDelta.improvementVerdict, "NO_SIGNIFICANT_IMPROVEMENT");
+  assert.equal(smallDelta.qualityImprovementClaimAllowed, false);
+  assert.ok(smallDelta.improvementReasons.includes("ndcg_delta_below_0.03_in_at_least_one_lens"));
+
+  const zeroDataset = fixture();
+  const zeroLive = liveReport(zeroDataset.queries);
+  for (const pair of zeroLive.pairs) pair.captures.candidate.finalResults = structuredClone(pair.captures.baseline.finalResults);
+  const zero = reportFor(zeroDataset, zeroLive).suites[0];
+  assert.equal(zero.evidenceSufficiency, "SUFFICIENT");
+  assert.equal(zero.metrics.ndcgAtK.observed.delta, 0);
+  assert.equal(zero.qualityImprovementClaimAllowed, false);
+  assert.equal(zero.improvementVerdict, "NO_SIGNIFICANT_IMPROVEMENT");
+
+  const negativeDataset = fixture();
+  const negativeLive = liveReport(negativeDataset.queries);
+  for (const pair of negativeLive.pairs) {
+    const query = negativeDataset.queries.find((item) => item.queryId === pair.queryId);
+    pair.captures.baseline.finalResults = documents(query, "candidate");
+    pair.captures.candidate.finalResults = documents(query, "baseline");
+  }
+  const negative = reportFor(negativeDataset, negativeLive).suites[0];
+  assert.equal(negative.evidenceSufficiency, "SUFFICIENT");
+  assert.ok(negative.metrics.ndcgAtK.observed.delta < 0);
+  assert.equal(negative.qualityImprovementClaimAllowed, false);
+  assert.equal(negative.improvementVerdict, "REVIEW_REQUIRED");
+});
+
+test("category, empty-result and P95 latency guardrails block improvement claims", () => {
+  const categoryDataset = fixture();
+  const categoryLive = liveReport(categoryDataset.queries);
+  for (const pair of categoryLive.pairs.filter((item) => item.category === "technical")) {
+    const query = categoryDataset.queries.find((item) => item.queryId === pair.queryId);
+    pair.captures.baseline.finalResults = documents(query, "candidate");
+    pair.captures.candidate.finalResults = documents(query, "baseline");
+  }
+  const category = reportFor(categoryDataset, categoryLive).suites[0];
+  assert.equal(category.evidenceSufficiency, "SUFFICIENT");
+  assert.equal(category.reviewRequired, true);
+  assert.ok(category.guardrails.reasons.includes("category_ndcg_drop>0.03:technical"));
+  assert.equal(category.qualityImprovementClaimAllowed, false);
+
+  const emptyDataset = fixture();
+  const emptyLive = liveReport(emptyDataset.queries);
+  emptyLive.pairs[0].captures.candidate.finalResults = [];
+  const empty = reportFor(emptyDataset, emptyLive).suites[0];
+  assert.ok(empty.guardrails.emptyResultRate.delta > 0.01);
+  assert.ok(empty.guardrails.reasons.includes("empty_result_rate_increase>1pp"));
+  assert.equal(empty.qualityImprovementClaimAllowed, false);
+
+  const latencyDataset = fixture();
+  const latencyLive = liveReport(latencyDataset.queries);
+  for (const pair of latencyLive.pairs) pair.captures.candidate.latencyMs = pair.captures.baseline.latencyMs * 1.21;
+  const latency = reportFor(latencyDataset, latencyLive).suites[0];
+  assert.equal(latency.evidenceSufficiency, "SUFFICIENT");
+  assert.ok(latency.guardrails.reasons.includes("p95_latency_increase>20%"));
+  assert.equal(latency.reviewRequired, true);
+  assert.equal(latency.qualityImprovementClaimAllowed, false);
+});
+
+test("canonical schema and live ABBA protocol fail loudly on invalid evidence", () => {
+  const queries = fixture();
+  const live = liveReport(queries.queries);
+  const badOrder = structuredClone(live);
+  badOrder.protocol.order = "AA";
+  assert.throws(() => reportFor(queries, badOrder), /protocol\.order must be AB\/BA/);
+  const badCache = structuredClone(live);
+  badCache.pairs[0].captures.baseline.request.skipCache = false;
+  assert.throws(() => reportFor(queries, badCache), /captures\.baseline\.request\.skipCache must be true/);
+  const badPairOrder = structuredClone(live);
+  badPairOrder.pairs[0].order = ["candidate", "baseline"];
+  assert.throws(() => reportFor(queries, badPairOrder), /pairs\[0\]\.order must alternate/);
+
+  const algorithm = canonicalAlgorithm(queries);
+  const badSchema = structuredClone(algorithm);
+  badSchema.schemaVersion = 2;
+  assert.throws(() => reportFor(queries, live, {
+    algorithmComparisons: [{ name: "bad", source: "bad.json", sourceSha256: "d".repeat(64), report: badSchema }],
+  }), /bad\.json\.schemaVersion: unsupported schema version 2/);
+  const badMetric = structuredClone(algorithm);
+  badMetric.metrics = ["recallAtK"];
+  assert.throws(() => reportFor(queries, live, {
+    algorithmComparisons: [{ name: "bad", source: "bad.json", sourceSha256: "d".repeat(64), report: badMetric }],
+  }), /bad\.json: canonical snapshot: unsupported metric recallAtK/);
+  const badStrategy = structuredClone(algorithm);
+  badStrategy.pairs[0].strategy.candidate = "magic";
+  assert.throws(() => reportFor(queries, live, {
+    algorithmComparisons: [{ name: "bad", source: "bad.json", sourceSha256: "d".repeat(64), report: badStrategy }],
+  }), /pairs\[0\]\.strategy: unsupported strategy magic/);
+  const missingProvenance = structuredClone(algorithm);
+  delete missingProvenance.candidate.commit;
+  assert.throws(() => reportFor(queries, live, {
+    algorithmComparisons: [{ name: "bad", source: "bad.json", sourceSha256: "d".repeat(64), report: missingProvenance }],
+  }), /candidate\.commit is required/);
+});
+
+test("missing latency and peak RSS stay null with explicit reasons", () => {
+  const queries = fixture();
+  const live = liveReport(queries.queries);
+  delete live.peakRssBytes;
+  for (const pair of live.pairs) {
+    for (const side of ["baseline", "candidate"]) {
+      delete pair.captures[side].firstResultLatencyMs;
+      delete pair.captures[side].peakRssBytes;
+    }
+  }
+  const suite = reportFor(queries, live).suites[0];
+  assert.equal(suite.baseline.firstResultLatencyMs.mean, null);
+  assert.equal(suite.baseline.firstResultLatencyMs.reason, "not_captured");
+  assert.equal(suite.baseline.peakRssBytes.max, null);
+  assert.equal(suite.baseline.peakRssBytes.reason, "not_captured");
+  assert.equal(suite.perQuery[0].baseline.firstResultReason, "not_captured");
+  assert.equal(suite.perQuery[0].baseline.peakRssReason, "not_captured");
+  assert.equal(suite.reviewRequired, false);
+  assert.equal(suite.qualityImprovementClaimAllowed, true);
 });
 
 test("duplicate rows are reported without treating them as new documents", () => {

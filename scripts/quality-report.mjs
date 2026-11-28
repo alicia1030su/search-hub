@@ -6,6 +6,39 @@
  * separate inputs and are never pooled. All ranking metrics and paired bootstrap
  * calculations come from the core evaluation modules; this script only validates
  * evidence, derives operational signals, and renders the result.
+ *
+ * Canonical same-snapshot input (schemaVersion 1):
+ * {
+ *   schemaVersion: 1,
+ *   source: "snapshot",
+ *   queriesFingerprint: "<SHA-256 of the exact --queries file bytes>",
+ *   baseline: { commit: "<baseline-commit>", configFingerprint: "<baseline-config>" },
+ *   candidate: { commit: "<candidate-commit>", configFingerprint: "<candidate-config>" },
+ *   providers: ["provider-id"],
+ *   startedAt: "ISO-8601",
+ *   finishedAt: "ISO-8601",
+ *   pairs: [{
+ *     queryId: "q001",
+ *     strategy: { baseline: "base", candidate: "rrf" },
+ *     snapshotHash: "<core snapshotFingerprint(providers)>",
+ *     baseline: {
+ *       providers: [ ProviderSnapshot ],
+ *       finalResults: [{ documentId, url, title }],
+ *       modelArtifacts: { "optional non-secret model identity": true }
+ *     },
+ *     candidate: {
+ *       providers: [ ProviderSnapshot ],
+ *       finalResults: [{ documentId, url, title }],
+ *       modelArtifacts: { "optional non-secret model identity": true }
+ *     }
+ *   }]
+ * }
+ *
+ * Supported strategy identifiers are basic, base, single, rrf, rerank and deep.
+ * Supported metrics are precisionAtK, ndcgAtK and mrrAtK. Recall is deliberately
+ * unsupported because the frozen qrels are incomplete. Legacy snapshot pair
+ * shapes remain accepted, but are labelled as legacy in the report and must still
+ * prove identical raw provider snapshots on both sides.
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -21,12 +54,16 @@ import {
   pairedStratifiedBootstrap,
 } from "../packages/core/src/evaluation/bootstrap.ts";
 import { aggregateMetric, evaluateQuery } from "../packages/core/src/evaluation/metrics.ts";
-import { round } from "../packages/core/src/evaluation/primitives.ts";
+import { percentile, round } from "../packages/core/src/evaluation/primitives.ts";
+import { snapshotFingerprint } from "../packages/core/src/evaluation/snapshot.ts";
 import { normalizeUrl } from "../packages/shared/src/url.ts";
 
 const REPORT_FORMAT = "search-hub.quality.report/1";
 const LIVE_FORMAT = "search-hub.quality.live/1";
+const CANONICAL_SNAPSHOT_FORMAT = "canonical_snapshot/1";
+const LEGACY_SNAPSHOT_FORMAT = "legacy_snapshot/1";
 const RANKING_METRICS = ["precisionAtK", "ndcgAtK", "mrrAtK"];
+const SUPPORTED_STRATEGIES = new Set(["basic", "base", "single", "rrf", "rerank", "deep"]);
 const CUTOFF = 10;
 
 function assert(condition, message) {
@@ -59,10 +96,6 @@ function canonical(value) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-function stableFingerprint(value) {
-  return sha256(canonical(value));
 }
 
 function finiteNumber(value) {
@@ -200,9 +233,13 @@ function evaluateSide(capture, judgment) {
 }
 
 function captureLatency(capture) {
+  const firstResultMs = firstNumber(capture?.firstResultLatencyMs, capture?.firstLatencyMs, capture?.ttfbMs);
+  const totalMs = firstNumber(capture?.latencyMs, capture?.elapsedMs, capture?.totalLatencyMs);
   return {
-    firstResultMs: firstNumber(capture?.firstResultLatencyMs, capture?.firstLatencyMs, capture?.ttfbMs),
-    totalMs: firstNumber(capture?.latencyMs, capture?.elapsedMs, capture?.totalLatencyMs),
+    firstResultMs,
+    totalMs,
+    firstResultReason: firstResultMs === null ? "not_captured" : null,
+    totalReason: totalMs === null ? "not_captured" : null,
   };
 }
 
@@ -261,10 +298,90 @@ function bootstrapStatusFor(pairs, metric) {
   return pairedStratifiedBootstrap({ pairs, metric, iterations: BOOTSTRAP_ITERATIONS, seed: BOOTSTRAP_SEED });
 }
 
+function validateTimeWindow(startedAt, finishedAt, path, maxWindowMs = null) {
+  const started = Date.parse(startedAt);
+  const finished = Date.parse(finishedAt);
+  assert(Number.isFinite(started) && Number.isFinite(finished), `${path}: startedAt and finishedAt must be valid ISO-8601 timestamps`);
+  assert(finished >= started, `${path}: finishedAt must not precede startedAt`);
+  if (maxWindowMs !== null) assert(finished - started <= maxWindowMs, `${path}: run exceeded the ${maxWindowMs}ms window`);
+}
+
+function validateMetrics(input, path) {
+  const metrics = input.metrics ?? input.metric;
+  if (metrics === undefined) return;
+  const requested = Array.isArray(metrics) ? metrics : [metrics];
+  for (const metric of requested) {
+    assert(RANKING_METRICS.includes(metric), `${path}: unsupported metric ${String(metric)}`);
+  }
+  assert(requested.length === RANKING_METRICS.length && RANKING_METRICS.every((metric) => requested.includes(metric)),
+    `${path}: metrics must contain exactly ${RANKING_METRICS.join(", ")}; Recall is unsupported for incomplete qrels`);
+}
+
+function validateStrategy(strategy, path) {
+  const values = typeof strategy === "string" ? [strategy, strategy] : [strategy?.baseline, strategy?.candidate];
+  for (const value of values) {
+    assert(typeof value === "string" && SUPPORTED_STRATEGIES.has(value), `${path}: unsupported strategy ${String(value)}`);
+  }
+}
+
+function validateCanonicalSnapshot(input, source, queriesSha256) {
+  const path = `${source}: canonical snapshot`;
+  assert(input.schemaVersion === 1, `${path}.schemaVersion must be 1`);
+  assert(input.source === "snapshot", `${path}.source must be "snapshot"`);
+  assert(typeof input.queriesFingerprint === "string" && /^[a-f0-9]{64}$/i.test(input.queriesFingerprint), `${path}.queriesFingerprint must be a SHA-256 hex string`);
+  assert(input.queriesFingerprint.toLowerCase() === queriesSha256?.toLowerCase(), `${path}.queriesFingerprint does not match --queries`);
+  for (const side of ["baseline", "candidate"]) {
+    assert(isRecord(input[side]), `${path}.${side} must be an object`);
+    assert(typeof input[side].commit === "string" && input[side].commit, `${path}.${side}.commit is required`);
+    assert(typeof input[side].configFingerprint === "string" && input[side].configFingerprint, `${path}.${side}.configFingerprint is required`);
+  }
+  assert(Array.isArray(input.providers) && input.providers.length > 0 && input.providers.every((provider) => typeof provider === "string" && provider), `${path}.providers must be a non-empty string array`);
+  validateTimeWindow(input.startedAt, input.finishedAt, path);
+  validateMetrics(input, path);
+  assert(Array.isArray(input.pairs) && input.pairs.length > 0, `${path}.pairs must be a non-empty array`);
+  const ids = new Set();
+  for (const [index, pair] of input.pairs.entries()) {
+    const pairPath = `${path}.pairs[${index}]`;
+    assert(isRecord(pair) && typeof pair.queryId === "string" && pair.queryId, `${pairPath}.queryId is required`);
+    assert(!ids.has(pair.queryId), `${pairPath}.queryId is duplicated: ${pair.queryId}`);
+    ids.add(pair.queryId);
+    validateStrategy(pair.strategy, `${pairPath}.strategy`);
+    assert(typeof pair.snapshotHash === "string" && /^[a-f0-9]{64}$/i.test(pair.snapshotHash), `${pairPath}.snapshotHash must be a SHA-256 hex string`);
+    for (const side of ["baseline", "candidate"]) {
+      assert(isRecord(pair[side]), `${pairPath}.${side} must be an object`);
+      assert(Array.isArray(pair[side].providers) && pair[side].providers.length > 0, `${pairPath}.${side}.providers must be a non-empty array`);
+      assert(Array.isArray(pair[side].finalResults), `${pairPath}.${side}.finalResults must be an array`);
+      if (pair[side].modelArtifacts !== undefined) assert(isRecord(pair[side].modelArtifacts), `${pairPath}.${side}.modelArtifacts must be an object`);
+    }
+    assert(canonical(pair.baseline.providers) === canonical(pair.candidate.providers), `${pairPath}: baseline.providers and candidate.providers must be the same raw snapshot`);
+    assert(snapshotFingerprint(pair.baseline.providers).toLowerCase() === pair.snapshotHash.toLowerCase(), `${pairPath}.snapshotHash does not match the raw provider snapshot`);
+  }
+}
+
+function validateLiveProtocol(run, source) {
+  const protocol = run.protocol;
+  assert(isRecord(protocol), `${source}.protocol is required`);
+  assert(protocol.order === "AB/BA", `${source}.protocol.order must be AB/BA`);
+  assert(protocol.serial === true, `${source}.protocol.serial must be true`);
+  assert(protocol.cachePolicy === "bypass", `${source}.protocol.cachePolicy must be bypass`);
+  assert(protocol.maxAttempts === 2, `${source}.protocol.maxAttempts must be 2`);
+  assert(Number.isInteger(protocol.maxWindowMs) && protocol.maxWindowMs > 0 && protocol.maxWindowMs <= 24 * 60 * 60 * 1000,
+    `${source}.protocol.maxWindowMs must be a positive integer no greater than 24h`);
+  for (const [index, pair] of run.pairs.entries()) {
+    const expected = index % 2 === 0 ? ["baseline", "candidate"] : ["candidate", "baseline"];
+    assert(canonical(pair?.order) === canonical(expected), `${source}.pairs[${index}].order must alternate AB/BA`);
+    for (const side of ["baseline", "candidate"]) {
+      assert(pair?.captures?.[side]?.request?.skipCache === true,
+        `${source}.pairs[${index}].captures.${side}.request.skipCache must be true`);
+    }
+  }
+}
+
 function provenanceFromLive(run, source, sourceSha256) {
   assert(isRecord(run), `${source}: live report must be an object`);
   assert(run.format === LIVE_FORMAT, `${source}: expected format ${LIVE_FORMAT}`);
   assert(Array.isArray(run.pairs), `${source}: live report pairs must be an array`);
+  validateLiveProtocol(run, source);
   if (run.comparison?.evidenceKind && run.comparison.evidenceKind !== "live_paired_abba") {
     throw new TypeError(`${source}: live comparison has incompatible evidence kind`);
   }
@@ -284,17 +401,22 @@ function provenanceFromLive(run, source, sourceSha256) {
   }).filter((value) => typeof value === "string" && value));
   const providerSets = unique(captures.filter((capture) => Array.isArray(capture.request?.providers)).map((capture) => canonical(capture.request.providers)));
   assert(providerSets.length <= 1, `${source}: live evidence mixes provider sets`);
-  if (run.startedAt && run.finishedAt) {
-    const startedAt = Date.parse(run.startedAt);
-    const finishedAt = Date.parse(run.finishedAt);
-    assert(Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt >= startedAt, `${source}: invalid live run time window`);
-    assert(finishedAt - startedAt <= 24 * 60 * 60 * 1000, `${source}: live run exceeded the 24-hour window`);
+  if (captures.length > 0 && run.status !== "skipped") {
+    assert(baselineCommits.length === 1, `${source}.pairs[].captures.baseline.commit is required and must be consistent`);
+    assert(candidateCommits.length === 1, `${source}.pairs[].captures.candidate.commit is required and must be consistent`);
+    assert(baselineConfigs.length === 1, `${source}.pairs[].captures.baseline.configFingerprint is required and must be consistent`);
+    assert(candidateConfigs.length === 1, `${source}.pairs[].captures.candidate.configFingerprint is required and must be consistent`);
+    assert(providers.length > 0, `${source}.pairs[].captures[].request.providers is required`);
+    assert(typeof run.region === "string" && run.region, `${source}.region is required`);
+    assert(typeof run.origin === "string" && run.origin, `${source}.origin is required`);
+    validateTimeWindow(run.startedAt, run.finishedAt, source, 24 * 60 * 60 * 1000);
   }
   return {
     evidenceKind: "live_paired_abba",
     sameSnapshot: false,
     source,
     sourceSha256,
+    inputFormat: LIVE_FORMAT,
     format: run.format,
     protocol: run.protocol ?? null,
     region: run.region ?? null,
@@ -314,23 +436,27 @@ function provenanceFromLive(run, source, sourceSha256) {
     providers,
     providerScope: providers.length > 0 ? providers.join(", ") : "N/A",
     peakRssBytes: run.peakRssBytes ?? (run.peakRssMBytes === undefined ? null : round(run.peakRssMBytes * 1024 * 1024)),
+    peakRssReason: run.peakRssBytes === undefined && run.peakRssMBytes === undefined ? "not_captured" : null,
   };
 }
 
 function sameSnapshotEvidence(pair) {
-  if (typeof pair.snapshotHash === "string" && pair.snapshotHash) return pair.snapshotHash;
+  const baselineRaw = pair.baseline?.providers ?? pair.baseline?.rawProviderSnapshot ?? pair.baseline?.envelope?.providers;
+  const candidateRaw = pair.candidate?.providers ?? pair.candidate?.rawProviderSnapshot ?? pair.candidate?.envelope?.providers;
+  if (!Array.isArray(baselineRaw) || !Array.isArray(candidateRaw) || baselineRaw.length === 0) {
+    return { hash: null, reason: "snapshot_identity_unverified" };
+  }
+  if (canonical(baselineRaw) !== canonical(candidateRaw)) {
+    return { hash: null, reason: "snapshot_mismatch" };
+  }
+  const hash = snapshotFingerprint(baselineRaw);
   const baselineId = pair.baseline?.snapshotHash ?? pair.baseline?.snapshotId;
   const candidateId = pair.candidate?.snapshotHash ?? pair.candidate?.snapshotId;
-  if (baselineId && candidateId && baselineId === candidateId) return String(baselineId);
-  const baselineHashes = pair.baseline?.providerHashes ?? pair.baseline?.envelope?.providerFingerprints;
-  const candidateHashes = pair.candidate?.providerHashes ?? pair.candidate?.envelope?.providerFingerprints;
-  const baselineRaw = pair.baseline?.rawProviderSnapshot ?? pair.baseline?.envelope?.providers;
-  const candidateRaw = pair.candidate?.rawProviderSnapshot ?? pair.candidate?.envelope?.providers;
-  if (isRecord(baselineHashes) && isRecord(candidateHashes) && Object.keys(baselineHashes).length > 0 &&
-      canonical(baselineHashes) === canonical(candidateHashes) && canonical(baselineRaw) === canonical(candidateRaw)) {
-    return stableFingerprint({ providerHashes: baselineHashes, rawProviderSnapshot: baselineRaw });
+  const declared = pair.snapshotHash ?? (baselineId && baselineId === candidateId ? baselineId : null);
+  if (declared && String(declared).toLowerCase() !== hash.toLowerCase()) {
+    return { hash: null, reason: "snapshot_hash_mismatch" };
   }
-  return null;
+  return { hash, reason: null };
 }
 
 function algorithmPairs(input) {
@@ -353,29 +479,55 @@ function algorithmPairs(input) {
   return pairs.map((pair) => pair.snapshotHash || !input.snapshotHash ? pair : { ...pair, snapshotHash: input.snapshotHash });
 }
 
-function provenanceFromAlgorithm(input, source, sourceSha256) {
+function provenanceFromAlgorithm(input, source, sourceSha256, dataset) {
   assert(isRecord(input) || Array.isArray(input), `${source}: algorithm comparison must be an object or pair array`);
   assert(!/live/i.test(String(input?.evidenceKind ?? input?.format ?? "")), `${source}: live evidence cannot be used as a same-snapshot algorithm comparison`);
+  assert(input?.schemaVersion === undefined || input.schemaVersion === 1, `${source}.schemaVersion: unsupported schema version ${String(input?.schemaVersion)}`);
+  assert(input?.source === undefined || input.source === "snapshot", `${source}.source: unsupported evidence source ${String(input?.source)}`);
+  const canonicalInput = input?.schemaVersion === 1 || input?.source === "snapshot";
+  if (canonicalInput) validateCanonicalSnapshot(input, source, dataset.dataset.sha256);
+  validateMetrics(input ?? {}, source);
+  const pairs = algorithmPairs(input);
+  for (const [index, pair] of pairs.entries()) {
+    if (pair.strategy !== undefined) validateStrategy(pair.strategy, `${source}.pairs[${index}].strategy`);
+  }
+  const baselineCommit = input?.baselineCommit ?? input?.baseline?.commit ?? null;
+  const candidateCommit = input?.candidateCommit ?? input?.candidate?.commit ?? null;
+  const baselineConfigFingerprint = input?.baselineConfigFingerprint ?? input?.baseline?.configFingerprint ?? null;
+  const candidateConfigFingerprint = input?.candidateConfigFingerprint ?? input?.candidate?.configFingerprint ?? null;
+  assert(typeof baselineCommit === "string" && baselineCommit, `${source}.baseline.commit is required`);
+  assert(typeof candidateCommit === "string" && candidateCommit, `${source}.candidate.commit is required`);
+  assert(typeof baselineConfigFingerprint === "string" && baselineConfigFingerprint, `${source}.baseline.configFingerprint is required`);
+  assert(typeof candidateConfigFingerprint === "string" && candidateConfigFingerprint, `${source}.candidate.configFingerprint is required`);
+  const derivedProviders = unique(pairs.flatMap((pair) => ["baseline", "candidate"].flatMap((side) => {
+    const rows = pair[side]?.providers ?? pair[side]?.rawProviderSnapshot ?? pair[side]?.envelope?.providers ?? [];
+    return Array.isArray(rows) ? rows.map((provider) => provider?.providerId).filter(Boolean) : [];
+  })));
+  const providers = unique(Array.isArray(input?.providers) ? input.providers : derivedProviders);
+  assert(providers.length > 0 && providers.every((provider) => typeof provider === "string" && provider), `${source}.providers is required`);
+  validateTimeWindow(input?.startedAt, input?.finishedAt, source);
   return {
     evidenceKind: "same_snapshot_algorithm_comparison",
     sameSnapshot: true,
     source,
     sourceSha256,
-    format: input.format ?? null,
-    suiteStatus: input.status ?? null,
-    skipReason: input.skipReason ?? null,
-    limitations: input.limitations ?? [],
-    startedAt: input.startedAt ?? null,
-    finishedAt: input.finishedAt ?? null,
-    baselineCommit: input.baselineCommit ?? input.baseline?.commit ?? null,
-    candidateCommit: input.candidateCommit ?? input.candidate?.commit ?? null,
-    baselineConfigFingerprint: input.baselineConfigFingerprint ?? input.baseline?.configFingerprint ?? null,
-    candidateConfigFingerprint: input.candidateConfigFingerprint ?? input.candidate?.configFingerprint ?? null,
-    configFingerprints: unique([input.baselineConfigFingerprint ?? input.baseline?.configFingerprint, input.candidateConfigFingerprint ?? input.candidate?.configFingerprint]).filter(Boolean),
-    providers: unique(input.providers ?? []),
-    providerScope: Array.isArray(input.providers) && input.providers.length > 0 ? input.providers.join(", ") : "N/A",
-    snapshotIdentity: "required_per_pair",
-    peakRssBytes: firstNumber(input.peakRssBytes, input.peakRssMBytes),
+    inputFormat: canonicalInput ? CANONICAL_SNAPSHOT_FORMAT : LEGACY_SNAPSHOT_FORMAT,
+    format: input?.format ?? null,
+    suiteStatus: input?.status ?? null,
+    skipReason: input?.skipReason ?? null,
+    limitations: input?.limitations ?? [],
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    baselineCommit,
+    candidateCommit,
+    baselineConfigFingerprint,
+    candidateConfigFingerprint,
+    configFingerprints: unique([baselineConfigFingerprint, candidateConfigFingerprint]),
+    providers,
+    providerScope: providers.join(", "),
+    snapshotIdentity: "identical_raw_provider_snapshot_required",
+    peakRssBytes: firstNumber(input?.peakRssBytes, input?.peakRssMBytes),
+    peakRssReason: firstNumber(input?.peakRssBytes, input?.peakRssMBytes) === null ? "not_captured" : null,
   };
 }
 
@@ -389,9 +541,83 @@ function livePairs(run) {
   return byQuery;
 }
 
+function buildGuardrails(perQuery) {
+  const included = perQuery.filter((query) => query.included);
+  const reasons = [];
+  const categories = [...new Set(perQuery.map((query) => query.category))].sort().map((category) => {
+    const rows = included.filter((query) => query.category === category);
+    const baseline = aggregateMetric(rows.map((query) => query.baseline), "ndcgAtK");
+    const candidate = aggregateMetric(rows.map((query) => query.candidate), "ndcgAtK");
+    const baselineValue = metricNumber(baseline);
+    const candidateValue = metricNumber(candidate);
+    const delta = baselineValue !== null && candidateValue !== null ? round(candidateValue - baselineValue) : null;
+    const reviewRequired = delta === null || delta < -0.03;
+    if (delta === null) reasons.push(`category_ndcg_unavailable:${category}`);
+    else if (delta < -0.03) reasons.push(`category_ndcg_drop>0.03:${category}`);
+    return {
+      category,
+      pairedN: rows.length,
+      baselineNdcgAtK: baseline,
+      candidateNdcgAtK: candidate,
+      delta,
+      reason: delta === null ? "no_measured_category_pairs" : null,
+      reviewRequired,
+    };
+  });
+  const emptyRate = (side) => included.length === 0 ? null : round(included.filter((query) => query[side].finalResultCount === 0).length / included.length);
+  const baselineEmpty = emptyRate("baseline");
+  const candidateEmpty = emptyRate("candidate");
+  const emptyDelta = baselineEmpty !== null && candidateEmpty !== null ? round(candidateEmpty - baselineEmpty) : null;
+  if (emptyDelta === null) reasons.push("empty_result_rate_unavailable");
+  else if (emptyDelta > 0.01) reasons.push("empty_result_rate_increase>1pp");
+  const latency = (side) => {
+    const values = included.map((query) => query[side].totalMs).filter((value) => value !== null).sort((left, right) => left - right);
+    return {
+      p50: percentile(values, 0.5),
+      p95: percentile(values, 0.95),
+      sampleN: values.length,
+      reason: values.length === 0 ? "not_captured" : values.length < included.length ? "partial_capture" : null,
+    };
+  };
+  const baselineLatency = latency("baseline");
+  const candidateLatency = latency("candidate");
+  if (baselineLatency.p95 === null || candidateLatency.p95 === null) {
+    reasons.push("p95_latency_unavailable");
+  } else if (candidateLatency.p95 > (baselineLatency.p95 === 0 ? 0 : baselineLatency.p95 * 1.2)) {
+    reasons.push("p95_latency_increase>20%");
+  }
+  const movements = included.map((query) => {
+    const baseline = metricNumber(query.baseline.ndcgAtK);
+    const candidate = metricNumber(query.candidate.ndcgAtK);
+    const delta = baseline !== null && candidate !== null ? round(candidate - baseline) : null;
+    return {
+      queryId: query.queryId,
+      category: query.category,
+      baseline: baseline,
+      candidate: candidate,
+      delta,
+      verdict: delta === null ? "not_comparable" : delta > 0 ? "improved" : delta < 0 ? "degraded" : "unchanged",
+    };
+  });
+  return {
+    reviewRequired: reasons.length > 0,
+    reasons: unique(reasons),
+    categories,
+    emptyResultRate: {
+      baseline: baselineEmpty,
+      candidate: candidateEmpty,
+      delta: emptyDelta,
+      reason: emptyDelta === null ? "no_eligible_pairs" : null,
+    },
+    latencyMs: { baseline: baselineLatency, candidate: candidateLatency },
+    queryMovements: movements,
+  };
+}
+
 function buildSuite({ name, evidenceKind, run, source, sourceSha256, dataset, credentialScope }) {
+  assert(typeof sourceSha256 === "string" && /^[a-f0-9]{64}$/i.test(sourceSha256), `${source}.sourceSha256 must be a SHA-256 hex string`);
   const isLive = evidenceKind === "live";
-  const provenance = isLive ? provenanceFromLive(run, source, sourceSha256) : provenanceFromAlgorithm(run, source, sourceSha256);
+  const provenance = isLive ? provenanceFromLive(run, source, sourceSha256) : provenanceFromAlgorithm(run, source, sourceSha256, dataset);
   const pairsById = isLive ? livePairs(run) : new Map(algorithmPairs(run).map((pair, index) => {
     assert(isRecord(pair) && typeof pair.queryId === "string" && pair.queryId, `${source}: algorithm pair ${index} needs queryId`);
     return [pair.queryId, pair];
@@ -409,9 +635,9 @@ function buildSuite({ name, evidenceKind, run, source, sourceSha256, dataset, cr
     const candidate = pair?.captures?.candidate ?? pair?.candidate;
     const reasons = [];
     if (!pair) reasons.push("missing_pair");
-    if (!isLive) {
-      const snapshotHash = pair ? sameSnapshotEvidence(pair) : null;
-      if (!snapshotHash) reasons.push("snapshot_identity_unverified");
+    if (!isLive && pair) {
+      const snapshot = sameSnapshotEvidence(pair);
+      if (snapshot.reason) reasons.push(snapshot.reason);
     }
     if (isLive) {
       reasons.push(...captureFailureReasons(baseline, "baseline"));
@@ -457,18 +683,24 @@ function buildSuite({ name, evidenceKind, run, source, sourceSha256, dataset, cr
         finalResultCount: baselineEvaluation.ranked.length,
         duplicateRows: duplicateRows(baselineEvaluation.ranked),
         duplicateRate: duplicateRate(baselineEvaluation.ranked),
+        duplicateRateReason: baselineEvaluation.ranked.length === 0 ? "no_final_results" : null,
         ...captureLatency(baseline),
         upstreamRequests: captureUpstreamRequests(baseline),
+        upstreamRequestsReason: captureUpstreamRequests(baseline) === null ? "not_captured" : null,
         peakRssBytes: capturePeakRss(baseline, run),
+        peakRssReason: capturePeakRss(baseline, run) === null ? "not_captured" : null,
       },
       candidate: {
         ...candidateEvaluation.metrics,
         finalResultCount: candidateEvaluation.ranked.length,
         duplicateRows: duplicateRows(candidateEvaluation.ranked),
         duplicateRate: duplicateRate(candidateEvaluation.ranked),
+        duplicateRateReason: candidateEvaluation.ranked.length === 0 ? "no_final_results" : null,
         ...captureLatency(candidate),
         upstreamRequests: captureUpstreamRequests(candidate),
+        upstreamRequestsReason: captureUpstreamRequests(candidate) === null ? "not_captured" : null,
         peakRssBytes: capturePeakRss(candidate, run),
+        peakRssReason: capturePeakRss(candidate, run) === null ? "not_captured" : null,
       },
     });
   }
@@ -486,18 +718,33 @@ function buildSuite({ name, evidenceKind, run, source, sourceSha256, dataset, cr
     const finalCounts = sideQueries.map((query) => query.finalResultCount);
     const duplicateRowCount = sideQueries.reduce((sum, query) => sum + query.duplicateRows, 0);
     const resultTotal = finalCounts.reduce((sum, count) => sum + count, 0);
+    const effectiveMean = mean(sideQueries.map((query) => query.returnedCount));
+    const finalMean = mean(finalCounts);
+    const duplicate = ratio(duplicateRowCount, resultTotal);
+    const firstMean = mean(sideQueries.map((query) => query.firstResultMs));
+    const totalMean = mean(sideQueries.map((query) => query.totalMs));
+    const upstreamTotal = total(sideQueries.map((query) => query.upstreamRequests));
+    const peakMax = maxNullable(sideQueries.map((query) => query.peakRssBytes));
+    const firstN = sideQueries.filter((query) => query.firstResultMs !== null).length;
+    const totalN = sideQueries.filter((query) => query.totalMs !== null).length;
+    const upstreamN = sideQueries.filter((query) => query.upstreamRequests !== null).length;
+    const peakN = sideQueries.filter((query) => query.peakRssBytes !== null).length;
+    const captureReason = (value, sampleN) => value === null
+      ? (sideQueries.length === 0 ? "no_eligible_pairs" : "not_captured")
+      : sampleN < sideQueries.length ? "partial_capture" : null;
     return {
       precisionAtK: aggregateMetric(sideQueries, "precisionAtK"),
       ndcgAtK: aggregateMetric(sideQueries, "ndcgAtK"),
       mrrAtK: aggregateMetric(sideQueries, "mrrAtK"),
       recallAtK: aggregateMetric(sideQueries, "recallAtK"),
-      effectiveResultCount: { mean: mean(sideQueries.map((query) => query.returnedCount)), total: total(sideQueries.map((query) => query.returnedCount)), sampleN: sideQueries.length },
-      finalResultCount: { mean: mean(finalCounts), total: total(finalCounts), sampleN: sideQueries.length },
-      duplicateRate: ratio(duplicateRowCount, resultTotal),
-      firstResultLatencyMs: { mean: mean(sideQueries.map((query) => query.firstResultMs)), sampleN: sideQueries.filter((query) => query.firstResultMs !== null).length },
-      totalLatencyMs: { mean: mean(sideQueries.map((query) => query.totalMs)), total: total(sideQueries.map((query) => query.totalMs)), sampleN: sideQueries.filter((query) => query.totalMs !== null).length },
-      upstreamRequests: { total: total(sideQueries.map((query) => query.upstreamRequests)), sampleN: sideQueries.filter((query) => query.upstreamRequests !== null).length },
-      peakRssBytes: { max: maxNullable(sideQueries.map((query) => query.peakRssBytes)), sampleN: sideQueries.filter((query) => query.peakRssBytes !== null).length },
+      effectiveResultCount: { mean: effectiveMean, total: total(sideQueries.map((query) => query.returnedCount)), sampleN: sideQueries.length, reason: effectiveMean === null ? "no_eligible_pairs" : null },
+      finalResultCount: { mean: finalMean, total: total(finalCounts), sampleN: sideQueries.length, reason: finalMean === null ? "no_eligible_pairs" : null },
+      duplicateRate: duplicate,
+      duplicateRateReason: duplicate === null ? "no_final_results" : null,
+      firstResultLatencyMs: { mean: firstMean, sampleN: firstN, reason: captureReason(firstMean, firstN) },
+      totalLatencyMs: { mean: totalMean, total: total(sideQueries.map((query) => query.totalMs)), sampleN: totalN, reason: captureReason(totalMean, totalN) },
+      upstreamRequests: { total: upstreamTotal, sampleN: upstreamN, reason: captureReason(upstreamTotal, upstreamN) },
+      peakRssBytes: { max: peakMax, sampleN: peakN, reason: captureReason(peakMax, peakN) },
     };
   };
   const provenanceComplete = Boolean(
@@ -515,15 +762,62 @@ function buildSuite({ name, evidenceKind, run, source, sourceSha256, dataset, cr
       .filter((category) => perQuery.filter((query) => query.included && query.category === category).length < MIN_CATEGORY_QUERIES)
       .map((category) => `category:${category}<8`),
   ]);
-  const supported = structuralReasons.length === 0 && RANKING_METRICS.every((metric) => metrics[metric].status === "SUPPORTED");
-  const status = supported ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE";
+  const metricEvidenceSufficient = RANKING_METRICS.every((metric) => metrics[metric].observed.sufficient && metrics[metric].releaseScore.sufficient);
+  const rawMetricReasons = RANKING_METRICS.flatMap((metric) => metrics[metric].reasons);
+  const evidenceReasons = unique([
+    ...structuralReasons,
+    ...rawMetricReasons.filter((reason) => reason !== "improvement_not_confirmed_in_both_lenses"),
+  ]);
+  const evidenceSufficiency = structuralReasons.length === 0 && metricEvidenceSufficient && evidenceReasons.length === 0
+    ? "SUFFICIENT"
+    : "INSUFFICIENT";
+  const status = evidenceSufficiency === "SUFFICIENT" ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE";
+  const positiveInBothLenses = ["observed", "releaseScore"].every((lens) => {
+    const result = metrics.ndcgAtK[lens];
+    return result.delta !== null && result.delta > 0 && result.deltaCi.lower !== null && result.deltaCi.lower > 0;
+  });
+  const ndcgTargetInBothLenses = ["observed", "releaseScore"].every((lens) => {
+    const delta = metrics.ndcgAtK[lens].delta;
+    return delta !== null && delta >= 0.03;
+  });
+  const mrrGuard = ["observed", "releaseScore"].every((lens) => {
+    const result = metrics.mrrAtK[lens];
+    return result.delta !== null && result.delta >= -0.01;
+  });
+  const guardrails = buildGuardrails(perQuery);
+  const statisticalImprovement = positiveInBothLenses && ndcgTargetInBothLenses && mrrGuard;
+  const improvementSupported = evidenceSufficiency === "SUFFICIENT" && statisticalImprovement && !guardrails.reviewRequired;
+  const improvementVerdict = evidenceSufficiency !== "SUFFICIENT"
+    ? "INSUFFICIENT_EVIDENCE"
+    : guardrails.reviewRequired
+      ? "REVIEW_REQUIRED"
+      : improvementSupported ? "IMPROVEMENT_SUPPORTED" : "NO_SIGNIFICANT_IMPROVEMENT";
+  const improvementReasons = improvementSupported ? [] : [
+    ...rawMetricReasons.filter((reason) => reason === "improvement_not_confirmed_in_both_lenses"),
+    ...(positiveInBothLenses ? [] : ["ndcg_delta_not_positive_with_ci_lower_above_zero_in_both_lenses"]),
+    ...(ndcgTargetInBothLenses ? [] : ["ndcg_delta_below_0.03_in_at_least_one_lens"]),
+    ...(mrrGuard ? [] : ["mrr_regression_beyond_0.01"]),
+    ...guardrails.reasons,
+  ];
   const exclusions = perQuery.filter((query) => !query.included).map((query) => ({ queryId: query.queryId, reasons: query.excludedReasons }));
   return {
     name,
     ...provenance,
     status,
+    evidenceSufficiency,
+    improvementVerdict,
+    releaseTargetMet: improvementSupported,
+    qualityImprovementClaimAllowed: improvementSupported,
+    reviewRequired: guardrails.reviewRequired,
+    guardrails,
     provenanceComplete,
-    claim: status === "SUPPORTED" ? "Quality-metric evidence supports the candidate; any release claim must also satisfy the preregistered latency gate." : "No quality-improvement claim is supported by this evidence.",
+    claim: improvementSupported
+      ? "Both lenses meet nDCG@10 delta>=0.03 with 95% delta CI lower bounds above zero, MRR and guardrails pass; operational release gates remain mandatory."
+      : guardrails.reviewRequired
+        ? "A preregistered guardrail requires explanation and re-review; do not claim quality improvement."
+        : evidenceSufficiency === "SUFFICIENT"
+          ? "Evidence is sufficient, but the release improvement target was not established; do not claim improvement."
+          : "Evidence is insufficient; do not claim quality improvement.",
     credentialScope,
     credentialLimitation: credentialScope === "public"
       ? "Only public/self-hosted providers were in scope; results do not establish paid-provider quality."
@@ -538,7 +832,8 @@ function buildSuite({ name, evidenceKind, run, source, sourceSha256, dataset, cr
     excludedN: exclusions.length,
     attrition: ratio(exclusions.length, dataset.queries.length) ?? 1,
     thresholds: { maxAttrition: MAX_ATTRITION, minPairedN: MIN_PAIRED_QUERIES, minStratumN: MIN_STRATUM_QUERIES, minCategoryN: MIN_CATEGORY_QUERIES },
-    reasons: unique([...structuralReasons, ...RANKING_METRICS.flatMap((metric) => metrics[metric].reasons)]),
+    reasons: evidenceReasons,
+    improvementReasons: unique(improvementReasons),
     baseline: sideSummary("baseline"),
     candidate: sideSummary("candidate"),
     metrics,
@@ -603,7 +898,8 @@ export function buildQualityReport({ queries, queriesSha256, live = [], algorith
     ...algorithmComparisons.map((input) => buildSuite({ name: input.name, evidenceKind: "snapshot", run: input.report, source: input.source, sourceSha256: input.sourceSha256, dataset, credentialScope })),
   ];
   assert(suites.length > 0, "at least one live or same-snapshot comparison input is required");
-  const allSupported = suites.length > 0 && suites.every((suite) => suite.status === "SUPPORTED");
+  const allEvidenceSufficient = suites.length > 0 && suites.every((suite) => suite.evidenceSufficiency === "SUFFICIENT");
+  const allImprovementSupported = suites.length > 0 && suites.every((suite) => suite.qualityImprovementClaimAllowed);
   return {
     format: REPORT_FORMAT,
     generatedAt,
@@ -615,15 +911,32 @@ export function buildQualityReport({ queries, queriesSha256, live = [], algorith
       recallReason: "qrels_incomplete",
       liveAndSnapshot: "never_mixed",
       bootstrap: { seed: BOOTSTRAP_SEED, iterations: BOOTSTRAP_ITERATIONS, paired: true, stratified: true, ci: 0.95, method: "paired_stratified_percentile", bca: false },
-      improvementClaim: allSupported ? "All suites provide quality-metric evidence; latency and operational gates remain mandatory." : "Prohibited: at least one suite lacks sufficient paired evidence.",
+      releaseTarget: { ndcgDeltaMinimum: 0.03, deltaCiLowerBoundExclusive: 0, mrrDeltaMinimum: -0.01, requiredLenses: ["observed", "releaseScore"] },
+      canonicalSnapshotSchema: {
+        schemaVersion: 1,
+        source: "snapshot",
+        requiredFields: ["schemaVersion", "source", "queriesFingerprint", "baseline.commit", "baseline.configFingerprint", "candidate.commit", "candidate.configFingerprint", "providers", "startedAt", "finishedAt", "pairs"],
+        requiredPairFields: ["queryId", "strategy", "snapshotHash", "baseline.providers", "baseline.finalResults", "candidate.providers", "candidate.finalResults"],
+        strategies: [...SUPPORTED_STRATEGIES],
+        metrics: RANKING_METRICS,
+      },
+      improvementClaim: allImprovementSupported
+        ? "All suites meet the observed/releaseScore positive-delta and CI-lower-bound rule; latency and operational gates remain mandatory."
+        : "Prohibited: at least one suite lacks sufficient evidence or does not establish improvement in both lenses.",
     },
     dataset: dataset.dataset,
     suites,
     summary: {
-      status: allSupported ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE",
-      supportedSuites: suites.filter((suite) => suite.status === "SUPPORTED").map((suite) => suite.name),
-      insufficientSuites: suites.filter((suite) => suite.status !== "SUPPORTED").map((suite) => suite.name),
-      qualityImprovementClaimAllowed: allSupported,
+      status: allEvidenceSufficient ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE",
+      evidenceSufficiency: allEvidenceSufficient ? "SUFFICIENT" : "INSUFFICIENT",
+      improvementVerdict: allImprovementSupported
+        ? "IMPROVEMENT_SUPPORTED"
+        : allEvidenceSufficient
+          ? suites.some((suite) => suite.reviewRequired) ? "REVIEW_REQUIRED" : "NO_SIGNIFICANT_IMPROVEMENT"
+          : "INSUFFICIENT_EVIDENCE",
+      supportedSuites: suites.filter((suite) => suite.evidenceSufficiency === "SUFFICIENT").map((suite) => suite.name),
+      insufficientSuites: suites.filter((suite) => suite.evidenceSufficiency !== "SUFFICIENT").map((suite) => suite.name),
+      qualityImprovementClaimAllowed: allImprovementSupported,
     },
   };
 }
@@ -645,8 +958,9 @@ function renderSuite(suite) {
   const lines = [
     `## ${suite.name}`,
     "",
-    `- 证据类型：\`${suite.evidenceKind}\`；同快照：\`${suite.sameSnapshot}\``,
-    `- 状态：**${suite.status}**；capture=${suite.suiteStatus ?? "N/A"}；skipReason=${suite.skipReason ?? "N/A"}`,
+    `- 证据类型：\`${suite.evidenceKind}\`；识别格式：\`${suite.inputFormat}\`；同快照：\`${suite.sameSnapshot}\``,
+    `- 证据充分性：**${suite.evidenceSufficiency}**；状态：**${suite.status}**；capture=${suite.suiteStatus ?? "N/A"}；skipReason=${suite.skipReason ?? "N/A"}`,
+    `- 提升结论：**${suite.improvementVerdict}**；允许提升声明：**${suite.qualityImprovementClaimAllowed}**`,
     `- 声明边界：${suite.claim}`,
     `- 已知限制：${suite.limitations.length > 0 ? suite.limitations.join("; ") : "无"}`,
     `- 输入：\`${suite.source}\`；SHA-256：\`${suite.sourceSha256}\``,
@@ -659,7 +973,8 @@ function renderSuite(suite) {
     `- 凭证范围：${suite.credentialScope}；${suite.credentialLimitation}`,
     `- 配对：expectedPairs=${suite.expectedPairs}；pairedN=${suite.pairedN}；excludedN=${suite.excludedN}；attrition=${fmt(suite.attrition * 100, 2)}%`,
     `- 门槛：attrition≤${suite.thresholds.maxAttrition * 100}%；pairedN≥${suite.thresholds.minPairedN}；每层≥${suite.thresholds.minStratumN}；每分类≥${suite.thresholds.minCategoryN}`,
-    `- 未满足原因：${suite.reasons.length > 0 ? suite.reasons.map((reason) => `\`${reason}\``).join(", ") : "无"}`,
+    `- 证据不足原因：${suite.reasons.length > 0 ? suite.reasons.map((reason) => `\`${reason}\``).join(", ") : "无"}`,
+    `- 提升未确认原因：${suite.improvementReasons.length > 0 ? suite.improvementReasons.map((reason) => `\`${reason}\``).join(", ") : "无"}`,
     "",
     "### 排序与运行指标",
     "",
@@ -693,6 +1008,21 @@ function renderSuite(suite) {
       lines.push(`| ${metric} | ${lens} | ${result.pairedN} | ${fmt(result.baselineMean)} | ${fmt(result.candidateMean)} | ${fmt(result.delta)} | [${fmt(result.deltaCi.lower)}, ${fmt(result.deltaCi.upper)}] |`);
     }
   }
+  lines.push("", "### 发布门槛与护栏", "", `- reviewRequired：**${suite.reviewRequired}**；releaseTargetMet：**${suite.releaseTargetMet}**`, "");
+  lines.push("| Category | Paired N | Baseline nDCG | Candidate nDCG | Delta | Review |", "|---|---:|---:|---:|---:|---|");
+  for (const category of suite.guardrails.categories) {
+    lines.push(`| ${markdownEscape(category.category)} | ${category.pairedN} | ${metricCell(category.baselineNdcgAtK)} | ${metricCell(category.candidateNdcgAtK)} | ${fmt(category.delta)} | ${category.reviewRequired} |`);
+  }
+  const emptyBaseline = suite.guardrails.emptyResultRate.baseline;
+  const emptyCandidate = suite.guardrails.emptyResultRate.candidate;
+  const emptyDelta = suite.guardrails.emptyResultRate.delta;
+  lines.push("", `- 空结果率：baseline=${emptyBaseline === null ? "N/A" : `${fmt(emptyBaseline * 100, 2)}%`}；candidate=${emptyCandidate === null ? "N/A" : `${fmt(emptyCandidate * 100, 2)}%`}；delta=${emptyDelta === null ? "N/A" : `${fmt(emptyDelta * 100, 2)}pp`}`);
+  lines.push(`- 总延迟 P50/P95：baseline=${fmt(suite.guardrails.latencyMs.baseline.p50, 2)}/${fmt(suite.guardrails.latencyMs.baseline.p95, 2)}ms；candidate=${fmt(suite.guardrails.latencyMs.candidate.p50, 2)}/${fmt(suite.guardrails.latencyMs.candidate.p95, 2)}ms`);
+  lines.push(`- 护栏原因：${suite.guardrails.reasons.length > 0 ? suite.guardrails.reasons.map((reason) => `\`${markdownEscape(reason)}\``).join(", ") : "无"}`);
+  const improved = suite.guardrails.queryMovements.filter((query) => query.verdict === "improved").map((query) => query.queryId);
+  const degraded = suite.guardrails.queryMovements.filter((query) => query.verdict === "degraded").map((query) => query.queryId);
+  lines.push(`- nDCG 改善查询：${improved.length > 0 ? improved.join(", ") : "无"}`);
+  lines.push(`- nDCG 退化查询：${degraded.length > 0 ? degraded.join(", ") : "无"}`);
   lines.push("", "### 分层", "", "| Language | Category | Frozen N | Paired N |", "|---|---|---:|---:|");
   for (const stratum of suite.strata) lines.push(`| ${markdownEscape(stratum.language)} | ${markdownEscape(stratum.category)} | ${stratum.frozenN} | ${stratum.pairedN} |`);
   lines.push("", "### 逐条排除", "", "| Query ID | Reasons |", "|---|---|");
@@ -708,7 +1038,8 @@ export function renderMarkdown(report) {
     "# Search Hub v0.1.18 真实质量对比报告",
     "",
     `- 生成时间：${report.generatedAt}`,
-    `- 总结状态：**${report.summary.status}**`,
+    `- 总结状态：**${report.summary.status}**；证据充分性：**${report.summary.evidenceSufficiency}**`,
+    `- 提升结论：**${report.summary.improvementVerdict}**`,
     `- 是否允许质量提升声明：**${report.summary.qualityImprovementClaimAllowed ? "是（仍须满足延迟门槛）" : "否"}**`,
     `- 冻结查询集：${report.dataset.name} ${report.dataset.version ?? ""}`,
     `- queries.json SHA-256：\`${report.dataset.sha256 ?? "N/A"}\``,
@@ -775,6 +1106,8 @@ async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help) {
     console.log("usage: quality-report.mjs --queries <queries.json> --live <suite=report.json> [--live ...] [--algorithm-comparison <suite=report.json>] [--out-dir <dir>] [--credential-scope public|paid|mixed|unknown]");
+    console.log("canonical snapshot: schemaVersion=1, source=snapshot, queriesFingerprint, baseline/candidate {commit,configFingerprint}, providers, startedAt/finishedAt, pairs[{queryId,strategy,snapshotHash,baseline/candidate{providers,finalResults,modelArtifacts?}}]");
+    console.log("strategies: basic, base, single, rrf, rerank, deep; metrics: precisionAtK, ndcgAtK, mrrAtK; Recall remains N/A.");
     return;
   }
   const queriesPath = resolve(options.queriesPath);
