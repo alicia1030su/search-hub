@@ -10,6 +10,7 @@ const options = {
   json: { type: "boolean" },
   format: { type: "string" },
   strict: { type: "boolean" },
+  stream: { type: "boolean" },
   verbose: { type: "boolean" },
   limit: { type: "string" },
   "max-chars": { type: "string" },
@@ -19,6 +20,7 @@ const options = {
   language: { type: "string" },
   freshness: { type: "string" },
   timeout: { type: "string" },
+  "stream-format": { type: "string" },
   enabled: { type: "boolean" },
   all: { type: "boolean" },
   kind: { type: "string" },
@@ -135,6 +137,8 @@ Global options:
 Search options:
   --limit <1..100> --provider <id> --group <name> --mode <mode>
   --language <tag> --freshness <day|week|month|year|all> --strict
+  --stream                     Stream live search events (SSE by default)
+  --stream-format <sse|ndjson> Stream wire format (default: sse; requires --stream)
 
 Fetch options:
   --max-chars <1..500000>      Maximum Markdown characters to return

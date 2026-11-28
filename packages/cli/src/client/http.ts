@@ -75,105 +75,149 @@ export class HttpClient {
     this.signal = signal;
   }
 
+  /** Applies the CLI's secret redaction policy to decoded API payloads. */
+  redact(value: unknown): unknown {
+    return this.token ? redactUnknown(value, [this.token]) : value;
+  }
+
   async request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
     const method = options.method ?? "GET";
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
     const timeoutController = new AbortController();
     const timer = setTimeout(() => timeoutController.abort(new Error("request timed out")), timeoutMs);
-    const signals = [timeoutController.signal];
-    if (this.signal) signals.push(this.signal);
-    const signal = AbortSignal.any(signals);
-    const secrets = this.token ? [this.token] : [];
-    let currentUrl = joinServerUrl(this.baseUrl, path);
-    let currentMethod = method;
-    let currentBody = options.body;
-
+    const signal = AbortSignal.any([timeoutController.signal, ...(this.signal ? [this.signal] : [])]);
     try {
-      for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-        if (this.signal?.aborted) {
-          throw new CliError("interrupted", "Interrupted by user", EXIT_CODES.interrupted);
-        }
-        const headers: Record<string, string> = {
-          accept: "application/json",
-          "user-agent": `shub/${CLI_VERSION}`,
-          ...options.headers,
-        };
-        if (options.authenticated !== false && this.token) headers["authorization"] = `Bearer ${this.token}`;
-        if (currentBody !== undefined) headers["content-type"] = "application/json";
-
-        const response = await fetch(currentUrl, {
-          method: currentMethod,
-          headers,
-          ...(currentBody === undefined ? {} : { body: JSON.stringify(currentBody) }),
-          redirect: "manual",
-          signal,
-        });
-
-        if ([301, 302, 303, 307, 308].includes(response.status)) {
-          const location = response.headers.get("location");
-          if (!location) throw new HttpResponseError(response.status, "invalid_redirect", "Redirect response has no Location header", null);
-          if (currentMethod !== "GET") {
-            throw new HttpResponseError(
-              response.status,
-              "unsafe_redirect",
-              "Refusing to redirect a mutating request; retry against the final URL explicitly",
-              null,
-            );
-          }
-          const next = new URL(location, currentUrl);
-          if (!sameOrigin(new URL(currentUrl), next)) {
-            throw new CliError(
-              "cross_origin_redirect",
-              "Refusing a cross-origin redirect; credentials were not forwarded",
-              EXIT_CODES.network,
-            );
-          }
-          currentUrl = next.toString();
-          continue;
-        }
-
-        const text = await response.text();
-        if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
-          throw new CliError("response_too_large", "Search Hub response exceeds the 16 MiB CLI safety limit", EXIT_CODES.server);
-        }
-        let body: unknown = undefined;
-        if (text.length > 0) {
-          try {
-            body = JSON.parse(text);
-          } catch {
-            body = text;
-          }
-        }
-        if (secrets.length > 0) body = redactUnknown(body, secrets);
-        if (response.ok) return body as T;
-
-        const envelope = errorEnvelope(body);
-        const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
-        const fallback = response.status === 429 ? "Rate limited by Search Hub" : `Search Hub returned HTTP ${response.status}`;
-        const message = envelope.message ?? fallback;
-        throw new HttpResponseError(
-          response.status,
-          envelope.code ?? `http_${response.status}`,
-          retryAfterMs === undefined ? message : `${message} (retry after ${retryAfterMs} ms)`,
-          body,
-          { details: envelope.details, retryAfterMs },
-        );
+      const response = await this.send(method, path, options, signal);
+      const text = await response.text();
+      if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
+        throw new CliError("response_too_large", "Search Hub response exceeds the 16 MiB CLI safety limit", EXIT_CODES.server);
       }
-      throw new CliError("too_many_redirects", `Search Hub exceeded ${MAX_REDIRECTS} same-origin redirects`, EXIT_CODES.network);
+      let body: unknown = undefined;
+      if (text.length > 0) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = text;
+        }
+      }
+      return this.redact(body) as T;
     } catch (error) {
-      if (error instanceof CliError) throw error;
-      if (this.signal?.aborted) {
-        throw new CliError("interrupted", "Interrupted by user", EXIT_CODES.interrupted);
-      }
-      if (timeoutController.signal.aborted) {
-        throw new CliError("timeout", `Request timed out after ${timeoutMs} ms`, EXIT_CODES.timeout, { cause: error });
-      }
-      const rawMessage = error instanceof Error ? error.message : String(error);
-      const message = redactSecrets(rawMessage, secrets);
-      throw new CliError("network_error", `Cannot reach Search Hub: ${message}`, EXIT_CODES.network);
+      throw this.translateError(error, timeoutController.signal, timeoutMs);
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** Consumes a streaming response while keeping timeout and cancellation active. */
+  async consumeStream<T>(path: string, options: RequestOptions, consume: (response: Response) => Promise<T>): Promise<T> {
+    const method = options.method ?? "GET";
+    const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(new Error("request timed out")), timeoutMs);
+    const signal = AbortSignal.any([timeoutController.signal, ...(this.signal ? [this.signal] : [])]);
+    try {
+      const response = await this.send(method, path, options, signal);
+      return await consume(response);
+    } catch (error) {
+      throw this.translateError(error, timeoutController.signal, timeoutMs);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async send(
+    method: RequestOptions["method"],
+    path: string,
+    options: RequestOptions,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    if (this.signal?.aborted) {
+      throw new CliError("interrupted", "Interrupted by user", EXIT_CODES.interrupted);
+    }
+    let currentUrl = joinServerUrl(this.baseUrl, path);
+    let currentMethod = method;
+    let currentBody = options.body;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+      const headers: Record<string, string> = {
+        accept: "application/json",
+        "user-agent": `shub/${CLI_VERSION}`,
+        ...options.headers,
+      };
+      if (options.authenticated !== false && this.token) headers["authorization"] = `Bearer ${this.token}`;
+      if (currentBody !== undefined) headers["content-type"] = "application/json";
+      const response = await fetch(currentUrl, {
+        method: currentMethod,
+        headers,
+        ...(currentBody === undefined ? {} : { body: JSON.stringify(currentBody) }),
+        redirect: "manual",
+        signal,
+      });
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location) throw new HttpResponseError(response.status, "invalid_redirect", "Redirect response has no Location header", null);
+        if (currentMethod !== "GET") {
+          throw new HttpResponseError(
+            response.status,
+            "unsafe_redirect",
+            "Refusing to redirect a mutating request; retry against the final URL explicitly",
+            null,
+          );
+        }
+        const next = new URL(location, currentUrl);
+        if (!sameOrigin(new URL(currentUrl), next)) {
+          throw new CliError(
+            "cross_origin_redirect",
+            "Refusing a cross-origin redirect; credentials were not forwarded",
+            EXIT_CODES.network,
+          );
+        }
+        currentUrl = next.toString();
+        continue;
+      }
+      if (response.ok) return response;
+      const body = await this.readErrorBody(response);
+      const envelope = errorEnvelope(body);
+      const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+      const fallback = response.status === 429 ? "Rate limited by Search Hub" : `Search Hub returned HTTP ${response.status}`;
+      const message = envelope.message ?? fallback;
+      throw new HttpResponseError(
+        response.status,
+        envelope.code ?? `http_${response.status}`,
+        retryAfterMs === undefined ? message : `${message} (retry after ${retryAfterMs} ms)`,
+        body,
+        { details: envelope.details, retryAfterMs },
+      );
+    }
+    throw new CliError("too_many_redirects", `Search Hub exceeded ${MAX_REDIRECTS} same-origin redirects`, EXIT_CODES.network);
+  }
+
+  private async readErrorBody(response: Response): Promise<unknown> {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
+      throw new CliError("response_too_large", "Search Hub response exceeds the 16 MiB CLI safety limit", EXIT_CODES.server);
+    }
+    let body: unknown = undefined;
+    if (text.length > 0) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    return this.redact(body);
+  }
+
+  private translateError(error: unknown, timeoutSignal: AbortSignal, timeoutMs: number): CliError {
+    if (error instanceof CliError) return error;
+    if (this.signal?.aborted) {
+      return new CliError("interrupted", "Interrupted by user", EXIT_CODES.interrupted);
+    }
+    if (timeoutSignal.aborted) {
+      return new CliError("timeout", `Request timed out after ${timeoutMs} ms`, EXIT_CODES.timeout, { cause: error });
+    }
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = redactSecrets(rawMessage, this.token ? [this.token] : []);
+    return new CliError("network_error", `Cannot reach Search Hub: ${message}`, EXIT_CODES.network);
   }
 
   health(timeoutMs?: number): Promise<HealthResponse> {
