@@ -5,7 +5,7 @@
 
 [English](./README_EN.md) · [部署](./docs/deployment.md) · [CLI](./docs/cli.md) · [API](./docs/api.md)
 
-> **v0.1.17 Stable。** 本版聚焦真实缺陷修复、发布可靠性与文档精简；具体变更见 [CHANGELOG](./CHANGELOG.md)。
+> **v0.1.18 Stable。** 本版新增策略化搜索、可解释诊断、真流式与统一正文读取，并修复搜索核心缺陷；具体变更见 [CHANGELOG](./CHANGELOG.md)。
 >
 > Stable 是公开发布渠道，不等于所有第三方集成都通过生产认证；未联调与未实现能力见下文“限制”。
 <a id="highlights"></a>
@@ -15,10 +15,10 @@
 |---|---|
 | 多源并发与部分成功 | 单源失败不拖垮整体搜索，返回可用结果与明确失败原因 |
 | Key 池与额度治理 | 每 Key 独立并发、RPM、日配额、冷却与熔断，支持多种调度策略 |
-| 统一结果与融合 | URL 规范化、去重、RRF 融合，保留来源与原始排名 |
+| 策略化搜索与融合 | Fast/Balanced/Quality/Deep 与本地自动路由；有界候选池、URL 去重、RRF/重排，保留来源与原始排名 |
 | 持久缓存与资源可视 | SQLite 缓存支持 TTL/LRU，后台可查看缓存、队列与进程资源 |
 | 加密备份与隔离恢复 | `.shbackup` 包含一致性数据库与匹配主密钥，恢复默认 dry-run |
-| 四种入口，一套核心 | REST、MCP、Agent Skills、`shub` CLI 都使用同一服务端搜索链路 |
+| 四种入口，一套核心 | REST、MCP、Agent Skills、`shub` CLI 共用搜索链路；REST/CLI 支持 SSE/NDJSON，四入口支持按需正文读取与缓存状态 |
 
 <a id="screenshots"></a>
 ## 界面
@@ -60,7 +60,7 @@ docker compose exec search-hub cat /app/data/setup-token
 
 ### Windows x64
 
-1. 从下方 Release 下载 `search-hub-v0.1.17-windows-x64.zip` 并校验。
+1. 从下方 Release 下载 `search-hub-v0.1.18-windows-x64.zip` 并校验。
 2. 解压到可写目录，数据保存在 `%LOCALAPPDATA%\SearchHub`。
 3. 首次启动前读取 `%LOCALAPPDATA%\SearchHub\setup-token`（若尚未生成，先启动一次）。
 4. 双击 `SearchHub.exe`，在 `/setup` 输入 token 并创建管理员。
@@ -70,22 +70,22 @@ docker compose exec search-hub cat /app/data/setup-token
 ```bash
 # Linux x64
 mkdir search-hub
-tar -xzf search-hub-v0.1.17-linux-x64.tar.gz -C search-hub
+tar -xzf search-hub-v0.1.18-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub
 ```
 
-Linux arm64 使用 `search-hub-v0.1.17-linux-arm64.tar.gz`，其余步骤相同。默认监听 `127.0.0.1:8787`；长期运行可使用包内 `search-hub.service`。
+Linux arm64 使用 `search-hub-v0.1.18-linux-arm64.tar.gz`，其余步骤相同。默认监听 `127.0.0.1:8787`；长期运行可使用包内 `search-hub.service`。
 
 **下载与校验**
 
-从 [v0.1.17 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.17) 下载以下资产；独立服务端包已包含运行时。
+从 [v0.1.18 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.18) 下载以下资产；独立服务端包已包含运行时。
 
 | 平台 / 用途 | 服务端 | CLI `shub` | 额外前提 |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.17-windows-x64.zip` | `shub-v0.1.17-windows-x64.zip` | 无 |
-| Linux x64 | `search-hub-v0.1.17-linux-x64.tar.gz` | `shub-v0.1.17-linux-x64.tar.gz` | 无 |
-| Linux arm64 | `search-hub-v0.1.17-linux-arm64.tar.gz` | `shub-v0.1.17-linux-arm64.tar.gz` | 无 |
-| Node.js >=22.12.0 便携 CLI | — | `shub-v0.1.17-node22.tar.gz` | Node.js >=22.12.0 |
+| Windows x64 | `search-hub-v0.1.18-windows-x64.zip` | `shub-v0.1.18-windows-x64.zip` | 无 |
+| Linux x64 | `search-hub-v0.1.18-linux-x64.tar.gz` | `shub-v0.1.18-linux-x64.tar.gz` | 无 |
+| Linux arm64 | `search-hub-v0.1.18-linux-arm64.tar.gz` | `shub-v0.1.18-linux-arm64.tar.gz` | 无 |
+| Node.js >=22.12.0 便携 CLI | — | `shub-v0.1.18-node22.tar.gz` | Node.js >=22.12.0 |
 
 Release 同时提供 `SHA256SUMS` 与 `resource-evidence.json`，共 9 个资产；下载后执行：
 
@@ -96,7 +96,7 @@ sha256sum -c SHA256SUMS
 在已克隆的仓库中使用发布镜像（镜像仅构建 `linux/amd64`）：
 
 ```bash
-SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.17 docker compose up -d
+SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.18 docker compose up -d
 ```
 
 arm64 主机请使用 arm64 独立包；Docker arm64 模拟运行不在项目验证范围。
@@ -106,7 +106,7 @@ arm64 主机请使用 arm64 独立包；Docker arm64 模拟运行不在项目验
 
 | 入口 | 地址 / 形式 | 认证 | 文档 |
 |---|---|---|---|
-| REST | `POST /api/search`、`/api/search/deep` | Bearer `search` scope | [API](./docs/api.md) |
+| REST | `POST /api/search`、`/api/search/deep`、`/api/search/stream`、`/api/web/read` | Bearer `search` scope | [API](./docs/api.md) |
 | MCP HTTP | `POST /mcp`，Streamable HTTP | Bearer `mcp:use`；搜索工具另需 `search`；`get_search_sources` 另需 `sources:read` | [MCP](./docs/mcp.md) |
 | MCP stdio | `packages/mcp/dist/stdio.mjs`，代理同一 REST API | 同一 Token 与分层 scope：`mcp:use`、搜索工具 `search`、`get_search_sources` 的 `sources:read` | [MCP](./docs/mcp.md) |
 | Agent Skills | `search-web`、`deep-research`、`research-with-citations` | `search` scope | [Skills](./docs/skills.md) |
@@ -119,6 +119,7 @@ export SEARCH_HUB_URL="http://127.0.0.1:8787"
 export SEARCH_HUB_TOKEN="sh_replace_with_your_token"
 shub status
 shub search "Linux" --json
+shub fetch https://www.python.org/ --json
 shub sources --enabled --json
 ```
 
@@ -133,7 +134,6 @@ shub sources --enabled --json
 ## 文档
 
 [架构](./docs/architecture.md) · [部署](./docs/deployment.md) · [独立包](./docs/standalone-packages.md) · [备份灾备](./docs/disaster-recovery.md) · [Provider 健康](./docs/provider-health.md) · [测试](./docs/testing.md)
-
 [CHANGELOG](./CHANGELOG.md) · [安全](./SECURITY.md)
 
 <a id="limits"></a>
@@ -141,8 +141,8 @@ shub sources --enabled --json
 
 - 多实例未实现：当前为单进程额度治理与 SQLite；Redis 协调、PostgreSQL 适配未实现。
 - 多数付费厂商仅有本地契约测试，未用真实凭证联调；不要据此宣称生产可用。
-- 质量评测实验室当前使用合成基准验证指标机制，不是厂商搜索排名或真实相关性结论。
-- MCP 当前返回单次 JSON 结果，不支持服务端发起的 SSE 流式订阅。
+- 质量评测实验室包含合成基准与 40 条真实网页查询草案，用于可复现对比；不代表全面质量提升或厂商排名。
+- MCP 工具仍返回单次 JSON；REST 的 SSE/NDJSON 不等于 MCP 服务端发起的流式订阅。
 
 <a id="license"></a>
 ## 许可证

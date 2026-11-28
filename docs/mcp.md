@@ -34,11 +34,13 @@ Mixing an `initialize` body with a modern version header is rejected with `400` 
 | `search_web` | `query`, `limit`, `language`, `freshness`, `providers` | Fused results, errors, timing |
 | `search_multi` | `queries[]`, `limit`, `language` | One merged result list |
 | `search_deep` | `query`, `limit`, `language` | Rewritten queries, results, cited summary |
+| `fetch_webpage` | `url`, `maxContentChars?` | Bounded Markdown/text with stable `readStatus` and `reasonCode`; never launches a browser |
 | `search_news` | `query`, `limit`, `language` | Results restricted to the last day |
 | `search_with_sources` | `query`, `limit`, `language` | Results plus per-provider diagnostics and dedupe counts |
 | `search_and_rerank` | `query`, `limit`, `rerankModelId?` | Results with `rerankScore` |
 | `search_and_summarize` | `query`, `limit`, `chatModelId?` | Results plus a cited summary |
 | `get_search_sources` | — | Provider list and runtime health |
+| `get_provider_health` | `status?` | Read-only provider health overview within the token's visible scope |
 | `get_search_status` | — | Key states, in-flight counts, breaker state |
 
 Sensitive admin operations are **not** exposed as tools. There is no provider/key mutation over MCP.
@@ -128,6 +130,6 @@ curl -sS http://localhost:8787/mcp \
 ## Known limits
 
 - `responseMode: "json"` — mid-call notifications/progress are dropped. Streaming subscriptions are not implemented.
-- The HTTP route buffers the response body, so server-initiated SSE streams are not supported yet. Tools return a single JSON result.
+- Tools return a single JSON result. REST `/api/search/stream` SSE/NDJSON support does not add server-initiated MCP streaming.
 - No OAuth authorization-server flow; access tokens are issued by the admin UI.
 - stdio is a REST proxy. If the API is down, stdio calls fail by design.

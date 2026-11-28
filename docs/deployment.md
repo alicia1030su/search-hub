@@ -2,21 +2,21 @@
 
 Target: a 2-core / 2 GB Linux host can run basic search comfortably. No Redis, vector database, GPU, or external model is required.
 
-## Release assets (v0.1.17)
+## Release assets (v0.1.18)
 
-The v0.1.17 Stable release workflow produces:
+The v0.1.18 Stable release workflow produces:
 
 | Artefact | Asset |
 |---|---|
-| Windows x64 server | `search-hub-v0.1.17-windows-x64.zip` |
-| Linux x64 server | `search-hub-v0.1.17-linux-x64.tar.gz` |
-| Linux arm64 server | `search-hub-v0.1.17-linux-arm64.tar.gz` |
-| Windows x64 CLI | `shub-v0.1.17-windows-x64.zip` |
-| Linux x64 CLI | `shub-v0.1.17-linux-x64.tar.gz` |
-| Linux arm64 CLI | `shub-v0.1.17-linux-arm64.tar.gz` |
-| Node.js >=22.12.0 CLI | `shub-v0.1.17-node22.tar.gz` |
+| Windows x64 server | `search-hub-v0.1.18-windows-x64.zip` |
+| Linux x64 server | `search-hub-v0.1.18-linux-x64.tar.gz` |
+| Linux arm64 server | `search-hub-v0.1.18-linux-arm64.tar.gz` |
+| Windows x64 CLI | `shub-v0.1.18-windows-x64.zip` |
+| Linux x64 CLI | `shub-v0.1.18-linux-x64.tar.gz` |
+| Linux arm64 CLI | `shub-v0.1.18-linux-arm64.tar.gz` |
+| Node.js >=22.12.0 CLI | `shub-v0.1.18-node22.tar.gz` |
 | Resource evidence | `resource-evidence.json` |
-| Container | `ghcr.io/alicia1030su/search-hub:0.1.16` (also `v0.1.17`, `latest`) |
+| Container | `ghcr.io/alicia1030su/search-hub:0.1.18` (also `v0.1.18`, `latest`) |
 
 The CLI can be installed on a machine without a Search Hub server. Configure
 `SEARCH_HUB_URL` and `SEARCH_HUB_TOKEN`, then run `shub status`. See
@@ -30,11 +30,18 @@ Verify a download before running it:
 
 ```bash
 sha256sum -c SHA256SUMS
-gh attestation verify shub-v0.1.17-linux-x64.tar.gz --repo alicia1030su/search-hub
+gh attestation verify shub-v0.1.18-linux-x64.tar.gz --repo alicia1030su/search-hub
 ```
 
 The two checks are independent: SHA256 proves the bytes match what was published, the
 attestation proves which workflow and commit produced them.
+
+## v0.1.18 search runtime
+
+- The Lab and REST API expose Fast/Balanced/Quality/Deep presets plus deterministic local `auto` routing. Existing `mode` requests remain valid; do not send `strategy` and `mode` together unless the server explicitly accepts the mapping.
+- `POST /api/search/stream` supports SSE and NDJSON. Keep reverse-proxy buffering disabled and allow the existing 120-second read timeout; provisional events are not final results.
+- `POST /api/web/read`, MCP `fetch_webpage`, and `shub fetch` use bounded HTTP extraction and do not launch Chromium. Browser rendering is outside the default read path.
+- Cache fingerprint v2 preserves compatible previous-Stable SQLite entries. An upgrade must not delete `search-hub.db` or clear the cache to “fix” misses.
 
 ## Backup and restore
 
@@ -183,7 +190,7 @@ git pull            # or download the new source tarball
 docker compose up -d --build
 ```
 
-The API applies any new `packages/db/migrations/*.sql` at startup. Read `CHANGELOG.md` first; a migration that requires manual action will be called out there.
+The API applies any new `packages/db/migrations/*.sql` at startup. Read `CHANGELOG.md` first; a migration that requires manual action will be called out there. v0.1.18 cache fingerprint v2 preserves compatible previous-Stable SQLite cache rows and leaves incompatible rows to expire normally; do not delete the database or cache as an upgrade step.
 
 ### Health check
 
@@ -210,7 +217,7 @@ server {
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_buffering off;          # keeps long MCP JSON responses intact
+    proxy_buffering off;          # keeps MCP JSON and search SSE/NDJSON streams incremental
     proxy_read_timeout 120s;
   }
 }

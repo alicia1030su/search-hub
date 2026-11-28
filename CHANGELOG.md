@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.18 — Stable
+
+### Added
+
+- **Strategy-based search.** Fast, Balanced, Quality, Deep, and a deterministic local `auto` router with visible rule explanations; existing `mode` requests remain supported.
+- **Real streaming and webpage reading.** REST search supports SSE/NDJSON with distinct provisional and final events, and `shub search --stream` consumes the same protocol. `POST /api/web/read`, MCP `fetch_webpage`, and `shub fetch` share bounded HTTP extraction without launching Chromium by default.
+- **Search Lab diagnostics.** Provider participation, route decisions, query expansion, source contribution, candidate funnel, rerank movements, latency, cache state, and on-demand article reading are available in the existing Lab page.
+- **Reproducible quality workflow.** A frozen 40-query real-web draft, human-curated qrels protocol, and live ABBA evidence path complement the existing synthetic fixtures; they do not claim a universal quality improvement.
+
+### Fixed
+
+- Reranking and embedding now operate on a bounded candidate pool before the final `limit` is applied.
+- Cancellation propagates through provider fanout, pagination, embedding, and rerank work; cancelled tasks preserve valid partial results without writing the response cache.
+- Deep Search deduplicates across subqueries, preserves query origins, and uses normalized per-query fusion instead of incomparable raw score sums.
+- Default recall no longer shrinks incorrectly when multiple providers are selected; explicit per-provider limits up to 100 remain supported.
+- Soft-404, login, captcha, maintenance, timeout, and truncated webpage responses now have stable outcomes rather than ambiguous empty successes.
+
+### Changed
+
+- Deep Search is bounded by subquery count, rounds, Provider-query calls, physical HTTP requests, and a total deadline.
+- SQLite cache fingerprint v2 includes strategy, routing, recall, expansion, and pipeline semantics while preserving compatible v0.1.17 entries; incompatible entries remain until normal expiry or eviction.
+
+### Compatibility
+
+- REST, MCP, Skills, and CLI keep their existing entry points. New request fields are optional, and legacy `mode` behavior remains available.
+- MCP tools still return a single JSON result; REST streaming does not add server-initiated MCP streaming subscriptions.
+- No quality-improvement claim is made without the frozen evaluation evidence and its stated source limitations.
+
 ## v0.1.17 — Stable
 
 ### Added

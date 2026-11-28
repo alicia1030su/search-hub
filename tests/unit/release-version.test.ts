@@ -38,9 +38,9 @@ const version = pkg.version;
 const tag = `v${version}`;
 const slug = version.replaceAll(".", "");
 
-describe("v0.1.17 release version single source", () => {
+describe("v0.1.18 release version single source", () => {
   it("pins the root and every workspace manifest to the target release", () => {
-    expect(version).toBe("0.1.17");
+    expect(version).toBe("0.1.18");
     const manifests = [
       "apps/api/package.json",
       "apps/web/package.json",
@@ -65,7 +65,7 @@ describe("v0.1.17 release version single source", () => {
     expect(CLI_VERSION).toBe(version);
     expect(MCP_VERSION).toBe(version);
     expect(createOpenApiDocument("9.8.7").info.version).toBe("9.8.7");
-    expect(read("packages/cli/src/version.ts")).not.toContain('"0.1.16"');
+    expect(read("packages/cli/src/version.ts")).not.toContain('"0.1.17"');
     expect(read("packages/mcp/src/stdio.ts")).not.toContain('version: "0.1.0"');
     expect(read("apps/api/src/routes/openapi-routes.ts")).not.toContain('version: "0.1.');
     expect(read("apps/api/src/app.ts")).toContain("registerOpenApiRoutes(app, ctx.config.version)");
@@ -123,6 +123,7 @@ describe("v0.1.17 release version single source", () => {
     expect(upgrade).toContain("node packaging/upgrade-matrix.mjs --from v0.1.14 --to \"$TARGET\" --port 8933");
     expect(upgrade).toContain("node packaging/upgrade-matrix.mjs --from v0.1.15 --to \"$TARGET\" --port 8934");
     expect(upgrade).toContain("node packaging/upgrade-matrix.mjs --from v0.1.16 --to \"$TARGET\" --port 8935");
+    expect(upgrade).toContain("node packaging/upgrade-matrix.mjs --from v0.1.17 --to \"$TARGET\" --port 8936");
     const matrix = JSON.parse(read("tests/disaster-recovery/requirement-matrix.json")) as {
       suite: string;
       requirements: Record<string, { command: string }>;
@@ -131,6 +132,7 @@ describe("v0.1.17 release version single source", () => {
     expect(matrix.requirements.R31?.command).toContain("--from v0.1.14");
     expect(matrix.requirements.R31?.command).toContain("--from v0.1.15");
     expect(matrix.requirements.R31?.command).toContain("--from v0.1.16");
+    expect(matrix.requirements.R31?.command).toContain("--from v0.1.17");
     expect(upgrade).toContain("Update fault injection");
     expect(upgrade).toContain("Supply-chain audit (published release)");
   });
@@ -148,7 +150,7 @@ describe("v0.1.17 release version single source", () => {
     expect(candidate).toContain("name: candidate-image-v${{ needs.gate.outputs.version }}");
     expect(candidate).toContain("name: release-candidate-evidence-v${{ needs.gate.outputs.version }}");
     expect(candidate).toContain("resource-evidence-v${{ needs.gate.outputs.versionSlug }}.json");
-    expect(candidate).not.toContain('test "$version" = "0.1.16"');
+    expect(candidate).not.toContain('test "$version" = "0.1.17"');
     const candidateGateJob = candidate.slice(candidate.indexOf("  gate:"), candidate.indexOf("  core-acceptance:"));
     expect(candidateGateJob).not.toContain("needs.gate.outputs");
     expect(promoter).toContain(`tags: ["${tag}"]`);
@@ -159,8 +161,8 @@ describe("v0.1.17 release version single source", () => {
     expect(promoter).toContain("name: release-final-v${{ needs.gate.outputs.versionSlug }}");
     expect(promoter).toContain('"${base}:${{ needs.gate.outputs.version }}" "${base}:v${{ needs.gate.outputs.version }}" "${base}:latest"');
     for (const workflow of [ci, candidate, promoter]) {
-      expect(workflow).not.toContain("v0.1.16");
-      expect(workflow).not.toContain("v0116");
+      expect(workflow).not.toContain("v0.1.17");
+      expect(workflow).not.toContain("v0117");
     }
   });
 

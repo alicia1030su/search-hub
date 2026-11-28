@@ -5,7 +5,7 @@
 
 [中文](./README.md) · [Deployment](./docs/deployment.md) · [CLI](./docs/cli.md) · [API](./docs/api.md)
 
-> **v0.1.17 Stable.** This release focuses on verified bug fixes, release reliability, and concise documentation; see the [CHANGELOG](./CHANGELOG.md) for details.
+> **v0.1.18 Stable.** This release adds strategy-based search, explainable diagnostics, real streaming, and unified webpage reading while fixing core search defects; see the [CHANGELOG](./CHANGELOG.md) for details.
 >
 > Stable is a public release channel, not a claim that every third-party integration is production-certified; see “Limits” below.
 <a id="highlights"></a>
@@ -15,10 +15,10 @@
 |---|---|
 | Concurrent providers, partial success | One provider failure does not fail the whole search; usable results and explicit failures are returned |
 | Key pools and quota controls | Per-key concurrency, RPM, daily quota, cooldown, and circuit breaking with multiple scheduling strategies |
-| Unified results and fusion | URL normalization, deduplication, and RRF fusion while preserving source attribution and original ranks |
+| Strategy-based search and fusion | Fast/Balanced/Quality/Deep with local auto-routing, bounded candidate pools, URL deduplication, and RRF/reranking with source attribution |
 | Persistent cache and resource visibility | SQLite cache with TTL/LRU, plus admin views for cache, queues, and process resources |
 | Encrypted backup and isolated restore | `.shbackup` includes a consistent database and matching master key; restore is dry-run by default |
-| Four entry points, one engine | REST, MCP, Agent Skills, and `shub` CLI all use the same server-side search path |
+| Four entry points, one engine | REST, MCP, Agent Skills, and `shub` CLI share one search path; REST/CLI add SSE/NDJSON, and all four expose on-demand webpage reading and cache state |
 
 <a id="screenshots"></a>
 ## Interface
@@ -60,7 +60,7 @@ Use the command above only when `SEARCH_HUB_SETUP_TOKEN` is unset; the token val
 
 ### Windows x64
 
-1. Download `search-hub-v0.1.17-windows-x64.zip` from the Release below and verify it.
+1. Download `search-hub-v0.1.18-windows-x64.zip` from the Release below and verify it.
 2. Extract it to a writable directory; data lives in `%LOCALAPPDATA%\SearchHub`.
 3. Read `%LOCALAPPDATA%\SearchHub\setup-token` before first setup; start once if it has not been generated yet.
 4. Double-click `SearchHub.exe`, then enter the token at `/setup` and create the administrator.
@@ -70,22 +70,22 @@ Use the command above only when `SEARCH_HUB_SETUP_TOKEN` is unset; the token val
 ```bash
 # Linux x64
 mkdir search-hub
-tar -xzf search-hub-v0.1.17-linux-x64.tar.gz -C search-hub
+tar -xzf search-hub-v0.1.18-linux-x64.tar.gz -C search-hub
 cd search-hub && ./bin/search-hub
 ```
 
-For Linux arm64, use `search-hub-v0.1.17-linux-arm64.tar.gz`; the remaining steps are identical. The default listener is `127.0.0.1:8787`; use the bundled `search-hub.service` for long-running deployments.
+For Linux arm64, use `search-hub-v0.1.18-linux-arm64.tar.gz`; the remaining steps are identical. The default listener is `127.0.0.1:8787`; use the bundled `search-hub.service` for long-running deployments.
 
 **Download and verify**
 
-Download the assets below from the [v0.1.17 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.17); standalone server packages already include a runtime.
+Download the assets below from the [v0.1.18 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.18); standalone server packages already include a runtime.
 
 | Platform / use | Server | CLI `shub` | Extra requirement |
 |---|---|---|---|
-| Windows x64 | `search-hub-v0.1.17-windows-x64.zip` | `shub-v0.1.17-windows-x64.zip` | None |
-| Linux x64 | `search-hub-v0.1.17-linux-x64.tar.gz` | `shub-v0.1.17-linux-x64.tar.gz` | None |
-| Linux arm64 | `search-hub-v0.1.17-linux-arm64.tar.gz` | `shub-v0.1.17-linux-arm64.tar.gz` | None |
-| Node.js >=22.12.0 portable CLI | — | `shub-v0.1.17-node22.tar.gz` | Node.js >=22.12.0 |
+| Windows x64 | `search-hub-v0.1.18-windows-x64.zip` | `shub-v0.1.18-windows-x64.zip` | None |
+| Linux x64 | `search-hub-v0.1.18-linux-x64.tar.gz` | `shub-v0.1.18-linux-x64.tar.gz` | None |
+| Linux arm64 | `search-hub-v0.1.18-linux-arm64.tar.gz` | `shub-v0.1.18-linux-arm64.tar.gz` | None |
+| Node.js >=22.12.0 portable CLI | — | `shub-v0.1.18-node22.tar.gz` | Node.js >=22.12.0 |
 
 The Release also provides `SHA256SUMS` and `resource-evidence.json`, for nine assets in total; verify after downloading:
 
@@ -96,7 +96,7 @@ sha256sum -c SHA256SUMS
 To use the published image from the cloned repository (the image is built for `linux/amd64` only):
 
 ```bash
-SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.17 docker compose up -d
+SEARCH_HUB_IMAGE=ghcr.io/alicia1030su/search-hub:0.1.18 docker compose up -d
 ```
 
 Use the arm64 standalone package on arm64 hosts; Docker arm64 emulation is outside the project's tested configurations.
@@ -106,7 +106,7 @@ Use the arm64 standalone package on arm64 hosts; Docker arm64 emulation is outsi
 
 | Entry point | Address / form | Authentication | Docs |
 |---|---|---|---|
-| REST | `POST /api/search`, `/api/search/deep` | Bearer with `search` scope | [API](./docs/api.md) |
+| REST | `POST /api/search`, `/api/search/deep`, `/api/search/stream`, `/api/web/read` | Bearer with `search` scope | [API](./docs/api.md) |
 | MCP HTTP | `POST /mcp`, Streamable HTTP | Bearer with `mcp:use`; search tools also need `search`; `get_search_sources` also needs `sources:read` | [MCP](./docs/mcp.md) |
 | MCP stdio | `packages/mcp/dist/stdio.mjs`, a proxy to the same REST API | The same token and layered scopes: `mcp:use`, `search` for search tools, and `sources:read` for `get_search_sources` | [MCP](./docs/mcp.md) |
 | Agent Skills | `search-web`, `deep-research`, `research-with-citations` | `search` scope | [Skills](./docs/skills.md) |
@@ -119,6 +119,7 @@ export SEARCH_HUB_URL="http://127.0.0.1:8787"
 export SEARCH_HUB_TOKEN="sh_replace_with_your_token"
 shub status
 shub search "Linux" --json
+shub fetch https://www.python.org/ --json
 shub sources --enabled --json
 ```
 
@@ -133,7 +134,6 @@ The catalogue contains 58 entries: 50 native adapters (7 `live_tested`, 42 `docu
 ## Documentation
 
 [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [Standalone packages](./docs/standalone-packages.md) · [Backup and recovery](./docs/disaster-recovery.md) · [Provider health](./docs/provider-health.md) · [Testing](./docs/testing.md)
-
 [CHANGELOG](./CHANGELOG.md) · [Security](./SECURITY.md)
 
 <a id="limits"></a>
@@ -141,8 +141,8 @@ The catalogue contains 58 entries: 50 native adapters (7 `live_tested`, 42 `docu
 
 - Multi-instance deployment is not implemented: quota governance is per process and storage is SQLite; Redis coordination and PostgreSQL support are not implemented.
 - Most paid providers have local contract tests only and have not been integration-tested with real credentials; do not treat them as production-certified.
-- The quality lab currently uses synthetic fixtures to validate metric mechanics; it is not a vendor search ranking or a real relevance result.
-- MCP returns a single JSON result; server-initiated SSE streaming subscriptions are not supported.
+- The quality lab includes synthetic fixtures and a frozen 40-query real-web draft for reproducible comparisons; this is not a universal quality-improvement claim or vendor ranking.
+- MCP tools still return one JSON result; REST SSE/NDJSON does not imply server-initiated MCP streaming subscriptions.
 
 <a id="license"></a>
 ## License

@@ -7,14 +7,14 @@ health probes or model calls. Every command uses the existing REST API.
 ## Install
 
 Download the matching asset from the
-[v0.1.17 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.17):
+[v0.1.18 Release](https://github.com/alicia1030su/search-hub/releases/tag/v0.1.18):
 
 | Platform | Asset | Requirements |
 |---|---|---|
-| Windows x64 | `shub-v0.1.17-windows-x64.zip` | None |
-| Linux x64 | `shub-v0.1.17-linux-x64.tar.gz` | None |
-| Linux arm64 | `shub-v0.1.17-linux-arm64.tar.gz` | None |
-| Portable | `shub-v0.1.17-node22.tar.gz` | Node.js >=22.12.0 |
+| Windows x64 | `shub-v0.1.18-windows-x64.zip` | None |
+| Linux x64 | `shub-v0.1.18-linux-x64.tar.gz` | None |
+| Linux arm64 | `shub-v0.1.18-linux-arm64.tar.gz` | None |
+| Portable | `shub-v0.1.18-node22.tar.gz` | Node.js >=22.12.0 |
 
 Extract the archive and run `shub` (`shub.exe` on Windows). Verify downloads with
 `sha256sum -c SHA256SUMS` and, optionally,
@@ -56,6 +56,8 @@ shub config reset
 shub search "Linux 内核最新变化"
 shub search "AI" --limit 20 --provider prv_xxx --mode rrf
 shub search "AI 搜索技术" --mode deep
+shub search "AI 搜索技术" --mode deep --stream --format ndjson
+shub fetch https://www.python.org/ --json
 shub sources
 shub sources --enabled --json
 shub status
@@ -74,7 +76,9 @@ shub doctor --local --data-dir /var/lib/search-hub
 
 `search` maps only real REST fields: `providers`, `group`, `limit`, `mode`,
 `language`, `freshness` and `timeoutMs`. Deep mode calls `/api/search/deep`; the
-server owns model selection and execution.
+server owns model selection and execution. `fetch` calls the shared
+`POST /api/web/read` service and returns bounded text or a stable `readStatus` /
+`reasonCode`; it does not start a browser.
 
 `sources` requires `sources:read`. `providers test` requires an `admin`-scope
 Bearer token. It performs a read-only preview first, skips missing/disabled keys,
@@ -87,10 +91,18 @@ when the preview reports potential paid probes.
 
 ## Output and exit codes
 
-`--json` is an alias for `--format json`. JSON mode writes exactly one JSON value
-to stdout; diagnostics go to stderr. `--format ndjson` emits explicit
-`metadata`, `result` and `complete` records with `streaming:false`; the REST search
-API is synchronous, so this is not real-time server streaming.
+`--json` is an alias for `--format json`. Without `--stream`, JSON mode writes
+exactly one JSON value to stdout and diagnostics go to stderr. Non-streaming
+`--format ndjson` emits explicit `metadata`, `result`, and `complete` records with
+`streaming:false`.
+
+`--stream` consumes the real `/api/search/stream` endpoint (SSE by default).
+Use `--stream --format ndjson` for one live event object per line; events carry
+`streaming:true`, temporary result sets are marked `resultSet:"temporary"`, and
+the terminal event is marked `resultSet:"final"`. `--stream --json` emits one JSON
+object per event rather than a single JSON document, so NDJSON is the safer
+machine format. The default table output prints progress and temporary updates,
+then the authoritative final table.
 
 | Code | Meaning |
 |---:|---|
@@ -102,13 +114,16 @@ API is synchronous, so this is not real-time server streaming.
 | 6 | Server/search/probe failure, or strict partial |
 | 7 | Timeout |
 | 8 | Incompatible server version |
+| 9 | Page fetched but unavailable; inspect `readStatus` / `reasonCode` |
 | 130 | Ctrl+C |
 
-Ctrl+C aborts local waiting. `shub` does not silently cancel a server-side search
-after a disconnect. Billable `POST /api/search` requests are never retried.
+Ctrl+C aborts local waiting. During `--stream`, closing the connection cancels
+the server-side search and the CLI returns 130 for a cancelled terminal event.
+Non-streaming requests keep the existing disconnect behavior. Billable
+`POST /api/search` requests are never retried.
 
 ## Compatibility
 
-The v0.1.17 CLI accepts server versions `0.1.12` and later within `0.1.x`.
+The v0.1.18 CLI accepts server versions `0.1.12` and later within `0.1.x`.
 Compatible fields remain usable; a missing endpoint fails explicitly instead of
 being treated as an empty success.
