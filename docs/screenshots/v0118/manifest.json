@@ -1,0 +1,140 @@
+{
+  "generatedBy": "scripts/docs-screenshots.mjs",
+  "version": "0.1.18",
+  "capturedAt": "2026-11-28T16:00:17.535Z",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "deviceScaleFactor": 1,
+  "locale": "zh-CN",
+  "browser": "channel:msedge",
+  "isolation": {
+    "host": "127.0.0.1",
+    "port": "ephemeral",
+    "dataDirectory": "random temporary directory; removed during teardown",
+    "providers": "built-in mock adapters only",
+    "externalRequests": 0
+  },
+  "redaction": {
+    "policy": "throwaway mock-only instance; no operator data or vendor credentials",
+    "administratorEmail": "synthetic admin@example.com",
+    "administratorPassword": "generated per run; not recorded",
+    "setupToken": "generated per run; not recorded",
+    "sessionCookies": "not recorded",
+    "csrfTokens": "not recorded",
+    "providerCredentials": "none created; built-in mock adapters only",
+    "externalRequests": "blocked by browser routing; zero expected"
+  },
+  "files": [
+    {
+      "file": "onboarding.png",
+      "route": "/setup",
+      "capturedAt": "2026-11-28T16:00:10.402Z",
+      "bytes": 54526,
+      "sha256": "e743995025e2d4fbd1afcc9797b6700d53714da7e8ce45953275b970a6ad9749",
+      "width": 1600,
+      "height": 1000,
+      "browserZoom": 1,
+      "redaction": {
+        "policy": "throwaway mock-only instance; no operator data or vendor credentials",
+        "administratorEmail": "synthetic admin@example.com",
+        "administratorPassword": "generated per run; not recorded",
+        "setupToken": "generated per run; not recorded",
+        "sessionCookies": "not recorded",
+        "csrfTokens": "not recorded",
+        "providerCredentials": "none created; built-in mock adapters only",
+        "externalRequests": "blocked by browser routing; zero expected"
+      },
+      "evidence": {
+        "phase": "before-setup",
+        "setupFormVisible": true,
+        "secretFieldsEmpty": true
+      }
+    },
+    {
+      "file": "search-lab.png",
+      "route": "/lab",
+      "capturedAt": "2026-11-28T16:00:15.143Z",
+      "bytes": 138633,
+      "sha256": "a6c7de526503c0c13c810f79cdc884594367884dd8f33b9bfb2e65e92df8d92d",
+      "width": 1600,
+      "height": 1000,
+      "browserZoom": 0.75,
+      "redaction": {
+        "policy": "throwaway mock-only instance; no operator data or vendor credentials",
+        "administratorEmail": "synthetic admin@example.com",
+        "administratorPassword": "generated per run; not recorded",
+        "setupToken": "generated per run; not recorded",
+        "sessionCookies": "not recorded",
+        "csrfTokens": "not recorded",
+        "providerCredentials": "none created; built-in mock adapters only",
+        "externalRequests": "blocked by browser routing; zero expected"
+      },
+      "evidence": {
+        "strategy": "balanced",
+        "streamHttpStatus": 200,
+        "resultRowsReturned": 6,
+        "resultRowsInViewport": 2,
+        "diagnosticsVisible": [
+          "路由解释",
+          "候选漏斗",
+          "逐源统计"
+        ],
+        "debugDetailsAvailable": true,
+        "providerType": "mock"
+      }
+    },
+    {
+      "file": "dashboard.png",
+      "route": "/",
+      "capturedAt": "2026-11-28T16:00:16.314Z",
+      "bytes": 103618,
+      "sha256": "c48f9f0ab1807c86b211abcd07eae06c705d06bbd3241745c1b51e3df93c1535",
+      "width": 1600,
+      "height": 1000,
+      "browserZoom": 0.95,
+      "redaction": {
+        "policy": "throwaway mock-only instance; no operator data or vendor credentials",
+        "administratorEmail": "synthetic admin@example.com",
+        "administratorPassword": "generated per run; not recorded",
+        "setupToken": "generated per run; not recorded",
+        "sessionCookies": "not recorded",
+        "csrfTokens": "not recorded",
+        "providerCredentials": "none created; built-in mock adapters only",
+        "externalRequests": "blocked by browser routing; zero expected"
+      },
+      "evidence": {
+        "onboardingCompleted": true,
+        "metricCards": 4,
+        "mockProviderActivity": true
+      }
+    },
+    {
+      "file": "provider-health.png",
+      "route": "/providers",
+      "capturedAt": "2026-11-28T16:00:17.535Z",
+      "bytes": 135656,
+      "sha256": "2b11cd841ff8c4436375e3d28034534e5ad38ab03701da8ddcf14cd4cca66cfd",
+      "width": 1600,
+      "height": 1000,
+      "browserZoom": 0.82,
+      "redaction": {
+        "policy": "throwaway mock-only instance; no operator data or vendor credentials",
+        "administratorEmail": "synthetic admin@example.com",
+        "administratorPassword": "generated per run; not recorded",
+        "setupToken": "generated per run; not recorded",
+        "sessionCookies": "not recorded",
+        "csrfTokens": "not recorded",
+        "providerCredentials": "none created; built-in mock adapters only",
+        "externalRequests": "blocked by browser routing; zero expected"
+      },
+      "evidence": {
+        "tab": "health",
+        "probedMockProviders": 3,
+        "probeKind": "connect",
+        "externalProviderCalls": 0
+      }
+    }
+  ]
+}

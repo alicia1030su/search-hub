@@ -23,10 +23,10 @@
 <a id="screenshots"></a>
 ## Interface
 
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/onboarding.png after capture. -->
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/dashboard.png after capture. -->
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/search-lab.png after capture. -->
-<!-- CAPTURE_REQUIRED: replace with the real v0.1.18 docs/screenshots/v0118/provider-health.png after capture. -->
+![Onboarding](docs/screenshots/v0118/onboarding.png)
+![Dashboard](docs/screenshots/v0118/dashboard.png)
+![Search laboratory](docs/screenshots/v0118/search-lab.png)
+![Provider health](docs/screenshots/v0118/provider-health.png)
 <a id="quick-start"></a>
 ## Quick start
 
