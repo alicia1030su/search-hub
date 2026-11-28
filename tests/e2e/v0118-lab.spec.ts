@@ -2,6 +2,12 @@ import { expect, test, type Page } from "@playwright/test";
 import { ensureSignedIn } from "./support";
 
 const CANARY = "V0118-RAW-CANARY";
+interface LabControl {
+  requests: Array<Record<string, unknown>>;
+  cancellations: number;
+  release?: () => void;
+  reads: string[];
+}
 const result = (id: string) => ({
   id, title: `Result ${id}`, url: `https://example.test/${id}`, snippet: "snippet",
   source: "p", provider: "p", providerName: "Local mock", providerType: "mock",
@@ -25,12 +31,13 @@ async function stubLabBase(page: Page) {
   await page.route("**/api/search/route-preview", (route) => route.fulfill({ status: 404, contentType: "application/json", body: "{}" }));
 }
 
-async function installStreamMock(page: Page, options: { cancel?: boolean } = {}) {
+async function installStreamMock(page: Page, options: { cancel?: boolean; response?: { results: Array<ReturnType<typeof result>>; [key: string]: unknown } } = {}) {
   await page.addInitScript(({ cancel, response }) => {
-    const originalFetch = window.fetch.bind(window);
-    const control = { requests: [] as unknown[], cancellations: 0, release: undefined as (() => void) | undefined, reads: [] as string[] };
-    Object.assign(window, { __labControl: control });
-    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const browser = globalThis as unknown as { fetch: typeof fetch; __labControl: LabControl };
+    const originalFetch = browser.fetch.bind(globalThis);
+    const control: LabControl = { requests: [], cancellations: 0, release: undefined, reads: [] };
+    Object.assign(globalThis, { __labControl: control });
+    browser.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.endsWith("/api/search/stream")) {
         control.requests.push(JSON.parse(String(init?.body ?? "{}")));
@@ -61,7 +68,7 @@ async function installStreamMock(page: Page, options: { cancel?: boolean } = {})
       }
       return originalFetch(input, init);
     };
-  }, { cancel: options.cancel ?? false, response: finalResponse });
+  }, { cancel: options.cancel ?? false, response: options.response ?? finalResponse });
 }
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
@@ -99,22 +106,22 @@ test.describe("v0.1.18 search laboratory", () => {
     const provisional = page.getByTestId("provisional-results");
     await expect(provisional).toBeVisible();
     await expect(provisional.getByText("临时结果", { exact: true }).first()).toBeVisible();
-    expect(await provisional.evaluate((node) => getComputedStyle(node).borderTopStyle)).toBe("dashed");
+    expect(await provisional.evaluate((node) => (globalThis as unknown as { getComputedStyle(value: unknown): { borderTopStyle: string } }).getComputedStyle(node).borderTopStyle)).toBe("dashed");
     await expect(page.getByRole("button", { name: "复制 JSON" })).toHaveCount(0);
     await expect(page.getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
-    await page.evaluate(() => (window as unknown as { __labControl: { release(): void } }).__labControl.release());
+    await page.evaluate(() => (globalThis as unknown as { __labControl: LabControl }).__labControl.release?.());
     await expect(page.getByTestId("final-results")).toBeVisible();
     await expect(page.getByTestId("provisional-results")).toHaveCount(0);
     await expect(page.getByTestId("final-results").getByRole("link", { name: "Result 1" })).toHaveCount(1);
     await expect(page.getByText("缓存命中", { exact: false })).toBeVisible();
-    const requests = await page.evaluate(() => (window as unknown as { __labControl: { requests: Array<Record<string, unknown>> } }).__labControl.requests);
+    const requests = await page.evaluate(() => (globalThis as unknown as { __labControl: LabControl }).__labControl.requests);
     expect(requests[0]?.strategy).toBe("balanced");
     expect(requests[0]?.mode).toBeUndefined();
     expect(requests[0]?.providers).toBeUndefined();
     expect(requests[0]?.queryExpansion).toBe(false);
     expect(requests[0]?.stream).toBe("sse");
     await page.getByRole("button", { name: "复制 JSON" }).click();
-    const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+    const clipboard = await page.evaluate(() => (globalThis as unknown as { navigator: { clipboard: { readText(): Promise<string> } } }).navigator.clipboard.readText());
     expect(clipboard).not.toContain(CANARY);
     expect(clipboard).not.toContain("sequence");
   });
@@ -132,7 +139,7 @@ test.describe("v0.1.18 search laboratory", () => {
     await expect(page.getByRole("status").getByText("已取消，非最终结果；以下内容不会被导出为最终响应。")).toBeVisible();
     await expect(page.getByTestId("provisional-results")).toBeVisible();
     await expect(page.getByRole("button", { name: "复制 JSON" })).toHaveCount(0);
-    expect(await page.evaluate(() => (window as unknown as { __labControl: { cancellations: number } }).__labControl.cancellations)).toBe(1);
+    expect(await page.evaluate(() => (globalThis as unknown as { __labControl: LabControl }).__labControl.cancellations)).toBe(1);
   });
 
   test("reads正文 only on demand, reuses session cache, handles login state and returns focus on Escape", async ({ page }) => {
@@ -144,7 +151,7 @@ test.describe("v0.1.18 search laboratory", () => {
     await page.locator("#lab-query").fill("reader query");
     await page.getByRole("button", { name: "运行搜索", exact: true }).click();
     await expect(page.getByTestId("final-results")).toBeVisible();
-    expect(await page.evaluate(() => (window as unknown as { __labControl: { reads: string[] } }).__labControl.reads.length)).toBe(0);
+    expect(await page.evaluate(() => (globalThis as unknown as { __labControl: LabControl }).__labControl.reads.length)).toBe(0);
     const firstRead = page.getByRole("button", { name: "查看正文" }).first();
     await firstRead.click();
     await expect(page.getByRole("dialog")).toBeVisible();
@@ -154,10 +161,53 @@ test.describe("v0.1.18 search laboratory", () => {
     await expect(firstRead).toBeFocused();
     await firstRead.click();
     await expect(page.getByText("Extracted safe text", { exact: true })).toBeVisible();
-    expect(await page.evaluate(() => (window as unknown as { __labControl: { reads: string[] } }).__labControl.reads.length)).toBe(1);
+    expect(await page.evaluate(() => (globalThis as unknown as { __labControl: LabControl }).__labControl.reads.length)).toBe(1);
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "查看正文" }).nth(1).click();
     await expect(page.getByRole("status").getByText("需要登录后查看，请打开原网页完成登录。")).toBeVisible();
+  });
+
+  test("shows Deep budgets, applied stages, route, degradations and ranking facts", async ({ page }) => {
+    await stubLabBase(page);
+    const first = result("1");
+    const second = result("2");
+    const deepResponse = {
+      ...finalResponse,
+      strategy: "deep" as const,
+      query: "deep query",
+      results: [second, first],
+      route: { selected: "deep" as const, ruleId: "rule-deep", matchedSignals: ["multi_hop"], considered: ["deep", "quality"] },
+      appliedStages: ["fanout", "rerank"],
+      degradations: [{ stage: "summary", reason: "model_not_configured", fallback: "skip" }],
+      queryExpansion: { queries: [
+        { query: "deep query", kind: "original", round: 1, weight: 1 },
+        { query: "deep query", kind: "rewrite", round: 1, weight: 0.5 },
+        { query: "expanded query", kind: "expanded", round: 2, weight: 0.5 },
+      ] },
+      deepBudget: { subqueries: 3, rounds: 2, providerQueries: 32, httpRequests: 64, exhausted: true },
+      stats: { ...finalResponse.stats, rerankApplied: true },
+      debug: { rerankComparison: { before: [first, second], after: [second, first] } },
+    };
+    await installStreamMock(page, { response: deepResponse });
+    await ensureSignedIn(page);
+    await page.getByRole("link", { name: "搜索实验室", exact: true }).click();
+    await page.locator("#lab-mode").selectOption("strategy:deep");
+    await page.locator("#lab-query").fill("deep query");
+    await page.getByRole("button", { name: "运行搜索", exact: true }).click();
+    await expect(page.getByTestId("provisional-results")).toBeVisible();
+    await page.evaluate(() => (globalThis as unknown as { __labControl: LabControl }).__labControl.release?.());
+    await expect(page.getByTestId("final-results")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "查询扩展与预算" })).toBeVisible();
+    await expect(page.getByText("已去重", { exact: true })).toBeVisible();
+    await expect(page.getByText("rule-deep", { exact: true })).toBeVisible();
+    await expect(page.getByText("rerank", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("summary: model_not_configured → skip", { exact: true })).toBeVisible();
+    await expect(page.getByText("预算耗尽，返回已有结果", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "重排前后对比" })).toBeVisible();
+    await expect(page.getByText("↑1", { exact: true })).toBeVisible();
+    await expect(page.getByText("↓1", { exact: true })).toBeVisible();
+    const finalText = await page.getByTestId("final-results").innerText();
+    expect(finalText.indexOf("Result 2")).toBeLessThan(finalText.indexOf("Result 1"));
   });
 
   test("has no page overflow at 360px and 768px and does not add routes", async ({ page }) => {
@@ -168,7 +218,10 @@ test.describe("v0.1.18 search laboratory", () => {
     expect(await page.locator('a[href^="/"]').evaluateAll((links) => links.map((link) => link.getAttribute("href")))).not.toContain("/reader");
     for (const width of [360, 768]) {
       await page.setViewportSize({ width, height: 900 });
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      expect(await page.evaluate(() => {
+        const browser = globalThis as unknown as { document: { documentElement: { scrollWidth: number } }; innerWidth: number };
+        return browser.document.documentElement.scrollWidth <= browser.innerWidth;
+      })).toBe(true);
       await expect(page.getByRole("button", { name: "运行搜索", exact: true })).toBeVisible();
     }
   });

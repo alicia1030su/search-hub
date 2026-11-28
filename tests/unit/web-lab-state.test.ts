@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLabRequest, initialLabState, labReducer } from "../../apps/web/src/pages/lab";
+import { buildLabRequest, initialLabState, labReducer } from "../../apps/web/src/lib/lab-state";
 import { ApiError } from "../../apps/web/src/lib/api";
 import type { SearchResponse, SearchResult } from "../../apps/web/src/lib/types";
 

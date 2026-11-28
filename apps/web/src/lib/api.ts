@@ -136,7 +136,8 @@ export async function ensureCsrf(force = false): Promise<string | null> {
 }
 
 function notifyUnauthorized(): void {
-  window.dispatchEvent(new CustomEvent("sh:unauthorized"));
+  const target = globalThis as unknown as { dispatchEvent?: (event: Event) => boolean };
+  target.dispatchEvent?.(new Event("sh:unauthorized"));
 }
 
 type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";

@@ -650,6 +650,7 @@ export interface SearchResponse {
   mode?: SearchMode;
   strategy?: SearchStrategy;
   route?: RouteExplanation;
+  appliedStages?: string[];
   degradations?: Degradation[];
   selectedProviderIds?: string[];
   excludedProviders?: Array<{ providerId: string; providerName?: string; reason: string }>;
