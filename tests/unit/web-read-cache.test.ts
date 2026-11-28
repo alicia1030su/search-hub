@@ -53,7 +53,8 @@ async function read(service: WebReadService, fetch: SafeFetch, url = "https://ex
 
 describe("webpage cache identity", () => {
   it("normalizes URLs without credentials or fragments", () => {
-    expect(normalizeWebpageCacheUrl("HTTPS://EXAMPLE.COM:443/a?b=2&a=1#token=secret")).toBe("https://example.com/a?b=2&a=1");
+    expect(normalizeWebpageCacheUrl("HTTPS://EXAMPLE.COM:443/a/?b=2&utm_source=news&a=1#token=secret")).toBe("https://example.com/a?a=1&b=2");
+    expect(normalizeWebpageCacheUrl("https://example.com")).toBe(normalizeWebpageCacheUrl("https://example.com/"));
     expect(() => normalizeWebpageCacheUrl("https://user:pass@example.com/")).toThrow(TypeError);
   });
 
@@ -67,9 +68,24 @@ describe("webpage cache identity", () => {
     expect(buildWebpageCacheKey(input)).not.toContain("example.com");
   });
 
+  it("uses one canonical key for tracking parameters, query order, default ports and trailing slashes", () => {
+    const canonical = buildWebpageCacheKey({ url: "https://example.com/article?a=1&b=2" });
+    for (const url of [
+      "https://example.com:443/article/?utm_source=news&b=2&a=1#section",
+      "http://example.com:80/article?a=1&b=2",
+      "https://EXAMPLE.com./article/?b=2&utm_campaign=x&a=1",
+    ]) {
+      if (url.startsWith("http:")) {
+        expect(buildWebpageCacheKey({ url })).not.toBe(canonical);
+      } else {
+        expect(buildWebpageCacheKey({ url })).toBe(canonical);
+      }
+    }
+  });
+
   it("refuses credential-bearing URL keys", () => {
-    expect(() => buildWebpageCacheKey({ url: "https://example.com/?token=secret" })).toThrow(/not cacheable/);
-    expect(() => buildWebpageCacheKey({ url: "https://example.com/?api_key=secret" })).toThrow(/not cacheable/);
+    expect(() => buildWebpageCacheKey({ url: "https://example.com/?token=secret" })).toThrow(/not allowed/);
+    expect(() => buildWebpageCacheKey({ url: "https://example.com/?api_key=secret" })).toThrow(/not allowed/);
   });
 });
 
@@ -87,6 +103,29 @@ describe("WebReadService SQLite cache", () => {
     expect(second).toMatchObject({ requestedUrl: "https://example.com/start", finalUrl: "https://example.com/redirected", readStatus: "ok", truncated: true, contentLength: 120 });
     expect(cache.totals().entries).toBe(1);
     expect(handle!.sqlite.prepare("SELECT mode, status FROM search_cache").get()).toEqual({ mode: "web_read", status: "ok" });
+  });
+
+  it("hits the same row for canonical URL variants and returns the canonical requested URL", async () => {
+    const cache = cacheAt(() => Date.now());
+    const fetch = fakeFetch();
+    const service = new WebReadService({ cache, logger });
+    await read(service, fetch, "https://example.com:443/article/?utm_source=news&b=2&a=1#one");
+    const second = await read(service, fetch, "https://example.com/article?a=1&b=2#two");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(second.requestedUrl).toBe("https://example.com/article?a=1&b=2");
+    expect(cache.totals().entries).toBe(1);
+  });
+
+  it.each(["api_key", "token", "access_token", "authorization", "signature", "password"])("rejects %s URLs before cache or fetch without leaking the credential", async (parameter) => {
+    const cache = cacheAt(() => Date.now());
+    const fetch = fakeFetch();
+    const service = new WebReadService({ cache, logger });
+    const url = `https://example.com/?${parameter}=secret-canary`;
+    await expect(read(service, fetch, url)).rejects.toThrow(/not allowed/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(cache.totals().entries).toBe(0);
+    expect(() => buildWebpageCacheKey({ url })).toThrow(/not allowed/);
+    expect(buildWebpageCacheKey({ url: "https://example.com/safe" })).not.toContain("secret-canary");
   });
 
   it("expires entries at TTL and caps configured TTL at one hour", async () => {

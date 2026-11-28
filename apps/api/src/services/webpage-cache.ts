@@ -4,7 +4,7 @@ import {
   fetchWebpage,
   type WebpageReadResult,
 } from "@search-hub/core";
-import { SearchHubError, type Logger, type SafeFetch } from "@search-hub/shared";
+import { normalizeUrl, SearchHubError, type Logger, type SafeFetch } from "@search-hub/shared";
 import type { CacheService } from "./cache.js";
 
 export const DEFAULT_WEBPAGE_CACHE_TTL_SECONDS = 60 * 60;
@@ -23,12 +23,14 @@ const CREDENTIAL_QUERY_KEY = /^(?:api_?key|token|access_?token|auth|authorizatio
 
 /** Canonical identity without fragments or credential-bearing URL parameters. */
 export function normalizeWebpageCacheUrl(rawUrl: string): string {
-  const url = new URL(rawUrl);
-  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+  const parsed = new URL(rawUrl);
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) {
     throw new TypeError("Webpage URL must use HTTP(S) without credentials");
   }
-  url.hash = "";
-  return url.toString();
+  if (hasCredentialQuery(parsed)) throw new TypeError("Credential-bearing webpage URLs are not allowed");
+  const normalized = normalizeUrl(rawUrl);
+  if (!normalized) throw new TypeError("Webpage URL must use HTTP or HTTPS");
+  return normalized;
 }
 
 function hasCredentialQuery(url: URL): boolean {
@@ -125,6 +127,7 @@ export class WebReadService {
   }
 
   async read(input: WebReadInput, context: WebReadContext): Promise<WebpageReadResult> {
+    const url = normalizeWebpageCacheUrl(input.url);
     if (input.render === true) {
       throw new SearchHubError("validation_error", "Rendered webpage reading is not enabled", { status: 400 });
     }
@@ -141,7 +144,7 @@ export class WebReadService {
       }
     }
     return this.singleFlight.run(key ?? `uncached:${crypto.randomUUID()}`, context.signal, async () => {
-      const result = await fetchWebpage(input.url, {
+      const result = await fetchWebpage(url, {
         fetch: context.fetch,
         signal: context.signal,
         timeoutMs: input.timeoutMs,
