@@ -124,7 +124,7 @@ describe("search cache fingerprint", () => {
     );
   });
 
-  it("is canonical across object insertion order and provider order", () => {
+  it("is canonical across object insertion order but preserves explicit provider order", () => {
     const first = v2({
       models: {
         chat: { fingerprint: "chat", stageVersion: "chat-v1" },
@@ -135,14 +135,21 @@ describe("search cache fingerprint", () => {
         { id: "a", capability: "raw_search", configFingerprint: "a", credentialVersion: "a" },
       ],
     });
-    const second = v2({
-      providers: [...first.providers].reverse(),
+    const reorderedObjects = v2({
+      providers: first.providers.map((provider) => ({
+        credentialVersion: provider.credentialVersion,
+        configFingerprint: provider.configFingerprint,
+        capability: provider.capability,
+        id: provider.id,
+      })),
       models: {
-        chat: { fingerprint: "chat", stageVersion: "chat-v1" },
-        rerank: { fingerprint: "rerank", stageVersion: "rerank-v1" },
+        rerank: { stageVersion: "rerank-v1", fingerprint: "rerank" },
+        chat: { stageVersion: "chat-v1", fingerprint: "chat" },
       },
     });
-    expect(key(buildSearchFingerprintV2(first))).toBe(key(buildSearchFingerprintV2(second)));
+    const reversedProviders = v2({ ...first, providers: [...first.providers].reverse() });
+    expect(key(buildSearchFingerprintV2(first))).toBe(key(buildSearchFingerprintV2(reorderedObjects)));
+    expect(key(buildSearchFingerprintV2(first))).not.toBe(key(buildSearchFingerprintV2(reversedProviders)));
     expect(canonicalSearchCacheJson({ b: 1, a: { d: 2, c: 3 } })).toBe('{"a":{"c":3,"d":2},"b":1}');
   });
 

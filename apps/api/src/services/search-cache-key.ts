@@ -158,14 +158,14 @@ export function buildSearchFingerprintV2(input: SearchCacheV2Input): Record<stri
     rerank: input.rerank ?? false,
     embedding: input.embedding ?? false,
     summarize: input.summarize ?? false,
-    providers: [...input.providers]
-      .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
-      .map((provider) => ({
-        id: provider.id,
-        capability: provider.capability,
-        configFingerprint: provider.configFingerprint,
-        credentialVersion: provider.credentialVersion,
-      })),
+    // B1 explicit provider order determines polling, duplicate ownership and
+    // final ordering. Callers canonicalize only the implicit-provider case.
+    providers: input.providers.map((provider) => ({
+      id: provider.id,
+      capability: provider.capability,
+      configFingerprint: provider.configFingerprint,
+      credentialVersion: provider.credentialVersion,
+    })),
     queryExpansion: {
       enabled: input.queryExpansion ?? false,
       maxSubqueries: input.maxSubqueries ?? null,
