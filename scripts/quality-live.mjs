@@ -9,6 +9,8 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { normalizeUrl } from "../packages/shared/src/url.ts";
 import { snapshotFingerprint } from "../packages/core/src/evaluation/snapshot.ts";
+import { pairedStratifiedBootstrap } from "../packages/core/src/evaluation/bootstrap.ts";
+import { evaluateQuery } from "../packages/core/src/evaluation/metrics.ts";
 
 const MAX_ATTEMPTS = 2;
 const MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -224,6 +226,94 @@ async function requestWithRetry({ url, body, token, fetchImpl, now, wait, deadli
   return attempts;
 }
 
+/**
+ * Legacy single-suite comparison API. Canonical multi-suite reports must use
+ * scripts/quality-report.mjs; this compatibility helper never pools suites.
+ */
+export function buildLiveComparison(report, qrels) {
+  const base = {
+    format: "search-hub.quality.live-comparison/1",
+    evidenceKind: "live_paired_abba",
+    sameSnapshot: false,
+    manifestHash: report.manifestHash,
+    qrelsFingerprint: qrels ? snapshotFingerprint(qrels) : null,
+    expectedPairs: report.pairs.length,
+    perQuery: [],
+    metrics: {},
+  };
+  const suiteIds = [...new Set(report.pairs.map((pair) => pair.suiteId ?? "legacy-basic"))];
+  assert(suiteIds.length <= 1, "buildLiveComparison supports only one suite; use quality-report.mjs for multiple suites");
+  if (!qrels) return { ...base, status: "INSUFFICIENT_EVIDENCE", reason: "qrels_not_provided" };
+  if (qrels.source !== "human") return { ...base, status: "INSUFFICIENT_EVIDENCE", reason: "qrels_not_human" };
+  assert(Array.isArray(qrels.queries), "qrels.queries must be an array");
+  assert(typeof qrels.judgmentsComplete === "boolean", "qrels.judgmentsComplete must be boolean");
+  const qrelsIds = new Set();
+  for (const query of qrels.queries) {
+    assert(typeof query.queryId === "string" && query.queryId, "every qrel query needs a queryId");
+    assert(!qrelsIds.has(query.queryId), `duplicate qrel queryId: ${query.queryId}`);
+    qrelsIds.add(query.queryId);
+    assert(Array.isArray(query.judgments), `qrels ${query.queryId} judgments must be an array`);
+    for (const judgment of query.judgments) {
+      assert(typeof judgment.documentId === "string" && judgment.documentId, "judgment documentId is required");
+      assert(Number.isInteger(judgment.relevance) && judgment.relevance >= 0 && judgment.relevance <= 3, "judgment relevance must be 0..3");
+    }
+  }
+  const qrelsByQuery = new Map(qrels.queries.map((query) => [query.queryId, query]));
+  const pairs = [];
+  const perQuery = [];
+  for (const pair of report.pairs) {
+    const qrel = qrelsByQuery.get(pair.queryId);
+    const baseline = pair.captures.baseline;
+    const candidate = pair.captures.candidate;
+    const reasons = [];
+    if (!qrel) reasons.push("no_human_judgments");
+    if (!baseline?.ok || !candidate?.ok) reasons.push("execution_failed");
+    if (JSON.stringify(baseline?.request) !== JSON.stringify(candidate?.request)) reasons.push("request_mismatch");
+    if (reasons.length === 0) {
+      const grades = new Map((qrel.judgments ?? []).map((judgment) => [judgment.documentId, judgment.relevance]));
+      const relevantTotal = qrels.judgmentsComplete === false ? null : [...grades.values()].filter((grade) => grade >= 2).length;
+      const metricsFor = (capture, cutoff) => evaluateQuery(
+        capture.finalResults.map((result) => result.documentId),
+        { queryId: pair.queryId, grades, relevantTotal },
+        { cutoff },
+      );
+      const baselineMetrics = metricsFor(baseline, 10);
+      const candidateMetrics = metricsFor(candidate, 10);
+      baselineMetrics.recallAtK = metricsFor(baseline, 20).recallAtK;
+      candidateMetrics.recallAtK = metricsFor(candidate, 20).recallAtK;
+      pairs.push({
+        queryId: pair.queryId,
+        language: pair.language,
+        category: pair.category,
+        judgmentSource: "human",
+        judgmentsComplete: qrels.judgmentsComplete === true,
+        baseline: baselineMetrics,
+        candidate: candidateMetrics,
+      });
+      perQuery.push({
+        queryId: pair.queryId,
+        baseline: { ndcgAtK: baselineMetrics.ndcgAtK.value, mrrAtK: baselineMetrics.mrrAtK.value, precisionAtK: baselineMetrics.precisionAtK.value, recallAt20: baselineMetrics.recallAtK.value },
+        candidate: { ndcgAtK: candidateMetrics.ndcgAtK.value, mrrAtK: candidateMetrics.mrrAtK.value, precisionAtK: candidateMetrics.precisionAtK.value, recallAt20: candidateMetrics.recallAtK.value },
+      });
+    } else {
+      perQuery.push({ queryId: pair.queryId, excludedReasons: reasons });
+    }
+  }
+  for (const metric of ["ndcgAtK", "mrrAtK", "precisionAtK"]) {
+    base.metrics[metric] = pairedStratifiedBootstrap({ pairs, metric });
+  }
+  const insufficient = Object.values(base.metrics).some((metric) => metric.status === "INSUFFICIENT_EVIDENCE");
+  return {
+    ...base,
+    perQuery,
+    pairedN: pairs.length,
+    excludedN: report.pairs.length - pairs.length,
+    attrition: report.pairs.length ? (report.pairs.length - pairs.length) / report.pairs.length : 1,
+    status: insufficient ? "INSUFFICIENT_EVIDENCE" : "SUPPORTED",
+    ...(insufficient ? { reason: "paired_evidence_threshold_not_met" } : {}),
+  };
+}
+
 /** Runs one frozen query set serially, alternating AB/BA by query position. */
 export async function runQualityLive({
   manifest,
@@ -231,11 +321,14 @@ export async function runQualityLive({
   candidateUrl,
   outDir,
   token = "",
+  qrels = null,
   fetchImpl = globalThis.fetch,
   now = Date.now,
   wait = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
 }) {
   validateManifest(manifest);
+  const suites = normalizedSuites(manifest);
+  if (qrels && suites.length > 1) throw new Error("legacy qrels comparison supports only one suite; use quality-report.mjs for multiple suites");
   const endpoints = validateEndpoints(baselineUrl, candidateUrl);
   const startedAt = now();
   const report = {
@@ -246,10 +339,11 @@ export async function runQualityLive({
     finishedAt: null,
     origin: endpoints.baseline.origin,
     manifestHash: snapshotFingerprint(manifest),
+    ...(qrels ? { qrelsFingerprint: snapshotFingerprint(qrels) } : {}),
     suiteReports: [],
     pairs: [],
   };
-  for (const suite of normalizedSuites(manifest)) {
+  for (const suite of suites) {
     const suiteStartedAt = now();
     const limitations = [...(suite.limitations ?? [])];
     const suiteRequest = manifest.suites === undefined
@@ -346,9 +440,11 @@ export async function runQualityLive({
     report.suiteReports.push(suiteReport);
   }
   report.finishedAt = new Date(now()).toISOString();
+  if (qrels) report.comparison = buildLiveComparison(report, qrels);
   if (outDir) {
     mkdirSync(outDir, { recursive: true });
     writeFileSync(resolve(outDir, "quality-live-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    if (report.comparison) writeFileSync(resolve(outDir, "quality-live-comparison.json"), `${JSON.stringify(report.comparison, null, 2)}\n`, "utf8");
   }
   return report;
 }
@@ -382,10 +478,12 @@ async function main() {
   const candidateUrl = flag("candidate-url", null);
   const outDir = flag("out", "deliverables/quality-live");
   const token = flag("token", process.env.SEARCH_HUB_TOKEN ?? "");
-  assert(manifestPath && baselineUrl && candidateUrl, "usage: quality-live.mjs --manifest <json> --baseline-url <url> --candidate-url <same-origin-url> [--out <dir>]");
+  const qrelsPath = flag("qrels", null);
+  assert(manifestPath && baselineUrl && candidateUrl, "usage: quality-live.mjs --manifest <json> [--qrels <legacy-single-suite.json>] --baseline-url <url> --candidate-url <same-origin-url> [--out <dir>]");
   assert(token, "--token or SEARCH_HUB_TOKEN is required");
   const manifest = loadLiveManifest(manifestPath);
-  const report = await runQualityLive({ manifest, baselineUrl, candidateUrl, outDir, token });
+  const qrels = qrelsPath ? JSON.parse(readFileSync(qrelsPath, "utf8")) : null;
+  const report = await runQualityLive({ manifest, baselineUrl, candidateUrl, outDir, token, qrels });
   console.log(`quality:live — ${report.pairs.length} paired queries, ${report.suiteReports.length} suites, AB/BA, cache bypass, origin=${report.origin}`);
   if (report.pairs.some((pair) => !pair.captures.baseline.ok || !pair.captures.candidate.ok)) process.exitCode = 4;
 }

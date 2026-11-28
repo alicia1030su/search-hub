@@ -4,7 +4,7 @@
 
 ## 1. 结论
 
-现有 `scripts/quality-live.mjs` 在本次补齐前只能固定发送 `mode=basic`。现已支持 `suites[]` 逐 suite 串行 ABBA，按 suite 冻结 `basic/rrf/rerank/deep` 请求、limit、perProviderLimit 与非密 modelArtifacts，输出 suiteId；未提供 suites 时兼容旧 basic manifest。原始 per-provider 行、最终排名、哈希、请求数和延迟均来自真实响应，不预填分数。脚本只负责原始证据；B8 `observed/releaseScore/attrition` 报告由 `scripts/quality-report.mjs` 从冻结 queries/labels 与原始 report 生成，多 suite 不合并 bootstrap。
+现有 `scripts/quality-live.mjs` 在本次补齐前只能固定发送 `mode=basic`。现已支持 `suites[]` 逐 suite 串行 ABBA，按 suite 冻结 `basic/rrf/rerank/deep` 请求、limit、perProviderLimit 与非密 modelArtifacts，输出 suiteId；未提供 suites 时兼容旧 basic manifest。原始 per-provider 行、最终排名、哈希、请求数和延迟均来自真实响应，不预填分数。正式报告唯一入口为 `scripts/quality-report.mjs`；`quality-live.mjs` 保留 `buildLiveComparison` 与可选 `--qrels` 作为旧单 suite 兼容接口，多 suite 传入 qrels 会在发请求前拒绝，必须使用 `quality-report.mjs`，不得合并 bootstrap。
 
 当前环境**不能产出有效的 v0.1.17/v0.1.18 ABBA 质量结论**，原因如下：
 
@@ -25,7 +25,7 @@
 | deep | 支持 suite `request.mode=deep`、`maxSubqueries`、`maxRounds`、`queryExpansion` | 保存 deepRounds 与预算；缺 chat metadata 时记 `chat_model_not_frozen` limitation，是否可运行由实现能力决定 |
 | v0.1.17/v0.1.18 | 通过同 origin 不同路径的代理路由接入两个 exact-SHA 实例 | 仓库不内置双实现路由，需按下节部署 |
 | 同快照重排 | 由 `quality.ts` 的 offline `snapshotRunId` 回放负责 | 不与 live ABBA 合并统计 |
-| live 比较 | `scripts/quality-report.mjs` 消费原始 live report 与冻结 queries/labels | labels 不声明完整时 Recall 为 N/A；不得补造分数 |
+| live 比较 | 正式入口 `scripts/quality-report.mjs`；旧单 suite 可用 `buildLiveComparison/--qrels` | labels 不声明完整时 Recall 为 N/A；多 suite 禁止旧接口；不得补造分数 |
 
 请求白名单禁止覆盖 `query/providers/limit/perProviderLimit/skipCache`，并禁止同时冻结 `mode` 与 `strategy`。缺少 `debug.perProviderResults` 的响应记为 `missing_per_provider_evidence`，不能当作成功空结果。
 
@@ -117,7 +117,7 @@ node --import tsx scripts/quality-live.mjs \
   --out deliverables/quality-live-public
 ```
 
-输出 `quality-live-report.json`：suiteId、AB/BA 顺序、每次尝试、原始 per-provider 快照、最终排名、请求数、延迟、错误、降级、hashes 与 provenance。随后由报告 worker 生成比较结果：
+输出 `quality-live-report.json`：suiteId、AB/BA 顺序、每次尝试、原始 per-provider 快照、最终排名、请求数、延迟、错误、降级、hashes 与 provenance。仅旧单 suite 且显式提供 `--qrels` 时额外输出 legacy `quality-live-comparison.json`。正式比较结果统一由报告 worker 生成：
 
 ```bash
 node --import tsx scripts/quality-report.mjs \

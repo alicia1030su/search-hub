@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { loadLiveManifest, parseRetryAfter, runQualityLive } from "../../scripts/quality-live.mjs";
+import { buildLiveComparison, loadLiveManifest, parseRetryAfter, runQualityLive } from "../../scripts/quality-live.mjs";
 
 function manifest(count = 3) {
   return {
@@ -201,6 +201,28 @@ test("raw live report preserves final results without computing quality scores",
     { documentId: "https://a.test/1", url: "https://a.test/1", title: "A" },
   ]);
   assert.equal(report.pairs[0].captures.baseline.ndcgAtK, undefined);
+});
+
+test("legacy single-suite qrels comparison remains available", async () => {
+  const qrels = {
+    source: "human", judgmentsComplete: true,
+    queries: [{ queryId: "q1", judgments: [{ documentId: "https://a.test/1", relevance: 3 }] }],
+  };
+  const report = await runQualityLive(options({ manifest: manifest(1), qrels, fetchImpl: async () => response(searchBody()) }));
+  assert.equal(report.comparison.evidenceKind, "live_paired_abba");
+  assert.equal(report.comparison.metrics.ndcgAtK.observed.pairedN, 1);
+  assert.equal(report.comparison.metrics.ndcgAtK.releaseScore.pairedN, 1);
+  assert.equal(buildLiveComparison(report, null).reason, "qrels_not_provided");
+});
+
+test("legacy qrels comparison refuses multiple suites before any request", async () => {
+  let called = false;
+  await assert.rejects(runQualityLive(options({
+    manifest: { ...manifest(1), suites: [{ id: "basic", request: { mode: "basic" } }, { id: "rrf", request: { mode: "rrf" } }] },
+    qrels: { source: "human", judgmentsComplete: true, queries: [] },
+    fetchImpl: async () => { called = true; return response(searchBody()); },
+  })), /only one suite/);
+  assert.equal(called, false);
 });
 
 test("suites run serially with suiteId and record skipped model-dependent evidence", async () => {
