@@ -25,6 +25,7 @@ import {
   qualitySnapshots,
   searchTasks,
 } from "../../packages/db/src/schema.js";
+import { deserializeSnapshot } from "../../packages/core/src/evaluation/snapshot.js";
 
 interface Harness {
   app: FastifyInstance;
@@ -658,7 +659,7 @@ describe("runs", () => {
       .filter((row) => row.runId === runId);
     expect(snapshots.length).toBeGreaterThan(0);
     for (const row of snapshots) {
-      const providers = JSON.parse(row.snapshotJson) as Array<{ ok: boolean; errorCode?: string }>;
+      const providers = deserializeSnapshot(row.snapshotJson).providers;
       expect(providers.length).toBeGreaterThan(0);
       for (const provider of providers) {
         // An outage must not be recorded as "returned nothing".

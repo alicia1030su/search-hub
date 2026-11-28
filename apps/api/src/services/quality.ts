@@ -1,5 +1,8 @@
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { SearchHubError, normalizeUrl, type Logger } from "@search-hub/shared";
+import { SearchHubError, normalizeUrl, type Logger, type SearchResponse } from "@search-hub/shared";
+import { deserializeSnapshot, snapshotFingerprint, type DeepQuerySnapshot, type EvaluationSnapshot, type ModelArtifacts } from "../../../../packages/core/src/evaluation/snapshot.js";
+import { compareRankStrategies, rankStrategy as rankFrozenStrategy, type RankStrategy } from "../../../../packages/core/src/evaluation/strategy.js";
+import { pairedStratifiedBootstrap, type PairedQuerySample, type PairedStratifiedBootstrapSummary } from "../../../../packages/core/src/evaluation/bootstrap.js";
 import {
   aggregateByCategory,
   aggregateMetric,
@@ -71,6 +74,95 @@ const DATASET_PAGE_MAX = 200;
 /** Queries or judgments per page in a dataset detail response. */
 const DETAIL_PAGE_DEFAULT = 200;
 const DETAIL_PAGE_MAX = 500;
+
+interface SnapshotProvenance {
+  sourceRunId: string | null;
+  sourceCapturedAt: string | null;
+  snapshotHash: string;
+}
+
+type StoredSnapshot = EvaluationSnapshot & { provenance?: SnapshotProvenance };
+
+/** Reads both v2 envelopes and legacy ProviderSnapshot[] without rewriting stored evidence. */
+function readStoredSnapshot(
+  raw: string,
+  query: { id: string; query: string; category: string; language: string },
+  createdAt: string,
+  sourceRunId: string | null,
+): StoredSnapshot {
+  const parsed = JSON.parse(raw) as unknown;
+  const legacyArray = Array.isArray(parsed);
+  const envelope = deserializeSnapshot(parsed);
+  const record = !legacyArray && parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  const storedProvenance = record.provenance && typeof record.provenance === "object"
+    ? record.provenance as Partial<SnapshotProvenance> : {};
+  const normalized: StoredSnapshot = {
+    ...envelope,
+    queryId: query.id,
+    query: query.query,
+    category: query.category as QueryCategory,
+    language: envelope.language === "und" ? query.language : envelope.language,
+    capturedAt: legacyArray ? createdAt : envelope.capturedAt,
+    provenance: {
+      sourceRunId: typeof storedProvenance.sourceRunId === "string" ? storedProvenance.sourceRunId : sourceRunId,
+      sourceCapturedAt: typeof storedProvenance.sourceCapturedAt === "string" ? storedProvenance.sourceCapturedAt : (legacyArray ? null : envelope.capturedAt),
+      snapshotHash: typeof storedProvenance.snapshotHash === "string" ? storedProvenance.snapshotHash : snapshotFingerprint(envelope),
+    },
+  };
+  return normalized;
+}
+
+function providerSnapshotsFromResponse(response: SearchResponse, requested: readonly string[]): ProviderSnapshot[] {
+  const stats = new Map(response.stats.providers.map((stat) => [stat.providerId, stat]));
+  const debug = new Map((response.debug?.perProviderResults ?? []).map((entry) => [entry.providerId, entry]));
+  const ids = [...new Set([...requested, ...stats.keys()])];
+  return ids.map((providerId) => {
+    const entry = debug.get(providerId);
+    const stat = stats.get(providerId);
+    return {
+      providerId,
+      providerName: entry?.providerName ?? stat?.providerName ?? providerId,
+      providerType: stat?.providerType ?? "unknown",
+      results: (entry?.results ?? []).map((result, index) => ({
+        documentId: result.id,
+        title: result.title,
+        url: result.url,
+        snippet: result.snippet,
+        rank: index + 1,
+      })),
+      ok: stat?.ok ?? (entry?.results.length ?? 0) > 0,
+      ...(stat?.errorCode === undefined ? {} : { errorCode: stat.errorCode }),
+      ...(stat?.latencyMs === undefined ? {} : { latencyMs: stat.latencyMs }),
+    };
+  });
+}
+
+function deepRoundsFromResponse(
+  response: SearchResponse,
+  original: EvaluationSnapshot,
+): DeepQuerySnapshot[] {
+  const pairs = response.debug?.providerQueries ?? [];
+  const queryTexts = [...new Set([original.query, ...pairs.map((pair) => pair.query)])];
+  return queryTexts.map((text, queryIndex) => {
+    const providerIds = pairs.filter((pair) => pair.query === text).map((pair) => pair.providerId);
+    const providers = providerIds.length === 0 ? original.providers : original.providers.filter((provider) => providerIds.includes(provider.providerId));
+    const budget = response.deepBudget;
+    return {
+      ...original,
+      queryId: queryIndex === 0 ? original.queryId : `${original.queryId}:q${queryIndex + 1}`,
+      query: text,
+      queryIndex,
+      kind: queryIndex === 0 ? "original" : "expanded",
+      weight: queryIndex === 0 ? 1 : 0.8,
+      round: 1,
+      providers,
+      providerQueryCalls: queryIndex === 0 ? budget?.providerQueryCalls ?? providers.length : providers.length,
+      httpRequests: queryIndex === 0 ? budget?.httpRequests ?? original.upstreamRequests : 0,
+      modelCalls: queryIndex === 0 ? budget?.modelCalls ?? 0 : 0,
+      budgetExhausted: budget?.budgetExhausted ?? false,
+    };
+  });
+}
 
 /**
  * Secondary category labels stored on a query row.
@@ -299,6 +391,8 @@ export interface RunInput {
   queryIds?: string[];
   /** Re-rank the snapshots captured by a previous run instead of new ones. */
   snapshotRunId?: string;
+  /** Offline ranking stage over frozen snapshots; defaults to legacy fusion. */
+  strategy?: RankStrategy;
   /** Live only: which providers may be called. */
   providerIds?: string[];
   /** Live only: hard ceiling on upstream requests. */
@@ -961,10 +1055,7 @@ export class QualityService {
           .get();
         if (snapshot) {
           try {
-            const providers = JSON.parse(snapshot.snapshotJson) as Array<{
-              providerId?: string;
-              results?: Array<{ url?: string }>;
-            }>;
+            const providers = deserializeSnapshot(snapshot.snapshotJson).providers;
             for (const provider of providers) {
               for (const providerResult of provider.results ?? []) {
                 if (typeof providerResult.url !== "string") continue;
@@ -1321,6 +1412,7 @@ export class QualityService {
       ranked: Array<{ documentId: string; title: string; url: string }>;
       metrics: QueryMetrics;
       latencyMs: number | null;
+      snapshotProvenance: SnapshotProvenance | null;
     }>;
   } {
     const row = this.deps.db.select().from(qualityRuns).where(eq(qualityRuns.id, runId)).get();
@@ -1332,6 +1424,9 @@ export class QualityService {
       .all();
     const queries = this.deps.db.select().from(qualityQueries).where(eq(qualityQueries.datasetId, row.datasetId)).all();
     const queryText = new Map(queries.map((item) => [item.id, item.query]));
+    const queryMeta = new Map(queries.map((item) => [item.id, item]));
+    const snapshotRows = this.deps.db.select().from(qualitySnapshots).where(eq(qualitySnapshots.runId, row.snapshotRunId ?? runId)).all();
+    const snapshotByQuery = new Map(snapshotRows.map((snapshot) => [snapshot.queryId, snapshot]));
 
     const stored = row.metricsJson ? (JSON.parse(row.metricsJson) as Record<string, unknown>) : {};
     return {
@@ -1360,6 +1455,16 @@ export class QualityService {
       perQuery: results.map((item) => {
         const metrics = JSON.parse(item.metricsJson) as QueryMetrics;
         const ranked = JSON.parse(item.rankedJson) as Array<{ documentId: string; title: string; url: string }>;
+        const snapshot = snapshotByQuery.get(item.queryId);
+        const meta = queryMeta.get(item.queryId);
+        let provenance: SnapshotProvenance | null = null;
+        if (snapshot && meta) {
+          try {
+            provenance = readStoredSnapshot(snapshot.snapshotJson, { id: meta.id, query: meta.query, category: meta.category as QueryCategory, language: meta.language }, snapshot.createdAt, row.snapshotRunId).provenance ?? null;
+          } catch {
+            // A corrupt optional evidence row must not hide an otherwise readable run.
+          }
+        }
         return {
           queryId: item.queryId,
           query: queryText.get(item.queryId) ?? item.queryId,
@@ -1367,6 +1472,7 @@ export class QualityService {
           ranked,
           metrics,
           latencyMs: item.latencyMs,
+          snapshotProvenance: provenance,
         };
       }),
     };
@@ -1780,31 +1886,7 @@ export class QualityService {
           // attributed the last measured query's time to whichever row happened
           // to be written.
           latencyByQuery.set(query.id, latencyMs);
-          const statById = new Map(response.stats.providers.map((stat) => [stat.providerId, stat]));
-          const providers: ProviderSnapshot[] = (response.debug?.perProviderResults ?? []).map(
-            (entry) => {
-              const stat = statById.get(entry.providerId);
-              return {
-                providerId: entry.providerId,
-                providerName: entry.providerName,
-                providerType: stat?.providerType ?? "unknown",
-                results: entry.results.map((result, index) => ({
-                  documentId: result.id,
-                  title: result.title,
-                  url: result.url,
-                  snippet: result.snippet,
-                  rank: index + 1,
-                })),
-                // A failed provider must be recorded as failed. Writing `ok`
-                // unconditionally would make an outage look like a source that
-                // simply returned nothing, and every later re-rank of this
-                // snapshot would inherit the lie.
-                ok: stat?.ok ?? entry.results.length > 0,
-                ...(stat?.errorCode === undefined ? {} : { errorCode: stat.errorCode }),
-                ...(stat?.latencyMs === undefined ? {} : { latencyMs: stat.latencyMs }),
-              };
-            },
-          );
+          const providers = providerSnapshotsFromResponse(response, providerIds);
           const asked = new Set(providerIds);
           for (const stat of response.stats.providers) {
             asked.delete(stat.providerId);
@@ -1824,22 +1906,34 @@ export class QualityService {
           }
           // Per query, not per run: one degraded query must not mark all of them.
           queryOutcome.set(query.id, { partial: response.status === "partial", failed: response.status === "failed" });
-          snapshots.set(query.id, {
+          const capturedAt = new Date(this.now()).toISOString();
+          const envelope = deserializeSnapshot({
+            schemaVersion: 2,
             queryId: query.id,
             query: query.query,
             category: query.category,
-            providers,
-            capturedAt: new Date(this.now()).toISOString(),
-            upstreamRequests: response.stats.providers.reduce((total, stat) => total + stat.attempts, 0),
+            language: query.language,
+            capturedAt,
+            upstreamRequests: response.stats.providers.reduce((total, stat) => total + (stat.httpRequests ?? stat.attempts), 0),
             cacheHits: 0,
+            providers,
+            providerFingerprints: this.providerFingerprintsForCapture(providers),
+            modelArtifacts: this.modelArtifactsForCapture(response),
+            deepRounds: [],
           });
+          const storedSnapshot: StoredSnapshot = {
+            ...envelope,
+            deepRounds: deepRoundsFromResponse(response, envelope),
+            provenance: { sourceRunId: runId, sourceCapturedAt: capturedAt, snapshotHash: snapshotFingerprint(envelope) },
+          };
+          snapshots.set(query.id, storedSnapshot);
           this.deps.db
             .insert(qualitySnapshots)
             .values({
               runId,
               queryId: query.id,
-              snapshotJson: JSON.stringify(providers),
-              createdAt: new Date(this.now()).toISOString(),
+              snapshotJson: JSON.stringify(storedSnapshot),
+              createdAt: capturedAt,
             })
             .onConflictDoNothing()
             .run();
@@ -1850,19 +1944,11 @@ export class QualityService {
           .from(qualitySnapshots)
           .where(eq(qualitySnapshots.runId, input.snapshotRunId))
           .all();
-        const snapshotByQuery = new Map(rows.map((row) => [row.queryId, row.snapshotJson]));
+        const snapshotByQuery = new Map(rows.map((row) => [row.queryId, row]));
         for (const query of queries) {
-          const raw = snapshotByQuery.get(query.id);
-          if (!raw) continue;
-          snapshots.set(query.id, {
-            queryId: query.id,
-            query: query.query,
-            category: query.category,
-            providers: JSON.parse(raw) as ProviderSnapshot[],
-            capturedAt: new Date(this.now()).toISOString(),
-            upstreamRequests: 0,
-            cacheHits: 0,
-          });
+          const stored = snapshotByQuery.get(query.id);
+          if (!stored) continue;
+          snapshots.set(query.id, readStoredSnapshot(stored.snapshotJson, query, stored.createdAt, input.snapshotRunId!));
         }
       } else {
         // Built-in synthetic fixture: the dataset id selects which one.
@@ -1874,13 +1960,28 @@ export class QualityService {
           // Persist them like a live capture so a fixture run can itself be
           // re-ranked with a different strategy. Without this, `snapshotRunId`
           // pointing at a fixture run would silently produce an empty run.
+          const query = queries.find((item) => item.id === snapshot.queryId)!;
+          const capturedAt = new Date(this.now()).toISOString();
+          const envelope = deserializeSnapshot({
+            ...snapshot,
+            schemaVersion: 2,
+            language: query.language,
+            providerFingerprints: Object.fromEntries(snapshot.providers.map((provider) => [provider.providerId, snapshotFingerprint(provider)])),
+            modelArtifacts: {},
+            deepRounds: [],
+          });
+          const storedSnapshot: StoredSnapshot = {
+            ...envelope,
+            provenance: { sourceRunId: runId, sourceCapturedAt: capturedAt, snapshotHash: snapshotFingerprint(envelope) },
+          };
+          snapshots.set(snapshot.queryId, storedSnapshot);
           this.deps.db
             .insert(qualitySnapshots)
             .values({
               runId,
               queryId: snapshot.queryId,
-              snapshotJson: JSON.stringify(snapshot.providers),
-              createdAt: new Date(this.now()).toISOString(),
+              snapshotJson: JSON.stringify(storedSnapshot),
+              createdAt: capturedAt,
             })
             .onConflictDoNothing()
             .run();
@@ -1922,7 +2023,7 @@ export class QualityService {
           continue;
         }
 
-        const ranked = rankSnapshot(snapshot, input.fusion, { limit });
+        const ranked = rankFrozenStrategy(snapshot, { strategy: input.strategy ?? "fusion", fusion: input.fusion, limit });
         const metrics = evaluateQuery(
           ranked.documents.map((document) => document.documentId),
           judged,
@@ -2000,6 +2101,7 @@ export class QualityService {
         latency,
         cost,
         quality,
+        strategy: input.strategy ?? "fusion",
         requestsUsed,
         cacheHits,
         // A stop is not a fault. It is still recorded, because a run card that
@@ -2079,10 +2181,7 @@ export class QualityService {
       const ids = new Set<string>();
       for (const row of rows) {
         try {
-          const providers = JSON.parse(row.snapshotJson) as Array<{ providerId?: unknown }>;
-          for (const provider of providers) {
-            if (typeof provider.providerId === "string") ids.add(provider.providerId);
-          }
+          for (const provider of deserializeSnapshot(row.snapshotJson).providers) ids.add(provider.providerId);
         } catch {
           /* a corrupt snapshot must not stop the run from being attributable to nothing */
         }
@@ -2144,6 +2243,35 @@ export class QualityService {
     // remaining ones would produce a digest of a different set.
     if (rows.length !== providerIds.length) return null;
     return providerFingerprint(rows);
+  }
+
+  private modelArtifactsForCapture(response: SearchResponse): ModelArtifacts {
+    const artifacts: ModelArtifacts = {};
+    const applied = new Set<string>();
+    if (response.stats.embeddingApplied) applied.add("embedding");
+    if (response.stats.rerankApplied) applied.add("rerank");
+    if (response.stats.summaryApplied || response.summary) applied.add("chat");
+    for (const model of this.deps.modelSnapshot?.() ?? []) {
+      const stage = model.kind === "embedding" || model.kind === "rerank" || model.kind === "chat" ? model.kind : null;
+      if (!stage || !applied.has(stage)) continue;
+      artifacts[stage] = {
+        modelId: model.modelId,
+        configFingerprint: snapshotFingerprint({ id: model.id, kind: model.kind, providerType: model.providerType, baseUrl: model.baseUrl, modelId: model.modelId }),
+        stageVersion: this.deps.engineVersion,
+      };
+    }
+    return artifacts;
+  }
+
+  private providerFingerprintsForCapture(providers: readonly ProviderSnapshot[]): Record<string, string> {
+    const configured = new Map((this.deps.providerSnapshot?.() ?? []).map((row) => [row.id, row]));
+    return Object.fromEntries(providers.map((provider) => {
+      const config = configured.get(provider.providerId);
+      const fingerprint = config
+        ? snapshotFingerprint({ id: config.id, type: config.type, baseUrl: config.baseUrl, weight: config.weight, timeoutMs: config.timeoutMs, maxConcurrency: config.maxConcurrency, resultsPerPage: config.resultsPerPage, rpmLimit: config.rpmLimit, maxRetries: config.maxRetries, searchConfig: config.searchConfig })
+        : snapshotFingerprint(provider);
+      return [provider.providerId, fingerprint];
+    }));
   }
 
   /**
@@ -2317,6 +2445,7 @@ export class QualityService {
       latency?: LatencyStats;
       cost?: CostSummary;
       quality?: Record<string, MetricValue>;
+      strategy?: RankStrategy;
       requestsUsed: number;
       cacheHits: number;
       error?: string;
@@ -2343,6 +2472,7 @@ export class QualityService {
           latency: payload.latency ?? latencyStats([]),
           cost: payload.cost ?? null,
           quality: payload.quality ?? {},
+          strategy: payload.strategy ?? "fusion",
         }),
         errorJson: payload.error ? JSON.stringify({ message: payload.error }) : null,
       })
@@ -2368,6 +2498,13 @@ export class QualityService {
     holdoutOnly: boolean;
     /** Per-category means; groups overlap when a query carries several labels. */
     byCategory: CategoryBreakdown;
+    /** PRD B8 paired evidence; null until at least one side has stored metrics. */
+    bootstrap: PairedStratifiedBootstrapSummary;
+    attrition: number;
+    pairedN: number;
+    excludedN: number;
+    /** Same-source snapshot replay can explain strategy-level rank changes. */
+    strategyComparison: Array<ReturnType<typeof compareRankStrategies>> | null;
     /** Document-level rank changes, judged documents only. */
     movements: {
       queries: Array<ReturnType<typeof queryMovements>>;
@@ -2413,6 +2550,7 @@ export class QualityService {
         rows.map((row) => [
           row.queryId,
           {
+            status: row.status,
             metrics: JSON.parse(row.metricsJson) as QueryMetrics,
             ranked: JSON.parse(row.rankedJson) as Array<{ documentId: string; title: string; url: string }>,
           },
@@ -2466,6 +2604,70 @@ export class QualityService {
         fusion: { strategy: "rrf" as const },
       }));
 
+    const judgmentSources = new Map<string, Set<string>>();
+    for (const row of judgedRows) {
+      const sources = judgmentSources.get(row.queryId) ?? new Set<string>();
+      sources.add(row.source);
+      judgmentSources.set(row.queryId, sources);
+    }
+    const emptyMetrics = (queryId: string) => evaluateQuery([], {
+      queryId,
+      grades: gradesByQuery.get(queryId) ?? new Map<string, RelevanceGrade>(),
+      relevantTotal: complete ? [...(gradesByQuery.get(queryId)?.values() ?? [])].filter((grade) => grade >= 2).length : null,
+    }, { cutoff });
+    const pairs: PairedQuerySample[] = queries.map((query) => {
+      const base = baselineRows.get(query.id);
+      const cand = candidateRows.get(query.id);
+      const sources = judgmentSources.get(query.id);
+      const status = !base || !cand ? "failed" as const
+        : base.status !== "ok" || cand.status !== "ok" ? "failed" as const : "ok" as const;
+      return {
+        queryId: query.id,
+        query: query.query,
+        language: query.language,
+        category: query.category,
+        judgmentSource: sources?.size === 1 && sources.has("human") ? "human" : "machine_generated",
+        judgmentsComplete: complete,
+        status,
+        exclusionReason: !base || !cand ? "not_executed" : status === "failed" ? "execution_failed" : undefined,
+        baseline: base?.metrics ?? emptyMetrics(query.id),
+        candidate: cand?.metrics ?? emptyMetrics(query.id),
+      };
+    });
+    const bootstrap = pairedStratifiedBootstrap({ pairs, metric });
+
+    let strategyComparison: Array<ReturnType<typeof compareRankStrategies>> | null = null;
+    const sharedSourceRunId = baseline.snapshotRunId && baseline.snapshotRunId === candidate.snapshotRunId
+      ? baseline.snapshotRunId
+      : candidate.snapshotRunId === baseline.id ? baseline.id
+        : baseline.snapshotRunId === candidate.id ? candidate.id : null;
+    if (sharedSourceRunId && baseline.fusionJson === candidate.fusionJson && baseline.limitValue === candidate.limitValue) {
+      const storedSnapshots = this.deps.db.select().from(qualitySnapshots)
+        .where(eq(qualitySnapshots.runId, sharedSourceRunId)).all();
+      const snapshotByQuery = new Map(storedSnapshots.map((row) => [row.queryId, row]));
+      const readStrategy = (run: typeof qualityRuns.$inferSelect): RankStrategy => {
+        try {
+          const parsed = JSON.parse(run.metricsJson ?? "{}") as { strategy?: RankStrategy };
+          return parsed.strategy ?? "fusion";
+        } catch {
+          return "fusion";
+        }
+      };
+      strategyComparison = [];
+      for (const query of queries) {
+        const stored = snapshotByQuery.get(query.id);
+        if (!stored) continue;
+        const snapshot = readStoredSnapshot(stored.snapshotJson, query, stored.createdAt, sharedSourceRunId);
+        strategyComparison.push(compareRankStrategies({
+          snapshot,
+          baseline: readStrategy(baseline),
+          candidate: readStrategy(candidate),
+          limit: baseline.limitValue,
+          fusion: JSON.parse(baseline.fusionJson) as FusionParameters,
+        }));
+      }
+    }
+
     return {
       ...compareRankings({
         metric,
@@ -2484,6 +2686,11 @@ export class QualityService {
       // A stored-run comparison covers exactly the queries both runs measured;
       // there is no hidden holdout. `sweepRrf` is where the split lives.
       holdoutOnly: false,
+      bootstrap,
+      attrition: bootstrap.attrition,
+      pairedN: bootstrap.pairedN,
+      excludedN: bootstrap.excludedN,
+      strategyComparison,
       byCategory: aggregateByCategory(
         [...baselineRows.values()].map((row) => row.metrics),
         judgedQueries.map((item) => ({
@@ -2691,11 +2898,7 @@ export class QualityService {
       .from(qualitySnapshots)
       .where(eq(qualitySnapshots.runId, sourceRunId))
       .all();
-    const byQuery = new Map<string, ProviderSnapshot[]>();
-    for (const row of rows) {
-      if (!allowed.has(row.queryId)) continue;
-      byQuery.set(row.queryId, JSON.parse(row.snapshotJson) as ProviderSnapshot[]);
-    }
+    const byQuery = new Map(rows.filter((row) => allowed.has(row.queryId)).map((row) => [row.queryId, row]));
     const queries = this.deps.db
       .select()
       .from(qualityQueries)
@@ -2703,20 +2906,9 @@ export class QualityService {
       .all();
     const meta = new Map(queries.map((row) => [row.id, row]));
     return new Map(
-      [...byQuery.entries()].map(([queryId, providers]) => {
-        const row = meta.get(queryId);
-        return [
-          queryId,
-          {
-            queryId,
-            query: row?.query ?? queryId,
-            category: (row?.category ?? "general") as QueryCategory,
-            providers,
-            capturedAt: new Date(this.now()).toISOString(),
-            upstreamRequests: 0,
-            cacheHits: 0,
-          } satisfies QuerySnapshot,
-        ];
+      [...byQuery.entries()].map(([queryId, stored]) => {
+        const row = meta.get(queryId) ?? { id: queryId, query: queryId, category: "general" as QueryCategory, language: "und" };
+        return [queryId, readStoredSnapshot(stored.snapshotJson, row, stored.createdAt, sourceRunId)] satisfies [string, QuerySnapshot];
       }),
     );
   }
