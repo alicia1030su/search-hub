@@ -87,9 +87,7 @@ export function startSearchStream(
         encoded = sequencer.next("results", event.data);
         break;
       case "status":
-        encoded = event.data["terminal"] === true && event.data["status"] === "cancelled"
-          ? sequencer.next("cancelled", event.data)
-          : sequencer.next("status", event.data);
+        encoded = sequencer.next("status", event.data);
         break;
       case "search_completed":
         encoded = sequencer.next("done", event.data);
@@ -138,8 +136,11 @@ export function startSearchStream(
     onEvent: emit,
   }).then((response: SearchResponse) => {
     if (!sequencer.closed) {
-      const type = response.status === "cancelled" ? "cancelled" : response.status === "failed" ? "error" : "done";
-      const terminal = sequencer.next(type, { ...response } as unknown as Record<string, unknown>);
+      const type = response.status === "failed" ? "error" : "done";
+      const payload = response.status === "cancelled"
+        ? { ...response, status: "cancelled", terminal: true } as unknown as Record<string, unknown>
+        : { ...response } as unknown as Record<string, unknown>;
+      const terminal = sequencer.next(response.status === "cancelled" ? "status" : type, payload);
       pushFrame(encode(terminal));
       finished = true;
       scheduleFlush();
