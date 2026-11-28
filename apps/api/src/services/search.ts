@@ -25,6 +25,7 @@ import {
   fuseLayeredRrf,
   resolveSearchIntent,
   routeProviders,
+  normalizeQueryIdentity,
   routeSearchStrategy,
   type CandidateResult,
   type ProviderRuntime,
@@ -69,6 +70,25 @@ const MAX_STORED_RESPONSE_BYTES = 512 * 1024;
 
 function abortMessage(signal?: AbortSignal): string {
   const reason = signal?.reason;
+interface DeepQueryPlanItem {
+  query: string;
+  id: string;
+  kind: "original" | "expanded" | "rewrite";
+  weight: number;
+  queryIndex: number;
+  round: number;
+}
+
+interface DeepQueryPlan {
+  queries: DeepQueryPlanItem[];
+  expansionMetadata?: SearchResponse["queryExpansion"];
+  degradations: SearchDegradation[];
+  modelCalls: number;
+  maxQueries: number;
+  maxRounds: number;
+  roundsPlanned: number;
+}
+
   return reason instanceof Error ? reason.message : String(reason ?? "");
 }
 
@@ -403,6 +423,22 @@ export class SearchService {
       providers: providerIdentities.map((provider) => provider.configFingerprint).sort(),
       limit: request.limit ?? settings.defaults.limit,
       perProviderLimit: request.perProviderLimit ?? null,
+    const deadlineAtMs = startedAt + (request.timeoutMs ?? settings.defaults.timeoutMs);
+    let deepPlan: DeepQueryPlan | undefined;
+    if (mode === "deep" || request.queryExpansion === true) {
+      const planningDeadline = new AbortController();
+      const planningSignal = AbortSignal.any([controller.signal, planningDeadline.signal]);
+      const planningTimer = setTimeout(
+        () => planningDeadline.abort(new Error("Search deadline exceeded")),
+        Math.max(1, deadlineAtMs - Date.now()),
+      );
+      planningTimer.unref();
+      try {
+        deepPlan = await this.prepareDeepPlan(request, planningSignal);
+      } finally {
+        clearTimeout(planningTimer);
+      }
+    }
       timeoutMs: request.timeoutMs ?? null,
       language: request.language ?? null,
       freshness: request.freshness ?? null,
@@ -429,7 +465,15 @@ export class SearchService {
       providers: providerIdentities,
       routeVersion: intent.routeVersion,
       queryExpansion: request.queryExpansion === true,
-      queryPlan: [{ queryId: "q1", query: request.query, kind: "original", round: 1, weight: 1 }],
+      maxSubqueries: request.maxSubqueries,
+      maxRounds: request.maxRounds,
+      queryPlan: deepPlan?.queries.map((query) => ({
+        queryId: query.id,
+        query: query.query,
+        kind: query.kind,
+        round: query.round,
+        weight: query.weight,
+      })) ?? [{ queryId: "q1", query: request.query, kind: "original", round: 1, weight: 1 }],
       models: modelIdentities,
       parked: [...blocked.keys()].sort(),
     });
@@ -552,7 +596,7 @@ export class SearchService {
       const performPhysical = async (sharedSignal: AbortSignal, leaderTaskId: string): Promise<SearchResponse> => {
         const useMultiQueryPipeline = mode === "deep" || request.queryExpansion === true;
         let response = useMultiQueryPipeline
-          ? await this.runDeep(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest, options.onEvent)
+          ? await this.runDeep(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest, options.onEvent, deepPlan, deadlineAtMs)
           : await this.runStandard(request, runtimes, sharedSignal, leaderTaskId, skippedByHealth, beforeRequest, options.onEvent);
         if (useMultiQueryPipeline && mode !== "deep") response.mode = mode;
 
@@ -620,14 +664,13 @@ export class SearchService {
       };
 
       const canShare = cacheUsable && cacheKey !== null && beforeRequest === undefined;
-      const deadlineMs = request.timeoutMs ?? settings.defaults.timeoutMs;
       let ledPhysical = false;
       const physical = (sharedSignal: AbortSignal): Promise<SearchResponse> => {
         ledPhysical = true;
         return performPhysical(sharedSignal, taskId);
       };
       const shared = canShare
-        ? await this.flights.run(cacheKey, controller.signal, physical, { deadlineAtMs: startedAt + deadlineMs })
+        ? await this.flights.run(cacheKey, controller.signal, physical, { deadlineAtMs })
         : await performPhysical(controller.signal, taskId);
       if (canShare && !ledPhysical) {
         options.onEvent?.({ type: "results_updated", data: { results: shared.results, stats: shared.stats, errors: shared.errors, failedSources: shared.failedSources } });
@@ -999,32 +1042,14 @@ export class SearchService {
     return response;
   }
 
-  /**
-   * Deep mode: rewrite the query, run up to 3 retrievals and merge by URL.
-   * Model rewriting is best-effort; a failure falls back to the original query.
-   */
-  private async runDeep(
-    request: SearchRequest,
-    runtimes: ProviderRuntime[],
-    signal: AbortSignal,
-    taskId: string,
-    skippedByHealth: readonly SearchErrorSummary[] = [],
-    beforeRequest?: (providerId: string, url: string) => void,
-    onEvent?: (event: SearchExecutionEvent) => void,
-  ): Promise<SearchResponse> {
+  /** Builds the actual Deep query plan once, before cache identity is computed. */
+  private async prepareDeepPlan(request: SearchRequest, signal: AbortSignal): Promise<DeepQueryPlan> {
     let expansionMetadata: SearchResponse["queryExpansion"];
-    const deepDegradations: SearchDegradation[] = [];
+    const degradations: SearchDegradation[] = [];
     let modelCalls = 0;
     const maxQueries = Math.min(4, Math.max(1, request.maxSubqueries ?? (request.strategy || request.queryExpansion ? 4 : 3)));
     const maxRounds = Math.min(2, Math.max(1, request.maxRounds ?? 2));
-    let queries: Array<{
-      query: string;
-      id: string;
-      kind: "original" | "rewrite";
-      weight: number;
-      queryIndex: number;
-      round: number;
-    }>;
+    let queries: DeepQueryPlanItem[];
     const modelService = this.deps.models as Partial<ModelService>;
     const chatAvailable = Boolean(
       request.chatModelId ||
@@ -1032,7 +1057,7 @@ export class SearchService {
     );
     if (request.queryExpansion === true || !chatAvailable) {
       const chat = chatAvailable ? this.deps.models.chatModel(request.chatModelId) : null;
-      if (!chat) deepDegradations.push({ stage: "query_expansion", reason: "model_not_configured" });
+      if (!chat) degradations.push({ stage: "query_expansion", reason: "model_not_configured" });
       const expansion = await expandQuery(
         { query: request.query, queryExpansion: true, strategy: request.strategy ?? "deep" },
         {
@@ -1063,7 +1088,7 @@ export class SearchService {
       queries = expansion.queries.map((query, index) => ({
         query: query.query,
         id: `q${index + 1}`,
-        kind: index === 0 ? "original" : "rewrite",
+        kind: index === 0 ? "original" : query.kind === "rewrite" ? "rewrite" : "expanded",
         weight: query.weight,
         queryIndex: index + 1,
         round: 1,
@@ -1072,10 +1097,20 @@ export class SearchService {
       const chat = this.deps.models.chatModel(request.chatModelId);
       modelCalls += 1;
       const rewritten = await rewriteQuery(chat, request.query, maxQueries, signal);
-      queries = rewritten.slice(0, maxQueries).map((rawQuery, index) => {
+      const seen = new Set<string>();
+      const unique = [request.query, ...rewritten]
+        .map((query) => query.trim())
+        .filter((query) => {
+          const identity = normalizeQueryIdentity(query);
+          if (!identity || seen.has(identity)) return false;
+          seen.add(identity);
+          return true;
+        })
+        .slice(0, maxQueries);
+      queries = unique.map((query, index) => {
         const queryIndex = index + 1;
         return {
-          query: rawQuery.trim(),
+          query,
           id: `q${queryIndex}`,
           kind: queryIndex === 1 ? "original" as const : "rewrite" as const,
           weight: queryIndex === 1 ? 1 : 0.8,
@@ -1098,7 +1133,7 @@ export class SearchService {
     // report `completed` with zero results.
     const maxProviderQueryCalls = 32;
     const maxHttpRequests = 64;
-    const deadline = Date.now() + (request.timeoutMs ?? this.deps.settings.get().defaults.timeoutMs);
+    const deadline = deadlineAtMs;
     let providerQueryCalls = 0;
     let httpRequests = 0;
     let budgetExhausted = false;
@@ -1118,15 +1153,67 @@ export class SearchService {
     };
 
     for (let round = 1; round <= roundsPlanned; round += 1) {
-      if (signal.aborted || Date.now() >= deadline) {
-        budgetExhausted = true;
-        break;
-      }
+      if (signal.aborted || Date.now() >= deadline) break;
       const roundQueries = plannedQueries.filter((query) => query.round === round);
       const allocations: Array<{ query: (typeof plannedQueries)[number]; runtimes: ProviderRuntime[] }> = [];
       for (const queryInfo of roundQueries) {
         const remaining = maxProviderQueryCalls - providerQueryCalls;
         if (remaining <= 0) {
+    return {
+      queries: plannedQueries,
+      ...(expansionMetadata ? { expansionMetadata } : {}),
+      degradations,
+      modelCalls,
+      maxQueries,
+      maxRounds,
+      roundsPlanned,
+    };
+  }
+
+  /** Owns one absolute deadline for Deep planning and every sub-query. */
+  private async runDeep(
+    request: SearchRequest,
+    runtimes: ProviderRuntime[],
+    externalSignal: AbortSignal,
+    taskId: string,
+    skippedByHealth: readonly SearchErrorSummary[] = [],
+    beforeRequest?: (providerId: string, url: string) => void,
+    onEvent?: (event: SearchExecutionEvent) => void,
+    preparedPlan?: DeepQueryPlan,
+    requestDeadlineAtMs?: number,
+  ): Promise<SearchResponse> {
+    const deadlineAtMs = requestDeadlineAtMs ?? Date.now() + (request.timeoutMs ?? this.deps.settings.get().defaults.timeoutMs);
+    const deadlineController = new AbortController();
+    const signal = AbortSignal.any([externalSignal, deadlineController.signal]);
+    const timer = deadlineAtMs <= Date.now()
+      ? null
+      : setTimeout(() => deadlineController.abort(new Error("Search deadline exceeded")), Math.max(1, deadlineAtMs - Date.now()));
+    timer?.unref();
+    if (timer === null) deadlineController.abort(new Error("Search deadline exceeded"));
+    try {
+      return await this.executeDeepPlan(request, runtimes, signal, taskId, deadlineAtMs, skippedByHealth, beforeRequest, onEvent, preparedPlan);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
+  /** Executes a normalized Deep plan; all sub-queries share the caller's deadline. */
+  private async executeDeepPlan(
+    request: SearchRequest,
+    runtimes: ProviderRuntime[],
+    signal: AbortSignal,
+    taskId: string,
+    deadlineAtMs: number,
+    skippedByHealth: readonly SearchErrorSummary[] = [],
+    beforeRequest?: (providerId: string, url: string) => void,
+    onEvent?: (event: SearchExecutionEvent) => void,
+    preparedPlan?: DeepQueryPlan,
+  ): Promise<SearchResponse> {
+    const plan = preparedPlan ?? await this.prepareDeepPlan(request, signal);
+    const { queries: plannedQueries, expansionMetadata, roundsPlanned, maxQueries, maxRounds } = plan;
+    const queries = plannedQueries;
+    const deepDegradations = plan.degradations;
+    const modelCalls = plan.modelCalls;
           budgetExhausted = true;
           break;
         }

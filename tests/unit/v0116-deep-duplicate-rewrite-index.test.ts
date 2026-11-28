@@ -20,7 +20,7 @@ interface DeepRunner {
 }
 
 describe("BUG-0116-02 duplicate Deep rewrite indexing", () => {
-  it("does not let a successful duplicate hide a later failed duplicate", async () => {
+  it("executes duplicate rewrites once while preserving the original q1", async () => {
     vi.mocked(rewriteQuery).mockResolvedValueOnce(["same query", "same query", "other query"]);
     let sameQueryCalls = 0;
     let wire = 0;
@@ -58,10 +58,7 @@ describe("BUG-0116-02 duplicate Deep rewrite indexing", () => {
         search: async (input: { query: string }, context: { fetch: SafeFetch }) => {
           await context.fetch("https://fake.test/a");
           await context.fetch("https://fake.test/b");
-          if (input.query === "same query") {
-            sameQueryCalls += 1;
-            if (sameQueryCalls === 2) throw new Error("second duplicate failed");
-          }
+          if (input.query === "same query") sameQueryCalls += 1;
           return {
             results: [{
               title: input.query,
@@ -94,15 +91,11 @@ describe("BUG-0116-02 duplicate Deep rewrite indexing", () => {
       "task-deep-duplicate-index",
     );
 
-    expect(response.debug?.rewrittenQueries).toEqual(["same query", "same query", "other query"]);
-    expect(sameQueryCalls).toBe(2);
+    expect(response.debug?.rewrittenQueries).toEqual(["original", "same query", "other query"]);
+    expect(sameQueryCalls).toBe(1);
     expect(wire).toBe(6);
-    expect(response.status).toBe("partial");
-    expect(response.results).toHaveLength(2);
-    expect(
-      response.errors.some(
-        (item) => item.query === "same query" && /second duplicate failed/.test(item.message),
-      ),
-    ).toBe(true);
+    expect(response.status).toBe("completed");
+    expect(response.results).toHaveLength(3);
+    expect(response.errors).toEqual([]);
   });
 });
