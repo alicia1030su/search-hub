@@ -923,6 +923,9 @@ export class SearchService {
     onEvent?: (event: SearchExecutionEvent) => void,
   ): Promise<SearchResponse> {
     let expansionMetadata: SearchResponse["queryExpansion"];
+    let modelCalls = 0;
+    const maxQueries = Math.min(4, Math.max(1, request.maxSubqueries ?? (request.strategy || request.queryExpansion ? 4 : 3)));
+    const maxRounds = Math.min(2, Math.max(1, request.maxRounds ?? 2));
     let queries: Array<{
       query: string;
       id: string;
@@ -936,10 +939,11 @@ export class SearchService {
       const expansion = await expandQuery(
         { query: request.query, queryExpansion: true, strategy: request.strategy ?? "deep" },
         {
-          maxQueries: request.maxSubqueries ?? 3,
+          maxQueries,
           signal,
           ...(chat === null ? {} : {
             modelExpander: async (query, expansionSignal) => {
+              modelCalls += 1;
               const completion = await chat.complete([
                 { role: "system", content: "Rewrite the search query conservatively. Return strict JSON {\"queries\":[\"...\"]}." },
                 { role: "user", content: query },
@@ -969,8 +973,9 @@ export class SearchService {
       }));
     } else {
       const chat = this.deps.models.chatModel(request.chatModelId);
-      const rewritten = await rewriteQuery(chat, request.query, 3, signal);
-      queries = rewritten.slice(0, 3).map((rawQuery, index) => {
+      modelCalls += 1;
+      const rewritten = await rewriteQuery(chat, request.query, maxQueries, signal);
+      queries = rewritten.slice(0, maxQueries).map((rawQuery, index) => {
         const queryIndex = index + 1;
         return {
           query: rawQuery.trim(),
@@ -982,6 +987,11 @@ export class SearchService {
         };
       });
     }
+    const roundsPlanned = maxRounds > 1 && queries.length > 1 ? 2 : 1;
+    const plannedQueries = queries.map((query, index) => ({
+      ...query,
+      round: roundsPlanned === 1 ? 1 : index === 0 ? 1 : 2,
+    }));
     const deps = this.engineDeps();
     deps.runtimes = runtimes;
 
@@ -989,16 +999,59 @@ export class SearchService {
     // `status: "failed"` is NOT a usable result: it means every provider for
     // that query failed. Treating it as valid is how a deep search used to
     // report `completed` with zero results.
-    const outcomes = await Promise.all(
-      queries.map(async (queryInfo, index) => {
+    const maxProviderQueryCalls = 32;
+    const maxHttpRequests = 64;
+    const deadline = Date.now() + (request.timeoutMs ?? this.deps.settings.get().defaults.timeoutMs);
+    let providerQueryCalls = 0;
+    let httpRequests = 0;
+    let budgetExhausted = false;
+    const outcomes: Array<{
+      query: (typeof plannedQueries)[number];
+      index: number;
+      response: SearchResponse | null;
+      error?: unknown;
+    }> = [];
+    const gatedBeforeRequest = (providerId: string, url: string): void => {
+      beforeRequest?.(providerId, url);
+      if (httpRequests >= maxHttpRequests) {
+        budgetExhausted = true;
+        throw new SearchHubError("rate_limited", "Deep search HTTP request budget exhausted");
+      }
+      httpRequests += 1;
+    };
+
+    for (let round = 1; round <= roundsPlanned; round += 1) {
+      if (signal.aborted || Date.now() >= deadline) {
+        budgetExhausted = true;
+        break;
+      }
+      const roundQueries = plannedQueries.filter((query) => query.round === round);
+      const allocations: Array<{ query: (typeof plannedQueries)[number]; runtimes: ProviderRuntime[] }> = [];
+      for (const queryInfo of roundQueries) {
+        const remaining = maxProviderQueryCalls - providerQueryCalls;
+        if (remaining <= 0) {
+          budgetExhausted = true;
+          break;
+        }
+        const queryRuntimes = runtimes.slice(0, Math.min(runtimes.length, remaining, 8));
+        providerQueryCalls += queryRuntimes.length;
+        allocations.push({ query: queryInfo, runtimes: queryRuntimes });
+      }
+      const roundOutcomes = await Promise.all(allocations.map(async ({ query: queryInfo, runtimes: queryRuntimes }) => {
         try {
           const response = await executeSearch(
-            deps,
-            { ...request, query: queryInfo.query, mode: "rrf", summarize: false, timeoutMs: request.timeoutMs },
+            { ...deps, runtimes: queryRuntimes },
+            {
+              ...request,
+              query: queryInfo.query,
+              mode: "rrf",
+              summarize: false,
+              timeoutMs: Math.max(1, deadline - Date.now()),
+            },
             {
               signal,
               taskId,
-              ...(beforeRequest === undefined ? {} : { beforeRequest }),
+              beforeRequest: gatedBeforeRequest,
               ...(onEvent === undefined ? {} : {
                 onEvent: (event) => {
                   if (event.type !== "meta") onEvent(event);
@@ -1006,12 +1059,25 @@ export class SearchService {
               }),
             },
           );
-          return { query: queryInfo, index, response };
+          return { query: queryInfo, index: queryInfo.queryIndex - 1, response };
         } catch (error) {
-          return { query: queryInfo, index, response: null, error };
+          return { query: queryInfo, index: queryInfo.queryIndex - 1, response: null, error };
         }
-      }),
-    );
+      }));
+      outcomes.push(...roundOutcomes);
+    }
+    const deepBudget: NonNullable<SearchResponse["deepBudget"]> = {
+      maxQueries,
+      maxRounds,
+      maxProviderQueryCalls,
+      maxHttpRequests,
+      queriesPlanned: plannedQueries.length,
+      roundsPlanned,
+      providerQueryCalls,
+      httpRequests,
+      modelCalls,
+      budgetExhausted,
+    };
 
     // Indexed rather than matched by query text: two rewrites can be identical,
     // and matching by string would then mark both as succeeded together.
@@ -1082,11 +1148,12 @@ export class SearchService {
         degraded: false,
         timing: { totalMs: 0, fanoutMs: 0, fusionMs: 0 },
         funnel: emptyFunnel(),
-        truncationReasons: [],
+        truncationReasons: budgetExhausted ? [{ reason: "deep_budget", count: 1 }] : [],
       },
         errors: failures,
         failedSources: failures.map((item) => ({ id: item.providerId, code: item.code })),
         ...(expansionMetadata ? { queryExpansion: expansionMetadata } : {}),
+        deepBudget,
         debug: { rewrittenQueries: queries.map((query) => query.query) },
       };
     }
@@ -1238,6 +1305,7 @@ export class SearchService {
     const truncationReasons: SearchTruncationReason[] = [];
     if (rawPoolTruncated > 0) truncationReasons.push({ reason: "raw_pool_limit", count: rawPoolTruncated });
     if (candidateTruncatedCount > 0) truncationReasons.push({ reason: "candidate_pool_limit", count: candidateTruncatedCount });
+    if (budgetExhausted) truncationReasons.push({ reason: "deep_budget", count: 1 });
     const perProviderResults = new Map<string, { providerId: string; providerName: string; results: SearchResult[] }>();
     for (const response of valid) {
       for (const providerResults of response.debug?.perProviderResults ?? []) {
@@ -1275,6 +1343,7 @@ export class SearchService {
       failedSources: errors.map((item) => ({ id: item.providerId, code: item.code })),
       errors,
       ...(expansionMetadata ? { queryExpansion: expansionMetadata } : {}),
+      deepBudget,
       debug: {
         ...base.debug,
         rewrittenQueries: queries.map((query) => query.query),
@@ -1362,6 +1431,7 @@ export class SearchService {
     request: SearchRequest,
     signal: AbortSignal,
   ): Promise<SearchResponse> {
+    if (response.deepBudget) response.deepBudget.modelCalls += 1;
     const started = Date.now();
     try {
       const chat = this.deps.models.chatModel(request.chatModelId);

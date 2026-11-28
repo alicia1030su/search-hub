@@ -47,7 +47,7 @@ function runtime(id: string, search: SearchProviderAdapter["search"]): ProviderR
   };
 }
 
-function serviceWith(models: Record<string, unknown>, runtimes: ProviderRuntime[]): SearchService {
+function serviceWith(models: Record<string, unknown>, runtimes: ProviderRuntime[], fetch: SafeFetch = unusedFetch): SearchService {
   return new SearchService({
     db: {},
     providers: {
@@ -64,7 +64,7 @@ function serviceWith(models: Record<string, unknown>, runtimes: ProviderRuntime[
         cache: { enabled: false, ttlSeconds: 0 },
       }),
     },
-    fetch: unusedFetch,
+    fetch,
     logger,
     health: { blockedProviders: () => new Map() },
     cache: {},
@@ -156,6 +156,56 @@ describe("search service quality regressions", () => {
     expect(response.queryExpansion?.queries[0]?.query).toBe("machine learning tutorial");
   });
 
+  it("keeps every Deep query in round one when maxRounds is one", async () => {
+    const provider = runtime("rounds", async () => ({
+      results: [{ title: "Shared", url: "https://example.com/shared", snippet: "shared body" }],
+    }));
+    const service = serviceWith({ chatModel: () => chatReturning(["q2"]) }, [provider]);
+
+    const response = await (service as unknown as DeepRunner).runDeep(
+      { query: "q1", mode: "deep", maxRounds: 1, limit: 10, skipCache: true },
+      [provider],
+      new AbortController().signal,
+      "task-deep-one-round",
+    );
+
+    expect(response.deepBudget).toMatchObject({ roundsPlanned: 1, queriesPlanned: 2 });
+    expect(response.results[0]?.queryOrigins?.map((origin) => origin.round)).toEqual([1, 1]);
+  });
+
+  it("enforces the Deep HTTP budget before dispatching additional physical requests", async () => {
+    const fetch: SafeFetch = async <T>(url: string, init?: Parameters<SafeFetch>[1]): Promise<{ status: number; headers: Headers; data: T; url: string }> => {
+      init?.onRequest?.(url);
+      return {
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        data: {} as T,
+        url,
+      };
+    };
+    const providers = Array.from({ length: 8 }, (_, index) => runtime(`p${index}`, async (_input, ctx) => {
+      for (let request = 0; request < 3; request += 1) {
+        await ctx.fetch(`https://stub.invalid/${index}/${request}`);
+      }
+      return { results: [{ title: `Result ${index}`, url: `https://example.com/${index}`, snippet: "body" }] };
+    }));
+    const service = serviceWith({ chatModel: () => chatReturning(["q2", "q3", "q4"]) }, providers, fetch);
+
+    const response = await (service as unknown as DeepRunner).runDeep(
+      { query: "q1", mode: "deep", strategy: "deep", maxSubqueries: 4, limit: 10, skipCache: true },
+      providers,
+      new AbortController().signal,
+      "task-deep-http-budget",
+    );
+
+    expect(response.deepBudget).toMatchObject({
+      providerQueryCalls: 32,
+      httpRequests: 64,
+      budgetExhausted: true,
+    });
+    expect(response.stats.truncationReasons).toContainEqual({ reason: "deep_budget", count: 1 });
+  });
+
   it("reranks the full candidate set instead of only the pre-truncated request.limit", async () => {
     const provider = runtime("recall", async (input) => ({
       results: Array.from({ length: input.limit }, (_, index) => ({
@@ -206,7 +256,9 @@ describe("search service quality regressions", () => {
     expect(response.results).toHaveLength(1);
     expect(response.results[0]?.sources).toHaveLength(2);
     expect(response.results[0]?.queryOrigins?.map((origin) => origin.queryId)).toEqual(["q1", "q2"]);
+    expect(response.results[0]?.queryOrigins?.map((origin) => origin.round)).toEqual([1, 2]);
     expect(response.results[0]?.queryOrigins?.every((origin) => origin.score > 0)).toBe(true);
+    expect(response.deepBudget).toMatchObject({ queriesPlanned: 2, roundsPlanned: 2, providerQueryCalls: 4, httpRequests: 0 });
   });
 
   it("does not let a weak single-source subquery outrank a strong multi-source consensus after score normalization", async () => {

@@ -244,8 +244,21 @@ export interface SearchFunnel {
 }
 
 export interface SearchTruncationReason {
-  reason: "provider_limit" | "raw_pool_limit" | "candidate_pool_limit";
+  reason: "provider_limit" | "raw_pool_limit" | "candidate_pool_limit" | "deep_budget";
   count: number;
+}
+
+export interface DeepBudget {
+  maxQueries: number;
+  maxRounds: number;
+  maxProviderQueryCalls: number;
+  maxHttpRequests: number;
+  queriesPlanned: number;
+  roundsPlanned: number;
+  providerQueryCalls: number;
+  httpRequests: number;
+  modelCalls: number;
+  budgetExhausted: boolean;
 }
 
 export interface SearchRouteDecision {
@@ -298,6 +311,7 @@ export interface SearchResponse {
     queries: Array<{ query: string; kind: string; weight: number; source: string }>;
     skippedReasons: string[];
   };
+  deepBudget?: DeepBudget;
   results: SearchResult[];
   stats: {
     rawCount: number;
