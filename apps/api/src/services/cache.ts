@@ -249,6 +249,30 @@ export class CacheService {
     return this.readJson<T>(key);
   }
 
+  /**
+   * One logical lookup across fallback keys (for example v2 then legacy v1).
+   * A hit touches only the matching row and records one hit; a complete miss
+   * records one miss regardless of how many physical keys were checked.
+   */
+  getAny<T = SearchResponse>(keys: readonly string[]): CacheLookup<T> | null {
+    const started = performance.now();
+    try {
+      for (const key of keys) {
+        const hit = this.getInternal<T>(key, false);
+        if (hit) {
+          this.count("hits");
+          return hit;
+        }
+      }
+      this.count("misses");
+      return null;
+    } finally {
+      const duration = performance.now() - started;
+      this.diagnostics.recordQuery(duration);
+      this.diagnostics.recordRead(duration);
+    }
+  }
+
   private readJson<T>(key: string): CacheLookup<T> | null {
     const started = performance.now();
     try {
@@ -260,17 +284,17 @@ export class CacheService {
     }
   }
 
-  private getInternal<T>(key: string): CacheLookup<T> | null {
+  private getInternal<T>(key: string, countMetrics = true): CacheLookup<T> | null {
     const nowIso = new Date(this.now()).toISOString();
     const row = this.deps.db.select().from(searchCache).where(eq(searchCache.cacheKey, key)).get();
     if (!row) {
-      this.count("misses");
+      if (countMetrics) this.count("misses");
       return null;
     }
     if (row.expiresAt <= nowIso) {
       this.deleteKeyWithTotals(key);
       this.diagnostics.recordExpiredRemoved(1);
-      this.count("misses");
+      if (countMetrics) this.count("misses");
       return null;
     }
 
@@ -279,7 +303,7 @@ export class CacheService {
       parsed = JSON.parse(row.responseJson) as T;
     } catch {
       this.deleteKeyWithTotals(key);
-      this.count("misses");
+      if (countMetrics) this.count("misses");
       return null;
     }
 
@@ -290,7 +314,7 @@ export class CacheService {
       .set({ lastAccessedAt: nowIso, hitCount: row.hitCount + 1 })
       .where(eq(searchCache.cacheKey, key))
       .run();
-    this.count("hits");
+    if (countMetrics) this.count("hits");
     return {
       response: parsed,
       createdAt: row.createdAt,
