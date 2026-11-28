@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { buildLiveComparison, parseRetryAfter, runQualityLive } from "../../scripts/quality-live.mjs";
+import { loadLiveManifest, parseRetryAfter, runQualityLive } from "../../scripts/quality-live.mjs";
 
 function manifest(count = 3) {
   return {
@@ -160,8 +161,8 @@ test("frozen implementation requests cover rrf/rerank/deep without allowing both
     const input = options({
       manifest: {
         ...manifest(1),
-        baseline: { commit: "base", configFingerprint: "cfg", request: { mode } },
-        candidate: { commit: "candidate", configFingerprint: "cfg", request: { mode } },
+        baseline: { commit: "base", configFingerprint: "cfg", request: { mode }, modelArtifacts: mode === "rerank" ? { rerank: { modelId: "frozen", configFingerprint: "cfg", stageVersion: "v1" } } : {} },
+        candidate: { commit: "candidate", configFingerprint: "cfg", request: { mode }, modelArtifacts: mode === "rerank" ? { rerank: { modelId: "frozen", configFingerprint: "cfg", stageVersion: "v1" } } : {} },
       },
       fetchImpl: async (_url, init) => {
         seen.push(JSON.parse(init.body));
@@ -193,39 +194,49 @@ test("missing per-provider debug evidence is a failed capture, not an empty succ
   assert.equal(report.pairs[0].captures.baseline.errors[0].code, "missing_per_provider_evidence");
 });
 
-test("human qrels produce observed/releaseScore evidence and never mix snapshot with live", async () => {
-  const qrels = {
-    source: "human",
-    judgmentsComplete: true,
-    queries: [{ queryId: "q1", judgments: [{ documentId: "https://a.test/1", relevance: 3 }] }],
-  };
-  const report = await runQualityLive(options({ manifest: manifest(1), qrels, fetchImpl: async () => response(searchBody()) }));
-  assert.equal(report.comparison.evidenceKind, "live_paired_abba");
-  assert.equal(report.comparison.sameSnapshot, false);
-  assert.equal(report.comparison.perQuery[0].baseline.ndcgAtK, 1);
-  assert.equal(report.comparison.metrics.ndcgAtK.observed.pairedN, 1);
-  assert.equal(report.comparison.metrics.ndcgAtK.releaseScore.pairedN, 1);
-  assert.equal(report.comparison.status, "INSUFFICIENT_EVIDENCE");
-  assert.equal(buildLiveComparison(report, null).reason, "qrels_not_provided");
-  assert.equal(buildLiveComparison(report, { ...qrels, source: "machine_generated" }).reason, "qrels_not_human");
+test("raw live report preserves final results without computing quality scores", async () => {
+  const report = await runQualityLive(options({ manifest: manifest(1), fetchImpl: async () => response(searchBody()) }));
+  assert.equal(report.comparison, undefined);
+  assert.deepEqual(report.pairs[0].captures.baseline.finalResults, [
+    { documentId: "https://a.test/1", url: "https://a.test/1", title: "A" },
+  ]);
+  assert.equal(report.pairs[0].captures.baseline.ndcgAtK, undefined);
 });
 
-test("empty live results stay N/A in observed and become zero only in releaseScore", async () => {
-  const qrels = {
-    source: "human", judgmentsComplete: true,
-    queries: Array.from({ length: 24 }, (_, index) => ({ queryId: `q${index + 1}`, judgments: [{ documentId: "https://a.test/1", relevance: 3 }] })),
-  };
-  const report = await runQualityLive(options({
-    manifest: manifest(24), qrels,
-    fetchImpl: async (url) => {
-      const body = searchBody();
-      if (new URL(url).pathname === "/candidate") body.results = [];
-      return response(body);
+test("suites run serially with suiteId and record skipped model-dependent evidence", async () => {
+  const calls = [];
+  const input = options({
+    manifest: {
+      ...manifest(1),
+      suites: [
+        { id: "basic", request: { mode: "basic" }, limit: 5, perProviderLimit: 7 },
+        { id: "rrf", request: { mode: "rrf" }, limit: 20, perProviderLimit: 20 },
+        { id: "rerank", request: { mode: "rerank" } },
+        { id: "deep", enabled: false, skipReason: "model not configured", request: { mode: "deep" } },
+      ],
     },
-  }));
-  assert.equal(report.comparison.metrics.ndcgAtK.observed.pairedN, 0);
-  assert.equal(report.comparison.metrics.ndcgAtK.releaseScore.pairedN, 24);
-  assert.equal(report.comparison.metrics.ndcgAtK.releaseScore.candidateMean, 0);
+    fetchImpl: async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return response(searchBody());
+    },
+  });
+  const report = await runQualityLive(input);
+  assert.deepEqual(calls.map((call) => call.body.mode), ["basic", "basic", "rrf", "rrf"]);
+  assert.deepEqual(calls.map((call) => call.body.limit), [5, 5, 20, 20]);
+  assert.equal(calls[0].body.perProviderLimit, 7);
+  assert.deepEqual(report.pairs.map((pair) => pair.suiteId), ["basic", "rrf"]);
+  assert.deepEqual(report.suiteReports.map((suite) => [suite.suiteId, suite.status]), [
+    ["basic", "completed"], ["rrf", "completed"], ["rerank", "skipped"], ["deep", "skipped"],
+  ]);
+  assert.equal(report.suiteReports[2].skipReason, "missing_rerank_model");
+  assert.equal(report.suiteReports[3].skipReason, "model not configured");
+});
+
+test("public example manifest resolves the frozen 40-query file without copying query text", () => {
+  const manifest = loadLiveManifest(fileURLToPath(new URL("../../scripts/quality-live.public.example.json", import.meta.url)));
+  assert.equal(manifest.queries.length, 40);
+  assert.ok(manifest.queries.every((query) => typeof query.id === "string" && typeof query.language === "string" && typeof query.category === "string"));
+  assert.deepEqual(manifest.suites.map((suite) => suite.id), ["basic-public", "rrf-public", "rerank-model-required", "deep-model-required"]);
 });
 
 test("model metadata cannot smuggle credentials and request cannot enable cache", async () => {

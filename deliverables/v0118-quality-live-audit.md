@@ -4,14 +4,14 @@
 
 ## 1. 结论
 
-现有 `scripts/quality-live.mjs` 在本次补齐前只能固定发送 `mode=basic`，且没有比较报告生成器。现已支持按实现冻结 `basic/rrf/rerank/deep` 请求、保存最终排名与原始 per-provider 证据，并在提供人工 qrels 时生成 B8 `observed/releaseScore/attrition` 配对报告。
+现有 `scripts/quality-live.mjs` 在本次补齐前只能固定发送 `mode=basic`。现已支持 `suites[]` 逐 suite 串行 ABBA，按 suite 冻结 `basic/rrf/rerank/deep` 请求、limit、perProviderLimit 与非密 modelArtifacts，输出 suiteId；未提供 suites 时兼容旧 basic manifest。原始 per-provider 行、最终排名、哈希、请求数和延迟均来自真实响应，不预填分数。脚本只负责原始证据；B8 `observed/releaseScore/attrition` 报告由 `scripts/quality-report.mjs` 从冻结 queries/labels 与原始 report 生成，多 suite 不合并 bootstrap。
 
 当前环境**不能产出有效的 v0.1.17/v0.1.18 ABBA 质量结论**，原因如下：
 
-1. 仓库没有冻结的 40 条真实查询 manifest 与至少两名人工标注者仲裁后的 qrels 文件。
+1. `tests/fixtures/quality-v0118/queries.json` 已存在 40 条冻结真实查询与 80 条 labels；本次已补充 `scripts/quality-live.public.example.json` 的 live manifest 形状。仍需按实际实例填写 Provider ID、exact commits、区域与非密配置指纹。该 labels 文件明确不声明 qrels 完整，因此 Recall 不可计算，也不能把它描述为两名标注者仲裁后的完整 qrels。
 2. 没有同实例、同区域、同 origin 的双实现路由；当前 API 本身不提供 v0.1.17/v0.1.18 并行入口。
 3. 没有本地 `data/` 数据库、`SEARCH_HUB_TOKEN` 或相关 Provider/模型凭证环境变量。
-4. 两个无凭证公开 Provider 的真实冒烟均失败：Wikipedia 10,742ms 网络错误，DuckDuckGo 302ms 网络错误。失败证据已保存，不得解释为空结果或质量 0。
+4. 两个无凭证公开 Provider 的真实冒烟均失败：Wikipedia 10,700ms 网络错误，DuckDuckGo 223ms 网络错误。失败证据已保存，不得解释为空结果或质量 0。
 
 因此现阶段只能确认协议实现与失败事实，不能确认任何 nDCG/MRR/P/Recall 提升。
 
@@ -21,11 +21,11 @@
 |---|---|---|
 | basic | 支持 `request.mode=basic` | 需可用的公开/自托管搜索 Provider |
 | rrf | 支持 `request.mode=rrf` | 与 basic 使用相同 Provider 集合和召回参数 |
-| rerank | 支持 `request.mode=rerank`、`rerankModelId` | 两侧必须配置可用 rerank 模型；无模型时旧模式应失败，不能伪装成功 |
-| deep | 支持 `request.mode=deep`、`maxSubqueries`、`maxRounds`、`queryExpansion` | 保存 deepRounds 与预算；无 chat 模型只能按实现规则降级 |
+| rerank | 支持 suite `request.mode=rerank`、`rerankModelId` | 两侧必须冻结可用 rerank 模型；缺模型时 suite 记 `skipped/missing_rerank_model`，不发送请求 |
+| deep | 支持 suite `request.mode=deep`、`maxSubqueries`、`maxRounds`、`queryExpansion` | 保存 deepRounds 与预算；缺 chat metadata 时记 `chat_model_not_frozen` limitation，是否可运行由实现能力决定 |
 | v0.1.17/v0.1.18 | 通过同 origin 不同路径的代理路由接入两个 exact-SHA 实例 | 仓库不内置双实现路由，需按下节部署 |
 | 同快照重排 | 由 `quality.ts` 的 offline `snapshotRunId` 回放负责 | 不与 live ABBA 合并统计 |
-| live 比较 | 提供人工 qrels 后自动生成 comparison JSON | 无 qrels 时明确 `qrels_not_provided` |
+| live 比较 | `scripts/quality-report.mjs` 消费原始 live report 与冻结 queries/labels | labels 不声明完整时 Recall 为 N/A；不得补造分数 |
 
 请求白名单禁止覆盖 `query/providers/limit/perProviderLimit/skipCache`，并禁止同时冻结 `mode` 与 `strategy`。缺少 `debug.perProviderResults` 的响应记为 `missing_per_provider_evidence`，不能当作成功空结果。
 
@@ -84,69 +84,47 @@ quality.internal {
 
 ## 5. 冻结输入
 
-manifest 至少包含：
+公开 Provider 示例 manifest 为 `scripts/quality-live.public.example.json`。它通过 `queriesFile: "../tests/fixtures/quality-v0118/queries.json"` 引用现有 40 查询，不复制查询正文；basic/rrf suite 启用，rerank/deep suite 显式 disabled 并记录原因。运行前必须替换区域、实际 Provider ID、exact commits 和非密配置指纹。
+
+suite 结构：
 
 ```json
 {
-  "version": 1,
-  "region": "<actual-region>",
-  "providers": ["<public-provider-id>"],
+  "id": "rrf-public",
+  "request": { "mode": "rrf" },
   "limit": 20,
   "perProviderLimit": 20,
-  "baseline": {
-    "commit": "<v0117-sha>",
-    "configFingerprint": "<non-secret-config-hash>",
-    "request": { "mode": "rrf" }
-  },
-  "candidate": {
-    "commit": "<v0118-sha>",
-    "configFingerprint": "<non-secret-config-hash>",
-    "request": { "mode": "rrf" }
-  },
-  "queries": [
-    { "id": "<frozen-id>", "query": "<real-query>", "category": "technical", "language": "zh" }
-  ]
+  "modelArtifacts": {}
 }
 ```
 
-将 `request.mode` 分别运行为 `basic`、`rrf`、`rerank`、`deep`，每个模式单独生成报告，不混合 bootstrap。`rerank` 模式需额外提供两侧已配置的 `rerankModelId`。
+每个 suite 使用同一 Provider 集合与两侧非密配置，完整执行 40 查询的 AB/BA 后才进入下一个 suite。未提供 `suites[]` 时兼容旧 manifest，默认 `legacy-basic`。`rerank` 缺少冻结模型 metadata/`rerankModelId` 时记 `skipped/missing_rerank_model`；`deep` 缺少 chat metadata 时记 limitation，不能伪造模型已执行。
 
-qrels 文件结构：
-
-```json
-{
-  "source": "human",
-  "judgmentsComplete": true,
-  "queries": [
-    {
-      "queryId": "<frozen-id>",
-      "judgments": [
-        { "documentId": "https://example.invalid/document", "relevance": 3 }
-      ]
-    }
-  ]
-}
-```
-
-必须使用冻结查询集中真实文档 URL；上面的 `example.invalid` 只是结构占位。Recall 仅在 `judgmentsComplete=true` 时计算。
+`tests/fixtures/quality-v0118/queries.json` 中的 80 条 labels 是冻结评测输入，但文件明确不声明 qrels 完整，因此 Recall 不可计算。`quality-report.mjs` 直接消费该冻结文件与原始 live report；不得把这些 labels 改写为完整 qrels 或为未标注文档填 0。
 
 ## 6. 精确执行命令
 
 完成第 4、5 节后，在工作树根目录执行：
 
 ```bash
+cp scripts/quality-live.public.example.json /secure/path/quality-live.json
+# 编辑 /secure/path/quality-live.json：替换 region、Provider ID、两侧 commit 与配置指纹。
 export SEARCH_HUB_TOKEN='<search-scope-token>'
 node --import tsx scripts/quality-live.mjs \
-  --manifest /secure/path/frozen-queries.json \
-  --qrels /secure/path/human-qrels.json \
+  --manifest /secure/path/quality-live.json \
   --baseline-url https://quality.internal/v0117/api/search \
   --candidate-url https://quality.internal/v0118/api/search \
-  --out deliverables/quality-live-rrf
+  --out deliverables/quality-live-public
 ```
 
-输出：
+输出 `quality-live-report.json`：suiteId、AB/BA 顺序、每次尝试、原始 per-provider 快照、最终排名、请求数、延迟、错误、降级、hashes 与 provenance。随后由报告 worker 生成比较结果：
 
-- `quality-live-report.json`：AB/BA 顺序、每次尝试、原始 per-provider 快照、最终排名、请求数、延迟、错误、降级、hashes 与 provenance。
-- `quality-live-comparison.json`：人工 qrels 下的逐查询指标、`observed`、`releaseScore`、`attrition`、`pairedN/excludedN` 和 B8 状态。
+```bash
+node --import tsx scripts/quality-report.mjs \
+  --queries tests/fixtures/quality-v0118/queries.json \
+  --live deliverables/quality-live-public/quality-live-report.json \
+  --credential-scope public \
+  --out-dir deliverables/quality-live-public/report
+```
 
-仅当 comparison 为 `SUPPORTED`、两种口径方向一致且满足预注册门槛时，才可讨论提升；当前环境未达到该状态。
+仅当报告为 `SUPPORTED`、两种口径方向一致且满足预注册门槛时，才可讨论提升；当前环境未达到该状态。

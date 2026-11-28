@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "region": "replace-with-actual-region",
+  "queriesFile": "../tests/fixtures/quality-v0118/queries.json",
+  "providers": [
+    "replace-with-wikipedia-provider-id",
+    "replace-with-duckduckgo-provider-id"
+  ],
+  "limit": 20,
+  "perProviderLimit": 20,
+  "baseline": {
+    "commit": "ea0a35dea23517584b29995fcaae4d5b7fdaf8f6",
+    "configFingerprint": "replace-with-v0117-non-secret-config-hash",
+    "modelArtifacts": {}
+  },
+  "candidate": {
+    "commit": "replace-with-exact-v0118-sha",
+    "configFingerprint": "replace-with-v0118-non-secret-config-hash",
+    "modelArtifacts": {}
+  },
+  "suites": [
+    {
+      "id": "basic-public",
+      "request": { "mode": "basic" },
+      "limit": 20,
+      "perProviderLimit": 20,
+      "modelArtifacts": {}
+    },
+    {
+      "id": "rrf-public",
+      "request": { "mode": "rrf" },
+      "limit": 20,
+      "perProviderLimit": 20,
+      "modelArtifacts": {}
+    },
+    {
+      "id": "rerank-model-required",
+      "enabled": false,
+      "skipReason": "requires the same configured rerank model on both implementations",
+      "request": { "mode": "rerank" },
+      "limit": 20,
+      "perProviderLimit": 20,
+      "modelArtifacts": {}
+    },
+    {
+      "id": "deep-model-required",
+      "enabled": false,
+      "skipReason": "enable only after freezing chat/expansion model availability on both implementations",
+      "request": { "mode": "deep", "queryExpansion": false },
+      "limit": 20,
+      "perProviderLimit": 20,
+      "modelArtifacts": {}
+    }
+  ]
+}
